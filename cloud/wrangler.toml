@@ -4,6 +4,11 @@ compatibility_date = "2026-05-08"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
+[[d1_databases]]
+binding = "CONTROL_PLANE_DB"
+database_name = "contrabass-control-plane"
+database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
+
 [observability]
 enabled = true
 head_sampling_rate = 1.0
@@ -11,6 +16,11 @@ head_sampling_rate = 1.0
 [env.staging]
 name = "contrabass-cloud-staging"
 workers_dev = true
+
+[[env.staging.d1_databases]]
+binding = "CONTROL_PLANE_DB"
+database_name = "contrabass-control-plane"
+database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
 
 [env.staging.vars]
 CONTRABASS_ENV = "staging"
@@ -22,6 +32,11 @@ head_sampling_rate = 1.0
 [env.production]
 name = "contrabass-cloud"
 workers_dev = true
+
+[[env.production.d1_databases]]
+binding = "CONTROL_PLANE_DB"
+database_name = "contrabass-control-plane"
+database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
 
 [env.production.vars]
 CONTRABASS_ENV = "production"
