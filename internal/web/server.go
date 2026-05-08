@@ -47,17 +47,17 @@ type TimelineProvider interface {
 }
 
 type Server struct {
-	httpServer            *http.Server
-	hub                   *hub.Hub[WebEvent]
-	webEvents             chan<- WebEvent
-	dashboardFS           fs.FS
-	listenAddr            string
-	snapshotProvider      SnapshotProvider
-	agentStopper          AgentStopper
-	boardProvider         BoardProvider
-	detailProvider        tracker.IssueDetailProvider
-	timelineProvider      TimelineProvider
-	sseKeepaliveInterval  time.Duration
+	httpServer           *http.Server
+	hub                  *hub.Hub[WebEvent]
+	webEvents            chan<- WebEvent
+	dashboardFS          fs.FS
+	listenAddr           string
+	snapshotProvider     SnapshotProvider
+	agentStopper         AgentStopper
+	boardProvider        BoardProvider
+	detailProvider       tracker.IssueDetailProvider
+	timelineProvider     TimelineProvider
+	sseKeepaliveInterval time.Duration
 }
 
 func NewServer(
