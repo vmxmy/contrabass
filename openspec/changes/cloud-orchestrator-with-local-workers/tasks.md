@@ -26,7 +26,7 @@
 
 - [x] 4.1 Create R2 buckets: `contrabass-artifacts` (logs/diffs/screenshots), `contrabass-events-archive`
   - Evidence: `wrangler r2 bucket list` shows `contrabass-artifacts` created at `2026-05-08T21:35:17.624Z` and `contrabass-events-archive` created at `2026-05-08T21:35:18.591Z`.
-- [ ] 4.2 Add R2 bindings to `wrangler.toml`
+- [x] 4.2 Add R2 bindings to `wrangler.toml`
 - [ ] 4.3 Implement R2 presigned PUT URL generation utility under `cloud/src/r2/presign.ts`
 - [ ] 4.4 Create `events-archive` Queue and consumer Worker that batches events into `contrabass-events-archive`
 - [ ] 4.5 Set Queue dead-letter policy and document recovery procedure
