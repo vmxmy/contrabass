@@ -11,7 +11,7 @@
 
 - [x] 2.1 Create `cloud/` directory with `wrangler.toml`, `package.json`, `tsconfig.json`, Vitest setup
 - [x] 2.2 Add `cloud/` to root `package.json` workspaces and Bun lockfile
-- [ ] 2.3 Add `make cloud-build`, `make cloud-deploy`, `make cloud-deploy-dry`, `make cloud-test` targets
+- [x] 2.3 Add `make cloud-build`, `make cloud-deploy`, `make cloud-deploy-dry`, `make cloud-test` targets
 - [ ] 2.4 Add CI lane: build cloud + `wrangler deploy --dry-run` on PRs touching `cloud/**` or `cloud/schemas/**`
 - [ ] 2.5 Set up two Wrangler environments: `staging` and `production`
 

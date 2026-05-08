@@ -1,7 +1,7 @@
 # Contrabass — Build Tooling
 # Build order: dashboard SPA must build before Go binary (embed.FS requires dist/)
 
-.PHONY: build-dashboard build-landing build dev-dashboard dev-dashboard-stack dev-landing dev test test-race test-cover test-dashboard test-landing test-quick test-all ci clean lint release-dry
+.PHONY: build-dashboard build-landing build cloud-build cloud-deploy cloud-deploy-dry cloud-test dev-dashboard dev-dashboard-stack dev-landing dev test test-race test-cover test-dashboard test-landing test-quick test-all ci clean lint release-dry
 
 # Build the React dashboard SPA to packages/dashboard/dist/
 build-dashboard:
@@ -14,6 +14,22 @@ build-landing:
 # Build the Go binary with embedded dashboard
 build: build-dashboard
 	go build -ldflags "-X main.version=dev -X main.commit=$$(git rev-parse --short HEAD 2>/dev/null || echo none) -X main.date=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o contrabass ./cmd/contrabass
+
+# Build the Cloudflare Worker bundle without publishing it
+cloud-build:
+	cd cloud && bun run build
+
+# Deploy the Cloudflare Worker
+cloud-deploy:
+	cd cloud && bun run deploy
+
+# Validate the Cloudflare Worker deploy without publishing it
+cloud-deploy-dry:
+	cd cloud && bun run deploy:dry
+
+# Run cloud TypeScript checks and tests
+cloud-test:
+	cd cloud && bun run typecheck && bun run test
 
 # Start Vite dev server for dashboard development (with hot reload)
 dev-dashboard:
