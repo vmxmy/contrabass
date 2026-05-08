@@ -1,7 +1,9 @@
 # Contrabass — Build Tooling
 # Build order: dashboard SPA must build before Go binary (embed.FS requires dist/)
 
-.PHONY: build-dashboard build-landing build cloud-build cloud-deploy cloud-deploy-dry cloud-test dev-dashboard dev-dashboard-stack dev-landing dev test test-race test-cover test-dashboard test-landing test-quick test-all ci clean lint release-dry
+.PHONY: build-dashboard build-landing build cloud-build cloud-deploy cloud-deploy-dry cloud-migrate cloud-test dev-dashboard dev-dashboard-stack dev-landing dev test test-race test-cover test-dashboard test-landing test-quick test-all ci clean lint release-dry
+
+CLOUD_MIGRATE_FLAGS ?= --remote
 
 # Build the React dashboard SPA to packages/dashboard/dist/
 build-dashboard:
@@ -26,6 +28,10 @@ cloud-deploy:
 # Validate the Cloudflare Worker deploy without publishing it
 cloud-deploy-dry:
 	cd cloud && bun run deploy:dry
+
+# Apply pending D1 migrations. Override with CLOUD_MIGRATE_FLAGS="--local" for local Wrangler state.
+cloud-migrate:
+	cd cloud && bun run migrate -- $(CLOUD_MIGRATE_FLAGS)
 
 # Run cloud TypeScript checks and tests
 cloud-test:
