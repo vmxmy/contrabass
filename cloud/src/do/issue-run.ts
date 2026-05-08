@@ -1,3 +1,6 @@
+import type { EventArchiveMessage } from "../queues/events-archive";
+import type { WorkerEventLine } from "../workerproto/v1";
+
 export const ISSUE_RUN_STATES = [
   "queued",
   "dispatched",
@@ -34,6 +37,26 @@ export type IssueRunHeartbeatResult = {
   leaseExpiresAt: number;
 };
 
+export type IssueRunStoredEvent = EventArchiveMessage;
+
+type IssueRunQueue<T> = {
+  send(message: T): Promise<void>;
+};
+
+type TeamCoordinatorStub = {
+  fetch(input: string | Request, init?: RequestInit): Promise<Response>;
+};
+
+type TeamCoordinatorNamespace = {
+  idFromName(name: string): unknown;
+  get(id: unknown): TeamCoordinatorStub;
+};
+
+export type IssueRunEnv = {
+  EVENTS_ARCHIVE_QUEUE?: IssueRunQueue<EventArchiveMessage>;
+  TEAM_COORDINATOR?: TeamCoordinatorNamespace;
+};
+
 export class IssueRunTransitionError extends Error {
   readonly code = "invalid_state_transition";
 
@@ -65,7 +88,10 @@ type IssueRunTransitionOptions = {
 };
 
 const RECORD_KEY = "issue-run:record";
+const EVENT_LOG_KEY = "issue-run:events";
 const DEFAULT_LEASE_SEC = 60;
+const MAX_EVENTS_PER_REQUEST = 200;
+const MAX_EVENTS_BYTES = 512 * 1024;
 const TERMINAL_STATES = new Set<IssueRunStatus>(["succeeded", "failed", "cancelled"]);
 const ALLOWED_TRANSITIONS: Record<IssueRunStatus, readonly IssueRunStatus[]> = {
   queued: ["dispatched"],
@@ -106,7 +132,7 @@ export function transitionIssueRunStatus(
 export class IssueRun {
   constructor(
     private readonly state: IssueRunDurableState,
-    private readonly env: unknown,
+    private readonly env: IssueRunEnv = {},
   ) {}
 
   async fetch(request: Request): Promise<Response> {
@@ -149,6 +175,10 @@ export class IssueRun {
     if (request.method === "POST" && url.pathname === "/heartbeat") {
       const body = await readObjectBody(request);
       return this.handleHeartbeat(request, body);
+    }
+
+    if (request.method === "POST" && url.pathname === "/events") {
+      return this.handleEvents(request);
     }
 
     if (request.method === "POST" && url.pathname === "/complete") {
@@ -300,6 +330,93 @@ export class IssueRun {
 
     return jsonResponse({ run: updated, leaseExpiresAt });
   }
+
+  private async handleEvents(request: Request): Promise<Response> {
+    const record = await this.state.storage.get<IssueRunRecord>(RECORD_KEY);
+    if (record === undefined) {
+      return eventError("run_unknown", "run was not found", 404);
+    }
+    if (isTerminalIssueRunStatus(record.status)) {
+      return eventError("run_terminal", "run is already terminal", 409);
+    }
+    if (record.status !== "running") {
+      return eventError("run_not_running", "events are only accepted for running runs", 409);
+    }
+    if (record.teamId === undefined || record.runId === undefined) {
+      return eventError("run_metadata_missing", "running run is missing teamId or runId", 409);
+    }
+    const { teamId, runId } = record;
+
+    const workerId = getRequestWorkerId(request, {});
+    if (record.leaseHolder !== undefined && workerId !== undefined && workerId !== record.leaseHolder) {
+      return eventError(
+        "lease_holder_mismatch",
+        "event batch came from a worker that does not hold the lease",
+        409,
+      );
+    }
+
+    const body = await request.text();
+    if (new TextEncoder().encode(body).byteLength > MAX_EVENTS_BYTES) {
+      return eventsTooLargeResponse();
+    }
+
+    const parsed = parseEventLines(body);
+    if ("error" in parsed) {
+      return eventError(parsed.error, parsed.message, parsed.status);
+    }
+    if (parsed.events.length > MAX_EVENTS_PER_REQUEST) {
+      return eventsTooLargeResponse();
+    }
+
+    const receivedAt = Date.now();
+    const messages = parsed.events.map((event): EventArchiveMessage => ({
+      protocol_version: "1.0.0",
+      teamId,
+      runId,
+      issueRef: record.issueRef,
+      workerId: workerId ?? record.leaseHolder,
+      receivedAt,
+      event,
+    }));
+
+    const existing = await this.state.storage.get<IssueRunStoredEvent[]>(EVENT_LOG_KEY);
+    await this.state.storage.put(EVENT_LOG_KEY, [...(existing ?? []), ...messages]);
+    await this.forwardEventsToTeamCoordinator(record, messages);
+    await this.enqueueEvents(messages);
+
+    return jsonResponse({ protocol_version: "1.0.0", accepted: messages.length });
+  }
+
+  private async forwardEventsToTeamCoordinator(
+    record: IssueRunRecord,
+    messages: readonly EventArchiveMessage[],
+  ): Promise<void> {
+    if (this.env.TEAM_COORDINATOR === undefined || record.teamId === undefined) {
+      return;
+    }
+
+    const id = this.env.TEAM_COORDINATOR.idFromName(record.teamId);
+    const teamCoordinator = this.env.TEAM_COORDINATOR.get(id);
+
+    for (const message of messages) {
+      await teamCoordinator.fetch("https://team-coordinator.internal/run-event", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(message),
+      });
+    }
+  }
+
+  private async enqueueEvents(messages: readonly EventArchiveMessage[]): Promise<void> {
+    if (this.env.EVENTS_ARCHIVE_QUEUE === undefined) {
+      return;
+    }
+
+    for (const message of messages) {
+      await this.env.EVENTS_ARCHIVE_QUEUE.send(message);
+    }
+  }
 }
 
 async function readObjectBody(request: Request): Promise<Record<string, unknown>> {
@@ -337,6 +454,61 @@ function getRequestWorkerId(request: Request, body: Record<string, unknown>): st
   return request.headers.get("x-contrabass-worker-id") ?? getStringField(body, "workerId");
 }
 
+type EventParseResult = {
+  events: WorkerEventLine[];
+} | {
+  error: string;
+  message: string;
+  status: number;
+};
+
+function parseEventLines(body: string): EventParseResult {
+  const lines = body.split(/\r?\n/u).filter((line) => line.trim().length > 0);
+  const events: WorkerEventLine[] = [];
+
+  for (const line of lines) {
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(line);
+    } catch {
+      return { error: "invalid_ndjson", message: "event batch contains invalid JSON", status: 400 };
+    }
+
+    if (!isWorkerEventLine(decoded)) {
+      return { error: "invalid_event", message: "event line does not match worker protocol v1", status: 400 };
+    }
+    events.push(decoded);
+  }
+
+  return { events };
+}
+
+function isWorkerEventLine(value: unknown): value is WorkerEventLine {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return value.protocol_version === "1.0.0"
+    && typeof value.ts === "number"
+    && Number.isFinite(value.ts)
+    && isWorkerEventKind(value.kind)
+    && isRecord(value.payload)
+    && (value.seq === undefined || (typeof value.seq === "number" && Number.isFinite(value.seq)));
+}
+
+function isWorkerEventKind(value: unknown): value is WorkerEventLine["kind"] {
+  return value === "start"
+    || value === "log"
+    || value === "tool_call"
+    || value === "diff"
+    || value === "error"
+    || value === "phase";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function leaseFieldsChanged(previous: IssueRunRecord, next: IssueRunRecord): boolean {
   return previous.leaseHolder !== next.leaseHolder
     || previous.leaseExpiresAt !== next.leaseExpiresAt
@@ -349,4 +521,16 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function heartbeatError(error: string, message: string, status: number): Response {
   return jsonResponse({ protocol_version: "1.0.0", error, message }, status);
+}
+
+function eventError(error: string, message: string, status: number): Response {
+  return jsonResponse({ protocol_version: "1.0.0", error, message }, status);
+}
+
+function eventsTooLargeResponse(): Response {
+  return jsonResponse({
+    error: "events_too_large",
+    max_events: MAX_EVENTS_PER_REQUEST,
+    max_bytes: MAX_EVENTS_BYTES,
+  }, 413);
 }

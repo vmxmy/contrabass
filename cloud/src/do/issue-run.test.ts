@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   IssueRun,
+  type IssueRunEnv,
   IssueRunTransitionError,
   type IssueRunRecord,
   type IssueRunStatus,
+  type IssueRunStoredEvent,
   type IssueRunStorage,
   transitionIssueRunStatus,
 } from "./issue-run";
@@ -34,9 +36,41 @@ class MemoryIssueRunStorage implements IssueRunStorage {
   }
 }
 
+class MemoryQueue<T> {
+  readonly messages: T[] = [];
+
+  async send(message: T): Promise<void> {
+    this.messages.push(message);
+  }
+}
+
+class MemoryTeamCoordinator {
+  readonly requests: Array<{ input: string | Request; init?: RequestInit }> = [];
+
+  async fetch(input: string | Request, init?: RequestInit): Promise<Response> {
+    this.requests.push({ input, init });
+    return Response.json({ ok: true });
+  }
+}
+
+class MemoryTeamCoordinatorNamespace {
+  readonly names: string[] = [];
+  readonly coordinator = new MemoryTeamCoordinator();
+
+  idFromName(name: string): unknown {
+    this.names.push(name);
+    return name;
+  }
+
+  get(): MemoryTeamCoordinator {
+    return this.coordinator;
+  }
+}
+
 type IssueRunResponseBody = {
   run?: IssueRunRecord;
   leaseExpiresAt?: number;
+  accepted?: number;
   transition?: {
     previous: IssueRunStatus;
     current: IssueRunStatus;
@@ -317,6 +351,118 @@ describe("IssueRun Durable Object", () => {
       error: "invalid_state_transition",
     });
   });
+
+  it("appends running events, forwards them, and enqueues them for archival", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(10_000);
+    const { issueRun, storage, queue, teamCoordinator } = createIssueRunWithBindings();
+
+    await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      teamId: "team-1",
+      issueRef: "LIN-123",
+      workerId: "worker-1",
+      leaseSec: 30,
+    });
+    await post(issueRun, "/ack", { accept: true, workerId: "worker-1" });
+
+    const event = {
+      protocol_version: "1.0.0",
+      ts: 9_500,
+      kind: "phase",
+      payload: {
+        phase: "exec",
+        label: "editing files",
+      },
+    };
+    const response = await postNdjson(issueRun, "/events", `${JSON.stringify(event)}\n`, {
+      "x-contrabass-worker-id": "worker-1",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(readIssueRunResponse(response)).resolves.toMatchObject({
+      protocol_version: "1.0.0",
+      accepted: 1,
+    });
+
+    const storedEvents = await storage.get<IssueRunStoredEvent[]>("issue-run:events");
+    expect(storedEvents).toEqual([
+      {
+        protocol_version: "1.0.0",
+        teamId: "team-1",
+        runId: "run-1",
+        issueRef: "LIN-123",
+        workerId: "worker-1",
+        receivedAt: 10_000,
+        event,
+      },
+    ]);
+    expect(queue.messages).toEqual(storedEvents);
+    expect(teamCoordinator.names).toEqual(["team-1"]);
+    expect(teamCoordinator.coordinator.requests).toHaveLength(1);
+    const forwarded = teamCoordinator.coordinator.requests[0];
+    expect(forwarded?.input).toBe("https://team-coordinator.internal/run-event");
+    expect(JSON.parse(String(forwarded?.init?.body))).toEqual(storedEvents?.[0]);
+  });
+
+  it("rejects event batches for non-running runs without side effects", async () => {
+    const { issueRun, storage, queue, teamCoordinator } = createIssueRunWithBindings();
+
+    await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      teamId: "team-1",
+      issueRef: "LIN-123",
+      workerId: "worker-1",
+      leaseSec: 30,
+    });
+    const response = await postNdjson(issueRun, "/events", `${JSON.stringify({
+      protocol_version: "1.0.0",
+      ts: 9_500,
+      kind: "phase",
+      payload: { phase: "exec" },
+    })}\n`, {
+      "x-contrabass-worker-id": "worker-1",
+    });
+
+    expect(response.status).toBe(409);
+    await expect(readIssueRunResponse(response)).resolves.toMatchObject({
+      protocol_version: "1.0.0",
+      error: "run_not_running",
+    });
+    await expect(storage.get<IssueRunStoredEvent[]>("issue-run:events")).resolves.toBeUndefined();
+    expect(queue.messages).toEqual([]);
+    expect(teamCoordinator.coordinator.requests).toEqual([]);
+  });
+
+  it("rejects event batches over the per-request event count limit", async () => {
+    const { issueRun, queue, teamCoordinator } = createIssueRunWithBindings();
+
+    await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      teamId: "team-1",
+      workerId: "worker-1",
+      leaseSec: 30,
+    });
+    await post(issueRun, "/ack", { accept: true, workerId: "worker-1" });
+
+    const line = JSON.stringify({
+      protocol_version: "1.0.0",
+      ts: 9_500,
+      kind: "log",
+      payload: { level: "info", message: "hello" },
+    });
+    const response = await postNdjson(issueRun, "/events", `${Array.from({ length: 201 }, () => line).join("\n")}\n`, {
+      "x-contrabass-worker-id": "worker-1",
+    });
+
+    expect(response.status).toBe(413);
+    await expect(readIssueRunResponse(response)).resolves.toMatchObject({
+      error: "events_too_large",
+      max_events: 200,
+      max_bytes: 524288,
+    });
+    expect(queue.messages).toEqual([]);
+    expect(teamCoordinator.coordinator.requests).toEqual([]);
+  });
 });
 
 function createIssueRun(): IssueRun {
@@ -326,6 +472,22 @@ function createIssueRun(): IssueRun {
 function createIssueRunWithStorage(): { issueRun: IssueRun; storage: MemoryIssueRunStorage } {
   const storage = new MemoryIssueRunStorage();
   return { issueRun: new IssueRun({ storage }, {}), storage };
+}
+
+function createIssueRunWithBindings(): {
+  issueRun: IssueRun;
+  storage: MemoryIssueRunStorage;
+  queue: MemoryQueue<IssueRunStoredEvent>;
+  teamCoordinator: MemoryTeamCoordinatorNamespace;
+} {
+  const storage = new MemoryIssueRunStorage();
+  const queue = new MemoryQueue<IssueRunStoredEvent>();
+  const teamCoordinator = new MemoryTeamCoordinatorNamespace();
+  const env: IssueRunEnv = {
+    EVENTS_ARCHIVE_QUEUE: queue,
+    TEAM_COORDINATOR: teamCoordinator,
+  };
+  return { issueRun: new IssueRun({ storage }, env), storage, queue, teamCoordinator };
 }
 
 function post(
@@ -339,6 +501,21 @@ function post(
       method: "POST",
       body: JSON.stringify(body),
       headers: { "content-type": "application/json", ...headers },
+    }),
+  );
+}
+
+function postNdjson(
+  issueRun: IssueRun,
+  path: string,
+  body: string,
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  return issueRun.fetch(
+    new Request(`https://issue-run.test${path}`, {
+      method: "POST",
+      body,
+      headers: { "content-type": "application/x-ndjson", ...headers },
     }),
   );
 }
