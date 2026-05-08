@@ -329,12 +329,13 @@ describe("IssueRun Durable Object", () => {
     });
   });
 
-  it("requeues and clears the lease when the alarm fires after expiry", async () => {
+  it("requeues, revokes the lease, and clears holder state when the alarm fires after expiry", async () => {
     const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
-    const { issueRun, storage } = createIssueRunWithStorage();
+    const { issueRun, storage, teamCoordinator } = createIssueRunWithBindings();
 
     await post(issueRun, "/dispatch", {
       runId: "run-1",
+      teamId: "team-1",
       workerId: "worker-1",
       leaseSec: 2,
     });
@@ -349,6 +350,16 @@ describe("IssueRun Durable Object", () => {
     expect(state.run?.leaseHolder).toBeUndefined();
     expect(state.run?.leaseExpiresAt).toBeUndefined();
     expect(state.run?.leaseSec).toBeUndefined();
+    expect(teamCoordinator.names).toEqual(["team-1"]);
+    expect(teamCoordinator.coordinator.requests).toHaveLength(1);
+    expect(teamCoordinator.coordinator.requests[0]?.input).toBe("https://team-coordinator.internal/lease-revoked");
+    expect(JSON.parse(String(teamCoordinator.coordinator.requests[0]?.init?.body))).toEqual({
+      type: "lease-revoked",
+      protocol_version: "1.0.0",
+      runId: "run-1",
+      workerId: "worker-1",
+      reason: "heartbeat_timeout",
+    });
   });
 
   it("keeps the run and resets the alarm when an early alarm fires", async () => {
@@ -926,6 +937,47 @@ describe("IssueRun Durable Object", () => {
     await expect(storage.get<IssueRunStoredEvent[]>("issue-run:events")).resolves.toBeUndefined();
     expect(queue.messages).toHaveLength(1);
     expect(teamCoordinator.coordinator.requests).toHaveLength(2);
+  });
+
+  it("prunes terminal retention when a late event arrives after 24 hours", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    const { issueRun, storage, queue, teamCoordinator } = createIssueRunWithBindings();
+
+    await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      teamId: "team-1",
+      issueRef: "LIN-123",
+      workerId: "worker-1",
+      kind: "local",
+      leaseSec: 30,
+    });
+    await post(issueRun, "/ack", { accept: true, workerId: "worker-1" });
+
+    now.mockReturnValue(20_000);
+    await post(issueRun, "/complete", completeBody("succeeded"), {
+      "x-contrabass-worker-id": "worker-1",
+    });
+
+    now.mockReturnValue(86_420_000);
+    const response = await postNdjson(issueRun, "/events", `${JSON.stringify({
+      protocol_version: "1.0.0",
+      ts: 86_419_999,
+      kind: "phase",
+      payload: { phase: "verify" },
+    })}\n`, {
+      "x-contrabass-worker-id": "worker-1",
+    });
+
+    expect(response.status).toBe(404);
+    await expect(readIssueRunResponse(response)).resolves.toMatchObject({
+      protocol_version: "1.0.0",
+      error: "run_unknown",
+    });
+    await expect(storage.get<IssueRunRecord>("issue-run:record")).resolves.toBeUndefined();
+    await expect(storage.get<IssueRunStoredEvent[]>("issue-run:events")).resolves.toBeUndefined();
+    await expect(storage.getAlarm()).resolves.toBeNull();
+    expect(queue.messages).toEqual([]);
+    expect(teamCoordinator.coordinator.requests).toHaveLength(1);
   });
 
   it("evicts terminal retention state after 24 hours", async () => {

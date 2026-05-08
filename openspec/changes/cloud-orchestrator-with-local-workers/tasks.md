@@ -46,7 +46,7 @@
 - [x] 6.5 Implement CAS dispatch acquire (single-leaseholder guarantee)
 - [x] 6.6 Implement `complete` handler that writes terminal record to D1 and broadcasts `run-complete`
 - [x] 6.7 Implement `cancel` handler called by `TeamCoordinator`
-- [ ] 6.8 Implement late-event window (24h retention for terminal runs)
+- [x] 6.8 Implement late-event window (24h retention for terminal runs)
 - [ ] 6.9 Vitest coverage: state-machine transitions, alarm firing, CAS race, late events
 
 ## 7. `TeamCoordinator` Durable Object

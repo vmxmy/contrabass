@@ -1,5 +1,5 @@
 import type { EventArchiveMessage } from "../queues/events-archive";
-import type { ArtifactKeysPartial, WorkerCompleteRequest, WorkerEventLine } from "../workerproto/v1";
+import type { ArtifactKeysPartial, LeaseRevokedFrame, WorkerCompleteRequest, WorkerEventLine } from "../workerproto/v1";
 
 export const ISSUE_RUN_STATES = [
   "queued",
@@ -268,6 +268,7 @@ export class IssueRun {
       return;
     }
 
+    await this.sendLeaseRevoked(record, "heartbeat_timeout");
     await this.transitionRecord(record, "queued", now, { clearLease: true });
     await this.state.storage.deleteAlarm();
   }
@@ -655,7 +656,7 @@ export class IssueRun {
     }
   }
 
-  private async sendLeaseRevoked(record: IssueRunRecord, reason: "cancelled"): Promise<void> {
+  private async sendLeaseRevoked(record: IssueRunRecord, reason: LeaseRevokedFrame["reason"]): Promise<void> {
     if (
       this.env.TEAM_COORDINATOR === undefined
       || record.teamId === undefined
