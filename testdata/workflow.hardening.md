@@ -1,5 +1,5 @@
 ---
-max_concurrency: 1
+max_concurrency: 3
 poll_interval_ms: 4000
 max_retry_backoff_ms: 90000
 model: $CONTRABASS_MODEL

@@ -1,0 +1,4138 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index cb41109..a2144b4 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -293,3 +293,12 @@ This project is indexed by GitNexus as **contrabass** (8621 symbols, 18851 relat
+ | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+ 
+ <!-- gitnexus:end -->
++
++
++<claude-mem-context>
++# Memory Context
++
++# [contrabass] recent context, 2026-05-09 2:43am GMT+8
++
++No previous sessions found.
++</claude-mem-context>
+\ No newline at end of file
+diff --git a/openspec/changes/extract-config-composition-model/.openspec.yaml b/openspec/changes/extract-config-composition-model/.openspec.yaml
+deleted file mode 100644
+index 054b8c0..0000000
+--- a/openspec/changes/extract-config-composition-model/.openspec.yaml
++++ /dev/null
+@@ -1,2 +0,0 @@
+-schema: spec-driven
+-created: 2026-05-08
+diff --git a/openspec/changes/extract-config-composition-model/design.md b/openspec/changes/extract-config-composition-model/design.md
+deleted file mode 100644
+index 342b77d..0000000
+--- a/openspec/changes/extract-config-composition-model/design.md
++++ /dev/null
+@@ -1,87 +0,0 @@
+-## Context
+-
+-`internal/config/config.go` parses one workflow YAML per file. The 8 testdata files duplicate ~80% of fields. Defaults live in Go const. Tracker/agent blocks are copied 3-5×.
+-
+-The next major direction is SaaS migration. SaaS config will live in a database, not yaml on disk. `--config <path>`, `--preset` flags, `scripts/start.sh`, and the testdata fixtures don't follow into SaaS — but the **composition model** does (defaults → tracker template → agent template → preset).
+-
+-This change extracts the schema + resolution logic only, so SaaS can reuse `Resolve(presetName)` against data fetched from DB instead of disk. CLI surface and file-organization work is deferred until the SaaS architecture is decided, to avoid building dead code.
+-
+-## Goals / Non-Goals
+-
+-**Goals**:
+-- Define the composition schema: `defaults` + named `trackers` + named `agents` + `presets` that pick + override.
+-- Implement deterministic deep-merge resolution.
+-- ENV interpolation runs once, on the merged result.
+-- Storage-agnostic loader (`io.Reader` in, no path knowledge).
+-- Pluggable prompt loader so SaaS can swap disk for DB.
+-
+-**Non-Goals**:
+-- Shipping `config/contrabass.yaml` in the repo (defer until SaaS schema is decided).
+-- New CLI flags or subcommands (`--preset`, `list-presets`).
+-- Modifying `scripts/start.sh`.
+-- Removing or migrating `testdata/workflow.*.md`.
+-- ENV var renames (`CONTRABASS_*`).
+-- Equivalence test locking the current testdata layout.
+-- Hot-reload of the new tree.
+-
+-## Decisions
+-
+-### D1: Layered composition over inheritance trees or YAML anchors
+-
+-Each preset SHALL deep-merge `defaults → trackers[<name>] → agents[<name>] → preset overrides`. Later layers win on scalar conflict; nested maps merge by key; slices are replaced wholesale.
+-
+-**Alternative**: YAML anchors (`<<: *base`). Rejected — clunky composition, doesn't survive a DB swap.
+-
+-### D2: ENV interpolation runs on the merged result, not per-layer
+-
+-After merge, the parser walks the final struct and resolves `$VAR` placeholders. Avoids "did defaults or preset win?" ambiguity for env-bearing fields. Reuses the existing `resolveEnvReferencesValue` semantics from PR #14 — same struct walker, same map-non-recursion limitation.
+-
+-### D3: Storage-agnostic loader
+-
+-`LoadRoot(io.Reader)` takes a stream, not a path. CLI callers wrap a `*os.File`; SaaS callers wrap a `bytes.Reader` over yaml derived from DB rows, or skip yaml entirely and construct `*RootConfig` directly. The composition logic doesn't know or care.
+-
+-### D4: Prompt loading is pluggable
+-
+-`PromptLoader` interface lets prompts come from disk now and DB later. Default `FilePromptLoader` keeps current behavior. `Resolve` takes the loader as a parameter (not as a `RootConfig` field) so `RootConfig` stays a pure data struct.
+-
+-### D5: No CLI surface in this change
+-
+-`--preset` flag, `list-presets`, `scripts/start.sh` rewrites all live in a follow-up if the OSS CLI keeps mattering post-SaaS. Deliberately deferred to avoid building code that SaaS will throw away.
+-
+-### D6: No legacy removal
+-
+-`testdata/workflow.*.md` stay as dev fixtures. The new composition model coexists with the old single-file path. `LoadWorkflow` and `LoadRoot` are siblings, not stages of a migration.
+-
+-## Risks / Trade-offs
+-
+-- **Risk**: Adding `RootConfig` without a real consumer creates orphan code. → **Mitigation**: ship at least one consumer in the same change — table-driven tests that exercise `Resolve` end-to-end on a representative preset set inline in the test file. SaaS becomes the production consumer when it lands.
+-- **Risk**: Deep-merge precedence is subtle for nested maps (e.g. `tracker.linear.assignee_id` in defaults vs preset). → **Mitigation**: document precedence rules (maps merge by key, scalars replace, slices replace) in the package doc comment; cover with table-driven tests including a nested-map case.
+-- **Risk**: SaaS data model may diverge from this composition shape. → **Mitigation**: keep the composition model small (4 sections, no extras); if SaaS adds tenant scoping, that wraps `RootConfig`, not replaces it.
+-- **Trade-off**: Without a `config/contrabass.yaml` shipping in the repo, the new model is harder to demo. → **Mitigation**: tests + doc comment + one example yaml string inline in tests are sufficient demo until SaaS becomes the real consumer.
+-
+-### D7: Pointer-presence for scalar/slice/map merge semantics
+-
+-Scalar fields (`string`, `int`, `bool`) and slice fields (`[]string`) in `TrackerTemplate`, `AgentTemplate` (via `CodexTemplateConfig`, `OMXTemplateConfig`, etc.), and `PresetConfig` use pointer types (`*string`, `*int`, `*bool`, `*[]string`). nil = absent (do not override the merged value); non-nil = explicitly set (apply, even if the pointed-to value is zero, false, or empty). This eliminates the "non-zero overlay" bug where a later layer could not set a boolean to false, an int to 0, or an empty list to clear prior labels.
+-
+-When writing the final `WorkflowConfig` (which retains plain value types for downstream consumers), nil pointers fall back to zero values, matching today's `LoadWorkflow` behavior.
+-
+-**Rationale**: value types give no way to distinguish "field absent" from "field set to zero" in a YAML-parsed struct. Pointer types give presence tracking for free, and Go's `gopkg.in/yaml.v3` supports `*T` natively (nil if key absent; populated pointer if key present, even with a zero value).
+-
+-### D8: Inline agent uses `agent:` key; named reference uses `agent_ref:` key
+-
+-The YAML shape for presets distinguishes inline agent templates from named references:
+-
+-- `agent: <AgentTemplate struct>` — inline override, no named lookup. The preferred shape is flat, e.g. `agent: { type: omc, omc: { binary_path: omc } }`.
+-- `agent_ref: <name>` — named reference into `RootConfig.Agents`.
+-
+-This matches the spec scenario wording ("inline data under `agent:`", "named ref under `agent_ref:`") and removes the prior ambiguity where `agent` was a string ref and `agent_inline` was the struct. Setting both is still a fail-fast error.
+-
+-### D9: AgentTemplate is flat and pointer-presence aware
+-
+-`AgentTemplate` carries `type` and runner blocks (`codex`, `opencode`, `omx`, `omc`, `oh_my_opencode`) at the same level. Named templates under top-level `agents:` and inline templates under preset `agent:` therefore share the same shape. `type` is `*string`, so an explicit `type: ""` can clear a default agent type while an omitted `type` inherits the prior layer.
+-
+-## Open Questions
+-
+-- Should `Resolve` take a `PromptLoader` parameter, or read it from a `RootConfig.PromptLoader` field set at construction time? **Initial cut**: parameter — keeps `RootConfig` a pure data struct.
+-- Should the merge handle slice append vs replace? **Initial cut**: slice replace. Document and revisit only if a real use case for append emerges.
+-- Does SaaS need per-tenant `defaults` and per-project `presets`? Probably yes, but that wraps `RootConfig` (e.g., `OrgConfig { Defaults; map[projectID]RootConfig }`) rather than changing it. Out of scope here.
+diff --git a/openspec/changes/extract-config-composition-model/proposal.md b/openspec/changes/extract-config-composition-model/proposal.md
+deleted file mode 100644
+index 3b6e3f0..0000000
+--- a/openspec/changes/extract-config-composition-model/proposal.md
++++ /dev/null
+@@ -1,43 +0,0 @@
+-## Why
+-
+-Today `internal/config/config.go` parses one workflow YAML per file. The 8 testdata files share ~80% of fields (model, agent_timeout_ms, prompt body, tracker block). Defaults live in Go const, not yaml. Tracker/agent blocks duplicate 3-5×.
+-
+-The next major direction is SaaS, where config will live in a database keyed by org/project, not a yaml on disk. The CLI-time pain points (file sprawl, `--preset` ergonomics, `start.sh` env validation, deletion of `testdata/*.md`) become irrelevant under SaaS. But the **composition model** — `defaults` + named `trackers` + named `agents` + lightweight `presets` that override only what differs — maps directly to the SaaS data model: `organization.defaults`, `tracker_credentials[]`, `agent_configs[]`, `project.preset` references both.
+-
+-This change extracts the durable part — schema types, deep-merge resolution, ENV interpolation through the merged result — and skips the file-organization and CLI-surface work that SaaS would throw away.
+-
+-## What Changes
+-
+-- New types in `internal/config/`: `RootConfig` (with `defaults`, `trackers`, `agents`, `presets` sections), `PresetConfig`, `TrackerTemplate`, `AgentTemplate`. Existing `WorkflowConfig` stays as the merge target, unchanged.
+-- `(*RootConfig).Resolve(presetName) (*WorkflowConfig, error)`: deep-merges `defaults → trackers[<name>] → agents[<name>] → preset overrides`, runs ENV interpolation on the merged struct.
+-- `LoadRoot(io.Reader) (*RootConfig, error)`: storage-agnostic stream parser. SaaS swaps in a DB-backed loader later by constructing `RootConfig` directly or feeding a DB-derived yaml stream.
+-- Optional `PromptLoader` interface so prompt bodies can come from disk now and DB later without changing `Resolve`.
+-
+-## Capabilities
+-
+-### New Capabilities
+-
+-- `config-composition-model`: schema + resolution semantics for layered config (defaults → tracker template → agent template → preset). Storage-agnostic.
+-
+-### Modified Capabilities
+-
+-(none — additive; existing `LoadWorkflow` path is untouched)
+-
+-## Impact
+-
+-- **Code added**: `internal/config/composition.go`, `internal/config/composition_test.go`, plus a doc comment on the new types.
+-- **Code unchanged**: `internal/config/config.go`'s existing `LoadWorkflow` path keeps working. Orchestrator, tracker adapters, agent runners, TUI, web, hub all unaffected.
+-- **No CLI changes**: no `--preset` flag, no `list-presets` subcommand, no `scripts/start.sh` rewrite.
+-- **No file deletions**: `testdata/workflow.*.md` stay as dev fixtures.
+-- **No fsnotify changes**: existing per-file watch unchanged.
+-- **No tracker/agent adapter changes.**
+-- **SaaS portability**: when SaaS lands, it imports `Resolve` and calls it on data fetched from DB. The `LoadRoot` stream loader becomes one of several entry points.
+-
+-## Out of Scope
+-
+-- Shipping `config/contrabass.yaml` in the repo (defer until SaaS schema is decided).
+-- `--preset` CLI flag, `list-presets` subcommand, `scripts/start.sh` integration.
+-- Removal or migration of `testdata/workflow.*.md`.
+-- ENV var rename to `CONTRABASS_*` prefix.
+-- Equivalence test that locks in the current 8-preset layout.
+-- Hot-reload semantics for the new tree (revisit when there is a real consumer).
+diff --git a/openspec/changes/extract-config-composition-model/specs/config-composition-model/spec.md b/openspec/changes/extract-config-composition-model/specs/config-composition-model/spec.md
+deleted file mode 100644
+index af52b00..0000000
+--- a/openspec/changes/extract-config-composition-model/specs/config-composition-model/spec.md
++++ /dev/null
+@@ -1,80 +0,0 @@
+-## ADDED Requirements
+-
+-### Requirement: A composition schema SHALL describe workflow configs as layered templates
+-
+-The system SHALL expose a `RootConfig` type with exactly four sections — `defaults`, `trackers`, `agents`, `presets` — such that a complete `WorkflowConfig` can be derived from any preset name by deep-merging, in order, `defaults → trackers[<preset.tracker>] → agents[<preset.agent>] → preset overrides`. Later layers MUST win on scalar conflict; nested maps MUST merge by key; slices MUST be replaced wholesale.
+-
+-#### Scenario: Preset selects a tracker template by name
+-
+-- **WHEN** `RootConfig` defines `trackers: { linear: { type: linear, project_url: $CONTRABASS_PROJECT_URL } }` and `presets: { demo: { tracker: linear, max_concurrency: 3 } }`
+-- **AND** the caller invokes `Resolve("demo")`
+-- **THEN** the resolved `WorkflowConfig` SHALL have `tracker.type = "linear"`, `tracker.project_url` populated from env, and `max_concurrency = 3`
+-
+-#### Scenario: Preset overrides a defaults field
+-
+-- **WHEN** `defaults.agent_timeout_ms = 900000` and `presets.hardening.agent_timeout_ms = 1800000`
+-- **THEN** `Resolve("hardening")` SHALL return `agent_timeout_ms = 1800000`
+-
+-#### Scenario: Preset inlines an agent override instead of selecting a named template
+-
+-- **WHEN** `presets.omc = { agent: { type: omc, omc: { binary_path: omc } } }` and `agents` does not contain an `omc` entry
+-- **THEN** `Resolve("omc")` SHALL succeed with `agent.type = "omc"` and `agent.omc.binary_path = "omc"`
+-
+-#### Scenario: Conflicting inline + named agent on the same preset fails fast
+-
+-- **WHEN** `presets.x = { agent: <inline override>, agent_ref: omc }` (or any equivalent shape carrying both)
+-- **THEN** `Resolve("x")` SHALL return an error citing the preset name and the conflict
+-
+-#### Scenario: Missing tracker reference fails fast
+-
+-- **WHEN** a preset says `tracker: bogus` but `trackers` does not define `bogus`
+-- **THEN** `Resolve(...)` SHALL fail with a clear error pointing at the preset name and the unknown reference
+-
+-#### Scenario: Unknown preset name fails fast
+-
+-- **WHEN** the caller invokes `Resolve("does-not-exist")`
+-- **THEN** the call SHALL fail with a clear error listing the available preset names
+-
+-### Requirement: ENV interpolation SHALL run once, against the merged result
+-
+-After deep-merge of defaults + tracker + agent + preset overrides, the resolver SHALL resolve `$VAR` placeholders against the process environment in the final merged config. Resolution SHALL reuse the existing `resolveEnvReferencesValue` semantics (struct fields recurse; raw map values do not).
+-
+-#### Scenario: ENV var defined at defaults level resolves in the merged preset
+-
+-- **WHEN** `defaults.model = $CONTRABASS_MODEL` and the env has `CONTRABASS_MODEL=openai/gpt-5.5`
+-- **AND** `Resolve("demo")` is called
+-- **THEN** the resolved config's `model` field SHALL be `openai/gpt-5.5`
+-
+-#### Scenario: ENV var unset surfaces as empty string
+-
+-- **WHEN** `defaults.model = $CONTRABASS_MODEL` and the env has no `CONTRABASS_MODEL`
+-- **THEN** the resolver SHALL set the field to an empty string (matching existing `LoadWorkflow` behavior)
+-
+-### Requirement: The loader SHALL be storage-agnostic
+-
+-The system SHALL expose `LoadRoot(r io.Reader) (*RootConfig, error)` that yaml-unmarshals into `RootConfig` from any byte stream — no file path knowledge inside the function. Callers (CLI, SaaS, tests) supply the stream.
+-
+-#### Scenario: LoadRoot accepts a yaml stream
+-
+-- **WHEN** a caller passes `bytes.NewReader([]byte(yamlString))` containing a valid `RootConfig`
+-- **THEN** `LoadRoot` SHALL return a populated `*RootConfig` with no error
+-
+-#### Scenario: LoadRoot rejects unknown top-level sections
+-
+-- **WHEN** the input yaml has a top-level key outside `{defaults, trackers, agents, presets}`
+-- **THEN** `LoadRoot` SHALL return an error citing the offending key
+-
+-### Requirement: Prompt bodies SHALL load through a pluggable interface
+-
+-The system SHALL expose a `PromptLoader` interface with `Load(ref string) (string, error)`. `Resolve` SHALL accept a `PromptLoader` parameter; passing `nil` SHALL fall back to a default `FilePromptLoader` rooted at the current directory. The interface lets SaaS substitute a DB-backed loader without changing `Resolve`.
+-
+-#### Scenario: Custom PromptLoader supplies the prompt body
+-
+-- **WHEN** the caller passes a `PromptLoader` whose `Load("standard")` returns `"hello {{ issue.title }}"`
+-- **AND** the resolved preset's `prompt_ref = standard`
+-- **THEN** the resolved `WorkflowConfig.Prompt` SHALL equal `"hello {{ issue.title }}"`
+-
+-#### Scenario: PromptLoader error propagates out of Resolve
+-
+-- **WHEN** the configured `PromptLoader.Load(ref)` returns an error
+-- **THEN** `Resolve` SHALL return an error wrapping that loader error and citing the preset that requested the prompt
+diff --git a/openspec/changes/extract-config-composition-model/tasks.md b/openspec/changes/extract-config-composition-model/tasks.md
+deleted file mode 100644
+index 55cbe2f..0000000
+--- a/openspec/changes/extract-config-composition-model/tasks.md
++++ /dev/null
+@@ -1,25 +0,0 @@
+-## 1. Schema types
+-
+-- [x] 1.1 Define `RootConfig`, `PresetConfig`, `TrackerTemplate`, `AgentTemplate` in `internal/config/composition.go`. `RootConfig` has `Defaults WorkflowDefaults`, `Trackers map[string]TrackerTemplate`, `Agents map[string]AgentTemplate`, `Presets map[string]PresetConfig`. Reuse existing `WorkflowConfig` field types so the merged result is the same struct downstream code already consumes.
+-- [x] 1.2 Decide which fields belong on `WorkflowDefaults` vs a preset (rule of thumb: anything that has a sensible global value goes on defaults; anything that varies per preset stays per-preset). Document the split in a doc comment on `RootConfig`.
+-
+-## 2. Loader
+-
+-- [x] 2.1 Implement `LoadRoot(r io.Reader) (*RootConfig, error)` that yaml-unmarshals into `RootConfig`. Strict mode: reject unknown top-level sections. No file path knowledge in this function — pure stream-in.
+-- [x] 2.2 Unit-test `LoadRoot` with valid input, missing required sections, unknown extra section (rejected), empty input.
+-
+-## 3. Resolve / merge
+-
+-- [x] 3.1 Implement `(*RootConfig).Resolve(presetName string) (*WorkflowConfig, error)`. Order: start from `Defaults`, deep-merge `Trackers[preset.Tracker]`, then `Agents[preset.Agent]` (or inline agent override on the preset), then preset's own field overrides. Later layers MUST win on scalar conflict; nested maps MUST merge by key; slices are replaced wholesale (document this).
+-- [x] 3.2 Run existing `resolveEnvReferencesValue` on the final merged struct (not on each layer — env resolves once, against the merged result).
+-- [x] 3.3 Fail fast on: unknown preset name, unknown tracker reference, unknown agent reference, conflicting inline-agent + named-agent on same preset.
+-- [x] 3.4 Unit-test merge with table-driven cases: defaults-only preset, preset overrides defaults scalar, preset adds new tracker fields on top of template, inline agent override beats named agent, ENV resolution at defaults level survives merge, missing tracker reference fails fast, missing agent reference fails fast, slice-replace semantics on a list field.
+-
+-## 4. Prompt loader interface
+-
+-- [x] 4.1 Define `type PromptLoader interface { Load(ref string) (string, error) }` so prompt bodies can come from disk (`FilePromptLoader`) or DB (SaaS later). `Resolve` accepts a `PromptLoader` parameter; passing nil falls back to `FilePromptLoader{Root: "."}`.
+-- [x] 4.2 Unit-test with a fake loader that returns canned content; verify the resolved `WorkflowConfig.Prompt` matches and a missing prompt-ref surfaces a clear error.
+-
+-## 5. Documentation
+-
+-- [x] 5.1 Add a package doc comment (top of `composition.go`) describing the composition model, merge order, ENV interpolation timing, and the SaaS portability rationale. No README changes.
+diff --git a/openspec/specs/codex-runner-protocol/spec.md b/openspec/specs/codex-runner-protocol/spec.md
+deleted file mode 100644
+index 6dc3485..0000000
+--- a/openspec/specs/codex-runner-protocol/spec.md
++++ /dev/null
+@@ -1,226 +0,0 @@
+-# Codex runner protocol — handshake, streaming, error handling
+-
+-## ADDED Requirements
+-
+-### Requirement: Codex runner SHALL include `approvalPolicy` and `sandboxPolicy` in `thread/start` and `turn/start`
+-
+-`CodexRunner.Start` SHALL build the params for both `thread/start` and
+-`turn/start` such that they include both `approvalPolicy` and
+-`sandboxPolicy` keys. Values come from
+-`CodexRunnerOptions.ApprovalPolicy` and
+-`CodexRunnerOptions.Sandbox` if set; otherwise from the runner's
+-defaults: `approvalPolicy="never"` and
+-`sandboxPolicy={"type":"workspaceWrite","networkAccess":false}`.
+-
+-#### Scenario: Defaults applied when config is empty
+-
+-- GIVEN a `CodexRunner` constructed with empty `ApprovalPolicy` and
+-  empty `Sandbox`
+-- WHEN `Start` runs
+-- THEN the wire-encoded `thread/start.params` contains
+-  `"approvalPolicy":"never"` and
+-  `"sandboxPolicy":{"type":"workspaceWrite","networkAccess":false}`,
+-  AND the same fields appear in `turn/start.params`.
+-
+-#### Scenario: Workflow override is forwarded verbatim
+-
+-- GIVEN `ApprovalPolicy="on-request"` and `Sandbox={"type":"readOnly"}`
+-- WHEN `Start` runs
+-- THEN `thread/start.params.approvalPolicy == "on-request"` and
+-  `thread/start.params.sandboxPolicy == {"type":"readOnly"}`. Same for
+-  `turn/start.params`.
+-
+-### Requirement: Codex runner SHALL retry on `-32001 server overloaded`
+-
+-`awaitResponse` SHALL recognize JSON-RPC error responses whose code is
+-`-32001` and return a sentinel `errCodexOverloaded` (in addition to or
+-in place of the generic error string). Each handshake call site
+-(`initialize`, `thread/start`, `turn/start`) SHALL retry the same
+-request (preserving the same id) on `errCodexOverloaded` up to
+-`r.overloadRetries` times (default 5) with exponential backoff capped
+-at `r.overloadRetryCap` (default 4 s, starting at 100 ms, doubling
+-each step). After the retry budget is exhausted the runner SHALL
+-return the error and trigger `cleanupOnStartFailure` as before.
+-
+-#### Scenario: Single overload retried successfully
+-
+-- GIVEN the codex stub responds to `id=2` (`thread/start`) with
+-  `{"id":2,"error":{"code":-32001,"message":"Server overloaded"}}` on
+-  the first read and with `{"id":2,"result":{"thread":{"id":"t-1"}}}`
+-  on the second read
+-- WHEN `Start` runs
+-- THEN `Start` returns successfully and the runner's stderr buffer
+-  records exactly one overload retry log line.
+-
+-#### Scenario: Sustained overload exhausts retry budget
+-
+-- GIVEN the codex stub returns `-32001` for every read of `id=2`
+-- AND `r.overloadRetries == 2` for the test
+-- WHEN `Start` runs
+-- THEN `Start` returns an error wrapping `errCodexOverloaded`, the
+-  runner cleans up the subprocess, and `cleanupOnStartFailure` was
+-  called exactly once.
+-
+-#### Scenario: Other JSON-RPC errors are not retried
+-
+-- GIVEN the codex stub returns
+-  `{"id":2,"error":{"code":-32600,"message":"Invalid request"}}`
+-- WHEN `Start` runs
+-- THEN `Start` returns an error and zero overload retries are
+-  attempted.
+-
+-### Requirement: Codex runner SHALL tolerate per-line sizes up to 32 MB without aborting the stream
+-
+-`streamEventsAndWait` SHALL parse JSONL output using a reader that
+-admits per-line lengths up to `maxStreamLineSize` (default 32 MB).
+-Lines exceeding the cap SHALL be logged at WARN, dropped from the
+-event stream, and the loop SHALL continue reading subsequent lines.
+-
+-#### Scenario: 5 MB agent message is delivered
+-
+-- GIVEN the codex stub emits a single 5 MB JSON line whose `method` is
+-  `item/agentMessage`
+-- WHEN the streaming loop reads it
+-- THEN exactly one `item/agentMessage` event reaches the events
+-  channel and the loop continues reading subsequent lines.
+-
+-#### Scenario: Oversized line is skipped, stream survives
+-
+-- GIVEN the codex stub emits a 64 MB malformed JSON line followed by a
+-  normal `turn/completed` line
+-- WHEN the streaming loop reads them
+-- THEN the oversized line produces zero events and one WARN log entry
+-  (`maxStreamLineSize_exceeded` or equivalent), AND the
+-  `turn/completed` event still reaches the events channel.
+-
+-### Requirement: Terminal events SHALL never be dropped
+-
+-For agent events whose type is in `terminalCodexEventTypes` =
+-`{"turn/completed", "turn/failed", "turn/cancelled"}`, the runner
+-SHALL deliver the event to the events channel using a blocking send
+-(in tandem with context cancellation). Other events MAY use
+-non-blocking send semantics (the existing `select { case ...:
+-default: }`) so a slow consumer cannot deadlock the runner.
+-
+-#### Scenario: Slow consumer receives `turn/completed` after backpressure
+-
+-- GIVEN the events channel has buffer 4 and the consumer is paused
+-- AND the runner emits 100 `item/*` events followed by one
+-  `turn/completed`
+-- WHEN the consumer eventually drains the channel
+-- THEN the final event read is `turn/completed` (it survived the
+-  backpressure period).
+-- AND some `item/*` events MAY have been dropped (acceptable).
+-
+-#### Scenario: Context cancellation supersedes blocking send
+-
+-- GIVEN the consumer never reads the channel
+-- AND the parent context is cancelled while the runner is trying to
+-  send `turn/completed`
+-- WHEN the runner reacts to the cancellation
+-- THEN the blocking send returns within the cancellation window
+-  (~tens of ms) and the streaming loop exits cleanly without
+-  goroutine leak.
+-
+-### Requirement: Codex runner SHALL flush stdin after every JSON-RPC message
+-
+-Every code path that builds a JSON-RPC message via `sendMessage`
+-SHALL invoke `bufio.Writer.Flush()` (or equivalent) before returning,
+-and SHALL surface any flush error to the caller as the function's
+-return value.
+-
+-#### Scenario: Flush error is surfaced
+-
+-- GIVEN the codex stub closes stdin before any message can be flushed
+-- WHEN `sendMessage` runs
+-- THEN it returns a non-nil error (`flush stdin: ...`) and does not
+-  silently swallow the failure.
+-
+-### Requirement: Handshake timeout and per-line stream-read timeout SHALL be independently configurable
+-
+-The runner SHALL expose two distinct durations:
+-
+-- `handshakeTimeout` — applied to each `awaitResponse` call inside
+-  `Start` (default 30 s).
+-- `streamReadTimeout` — applied to each per-line read inside
+-  `streamEventsAndWait` (default 0 == disabled).
+-
+-The constructor `NewCodexRunner(binaryPath, timeout)` retains its
+-existing two-argument signature with `timeout` interpreted as
+-`handshakeTimeout`. A new opt-in setter
+-`(*CodexRunner).WithStreamReadTimeout(d time.Duration)` SHALL
+-configure the per-line read budget and SHALL be invoked by
+-`createRunner` in `cmd/contrabass/team.go` when
+-`WorkflowConfig.StallTimeoutMs > 0`.
+-
+-#### Scenario: Handshake timeout enforced independently
+-
+-- GIVEN `handshakeTimeout = 1 s` and `streamReadTimeout = 0`
+-- AND the codex stub never responds to `id=1`
+-- WHEN `Start` runs
+-- THEN it returns a handshake-timeout error within 1 s plus a small
+-  margin.
+-
+-#### Scenario: Stream read timeout enforced independently
+-
+-- GIVEN `handshakeTimeout = 30 s` and `streamReadTimeout = 500 ms`
+-- AND the codex stub completes the handshake but emits no further
+-  lines
+-- WHEN the streaming loop runs
+-- THEN within ~500 ms the runner observes a stream stall and
+-  `streamEventsAndWait` finishes with the corresponding error
+-  (without hanging up the whole 30 s handshake budget).
+-
+-#### Scenario: Default behavior is unchanged for callers that don't opt in
+-
+-- GIVEN `streamReadTimeout` is left at its default 0
+-- WHEN the streaming loop runs against a healthy codex stub
+-- THEN behavior is identical to today's runner: the loop reads until
+-  the underlying reader returns EOF, with no per-line deadline.
+-
+-### Requirement: Codex runner SHALL finalize the subprocess after a terminal turn event
+-
+-After `streamEventsAndWait` parses an event whose `Type` is in
+-`terminalCodexEventTypes` (`turn/completed`, `turn/failed`,
+-`turn/cancelled`), the runner SHALL close codex's stdin pipe exactly
+-once via a `sync.Once` guard on `codexProcess`. The streaming loop
+-SHALL continue to drain remaining stdout lines until natural EOF,
+-and the existing `process.cmd.Wait()` path remains the single source
+-of truth for the runner's exit status.
+-
+-#### Scenario: turn/completed triggers stdin close and clean exit
+-
+-- GIVEN a stub app-server that completes the handshake and emits
+-  `turn/completed`, then sits idle on stdin and exits 0 only when
+-  it observes EOF
+-- WHEN the runner streams the events
+-- THEN the runner closes stdin within ~50 ms of receiving
+-  `turn/completed`, the stub then exits 0, and
+-  `process.cmd.Wait()` returns nil; the parent contrabass code path
+-  observes a clean run termination (no synthetic `Failed` from
+-  `stall_timeout_ms`).
+-
+-#### Scenario: turn/failed triggers stdin close
+-
+-- GIVEN a stub that emits `turn/failed` instead of `turn/completed`
+-- WHEN the runner streams the event
+-- THEN the runner still closes stdin and `process.cmd.Wait()`
+-  returns the underlying exit status; the runner does NOT synthesize
+-  an extra failure on top of codex's own failure signal.
+-
+-#### Scenario: Multiple terminal events in a single run do not double-close
+-
+-- GIVEN a (degenerate) stub that emits `turn/completed` followed by
+-  another `turn/cancelled`
+-- WHEN both events arrive at `streamEventsAndWait`
+-- THEN stdin is closed exactly once (no panic, no error from
+-  duplicate close), and the runner exits the loop cleanly.
+-
+-#### Scenario: `Stop()` after a terminal event is idempotent
+-
+-- GIVEN `Stop()` is called after `turn/completed` has already
+-  triggered stdin close
+-- WHEN `Stop()` runs
+-- THEN it does not panic and does not log an error about
+-  already-closed stdin; codex's exit is allowed to complete
+-  naturally per the existing graceful-stop budget.
+diff --git a/openspec/specs/dashboard-status-rendering/spec.md b/openspec/specs/dashboard-status-rendering/spec.md
+deleted file mode 100644
+index e68a00e..0000000
+--- a/openspec/specs/dashboard-status-rendering/spec.md
++++ /dev/null
+@@ -1,161 +0,0 @@
+-# dashboard-status-rendering Specification
+-
+-## Purpose
+-TBD - created by archiving change improve-dashboard-liveness. Update Purpose after archive.
+-## Requirements
+-### Requirement: Sessions table SHALL render a phase label, not a phase number
+-
+-The React `SessionsTable` (`packages/dashboard/src/components/SessionsTable.tsx`)
+-SHALL render `running.phase_label` from the snapshot payload in the
+-phase column. When `phase_label` is empty (older server), it SHALL
+-fall back to a client-side mapping table keyed on `running.phase` so
+-existing deployments don't show a bare integer.
+-
+-#### Scenario: Server provides label
+-
+-- GIVEN `running.phase_label == "AgentRunning · turn 3"`
+-- WHEN the row renders
+-- THEN the phase cell shows the string literally.
+-
+-#### Scenario: Server provides only the integer
+-
+-- GIVEN `running.phase_label == ""` and `running.phase == 4`
+-- WHEN the row renders
+-- THEN the phase cell shows the client-side mapping for `4`
+-  (e.g. `"AgentRunning"`); never the bare number `4`.
+-
+-### Requirement: Sessions table SHALL render a "Last activity" indicator with traffic-light dot
+-
+-The sessions table SHALL include a column whose content for each row is:
+-
+-- a colored dot (green / yellow / red) reflecting the age of
+-  `last_activity_at` relative to the wall clock,
+-- followed by a relative-time string (`8s ago`, `2m ago`),
+-- followed by `last_activity_kind` in subdued text.
+-
+-Color thresholds:
+-| age | dot |
+-|---|---|
+-| `< 30 s` | green |
+-| `30 – 180 s` | yellow |
+-| `> 180 s` | red |
+-| `last_activity_at == ""` | gray (no data yet) |
+-
+-#### Scenario: Recently active
+-
+-- GIVEN `last_activity_at` is 8 s ago and `last_activity_kind == "tool_call"`
+-- WHEN the row renders
+-- THEN it shows: green dot, `8s ago`, `tool_call`.
+-
+-#### Scenario: Stale activity warning
+-
+-- GIVEN `last_activity_at` is 4 minutes ago
+-- WHEN the row renders
+-- THEN the dot is red and the indicator includes the relative time.
+-
+-### Requirement: Sessions table SHALL render a diff summary column
+-
+-The sessions table SHALL include a `Diff` column whose content per row is:
+-
+-- `+{diff_added} -{diff_removed} ({diff_files} files)` when
+-  `diff_status == "ok"` and any of the three counts is non-zero.
+-- `—` when all three counts are zero and status is `"ok"`.
+-- `?` (with a tooltip carrying the `diff_status` string) for
+-  `"timeout"` or `"error"`.
+-
+-#### Scenario: Active edits visible
+-
+-- GIVEN `diff_added=47, diff_removed=3, diff_files=2, diff_status="ok"`
+-- WHEN the row renders
+-- THEN the diff cell shows `+47 -3 (2 files)`.
+-
+-#### Scenario: Quiet workspace
+-
+-- GIVEN `diff_added=0, diff_removed=0, diff_files=0, diff_status="ok"`
+-- WHEN the row renders
+-- THEN the diff cell shows `—`.
+-
+-#### Scenario: Diff probe failed
+-
+-- GIVEN `diff_status="timeout"`
+-- WHEN the row renders
+-- THEN the diff cell shows `?` with a hover tooltip that contains
+-  the word `timeout`.
+-
+-### Requirement: Sessions table SHALL render an iteration progress badge
+-
+-When `iteration_max > 0`, the row SHALL display a small badge with
+-`iter {iteration}/{iteration_max}`. When `iteration_max == 0` no
+-badge is displayed (avoids `0/0` noise on non-omx runners).
+-
+-#### Scenario: Badge shown
+-
+-- GIVEN `iteration=3, iteration_max=50`
+-- WHEN the row renders
+-- THEN a badge with text `iter 3/50` is visible.
+-
+-#### Scenario: Badge hidden
+-
+-- GIVEN `iteration_max=0`
+-- WHEN the row renders
+-- THEN no iteration badge is in the DOM.
+-
+-### Requirement: Dashboard SHALL render a "Queue" panel for blocked-by skips
+-
+-The dashboard SHALL include a panel (component file
+-`packages/dashboard/src/components/QueuePanel.tsx`) that subscribes
+-to the SSE `event: queue` channel and renders one row per recently
+-skipped issue. Each row shows:
+-
+-- the issue identifier,
+-- a short label `blocked by`,
+-- the comma-separated unresolved blockers from the event payload.
+-
+-The panel keeps each row visible for at least 5 seconds *after the
+-most recent skip event for that issue* and then removes it
+-(eventual eviction; the gate keeps re-emitting on every poll cycle,
+-so an actively-blocked issue stays in the panel continuously).
+-
+-#### Scenario: Single blocker rendered
+-
+-- GIVEN a `queue` SSE event with payload
+-  `{ issue_id: "...", identifier: "ZII-50", blockers: "ZII-49" }`
+-- WHEN the panel processes the event
+-- THEN a row is visible with text containing both `ZII-50` and
+-  `ZII-49`.
+-
+-#### Scenario: Multiple blockers rendered
+-
+-- GIVEN payload `{ identifier: "ZII-52", blockers: "ZII-49,ZII-50" }`
+-- WHEN the panel processes the event
+-- THEN the row contains `ZII-49` and `ZII-50`, displayed as a
+-  comma-separated list.
+-
+-#### Scenario: Stale entry expires
+-
+-- GIVEN a row was last refreshed 6 seconds ago and no further skip
+-  events for that issue have arrived
+-- WHEN the panel re-renders
+-- THEN the row is no longer in the DOM.
+-
+-### Requirement: Agent log stream SHALL exclude heartbeats and queue events
+-
+-The dashboard's agent log component
+-(`packages/dashboard/src/components/AgentLogs.tsx`) SHALL not display
+-events whose type matches the heartbeat set (`team/stalled`) or whose
+-SSE channel is `queue`. Both classes are surfaced through dedicated
+-UI affordances (the activity dot, the queue panel) and would
+-otherwise pollute the log view.
+-
+-#### Scenario: Heartbeat hidden
+-
+-- GIVEN a `team/stalled` agent event arrives
+-- WHEN the agent log re-renders
+-- THEN no log entry for it appears.
+-
+-#### Scenario: Real agent events still shown
+-
+-- GIVEN a `tool_call` agent event arrives
+-- WHEN the agent log re-renders
+-- THEN a corresponding entry appears.
+-
+diff --git a/openspec/specs/linear-comment-sync/spec.md b/openspec/specs/linear-comment-sync/spec.md
+deleted file mode 100644
+index da961d3..0000000
+--- a/openspec/specs/linear-comment-sync/spec.md
++++ /dev/null
+@@ -1,68 +0,0 @@
+-# linear-comment-sync Specification
+-
+-## Purpose
+-TBD - created by archiving change sync-linear-workflow-timeline. Update Purpose after archive.
+-## Requirements
+-### Requirement: Linear comment sync is opt-in
+-Contrabass SHALL write workflow-node summaries to Linear comments only when the tracker type is Linear and `linear.sync_comments.enabled` is true.
+-
+-#### Scenario: Sync disabled preserves legacy comments
+-- **WHEN** `linear.sync_comments.enabled` is false
+-- **THEN** existing direct completion and unverified-success tracker comments remain unchanged
+-
+-#### Scenario: Sync enabled suppresses legacy Linear comments
+-- **WHEN** `linear.sync_comments.enabled` is true and the tracker type is Linear
+-- **THEN** direct legacy Linear completion and unverified-success comments are suppressed and equivalent timeline nodes are queued for Linear sync
+-
+-#### Scenario: Non-Linear tracker preserves legacy behavior
+-- **WHEN** the tracker type is not Linear
+-- **THEN** legacy `Tracker.PostComment` behavior remains unchanged regardless of Linear sync configuration
+-
+-### Requirement: Linear sync creates one root comment per run
+-The Linear syncer SHALL maintain a run-level sync state keyed by `(issue_id, run_id, target)` and SHALL create at most one root comment for that run.
+-
+-#### Scenario: Multiple nodes share one root
+-- **WHEN** two pending workflow nodes for the same issue and run are synced to Linear
+-- **THEN** the syncer creates exactly one root comment and associates both node sync records with that run-level root
+-
+-#### Scenario: Restart after root creation
+-- **WHEN** Contrabass restarts after creating a root comment but before creating a node reply
+-- **THEN** the syncer reuses the persisted root comment ID and creates only the missing node reply or top-level fallback comment
+-
+-### Requirement: Linear sync creates idempotent node comments
+-The Linear syncer SHALL create at most one effective Linear reply or top-level fallback comment per `(issue_id, run_id, node_id, target, content_hash)`.
+-
+-#### Scenario: Restart after node sync
+-- **WHEN** Contrabass restarts after successfully syncing a node comment
+-- **THEN** the syncer does not create a duplicate comment for the same node key and content hash
+-
+-#### Scenario: Node content hash changes
+-- **WHEN** a node summary changes content hash after a previous sync
+-- **THEN** the syncer updates the existing comment when supported or appends a superseding comment according to the effective sync mode
+-
+-### Requirement: Linear sync is asynchronous and non-blocking
+-Linear comment writes SHALL be performed by an asynchronous syncer that does not block issue completion, release, retry enqueueing, or dashboard snapshot rendering.
+-
+-#### Scenario: Linear API failure during completion
+-- **WHEN** Linear comment sync fails while an issue completes
+-- **THEN** the issue completion path proceeds and the node sync state records `failed` with the last error
+-
+-#### Scenario: Web dashboard disabled
+-- **WHEN** `linear.sync_comments.enabled` is true and the web dashboard port is disabled
+-- **THEN** the Linear syncer still starts and processes pending timeline nodes
+-
+-### Requirement: Linear sync handles rate limits and mode fallback
+-The Linear syncer SHALL persist retry state for rate limits and SHALL use deterministic behavior for unsupported comment modes.
+-
+-#### Scenario: Rate limited response
+-- **WHEN** Linear returns a rate-limit response with Retry-After
+-- **THEN** the syncer persists retry-after state and does not retry that node before the retry time
+-
+-#### Scenario: Default reply mode unsupported
+-- **WHEN** the default `reply_thread` mode is unsupported by the verified Linear schema
+-- **THEN** the syncer logs the fallback once and uses effective mode `top_level`
+-
+-#### Scenario: Explicit unsupported mode
+-- **WHEN** the operator explicitly configures an unsupported Linear comment mode
+-- **THEN** configuration validation fails before runtime sync starts
+-
+diff --git a/openspec/specs/linear-issue-detail/spec.md b/openspec/specs/linear-issue-detail/spec.md
+deleted file mode 100644
+index 4eada25..0000000
+--- a/openspec/specs/linear-issue-detail/spec.md
++++ /dev/null
+@@ -1,49 +0,0 @@
+-# linear-issue-detail Specification
+-
+-## Purpose
+-TBD - created by archiving change sync-linear-workflow-timeline. Update Purpose after archive.
+-## Requirements
+-### Requirement: Backend fetches richer Linear issue details
+-Contrabass SHALL provide a backend-only Linear issue detail read path that returns richer Linear metadata without adding those fields to every orchestration poll.
+-
+-#### Scenario: Detail fetch succeeds
+-- **WHEN** the dashboard requests details for a cached Linear issue
+-- **THEN** the backend fetches and returns richer Linear metadata including assignee, creator, team, project, cycle, estimate, due date, and relation summaries when available
+-
+-#### Scenario: Candidate polling remains lean
+-- **WHEN** the orchestrator polls candidate Linear issues
+-- **THEN** it uses the existing lean issue polling path rather than the richer detail query
+-
+-### Requirement: Dashboard never receives Linear credentials
+-Contrabass SHALL keep Linear API credentials server-side and SHALL not expose them to browser code or dashboard payloads.
+-
+-#### Scenario: Dashboard loads issue details
+-- **WHEN** the dashboard opens an issue detail view
+-- **THEN** it requests issue details from the Contrabass backend and does not call Linear directly
+-
+-#### Scenario: Detail payload excludes secrets
+-- **WHEN** the backend returns Linear issue details
+-- **THEN** the response does not include Linear API tokens, Authorization headers, or other credentials
+-
+-### Requirement: Issue detail endpoint is separate from existing issue route
+-Contrabass SHALL expose richer issue details through `/api/v1/issues/{issue_id}/details` and SHALL avoid extending the broad `/api/v1/{identifier}` route for this feature.
+-
+-#### Scenario: Detail endpoint returns payload
+-- **WHEN** a client requests `GET /api/v1/issues/{issue_id}/details`
+-- **THEN** the backend returns the normalized issue, Linear detail object when available, and generation timestamp
+-
+-#### Scenario: Detail provider unavailable
+-- **WHEN** the tracker does not provide richer issue details
+-- **THEN** the endpoint returns a non-success status or a payload that clearly indicates the detail provider is unavailable without breaking the base snapshot state
+-
+-### Requirement: Dashboard renders issue details and timeline together
+-The dashboard SHALL render Linear issue details and local workflow timeline data in the issue detail sheet with non-blocking loading and error states.
+-
+-#### Scenario: Detail sheet opens
+-- **WHEN** a user opens an issue detail sheet
+-- **THEN** the dashboard loads `/api/v1/issues/{issue_id}/details` and `/api/v1/issues/{issue_id}/timeline` and continues to show base snapshot issue data while those requests are pending
+-
+-#### Scenario: Detail or timeline fetch fails
+-- **WHEN** either detail or timeline fetch fails
+-- **THEN** the dashboard shows an inline non-blocking error and preserves the base snapshot issue display
+-
+diff --git a/openspec/specs/orchestrator-claim/spec.md b/openspec/specs/orchestrator-claim/spec.md
+deleted file mode 100644
+index c45f1c4..0000000
+--- a/openspec/specs/orchestrator-claim/spec.md
++++ /dev/null
+@@ -1,120 +0,0 @@
+-# orchestrator-claim Specification
+-
+-## Purpose
+-TBD - created by archiving change gate-claims-on-blocked-by. Update Purpose after archive.
+-## Requirements
+-### Requirement: Orchestrator SHALL skip dispatch when an issue has unresolved blockers
+-
+-`dispatchUnclaimedIssues` SHALL, before invoking `dispatchIssue` for
+-each `types.Unclaimed` issue, evaluate the issue's `BlockedBy` slice
+-against the set of identifiers in the same dispatch batch (the slice
+-of issues just returned by `Tracker.FetchIssues`). When at least one
+-blocker identifier appears in that set, dispatch SHALL be skipped for
+-this cycle and a `dispatch_skipped_blocked_by` log event SHALL be
+-emitted recording the skipped issue and the unresolved blocker
+-identifiers.
+-
+-#### Scenario: Skip when blocker is in the same batch
+-
+-- GIVEN `FetchIssues` returns
+-  - `T1` — `Identifier="ZII-49"`, `State=Unclaimed`, `BlockedBy=[]`
+-  - `T2` — `Identifier="ZII-50"`, `State=Unclaimed`, `BlockedBy=["ZII-49"]`
+-- WHEN `dispatchUnclaimedIssues` runs against this batch
+-- THEN `claimIssue` is called for `T1` only;
+-  `T2` is skipped and a single
+-  `dispatch_skipped_blocked_by` log event is emitted with
+-  `blockers="ZII-49"`.
+-
+-#### Scenario: Dispatch when blocker is absent from the batch
+-
+-- GIVEN `FetchIssues` returns only
+-  - `T2` — `BlockedBy=["ZII-49"]`
+-  (because `ZII-49` has reached a terminal state and was filtered out
+-  by the tracker)
+-- WHEN `dispatchUnclaimedIssues` runs
+-- THEN `claimIssue` is called for `T2` and no
+-  `dispatch_skipped_blocked_by` event is emitted.
+-
+-#### Scenario: Multiple blockers — skip if any is unresolved
+-
+-- GIVEN a candidate has `BlockedBy=["ZII-49","ZII-44"]` and the batch
+-  contains `ZII-44` (still open) but not `ZII-49`
+-- WHEN dispatch runs
+-- THEN the candidate is skipped and the log event records
+-  `blockers="ZII-44"` (only the unresolved subset, not the entire
+-  `BlockedBy` list).
+-
+-#### Scenario: Empty `BlockedBy` is unaffected
+-
+-- GIVEN a candidate has `BlockedBy=[]` (or nil)
+-- WHEN dispatch runs
+-- THEN the gate does not fire, dispatch proceeds, and no
+-  `dispatch_skipped_blocked_by` event is emitted.
+-
+-#### Scenario: Backoff (`RetryQueued`) issues bypass the gate
+-
+-- GIVEN an issue `T2` with `BlockedBy=["ZII-49"]` and `ZII-49` is in
+-  the batch
+-- AND `T2` is being processed via the backoff continuation path
+-  (`processContinuation`), not the unclaimed-dispatch path
+-- WHEN the backoff cycle runs
+-- THEN `T2` is dispatched as before; the gate added by this change
+-  applies only to fresh `Unclaimed` dispatch in
+-  `dispatchUnclaimedIssues`. Rationale: an in-flight retry must not
+-  be silently re-blocked by upstream changes mid-attempt.
+-
+-### Requirement: Orchestrator SHALL skip dispatch when an issue's identifier is found on mainRef
+-
+-`dispatchUnclaimedIssues` SHALL, after the BlockedBy gate, search the git log
+-of `cfg.TrackerMainRef()` for commits whose message contains the issue's
+-`Identifier` as a whole word (using `git log <mainRef> --grep="\b<id>\b" -P`).
+-
+-When a matching commit is found (`found=true`), dispatch SHALL be skipped for
+-this cycle. The orchestrator SHALL emit a `ClaimSkippedAlreadyImplemented` event
+-carrying `IssueIdentifier`, `CommitSHA`, `CommitSubject`, and `MainRef`, and
+-SHALL log a `dispatch_skipped_already_implemented` event. If
+-`cfg.TrackerAutoCloseAlreadyImplemented()` returns true, the orchestrator SHALL
+-call `TransitionToDone` on the tracker (Linear only; other adapters log a skip).
+-
+-When the mainRef cannot be resolved by git (`unresolvable=true`), the
+-orchestrator SHALL emit `ClaimMainRefUnresolvable` at most once per dispatch
+-cycle (warn-once semantics) and SHALL fail open — dispatch proceeds as normal.
+-
+-When no matching commit is found, dispatch proceeds without emitting any event.
+-
+-The gate SHALL NOT run when `Identifier` is empty or whitespace-only.
+-
+-#### Scenario: Skip when identifier is found on mainRef
+-
+-- GIVEN `FetchIssues` returns `T1` with `Identifier="ABC-1"`, `State=Unclaimed`
+-- AND `git log main --grep='\bABC-1\b' -P -1` returns a commit SHA + subject
+-- WHEN `dispatchUnclaimedIssues` runs
+-- THEN `claimIssue` is NOT called for `T1`
+-- AND a `ClaimSkippedAlreadyImplemented` event is emitted with the commit details
+-
+-#### Scenario: Word boundary prevents false positives
+-
+-- GIVEN commits on main contain "fix: close ABC-12 story"
+-- WHEN searching for identifier "ABC-1"
+-- THEN the ABC-12 commit SHALL NOT match (`\b` word-boundary prevents it)
+-
+-#### Scenario: Fail-open when mainRef is unresolvable
+-
+-- GIVEN `mainRef` resolves to "no-such-ref" (unknown revision)
+-- WHEN `dispatchUnclaimedIssues` runs for any unclaimed issue
+-- THEN `claimIssue` IS called (fail-open)
+-- AND `ClaimMainRefUnresolvable` event is emitted at most once per cycle
+-
+-#### Scenario: Auto-close when enabled and gate fires
+-
+-- GIVEN `auto_close_already_implemented: true`
+-- AND the gate fires for issue `T1`
+-- AND the tracker implements `linearAutoCloser`
+-- THEN `TransitionToDone` SHALL be called with a comment citing the commit SHA
+-
+-#### Scenario: Auto-close NOT called when disabled (default)
+-
+-- GIVEN `auto_close_already_implemented: false` (default)
+-- AND the gate fires for issue `T1`
+-- THEN `TransitionToDone` SHALL NOT be called
+-
+diff --git a/openspec/specs/orchestrator-completion/spec.md b/openspec/specs/orchestrator-completion/spec.md
+deleted file mode 100644
+index 1b18da5..0000000
+--- a/openspec/specs/orchestrator-completion/spec.md
++++ /dev/null
+@@ -1,115 +0,0 @@
+-# orchestrator-completion Specification
+-
+-## Purpose
+-TBD - created by archiving change verify-success-with-diff. Update Purpose after archive.
+-## Requirements
+-### Requirement: Orchestrator SHALL capture the workspace branch HEAD at claim time
+-
+-`claimIssue` SHALL, immediately after `tracker.ClaimIssue` returns
+-without error and the workspace exists, resolve the workspace's
+-branch HEAD via `git -C <workspace> rev-parse HEAD` and store the
+-40-character SHA on the per-attempt state struct as
+-`RunAttempt.ClaimHeadSha`. Errors from `git rev-parse` SHALL be
+-logged at `WARN` and SHALL NOT abort the claim; instead
+-`ClaimHeadSha` is left empty (the verifier interprets empty as
+-"unknown" and fails open).
+-
+-#### Scenario: Successful claim records HEAD
+-
+-- GIVEN a fresh worktree at the issue branch with HEAD `abc1234…`
+-- WHEN `claimIssue` runs to completion
+-- THEN the persisted `RunAttempt` carries `ClaimHeadSha = "abc1234…"`
+-  (full 40-char SHA).
+-
+-#### Scenario: `git rev-parse` failure does not block the claim
+-
+-- GIVEN `git rev-parse HEAD` fails (e.g. broken worktree)
+-- WHEN `claimIssue` runs
+-- THEN the claim still succeeds, `ClaimHeadSha = ""` is recorded,
+-  and exactly one WARN-level log line names the issue and the git
+-  error.
+-
+-### Requirement: Orchestrator SHALL verify branch advance before transitioning a Succeeded run to Released
+-
+-When the runtime processes an `agent_event=finished status=Succeeded`
+-event for a run, it SHALL — before transitioning the issue to
+-`Released` and before calling `tracker.UpdateIssueState(Released)` —
+-invoke `verifyBranchAdvanced(workspace, branch, claimHead)` and act
+-on its result:
+-
+-| verifier returns | orchestrator action |
+-|---|---|
+-| `(true, "", nil)` (advanced) | proceed with the existing Released path |
+-| `(false, "branch_unchanged", nil)` | reroute to the backoff path with cause `success_unverified_branch_unchanged`; do NOT transition the issue to Released; do NOT call `tracker.UpdateIssueState(Released)` |
+-| `(true, "git_error", err)` | log WARN with err, proceed with the existing Released path (fail open) |
+-
+-`verifyBranchAdvanced` SHALL resolve the *current* branch HEAD via
+-`git -C <workspace> rev-parse <branch>` and compare against
+-`claimHead`. An empty `claimHead` (per the previous requirement)
+-SHALL be treated identically to `git_error`.
+-
+-#### Scenario: Branch HEAD advanced — proceed normally
+-
+-- GIVEN `claimHead = "abc1234…"`, current `git rev-parse <branch>` =
+-  `def5678…`
+-- WHEN the runner emits `finished status=Succeeded`
+-- THEN the run transitions to Released, the tracker receives
+-  `UpdateIssueState(Released)`, and **no**
+-  `success_unverified_branch_unchanged` event is emitted.
+-
+-#### Scenario: Branch HEAD unchanged — reroute as backoff failure
+-
+-- GIVEN `claimHead = "abc1234…"`, current `git rev-parse <branch>` =
+-  `abc1234…` (identical)
+-- WHEN the runner emits `finished status=Succeeded`
+-- THEN the orchestrator emits exactly one
+-  `success_unverified_branch_unchanged` event whose payload includes
+-  the issue id, attempt number, branch name, and the unchanged SHA;
+-  AND the issue is enqueued for backoff with cause
+-  `success_unverified_branch_unchanged`;
+-  AND `tracker.UpdateIssueState(Released)` is NOT called for this
+-  run.
+-
+-#### Scenario: Empty `ClaimHeadSha` fails open
+-
+-- GIVEN `RunAttempt.ClaimHeadSha == ""` (claim-time `git rev-parse`
+-  had errored)
+-- WHEN the runner emits `finished status=Succeeded`
+-- THEN the run transitions to Released as if the verifier had
+-  succeeded. Exactly one WARN-level log line names the issue and
+-  the reason `verifier_skipped_no_claim_head`.
+-
+-#### Scenario: `git rev-parse` failure at success time fails open
+-
+-- GIVEN `claimHead = "abc1234…"` and current `git rev-parse <branch>`
+-  errors
+-- WHEN the runner emits `finished status=Succeeded`
+-- THEN the run transitions to Released, exactly one WARN-level log
+-  line names the issue and the rev-parse error, and no
+-  `success_unverified_branch_unchanged` event is emitted.
+-
+-#### Scenario: Failed runs bypass the verifier
+-
+-- GIVEN the runner emits `agent_event=finished status=Failed`
+-- WHEN the runtime processes that event
+-- THEN the existing failure path runs unchanged; the verifier is NOT
+-  invoked.
+-
+-### Requirement: The `success_unverified_branch_unchanged` event SHALL feed the existing backoff queue
+-
+-When the verifier rejects a hollow success, the orchestrator SHALL
+-call its existing backoff entry point with cause
+-`success_unverified_branch_unchanged`. The retry SHALL be subject to
+-the same `MaxRetryBackoffMs` jitter and concurrency rules as any
+-agent-error retry, and SHALL NOT bypass them.
+-
+-#### Scenario: Hollow success retries via the standard backoff queue
+-
+-- GIVEN the verifier rejected a Succeeded event for issue I, attempt
+-  1
+-- WHEN the next poll cycle runs
+-- THEN the same backoff path that handles agent errors is observed
+-  to schedule a retry for issue I at attempt 2, AND the
+-  `BackoffEnqueued` event carries the `success_unverified_branch_unchanged`
+-  cause.
+-
+diff --git a/openspec/specs/orphan-claim-recovery/spec.md b/openspec/specs/orphan-claim-recovery/spec.md
+deleted file mode 100644
+index 9f70a87..0000000
+--- a/openspec/specs/orphan-claim-recovery/spec.md
++++ /dev/null
+@@ -1,24 +0,0 @@
+-# orphan-claim-recovery Specification
+-
+-## Purpose
+-TBD - created by archiving change orchestrator-orphan-recovery. Update Purpose after archive.
+-## Requirements
+-### Requirement: Orchestrator recovers orphaned claimed issues on every poll tick
+-Before each dispatch cycle the orchestrator SHALL cross-reference all issues whose internal state is `Claimed` against the live managed-issues set. Any `Claimed` issue not present in the managed set SHALL have its state overridden to `Unclaimed` so it is eligible for dispatch.
+-
+-#### Scenario: Orphaned issue re-dispatched after restart
+-- **WHEN** the orchestrator restarts with an empty managed-issues map and Linear contains an issue with state type "started"
+-- **THEN** on the first poll tick after restart the orchestrator overrides that issue's state to Unclaimed, dispatches an agent for it, and logs `orphan_claim_recovered`
+-
+-#### Scenario: Genuinely managed issue not affected
+-- **WHEN** an issue is both "started" in Linear AND present in the managed-issues map
+-- **THEN** the orchestrator does not override its state and does not re-dispatch it
+-
+-#### Scenario: Recovery fires every tick until dispatch succeeds
+-- **WHEN** an orphaned issue is detected but dispatch is skipped (e.g. max concurrency reached)
+-- **THEN** the override is applied again on the next tick until the issue is successfully dispatched
+-
+-#### Scenario: Unstarted and terminal issues are not affected
+-- **WHEN** an issue has Linear state type "unstarted", "completed", or "canceled"
+-- **THEN** `recoverOrphanedClaims` does not modify its state
+-
+diff --git a/openspec/specs/running-blocker-revalidation/spec.md b/openspec/specs/running-blocker-revalidation/spec.md
+deleted file mode 100644
+index 6334993..0000000
+--- a/openspec/specs/running-blocker-revalidation/spec.md
++++ /dev/null
+@@ -1,24 +0,0 @@
+-# running-blocker-revalidation Specification
+-
+-## Purpose
+-TBD - created by archiving change orchestrator-revalidate-blockers. Update Purpose after archive.
+-## Requirements
+-### Requirement: Orchestrator re-validates blockers for managed issues each poll tick
+-On every poll cycle the orchestrator SHALL check whether any currently-managed (running or claimed) issue has acquired an unresolved blocker since it was dispatched. If so, the orchestrator SHALL stop the agent and revert the issue state to Todo.
+-
+-#### Scenario: Blocker relation added after dispatch
+-- **WHEN** issue A is running and a new `blocks` relation is added in the tracker pointing at A while A's blocker B is still open
+-- **THEN** on the next poll tick the orchestrator stops A's agent process, reverts A to Todo, and logs `running_released_blocked_by`
+-
+-#### Scenario: No blockers — managed issue untouched
+-- **WHEN** a managed issue has an empty `BlockedBy` list
+-- **THEN** the orchestrator does not stop the agent and continues normal execution
+-
+-#### Scenario: Blocker already resolved — managed issue untouched
+-- **WHEN** a managed issue has a `BlockedBy` entry but that blocker is no longer in the open issue set (Done or Canceled)
+-- **THEN** the orchestrator does not stop the agent and continues normal execution
+-
+-#### Scenario: Tracker revert fails
+-- **WHEN** the orchestrator stops an agent but the `MoveIssue(Todo)` tracker call fails
+-- **THEN** the orchestrator logs the error and retries the revert on the next poll tick; the issue is removed from the managed set so it is not re-stopped unnecessarily
+-
+diff --git a/openspec/specs/stop-running-agent/spec.md b/openspec/specs/stop-running-agent/spec.md
+deleted file mode 100644
+index 51ee3d5..0000000
+--- a/openspec/specs/stop-running-agent/spec.md
++++ /dev/null
+@@ -1,35 +0,0 @@
+-# stop-running-agent Specification
+-
+-## Purpose
+-TBD - created by archiving change stop-running-agent. Update Purpose after archive.
+-## Requirements
+-### Requirement: Caller can stop a running agent by issue ID
+-The system SHALL expose `POST /api/v1/running/{issue_id}/stop` that terminates the agent process associated with the given issue and returns HTTP 202.
+-
+-#### Scenario: Stop a running agent
+-- **WHEN** a client sends `POST /api/v1/running/{issue_id}/stop` for an issue that is currently running
+-- **THEN** the server responds with HTTP 202 and an empty body, and the orchestrator sends SIGTERM to the agent PID
+-
+-#### Scenario: Issue not in running state
+-- **WHEN** a client sends `POST /api/v1/running/{issue_id}/stop` for an issue that is not currently running
+-- **THEN** the server responds with HTTP 404 and `{"error": "agent not running"}`
+-
+-#### Scenario: SIGTERM ignored — SIGKILL fallback
+-- **WHEN** the agent process does not exit within 5 seconds of SIGTERM
+-- **THEN** the orchestrator sends SIGKILL to the agent PID
+-
+-### Requirement: Stop button displayed in running detail view
+-The dashboard IssueDetailSheet SHALL display a Stop button when the selected entry has `kind = "running"`.
+-
+-#### Scenario: Button in idle state
+-- **WHEN** the detail sheet opens for a running entry
+-- **THEN** a Stop button is visible and clickable
+-
+-#### Scenario: Button transitions to stopping state
+-- **WHEN** the user clicks the Stop button
+-- **THEN** the button becomes disabled and shows a loading indicator, and the frontend sends `POST /api/v1/running/{issue_id}/stop`
+-
+-#### Scenario: Button disappears after stop completes
+-- **WHEN** the SSE snapshot no longer includes the stopped issue in the running list
+-- **THEN** the detail sheet either closes or transitions to the stale/canceled view
+-
+diff --git a/openspec/specs/team-runtime/spec.md b/openspec/specs/team-runtime/spec.md
+deleted file mode 100644
+index 5e2645d..0000000
+--- a/openspec/specs/team-runtime/spec.md
++++ /dev/null
+@@ -1,64 +0,0 @@
+-# team-runtime Specification
+-
+-## Purpose
+-TBD - created by archiving change surface-omx-token-usage. Update Purpose after archive.
+-## Requirements
+-### Requirement: Team CLI runner SHALL surface omx token totals to the orchestrator
+-
+-`teamCLIRunner` SHALL read the omx-maintained metrics file at
+-`<workspace>/.omx/metrics.json` on every poll cycle of `monitorProcess`
+-and emit a `session.usage` agent event whenever any of the cumulative
+-token totals strictly increase since the last emission.
+-
+-#### Scenario: First successful read produces an event
+-
+-- GIVEN a workspace whose `.omx/metrics.json` contains
+-  `{"session_input_tokens": 1234, "session_output_tokens": 56,
+-  "session_total_tokens": 1290}`
+-- AND `monitorProcess` has not previously emitted `session.usage` for
+-  this run
+-- WHEN the next poll cycle reads the file
+-- THEN exactly one `session.usage` event is emitted whose
+-  `Data["usage"]` map contains
+-  `input_tokens=1234`, `output_tokens=56`, `total_tokens=1290`.
+-
+-#### Scenario: Unchanged metrics suppress further events
+-
+-- GIVEN one `session.usage` event has already been emitted with
+-  `total_tokens=1290`
+-- AND the next poll cycle reads `metrics.json` whose
+-  `session_total_tokens` is still `1290`
+-- WHEN the cycle completes
+-- THEN no further `session.usage` event is emitted.
+-
+-#### Scenario: Increasing metrics produce a new event
+-
+-- GIVEN the previously emitted total was `1290`
+-- AND the next poll cycle reads `session_total_tokens: 2500`
+-- WHEN the cycle completes
+-- THEN exactly one new `session.usage` event is emitted with
+-  the updated cumulative values.
+-
+-#### Scenario: Missing metrics file is silently tolerated
+-
+-- GIVEN `<workspace>/.omx/metrics.json` does not exist (e.g. the runner
+-  is opencode/omc, or the omx team has not finished its first turn)
+-- WHEN the poll cycle attempts to read the file
+-- THEN no error is propagated, no log line above debug is produced,
+-  and no `session.usage` event is emitted.
+-
+-#### Scenario: Partial / corrupt JSON is silently tolerated
+-
+-- GIVEN the metrics file is mid-write and JSON parsing fails
+-- WHEN the poll cycle attempts to read the file
+-- THEN the runner does not crash, no `session.usage` event is emitted
+-  for that cycle, and the next successful read still emits.
+-
+-#### Scenario: Cumulative totals match orchestrator delta accounting
+-
+-- GIVEN `parseUsageTokens` in the orchestrator credits
+-  `tokensIn - entry.attempt.TokensIn` as the delta
+-- WHEN this runner emits cumulative values
+-- THEN `parseUsageTokens` records correct deltas and the dashboard
+-  `Stats.TotalTokensIn` / `TotalTokensOut` advance monotonically.
+-
+diff --git a/openspec/specs/tracker-linear/spec.md b/openspec/specs/tracker-linear/spec.md
+deleted file mode 100644
+index 3336a10..0000000
+--- a/openspec/specs/tracker-linear/spec.md
++++ /dev/null
+@@ -1,56 +0,0 @@
+-# tracker-linear Specification
+-
+-## Purpose
+-TBD - created by archiving change gate-claims-on-blocked-by. Update Purpose after archive.
+-## Requirements
+-### Requirement: Linear tracker SHALL populate `Issue.BlockedBy` from `inverseRelations` of type `blocks`
+-
+-`LinearClient.FetchIssues` SHALL request each issue's
+-`inverseRelations` field with a `type` filter and the related issue's
+-`identifier`. `normalizeIssue` SHALL produce a non-nil `[]string`
+-slice in `Issue.BlockedBy` whose elements are the `identifier`s of the
+-issues whose relation to the current issue has `type == "blocks"` —
+-i.e. the issues that *block* the current one. Issues with no
+-incoming `blocks` relations SHALL keep `BlockedBy` as an empty (not
+-nil) slice so the existing JSON-stable contract is preserved.
+-
+-#### Scenario: Issue with one inverse blocks relation
+-
+-- GIVEN a Linear issue `ZII-50` whose `inverseRelations` payload
+-  contains `[{ "type": "blocks", "issue": { "identifier": "ZII-49" } }]`
+-- WHEN `FetchIssues` returns the issue
+-- THEN `issue.BlockedBy` equals `["ZII-49"]`.
+-
+-#### Scenario: Issue with multiple inverse blocks relations
+-
+-- GIVEN an issue whose `inverseRelations` contains two `type: blocks`
+-  entries pointing at `ZII-49` and `ZII-50` and one `type: related`
+-  entry pointing at `ZII-44`
+-- WHEN `FetchIssues` returns the issue
+-- THEN `issue.BlockedBy` is a slice that contains `ZII-49` and `ZII-50`
+-  in deterministic (input) order, and does NOT contain `ZII-44`.
+-
+-#### Scenario: Issue with no inverse relations
+-
+-- GIVEN an issue whose `inverseRelations.nodes` is the empty list
+-- WHEN `FetchIssues` returns the issue
+-- THEN `issue.BlockedBy` is `[]string{}` (non-nil, length 0).
+-
+-#### Scenario: Outgoing `relations` of type `blocks` are ignored for `BlockedBy`
+-
+-- GIVEN an issue whose **outgoing** `relations` field contains
+-  `[{ "type": "blocks", "relatedIssue": { "identifier": "ZII-99" } }]`
+-  (i.e. this issue blocks `ZII-99`) but whose `inverseRelations` is
+-  empty
+-- WHEN `FetchIssues` returns the issue
+-- THEN `issue.BlockedBy` is `[]string{}`.
+-  Rationale: `BlockedBy` lists who blocks me, not who I block.
+-
+-#### Scenario: Missing identifier on a related issue is skipped
+-
+-- GIVEN an `inverseRelations` node whose `issue.identifier` is missing
+-  or empty
+-- WHEN `normalizeIssue` parses the response
+-- THEN that node SHALL be silently skipped; well-formed nodes from the
+-  same response SHALL still appear in `BlockedBy`.
+-
+diff --git a/openspec/specs/web-state-payload/spec.md b/openspec/specs/web-state-payload/spec.md
+deleted file mode 100644
+index 8a08a98..0000000
+--- a/openspec/specs/web-state-payload/spec.md
++++ /dev/null
+@@ -1,111 +0,0 @@
+-# web-state-payload Specification
+-
+-## Purpose
+-TBD - created by archiving change improve-dashboard-liveness. Update Purpose after archive.
+-## Requirements
+-### Requirement: Snapshot `Running` entries SHALL carry liveness fields
+-
+-The `OrchestratorSnapshot.Running[i]` entry returned by the
+-`internal/orchestrator` package and serialized by `internal/web` at
+-`GET /api/v1/state` SHALL include the following additive fields. All
+-fields are required; runners that cannot compute a value supply the
+-indicated zero value.
+-
+-| field | type | zero | semantics |
+-|---|---|---|---|
+-| `phase_label` | string | `""` | Human label for `phase`, taken from the `phase int → string` table next to the `Phase` enum |
+-| `last_activity_at` | RFC3339 string | `""` | Wall-clock time of the most recent **non-heartbeat** agent event for this run |
+-| `last_activity_kind` | string | `""` | Type of that event (e.g. `tool_call`, `turn/started`) |
+-| `last_heartbeat_at` | RFC3339 string | `""` | Wall-clock time of the most recent agent event of any kind, including `team/stalled` |
+-| `iteration` | int | `0` | Current iteration index from `.omx/state/run-state.json` if present, else `0` |
+-| `iteration_max` | int | `0` | `max_iterations` from the same file, else `0` |
+-| `diff_added` | int | `0` | Lines added in the workspace as reported by `git diff --stat HEAD`. `0` on timeout or no changes |
+-| `diff_removed` | int | `0` | Lines removed |
+-| `diff_files` | int | `0` | File count |
+-| `diff_status` | string | `"ok"` | `"ok"` for a successful diff, `"timeout"` for the 1-second deadline, `"error"` for any other failure (the dashboard renders `?` for non-`ok`) |
+-
+-#### Scenario: Successful initial poll populates all liveness fields
+-
+-- GIVEN a running issue whose runner has emitted a `turn/started`
+-  event 4 seconds ago
+-- AND the workspace has 47 added / 3 removed lines vs `HEAD` across 2 files
+-- AND `.omx/state/run-state.json` contains `{ "iteration": 0, "max_iterations": 50 }`
+-- WHEN the snapshotter assembles the `Running` entry
+-- THEN `phase_label != ""`, `last_activity_at` is within 5 seconds of
+-  now, `last_activity_kind == "turn/started"`, `last_heartbeat_at`
+-  is the same as `last_activity_at` (no heartbeats yet),
+-  `iteration == 0`, `iteration_max == 50`, `diff_added == 47`,
+-  `diff_removed == 3`, `diff_files == 2`, `diff_status == "ok"`.
+-
+-#### Scenario: `team/stalled` does not advance `last_activity_at`
+-
+-- GIVEN `last_activity_at` was set 30 seconds ago by a `tool_call`
+-  event
+-- AND four `team/stalled` heartbeats arrive in the next 30 seconds
+-- WHEN the next snapshot is taken
+-- THEN `last_activity_at` is still the original 30-seconds-ago timestamp
+-- AND `last_activity_kind` is still `"tool_call"`
+-- AND `last_heartbeat_at` advances on each stalled event.
+-
+-#### Scenario: Runner with no `.omx` directory leaves iteration fields zero
+-
+-- GIVEN a codex runner whose workspace contains no `.omx/state/`
+-- WHEN the snapshotter runs
+-- THEN `iteration == 0` and `iteration_max == 0`, no error is logged,
+-  and the rest of the fields are populated normally.
+-
+-#### Scenario: Diff timeout reports `timeout` status with zero counts
+-
+-- GIVEN a workspace large enough that `git diff --stat HEAD` exceeds
+-  the 1-second budget
+-- WHEN the snapshotter assembles the entry
+-- THEN `diff_added == 0`, `diff_removed == 0`, `diff_files == 0`,
+-  `diff_status == "timeout"`, and the snapshot itself completes (no
+-  panic, no fatal log).
+-
+-#### Scenario: Snapshot serialization is backward-compatible
+-
+-- GIVEN an external consumer that decodes the existing
+-  `Running` JSON into a struct that knows only the original
+-  `{issue_id, attempt, pid, session_id, workspace, started_at,
+-  phase, tokens_in, tokens_out}` fields
+-- WHEN the consumer decodes a snapshot from the upgraded server
+-- THEN decoding succeeds and the consumer ignores the new fields.
+-
+-### Requirement: SSE event stream SHALL filter heartbeat events to dashboard subscribers
+-
+-The HTTP SSE endpoint at `GET /api/v1/events` SHALL drop agent events
+-whose type is in the heartbeat set (currently `{"team/stalled"}`)
+-before encoding to the wire. The orchestrator event hub SHALL still
+-deliver these events to non-SSE subscribers (TUI bridge, IPC, tests)
+-unchanged.
+-
+-#### Scenario: TUI bridge keeps receiving heartbeat events
+-
+-- GIVEN both an SSE client and the TUI bridge are subscribed
+-- WHEN the runner emits a `team/stalled` event
+-- THEN the TUI bridge receives it and the SSE client does not.
+-
+-#### Scenario: Non-heartbeat events still flow to SSE
+-
+-- GIVEN an SSE client is subscribed
+-- WHEN the runner emits `tool_call`
+-- THEN the SSE client receives it within the normal flush window.
+-
+-### Requirement: SSE event stream SHALL re-classify `dispatch_skipped_blocked_by` events
+-
+-The SSE endpoint SHALL forward `dispatch_skipped_blocked_by` events
+-under a distinct event channel (e.g. `event: queue` instead of
+-`event: agent`) so dashboard consumers can route them to the Queue
+-panel without keyword-matching the payload. The underlying
+-`OrchestratorEvent` payload is unchanged; only the SSE `event:` line
+-differs.
+-
+-#### Scenario: Skip events arrive on the queue channel
+-
+-- GIVEN a candidate is gated by `dispatchUnclaimedIssues`
+-- WHEN the orchestrator logs `dispatch_skipped_blocked_by`
+-- THEN the SSE client receives one frame whose `event:` line is
+-  `queue` and whose data carries the original
+-  `{ issue_id, blockers }` payload.
+-
+diff --git a/openspec/specs/workflow-timeline/spec.md b/openspec/specs/workflow-timeline/spec.md
+deleted file mode 100644
+index 355a5a1..0000000
+--- a/openspec/specs/workflow-timeline/spec.md
++++ /dev/null
+@@ -1,60 +0,0 @@
+-# workflow-timeline Specification
+-
+-## Purpose
+-TBD - created by archiving change sync-linear-workflow-timeline. Update Purpose after archive.
+-## Requirements
+-### Requirement: Durable workflow timeline store
+-Contrabass SHALL persist single-agent workflow run summaries, workflow-node summaries, and sync state in a durable local timeline store.
+-
+-#### Scenario: Persist node summary
+-- **WHEN** a single-agent workflow node reaches a durable completion, failure, retry, or needs-review state
+-- **THEN** the system persists a workflow-node summary with issue ID, run ID, node ID, attempt, status, timestamps, content hash, and available runtime metrics
+-
+-#### Scenario: Snapshot survives restart
+-- **WHEN** Contrabass restarts after timeline records were written
+-- **THEN** reducing the issue timeline file returns the same runs, nodes, run sync states, and node sync states that were present before restart
+-
+-### Requirement: Timeline writes are idempotent
+-The workflow timeline store SHALL make node writes idempotent by `(issue_id, run_id, node_id, attempt)` and content hash.
+-
+-#### Scenario: Duplicate node write with same hash
+-- **WHEN** the same workflow-node summary is written twice with the same content hash
+-- **THEN** the timeline snapshot contains only one effective node summary for that key
+-
+-#### Scenario: Replacement node write with changed hash
+-- **WHEN** a workflow-node summary is written again for the same key with a different content hash
+-- **THEN** the timeline snapshot uses the newest content and content hash for that key
+-
+-### Requirement: Timeline writes are file locked
+-The workflow timeline store SHALL acquire a file lock for every append or sync-state upsert against a per-issue JSONL file.
+-
+-#### Scenario: Concurrent timeline writes
+-- **WHEN** multiple goroutines append run, node, run-sync, and node-sync records for the same issue concurrently
+-- **THEN** the resulting JSONL file contains valid non-interleaved JSON records and the reduced snapshot includes all successful writes
+-
+-### Requirement: Pre-agent failures are timeline nodes
+-Contrabass SHALL create syncable failed workflow-node summaries for failures that occur before the agent process is running.
+-
+-#### Scenario: Claim failure creates node
+-- **WHEN** claiming an issue fails before workspace creation
+-- **THEN** the timeline contains `run:attempt-<n>:claim-failed` with status `failed` and the error summary
+-
+-#### Scenario: Workspace creation failure creates node
+-- **WHEN** workspace creation fails after claim
+-- **THEN** the timeline contains `run:attempt-<n>:workspace-failed` with status `failed` and the error summary
+-
+-#### Scenario: Prompt render failure creates node
+-- **WHEN** prompt rendering fails before agent start
+-- **THEN** the timeline contains `run:attempt-<n>:prompt-failed` with status `failed` and the error summary
+-
+-#### Scenario: Agent start failure creates node
+-- **WHEN** starting the agent process fails
+-- **THEN** the timeline contains `run:attempt-<n>:agent-start-failed` with status `failed` and the error summary
+-
+-### Requirement: Timeline is exposed to dashboard through backend
+-Contrabass SHALL expose an issue workflow timeline through a backend endpoint without requiring dashboard access to local timeline files.
+-
+-#### Scenario: Dashboard requests issue timeline
+-- **WHEN** the dashboard requests `GET /api/v1/issues/{issue_id}/timeline`
+-- **THEN** the backend returns a workflow timeline snapshot containing runs, nodes, run sync states, node sync states, and generation time
+-
+diff --git a/testdata/workflow.hardening.md b/testdata/workflow.hardening.md
+index 29659f7..50e3eba 100644
+--- a/testdata/workflow.hardening.md
++++ b/testdata/workflow.hardening.md
+@@ -1,5 +1,5 @@
+ ---
+-max_concurrency: 1
++max_concurrency: 3
+ poll_interval_ms: 4000
+ max_retry_backoff_ms: 90000
+ model: $CONTRABASS_MODEL
+
+--- /dev/null
++++ b/.claude/auto-runs/01_02_apply/impl_msg_1.txt
+Implemented task 1.2 only: generated Go worker protocol v1 types under `internal/workerproto/v1/` and added a reproducible `go generate` entry point.
+
+**Files Changed**
+- `internal/workerproto/v1/generate.go` — 3 lines; adds pinned `go generate` command using `go-jsonschema`.
+- `internal/workerproto/v1/types_gen.go` — 832 lines; generated Go structs/enums from `cloud/schemas/worker-protocol-v1/*.json`.
+- `internal/workerproto/v1/protocol.go` — 18 lines; adds `ProtocolVersionCurrent` and typed interfaces for ack/complete oneOf variants.
+- `internal/workerproto/v1/types_test.go` — 86 lines; table-driven marshal tests for wire field names plus oneOf interface compile checks.
+
+**Validation**
+- `go generate ./internal/workerproto/v1/...` — passed; generator emits expected duplicate `ErrorCode` name warnings because each endpoint schema has its own `$defs.ErrorCode`.
+- `go test ./internal/workerproto/v1/... && go vet ./...` — passed.
+- `bunx --bun ajv-cli@5 compile ... --spec=draft2020 --strict=false` for all worker protocol schemas — passed; AJV reported expected ignored `uri` format warnings.
+
+**Spec Coverage**
+- Satisfied task 1.2: Go types are generated from the frozen worker protocol schemas and can be regenerated with `go generate`.
+- No spec scenarios were blocked for this checkbox.
+
+**Deferred**
+- TypeScript generation remains task 1.3.
+- Shared golden fixtures remain task 1.4.
+- I did not touch `openspec/changes/.../tasks.md`, per instruction.
+
+--- /dev/null
++++ b/.claude/auto-runs/01_02_apply/impl_prompt_1.md
+You are implementing ONE checkbox task from an OpenSpec change. Stay strictly within scope.
+
+# Task 1.2 (epic: Worker protocol freeze (do first; cross-phase contract))
+
+Generate Go types from those schemas under `internal/workerproto/v1/` and add `go generate` step
+
+# Where to read
+
+1. The change root: `openspec/changes/cloud-orchestrator-with-local-workers/`
+2. Capability specs (read whichever ones the task touches):
+  - openspec/changes/cloud-orchestrator-with-local-workers/specs/cloud-config-store/spec.md
+  - openspec/changes/cloud-orchestrator-with-local-workers/specs/cloud-dashboard-hosting/spec.md
+  - openspec/changes/cloud-orchestrator-with-local-workers/specs/cloud-issue-run/spec.md
+  - openspec/changes/cloud-orchestrator-with-local-workers/specs/cloud-team-coordinator/spec.md
+  - openspec/changes/cloud-orchestrator-with-local-workers/specs/cloud-tracker-poller/spec.md
+  - openspec/changes/cloud-orchestrator-with-local-workers/specs/local-worker-daemon/spec.md
+  - openspec/changes/cloud-orchestrator-with-local-workers/specs/worker-protocol/spec.md
+3. `openspec/changes/cloud-orchestrator-with-local-workers/design.md` for decisions.
+4. `openspec/changes/cloud-orchestrator-with-local-workers/tasks.md` for the surrounding task list. Read sibling tasks in epic 1 so you understand context, but ONLY implement task 1.2.
+5. `CLAUDE.md` for repo-wide conventions.
+
+
+## Repo conventions (from CLAUDE.md, MUST follow)
+
+- Charm v2 vanity imports only: charm.land/bubbletea/v2, charm.land/bubbles/v2, charm.land/lipgloss/v2.
+- errgroup.Group + context.WithCancel for concurrency; propagate context.Context through all I/O.
+- Tests: table-driven with stretchr/testify (assert/require). Fixtures in testdata/.
+- Commit format will be applied by the orchestrator — your job is just the code.
+- Never use `as any` / `@ts-ignore` / `@ts-expect-error`.
+- Bug fixes are minimal — never refactor while fixing.
+
+## Build commands
+
+- `make test-quick` — go + dashboard + landing
+- `make build` — dashboard SPA + go binary
+- `make lint` — `go vet ./...`
+- For schema work in `cloud/schemas/`: `bunx --bun ajv-cli@5 compile -s <file> --spec=draft2020 --strict=false`
+- For Go-side per-package: `go test ./internal/<pkg>/... && go vet ./...`
+- For TS work in `cloud/`: `bunx tsc --noEmit` once `cloud/tsconfig.json` exists
+
+
+# Your job
+
+1. Pick the smallest change that satisfies the task statement plus the relevant spec scenarios.
+2. Add or update tests where appropriate.
+3. Run validation locally and report outcomes:
+   - Go work → `go test ./internal/<pkg>/... && go vet ./...` (or `make test-quick` if the change is broad).
+   - Schema work → ajv compile.
+   - Cloud TS work → `bunx tsc --noEmit` if `cloud/tsconfig.json` exists, otherwise document the gap.
+4. **Do NOT commit, push, or open PRs.** Leave the working tree dirty — the orchestrator will commit.
+5. **Do NOT modify other tasks' areas.** No drive-by refactors. No touching `openspec/changes/.../tasks.md` (the orchestrator manages it).
+6. **Stay inside the repo at `/Users/xumingyang/github/contrabass`.** Never touch `~/.claude/`, `~/.codex/`, `~/.config/`, etc.
+
+When done, write a short final-message summary:
+- Files changed and rough line counts
+- Validation commands you ran and their results
+- Any spec scenarios you couldn't satisfy and why
+- Anything you defer to follow-up tasks
+
+If truly blocked, write "BLOCKED: <reason>" as the LAST line and explain.
+
+
+--- /dev/null
++++ b/.claude/worktrees/agent-a25f410516b343864/
+[binary or unreadable]
+
+--- /dev/null
++++ b/.claude/worktrees/agent-a2bd682fa5cba0f53/
+[binary or unreadable]
+
+--- /dev/null
++++ b/.claude/worktrees/agent-a2d96a18dff3f82dc/
+[binary or unreadable]
+
+--- /dev/null
++++ b/.claude/worktrees/agent-a313379c03755a8f7/
+[binary or unreadable]
+
+--- /dev/null
++++ b/.claude/worktrees/agent-a3bdd815828804501/
+[binary or unreadable]
+
+--- /dev/null
++++ b/.claude/worktrees/agent-a4c6a433369ae6445/
+[binary or unreadable]
+
+--- /dev/null
++++ b/.claude/worktrees/agent-a4d2de6e42acd9442/
+[binary or unreadable]
+
+--- /dev/null
++++ b/.claude/worktrees/agent-a517eff2364cfe66d/
+[binary or unreadable]
+
+--- /dev/null
++++ b/.claude/worktrees/agent-a57f025c087e4b600/
+[binary or unreadable]
+
+--- /dev/null
++++ b/.claude/worktrees/agent-a5ab3549690cd1197/
+[binary or unreadable]
+
+--- /dev/null
++++ b/.claude/worktrees/agent-a673ae2d945920eb3/
+[binary or unreadable]
+
+--- /dev/null
++++ b/.claude/worktrees/agent-a75009f1c513419a8/
+[binary or unreadable]
+
+--- /dev/null
++++ b/.claude/worktrees/agent-a7c4de8ff9d534cdb/
+[binary or unreadable]
+
+--- /dev/null
++++ b/.claude/worktrees/agent-a8bd17db259afc99f/
+[binary or unreadable]
+
+--- /dev/null
++++ b/.claude/worktrees/agent-a9944cf58c1c7076e/
+[binary or unreadable]
+
+--- /dev/null
++++ b/.claude/worktrees/agent-ad1d34d12add91300/
+[binary or unreadable]
+
+--- /dev/null
++++ b/.claude/worktrees/agent-af8e7cebfd3eb8f1b/
+[binary or unreadable]
+
+--- /dev/null
++++ b/internal/workerproto/v1/generate.go
+package v1
+
+//go:generate sh -c "go run github.com/atombender/go-jsonschema@v0.23.0 -p v1 --struct-name-from-title --capitalization ID --capitalization URL --capitalization NDJSON --tags json --only-models -o types_gen.go ../../../cloud/schemas/worker-protocol-v1/*.json"
+
+
+--- /dev/null
++++ b/internal/workerproto/v1/protocol.go
+package v1
+
+const ProtocolVersionCurrent ProtocolVersion = "1.0.0"
+
+type WorkerAckRequest interface {
+	isWorkerAckRequest()
+}
+
+func (Accept) isWorkerAckRequest() {}
+func (Reject) isWorkerAckRequest() {}
+
+type WorkerCompleteRequest interface {
+	isWorkerCompleteRequest()
+}
+
+func (SucceededCompletion) isWorkerCompleteRequest() {}
+func (FailedCompletion) isWorkerCompleteRequest()    {}
+func (CancelledCompletion) isWorkerCompleteRequest() {}
+
+
+--- /dev/null
++++ b/internal/workerproto/v1/types_gen.go
+// Code generated by github.com/atombender/go-jsonschema, DO NOT EDIT.
+
+package v1
+
+type Accept struct {
+	// Accept corresponds to the JSON schema field "accept".
+	Accept interface{} `json:"accept"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+}
+
+type ArtifactKeysFull struct {
+	// Diff corresponds to the JSON schema field "diff".
+	Diff R2ObjectKey `json:"diff"`
+
+	// Logs corresponds to the JSON schema field "logs".
+	Logs R2ObjectKey `json:"logs"`
+
+	// Screenshots corresponds to the JSON schema field "screenshots".
+	Screenshots []R2ObjectKey `json:"screenshots,omitempty,omitzero"`
+
+	// Summary corresponds to the JSON schema field "summary".
+	Summary R2ObjectKey `json:"summary"`
+}
+
+// Failed/cancelled runs may not have produced all artifacts; any subset is
+// allowed.
+type ArtifactKeysPartial struct {
+	// Diff corresponds to the JSON schema field "diff".
+	Diff *R2ObjectKey `json:"diff,omitempty,omitzero"`
+
+	// Logs corresponds to the JSON schema field "logs".
+	Logs *R2ObjectKey `json:"logs,omitempty,omitzero"`
+
+	// Screenshots corresponds to the JSON schema field "screenshots".
+	Screenshots []R2ObjectKey `json:"screenshots,omitempty,omitzero"`
+
+	// Summary corresponds to the JSON schema field "summary".
+	Summary *R2ObjectKey `json:"summary,omitempty,omitzero"`
+}
+
+type AuthInvalidError struct {
+	// Error corresponds to the JSON schema field "error".
+	Error interface{} `json:"error"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message *string `json:"message,omitempty,omitzero"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+}
+
+type BaseFields struct {
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	// Monotonic per-run sequence number assigned by the worker. Optional but
+	// recommended for replay deduplication.
+	Seq *int `json:"seq,omitempty,omitzero"`
+
+	// Ts corresponds to the JSON schema field "ts".
+	Ts EpochMillis `json:"ts"`
+}
+
+type BearerToken string
+
+type CancelledCompletion struct {
+	// ArtifactKeys corresponds to the JSON schema field "artifactKeys".
+	ArtifactKeys ArtifactKeysPartial `json:"artifactKeys"`
+
+	// FinalConfigHash corresponds to the JSON schema field "finalConfigHash".
+	FinalConfigHash ConfigHash `json:"finalConfigHash"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	// Status corresponds to the JSON schema field "status".
+	Status interface{} `json:"status"`
+
+	// Summary corresponds to the JSON schema field "summary".
+	Summary string `json:"summary"`
+}
+
+// Examples: agent:codex, agent:opencode, tmux, git, os:darwin, arch:arm64
+type Capability string
+
+// Bare 64-char SHA-256 hex digest of the active workflow YAML.
+// Content-addressable; safe in URL path parameters (no colon).
+type ConfigHash string
+
+type DiffEvent struct {
+	// Kind corresponds to the JSON schema field "kind".
+	Kind interface{} `json:"kind"`
+
+	// Payload corresponds to the JSON schema field "payload".
+	Payload DiffEventPayload `json:"payload"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	// Seq corresponds to the JSON schema field "seq".
+	Seq *int `json:"seq,omitempty,omitzero"`
+
+	// Ts corresponds to the JSON schema field "ts".
+	Ts EpochMillis `json:"ts"`
+}
+
+type DiffEventPayload struct {
+	// Additions corresponds to the JSON schema field "additions".
+	Additions *int `json:"additions,omitempty,omitzero"`
+
+	// Deletions corresponds to the JSON schema field "deletions".
+	Deletions *int `json:"deletions,omitempty,omitzero"`
+
+	// FilesChanged corresponds to the JSON schema field "filesChanged".
+	FilesChanged int `json:"filesChanged"`
+
+	// Optional inline summary; full diff goes to R2 via the dispatch presigned URL.
+	Summary *string `json:"summary,omitempty,omitzero"`
+}
+
+// Milliseconds since Unix epoch.
+type EpochMillis int
+
+type ErrorCode string
+
+const ErrorCodeLeaseAlreadyHeld ErrorCode = "lease_already_held"
+const ErrorCodeLeaseRevoked ErrorCode = "lease_revoked"
+const ErrorCodeRunUnknown ErrorCode = "run_unknown"
+
+type ErrorCode_1 string
+
+const ErrorCode_1_ArtifactMissing ErrorCode_1 = "artifact_missing"
+const ErrorCode_1_LeaseHolderMismatch ErrorCode_1 = "lease_holder_mismatch"
+const ErrorCode_1_LeaseRevoked ErrorCode_1 = "lease_revoked"
+const ErrorCode_1_RunTerminal ErrorCode_1 = "run_terminal"
+const ErrorCode_1_RunUnknown ErrorCode_1 = "run_unknown"
+
+type ErrorCode_2 string
+
+const ErrorCode_2_EventsTooLarge ErrorCode_2 = "events_too_large"
+const ErrorCode_2_EventsTooMany ErrorCode_2 = "events_too_many"
+const ErrorCode_2_InvalidNDJSON ErrorCode_2 = "invalid_ndjson"
+const ErrorCode_2_LeaseRevoked ErrorCode_2 = "lease_revoked"
+const ErrorCode_2_RunTerminal ErrorCode_2 = "run_terminal"
+const ErrorCode_2_RunUnknown ErrorCode_2 = "run_unknown"
+
+type ErrorCode_3 string
+
+const ErrorCode_3_LeaseHolderMismatch ErrorCode_3 = "lease_holder_mismatch"
+const ErrorCode_3_LeaseRevoked ErrorCode_3 = "lease_revoked"
+const ErrorCode_3_RunTerminal ErrorCode_3 = "run_terminal"
+const ErrorCode_3_RunUnknown ErrorCode_3 = "run_unknown"
+
+type ErrorCode_4 string
+
+const ErrorCode_4_RefreshExpired ErrorCode_4 = "refresh_expired"
+const ErrorCode_4_RefreshInvalid ErrorCode_4 = "refresh_invalid"
+const ErrorCode_4_RefreshRevoked ErrorCode_4 = "refresh_revoked"
+
+type ErrorCode_5 string
+
+const ErrorCode_5_AuthInvalid ErrorCode_5 = "auth_invalid"
+const ErrorCode_5_ProtocolVersionUnsupported ErrorCode_5 = "protocol_version_unsupported"
+const ErrorCode_5_TeamForbidden ErrorCode_5 = "team_forbidden"
+const ErrorCode_5_TeamWorkerCapExceeded ErrorCode_5 = "team_worker_cap_exceeded"
+
+type ErrorEvent struct {
+	// Kind corresponds to the JSON schema field "kind".
+	Kind interface{} `json:"kind"`
+
+	// Payload corresponds to the JSON schema field "payload".
+	Payload ErrorEventPayload `json:"payload"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	// Seq corresponds to the JSON schema field "seq".
+	Seq *int `json:"seq,omitempty,omitzero"`
+
+	// Ts corresponds to the JSON schema field "ts".
+	Ts EpochMillis `json:"ts"`
+}
+
+type ErrorEventPayload struct {
+	// ErrorClass corresponds to the JSON schema field "errorClass".
+	ErrorClass string `json:"errorClass"`
+
+	// Fatal corresponds to the JSON schema field "fatal".
+	Fatal bool `json:"fatal,omitempty,omitzero"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message string `json:"message"`
+}
+
+// Generic error envelope. Per-endpoint files define concrete error response
+// schemas with additionalProperties: false and any structured fields the spec
+// calls out (e.g., supported, max_events, max_bytes).
+type ErrorResponseBase struct {
+	// Stable error code (snake_case). Per-endpoint enums in their own files.
+	Error string `json:"error"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message *string `json:"message,omitempty,omitzero"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	AdditionalProperties interface{} `mapstructure:",remain"`
+}
+
+// HTTP 413 body. Mirrors spec scenario 'Worker exceeds per-request event limits'.
+type EventsTooLargeError struct {
+	// Error corresponds to the JSON schema field "error".
+	Error interface{} `json:"error"`
+
+	// MaxBytes corresponds to the JSON schema field "max_bytes".
+	MaxBytes interface{} `json:"max_bytes"`
+
+	// MaxEvents corresponds to the JSON schema field "max_events".
+	MaxEvents interface{} `json:"max_events"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message *string `json:"message,omitempty,omitzero"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+}
+
+type EventsTooManyError struct {
+	// Error corresponds to the JSON schema field "error".
+	Error interface{} `json:"error"`
+
+	// MaxEvents corresponds to the JSON schema field "max_events".
+	MaxEvents interface{} `json:"max_events"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message *string `json:"message,omitempty,omitzero"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+}
+
+type FailedCompletion struct {
+	// ArtifactKeys corresponds to the JSON schema field "artifactKeys".
+	ArtifactKeys ArtifactKeysPartial `json:"artifactKeys"`
+
+	// Stable error category (e.g., 'agent_runner_crash', 'tests_failed',
+	// 'merge_conflict').
+	ErrorClass string `json:"errorClass"`
+
+	// FinalConfigHash corresponds to the JSON schema field "finalConfigHash".
+	FinalConfigHash ConfigHash `json:"finalConfigHash"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	// Status corresponds to the JSON schema field "status".
+	Status interface{} `json:"status"`
+
+	// Summary corresponds to the JSON schema field "summary".
+	Summary string `json:"summary"`
+}
+
+// Git ref-name subset: rejects '..', leading dot per segment, '.lock' suffix, and
+// trailing '.' or '/'.
+type GitBranch string
+
+type InvalidNDJSONError struct {
+	// Error corresponds to the JSON schema field "error".
+	Error interface{} `json:"error"`
+
+	// LineNumber corresponds to the JSON schema field "lineNumber".
+	LineNumber int `json:"lineNumber"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message *string `json:"message,omitempty,omitzero"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+}
+
+// Tracker-native issue identifier (e.g., LIN-123, owner/repo#42, internal-board
+// UUID). Pattern rejects leading whitespace/control chars to keep dashboard, log,
+// and R2-key derivation safe.
+type IssueRef string
+
+type LeaseAlreadyHeldError struct {
+	// Error corresponds to the JSON schema field "error".
+	Error interface{} `json:"error"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message *string `json:"message,omitempty,omitzero"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+}
+
+type LeaseHolderMismatchError struct {
+	// Error corresponds to the JSON schema field "error".
+	Error interface{} `json:"error"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message *string `json:"message,omitempty,omitzero"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+}
+
+type LeaseRevokedError struct {
+	// Error corresponds to the JSON schema field "error".
+	Error interface{} `json:"error"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message *string `json:"message,omitempty,omitzero"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+}
+
+// Server-to-worker WebSocket frame revoking the lease for a run. See
+// worker-protocol spec: 'Lease revocation push'. On receipt the worker MUST stop
+// the agent (SIGTERM, then SIGKILL after 5s), attempt artifact upload to
+// still-valid presigned URLs, and discard local state for the run.
+type LeaseRevokedFrame struct {
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	// Reason corresponds to the JSON schema field "reason".
+	Reason LeaseRevokedFrameReason `json:"reason"`
+
+	// Optional human-readable detail (e.g., admin name on worker_evicted_by_admin).
+	ReasonDetail *string `json:"reasonDetail,omitempty,omitzero"`
+
+	// RevokedAt corresponds to the JSON schema field "revokedAt".
+	RevokedAt *EpochMillis `json:"revokedAt,omitempty,omitzero"`
+
+	// RunID corresponds to the JSON schema field "runId".
+	RunID RunID `json:"runId"`
+
+	// Type corresponds to the JSON schema field "type".
+	Type string `json:"type"`
+}
+
+type LeaseRevokedFrameReason string
+
+const LeaseRevokedFrameReasonAckTimeout LeaseRevokedFrameReason = "ack_timeout"
+const LeaseRevokedFrameReasonCancelled LeaseRevokedFrameReason = "cancelled"
+const LeaseRevokedFrameReasonConfigInvalidated LeaseRevokedFrameReason = "config_invalidated"
+const LeaseRevokedFrameReasonHeartbeatTimeout LeaseRevokedFrameReason = "heartbeat_timeout"
+const LeaseRevokedFrameReasonManualReassign LeaseRevokedFrameReason = "manual_reassign"
+const LeaseRevokedFrameReasonProtocolVersionRenegotiation LeaseRevokedFrameReason = "protocol_version_renegotiation"
+const LeaseRevokedFrameReasonServerShutdown LeaseRevokedFrameReason = "server_shutdown"
+const LeaseRevokedFrameReasonSessionExpired LeaseRevokedFrameReason = "session_expired"
+const LeaseRevokedFrameReasonTeamPaused LeaseRevokedFrameReason = "team_paused"
+const LeaseRevokedFrameReasonWorkerEvictedByAdmin LeaseRevokedFrameReason = "worker_evicted_by_admin"
+
+// Lease duration in seconds. Wire-level bound is 4 hours; per-team config may set
+// lower limits. Server authoritative; worker echoes for diagnostics only.
+type LeaseSec int
+
+// Server-enforced limits (informational; HTTP-byte-counted, not part of array
+// contract).
+type Limits struct {
+	// MaxBytesPerRequest corresponds to the JSON schema field "maxBytesPerRequest".
+	MaxBytesPerRequest interface{} `json:"maxBytesPerRequest,omitempty,omitzero"`
+
+	// MaxEventsPerRequest corresponds to the JSON schema field "maxEventsPerRequest".
+	MaxEventsPerRequest interface{} `json:"maxEventsPerRequest,omitempty,omitzero"`
+}
+
+type LogEvent struct {
+	// Kind corresponds to the JSON schema field "kind".
+	Kind interface{} `json:"kind"`
+
+	// Payload corresponds to the JSON schema field "payload".
+	Payload LogEventPayload `json:"payload"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	// Seq corresponds to the JSON schema field "seq".
+	Seq *int `json:"seq,omitempty,omitzero"`
+
+	// Ts corresponds to the JSON schema field "ts".
+	Ts EpochMillis `json:"ts"`
+}
+
+type LogEventPayload struct {
+	// Level corresponds to the JSON schema field "level".
+	Level LogEventPayloadLevel `json:"level"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message string `json:"message"`
+
+	// Optional source tag (e.g., 'agent', 'runner', 'tmux').
+	Source *string `json:"source,omitempty,omitzero"`
+}
+
+type LogEventPayloadLevel string
+
+const LogEventPayloadLevelDebug LogEventPayloadLevel = "debug"
+const LogEventPayloadLevelError LogEventPayloadLevel = "error"
+const LogEventPayloadLevelInfo LogEventPayloadLevel = "info"
+const LogEventPayloadLevelWarn LogEventPayloadLevel = "warn"
+
+type PhaseEvent struct {
+	// Kind corresponds to the JSON schema field "kind".
+	Kind interface{} `json:"kind"`
+
+	// Payload corresponds to the JSON schema field "payload".
+	Payload PhaseEventPayload `json:"payload"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	// Seq corresponds to the JSON schema field "seq".
+	Seq *int `json:"seq,omitempty,omitzero"`
+
+	// Ts corresponds to the JSON schema field "ts".
+	Ts EpochMillis `json:"ts"`
+}
+
+type PhaseEventPayload struct {
+	// Label corresponds to the JSON schema field "label".
+	Label *string `json:"label,omitempty,omitzero"`
+
+	// Phase corresponds to the JSON schema field "phase".
+	Phase PhaseEventPayloadPhase `json:"phase"`
+}
+
+type PhaseEventPayloadPhase string
+
+const PhaseEventPayloadPhaseComplete PhaseEventPayloadPhase = "complete"
+const PhaseEventPayloadPhaseExec PhaseEventPayloadPhase = "exec"
+const PhaseEventPayloadPhasePlan PhaseEventPayloadPhase = "plan"
+const PhaseEventPayloadPhaseReview PhaseEventPayloadPhase = "review"
+const PhaseEventPayloadPhaseVerify PhaseEventPayloadPhase = "verify"
+
+// Frozen wire identifier for v1. Locked per design D2.
+type ProtocolVersion string
+
+// HTTP 409 body. Mirrors spec scenario 'Worker advertises an incompatible major
+// version'.
+type ProtocolVersionUnsupportedError struct {
+	// Error corresponds to the JSON schema field "error".
+	Error interface{} `json:"error"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message *string `json:"message,omitempty,omitzero"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	// Supported corresponds to the JSON schema field "supported".
+	Supported []ProtocolVersion `json:"supported"`
+}
+
+type R2ObjectKey string
+
+type RefreshExpiredError struct {
+	// Error corresponds to the JSON schema field "error".
+	Error interface{} `json:"error"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message *string `json:"message,omitempty,omitzero"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+}
+
+type RefreshInvalidError struct {
+	// Error corresponds to the JSON schema field "error".
+	Error interface{} `json:"error"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message *string `json:"message,omitempty,omitzero"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+}
+
+type RefreshRevokedError struct {
+	// Error corresponds to the JSON schema field "error".
+	Error interface{} `json:"error"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message *string `json:"message,omitempty,omitzero"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+}
+
+type Reject struct {
+	// Accept corresponds to the JSON schema field "accept".
+	Accept interface{} `json:"accept"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	// Reason corresponds to the JSON schema field "reason".
+	Reason RejectReason `json:"reason"`
+
+	// ReasonDetail corresponds to the JSON schema field "reasonDetail".
+	ReasonDetail *string `json:"reasonDetail,omitempty,omitzero"`
+}
+
+type RejectReason string
+
+const RejectReasonAtCapacity RejectReason = "at_capacity"
+const RejectReasonConfigHashUnknown RejectReason = "config_hash_unknown"
+const RejectReasonMissingCapability RejectReason = "missing_capability"
+const RejectReasonOther RejectReason = "other"
+const RejectReasonWorkerShuttingDown RejectReason = "worker_shutting_down"
+
+type RunID string
+
+type RunTerminalError struct {
+	// Error corresponds to the JSON schema field "error".
+	Error interface{} `json:"error"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message *string `json:"message,omitempty,omitzero"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+}
+
+type RunUnknownError struct {
+	// Error corresponds to the JSON schema field "error".
+	Error interface{} `json:"error"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message *string `json:"message,omitempty,omitzero"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+}
+
+type StartEvent struct {
+	// Kind corresponds to the JSON schema field "kind".
+	Kind interface{} `json:"kind"`
+
+	// Payload corresponds to the JSON schema field "payload".
+	Payload StartEventPayload `json:"payload"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	// Seq corresponds to the JSON schema field "seq".
+	Seq *int `json:"seq,omitempty,omitzero"`
+
+	// Ts corresponds to the JSON schema field "ts".
+	Ts EpochMillis `json:"ts"`
+}
+
+type StartEventPayload struct {
+	// Which runner started: codex|opencode|omx|omc|mock|other.
+	AgentRunner string `json:"agentRunner"`
+
+	// Branch corresponds to the JSON schema field "branch".
+	Branch *GitBranch `json:"branch,omitempty,omitzero"`
+
+	// WorktreePath corresponds to the JSON schema field "worktreePath".
+	WorktreePath *string `json:"worktreePath,omitempty,omitzero"`
+}
+
+type SucceededCompletion struct {
+	// ArtifactKeys corresponds to the JSON schema field "artifactKeys".
+	ArtifactKeys ArtifactKeysFull `json:"artifactKeys"`
+
+	// FinalConfigHash corresponds to the JSON schema field "finalConfigHash".
+	FinalConfigHash ConfigHash `json:"finalConfigHash"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	// Status corresponds to the JSON schema field "status".
+	Status interface{} `json:"status"`
+
+	// Summary corresponds to the JSON schema field "summary".
+	Summary string `json:"summary"`
+}
+
+type TeamForbiddenError struct {
+	// Error corresponds to the JSON schema field "error".
+	Error interface{} `json:"error"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message *string `json:"message,omitempty,omitzero"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+}
+
+type TeamID string
+
+type TeamWorkerCapExceededError struct {
+	// Error corresponds to the JSON schema field "error".
+	Error interface{} `json:"error"`
+
+	// MaxActiveWorkers corresponds to the JSON schema field "max_active_workers".
+	MaxActiveWorkers int `json:"max_active_workers"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message *string `json:"message,omitempty,omitzero"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+}
+
+type ToolCallEvent struct {
+	// Kind corresponds to the JSON schema field "kind".
+	Kind interface{} `json:"kind"`
+
+	// Payload corresponds to the JSON schema field "payload".
+	Payload ToolCallEventPayload `json:"payload"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	// Seq corresponds to the JSON schema field "seq".
+	Seq *int `json:"seq,omitempty,omitzero"`
+
+	// Ts corresponds to the JSON schema field "ts".
+	Ts EpochMillis `json:"ts"`
+}
+
+type ToolCallEventPayload struct {
+	// Argument summary; truncate before send. Free-form.
+	Args interface{} `json:"args,omitempty,omitzero"`
+
+	// OutputSummary corresponds to the JSON schema field "outputSummary".
+	OutputSummary *string `json:"outputSummary,omitempty,omitzero"`
+
+	// Phase corresponds to the JSON schema field "phase".
+	Phase ToolCallEventPayloadPhase `json:"phase"`
+
+	// TokensIn corresponds to the JSON schema field "tokensIn".
+	TokensIn *int `json:"tokensIn,omitempty,omitzero"`
+
+	// TokensOut corresponds to the JSON schema field "tokensOut".
+	TokensOut *int `json:"tokensOut,omitempty,omitzero"`
+
+	// Tool corresponds to the JSON schema field "tool".
+	Tool string `json:"tool"`
+}
+
+type ToolCallEventPayloadPhase string
+
+const ToolCallEventPayloadPhaseError ToolCallEventPayloadPhase = "error"
+const ToolCallEventPayloadPhaseResult ToolCallEventPayloadPhase = "result"
+const ToolCallEventPayloadPhaseStart ToolCallEventPayloadPhase = "start"
+
+type URL string
+
+// Server-to-worker dispatch payload. Sent over WebSocket as a single text frame
+// ({type: 'dispatch', ...}) and reused as the JSON body of GET
+// /v1/workers/{workerId}/dispatch?wait=25s long-poll responses. See
+// worker-protocol spec: 'Dispatch over WebSocket', 'Long-poll dispatch fallback'.
+type WorkerDispatchFrame struct {
+	// Seconds the cloud waits for an ack before revoking the lease.
+	AckDeadlineSec int `json:"ackDeadlineSec,omitempty,omitzero"`
+
+	// R2 presigned PUT URLs valid for the lease duration. Workers MUST upload large
+	// outputs here, NOT via the events endpoint.
+	ArtifactUploadURLs WorkerDispatchFrameArtifactUploadURLs `json:"artifactUploadURLs"`
+
+	// Branch corresponds to the JSON schema field "branch".
+	Branch GitBranch `json:"branch"`
+
+	// ConfigHash corresponds to the JSON schema field "configHash".
+	ConfigHash ConfigHash `json:"configHash"`
+
+	// DispatchedAt corresponds to the JSON schema field "dispatchedAt".
+	DispatchedAt *EpochMillis `json:"dispatchedAt,omitempty,omitzero"`
+
+	// IssueRef corresponds to the JSON schema field "issueRef".
+	IssueRef IssueRef `json:"issueRef"`
+
+	// LeaseSec corresponds to the JSON schema field "leaseSec".
+	LeaseSec LeaseSec `json:"leaseSec"`
+
+	// Rendered Liquid template from active config (no secret references).
+	Prompt string `json:"prompt"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	// RunID corresponds to the JSON schema field "runId".
+	RunID RunID `json:"runId"`
+
+	// Type corresponds to the JSON schema field "type".
+	Type string `json:"type"`
+}
+
+// R2 presigned PUT URLs valid for the lease duration. Workers MUST upload large
+// outputs here, NOT via the events endpoint.
+type WorkerDispatchFrameArtifactUploadURLs struct {
+	// Diff corresponds to the JSON schema field "diff".
+	Diff URL `json:"diff"`
+
+	// Logs corresponds to the JSON schema field "logs".
+	Logs URL `json:"logs"`
+
+	// Screenshots corresponds to the JSON schema field "screenshots".
+	Screenshots []URL `json:"screenshots,omitempty,omitzero"`
+
+	// Summary corresponds to the JSON schema field "summary".
+	Summary URL `json:"summary"`
+}
+
+// Schema for ONE NDJSON line of POST /v1/runs/{runId}/events (Content-Type:
+// application/x-ndjson). Per-kind payload shapes are sealed via discriminated
+// oneOf. The endpoint accepts up to 200 lines or 512 KiB total per request — see
+// events-request.json for the logical batch contract used by tests and golden
+// fixtures.
+type WorkerEventLine map[string]interface{}
+
+// Logical decoded form of POST /v1/runs/{runId}/events for tests and golden
+// fixtures. The wire format is NDJSON (Content-Type: application/x-ndjson, one
+// JSON object per line). The maxBytes server invariant (524288) is HTTP-byte
+// counted and cannot be enforced by JSON Schema — see events.json $defs.Limits.
+type WorkerEventsRequest []WorkerEventLine
+
+// POST /v1/runs/{runId}/heartbeat — worker extends the lease for an active run.
+// Cadence ≤ heartbeatIntervalSec from register response. See worker-protocol spec:
+// 'Heartbeat and lease extension'.
+type WorkerHeartbeatRequest struct {
+	// LastEventTs corresponds to the JSON schema field "lastEventTs".
+	LastEventTs EpochMillis `json:"lastEventTs"`
+
+	// Short human-readable phase label (e.g., 'planning', 'editing', 'verifying').
+	Progress *string `json:"progress,omitempty,omitzero"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+}
+
+type WorkerID string
+
+// POST /v1/workers/refresh request body. See worker-protocol spec: 'Session
+// refresh'.
+type WorkerRefreshRequest struct {
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	// RefreshToken corresponds to the JSON schema field "refreshToken".
+	RefreshToken BearerToken `json:"refreshToken"`
+}
+
+// POST /v1/workers/refresh success response (HTTP 200) and structured error
+// response shapes.
+type WorkerRefreshResponse struct {
+	// ExpiresAt corresponds to the JSON schema field "expiresAt".
+	ExpiresAt EpochMillis `json:"expiresAt"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	// SessionToken corresponds to the JSON schema field "sessionToken".
+	SessionToken BearerToken `json:"sessionToken"`
+}
+
+// POST /v1/workers/register request body. See worker-protocol spec: 'Worker
+// registration and session bootstrap', 'Versioned protocol identity'.
+type WorkerRegisterRequest struct {
+	// Capabilities corresponds to the JSON schema field "capabilities".
+	Capabilities []Capability `json:"capabilities"`
+
+	// Optional self-declared worker type. Cloud uses for selection policy. Phase 2
+	// sets 'container'.
+	Kind WorkerRegisterRequestKind `json:"kind,omitempty,omitzero"`
+
+	// Maximum number of concurrently-acked runs the worker accepts.
+	MaxConcurrency int `json:"maxConcurrency"`
+
+	// Semver list of protocol versions this worker can speak. Cloud picks one (1.0.0
+	// in v1).
+	SupportedProtocolVersions []string `json:"supported_protocol_versions"`
+
+	// TeamID corresponds to the JSON schema field "teamId".
+	TeamID TeamID `json:"teamId"`
+
+	// Worker build version (e.g., contrabass git sha or semver).
+	Version string `json:"version"`
+
+	// WorkerID corresponds to the JSON schema field "workerId".
+	WorkerID WorkerID `json:"workerId"`
+}
+
+type WorkerRegisterRequestKind string
+
+const WorkerRegisterRequestKindContainer WorkerRegisterRequestKind = "container"
+const WorkerRegisterRequestKindLocal WorkerRegisterRequestKind = "local"
+
+// POST /v1/workers/register success response (HTTP 200) and structured error
+// response shapes.
+type WorkerRegisterResponse struct {
+	// DispatchChannel corresponds to the JSON schema field "dispatchChannel".
+	DispatchChannel WorkerRegisterResponseDispatchChannel `json:"dispatchChannel"`
+
+	// Cadence (seconds) at which the worker MUST send heartbeats per active run.
+	HeartbeatIntervalSec int `json:"heartbeatIntervalSec"`
+
+	// LeaseSec corresponds to the JSON schema field "leaseSec".
+	LeaseSec LeaseSec `json:"leaseSec"`
+
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
+	// RefreshToken corresponds to the JSON schema field "refreshToken".
+	RefreshToken BearerToken `json:"refreshToken"`
+
+	// SessionToken corresponds to the JSON schema field "sessionToken".
+	SessionToken BearerToken `json:"sessionToken"`
+
+	// Wall-clock millis when the sessionToken expires. Workers SHOULD refresh ahead
+	// of this point via /v1/workers/refresh.
+	SessionTokenExpiresAt EpochMillis `json:"sessionTokenExpiresAt"`
+}
+
+type WorkerRegisterResponseDispatchChannel struct {
+	// LongPollURL corresponds to the JSON schema field "longPollUrl".
+	LongPollURL URL `json:"longPollUrl"`
+
+	// WsURL corresponds to the JSON schema field "wsUrl".
+	WsURL WsURL `json:"wsUrl"`
+}
+
+type WsURL string
+
+
+--- /dev/null
++++ b/internal/workerproto/v1/types_test.go
+package v1
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestWorkerProtocolTypesMarshalWireFields(t *testing.T) {
+	tests := []struct {
+		name string
+		in   any
+		want map[string]any
+	}{
+		{
+			name: "register request keeps mixed casing",
+			in: WorkerRegisterRequest{
+				TeamID:                    "team-1",
+				WorkerID:                  "worker-1",
+				Capabilities:              []Capability{"agent:codex", "git"},
+				MaxConcurrency:            2,
+				Version:                   "dev",
+				SupportedProtocolVersions: []string{"1.0.0"},
+			},
+			want: map[string]any{
+				"teamId":                      "team-1",
+				"workerId":                    "worker-1",
+				"capabilities":                []any{"agent:codex", "git"},
+				"maxConcurrency":              float64(2),
+				"version":                     "dev",
+				"supported_protocol_versions": []any{"1.0.0"},
+			},
+		},
+		{
+			name: "dispatch frame includes protocol version",
+			in: WorkerDispatchFrame{
+				Type:            "dispatch",
+				ProtocolVersion: ProtocolVersionCurrent,
+				RunID:           "run-1",
+				IssueRef:        "LIN-123",
+				Branch:          "feature/lin-123",
+				Prompt:          "fix the issue",
+				ConfigHash:      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				LeaseSec:        60,
+				ArtifactUploadURLs: WorkerDispatchFrameArtifactUploadURLs{
+					Logs:    "https://example.test/logs",
+					Diff:    "https://example.test/diff",
+					Summary: "https://example.test/summary",
+				},
+			},
+			want: map[string]any{
+				"type":             "dispatch",
+				"protocol_version": "1.0.0",
+				"runId":            "run-1",
+				"issueRef":         "LIN-123",
+				"branch":           "feature/lin-123",
+				"prompt":           "fix the issue",
+				"configHash":       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				"leaseSec":         float64(60),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := json.Marshal(tt.in)
+			require.NoError(t, err)
+
+			var got map[string]any
+			require.NoError(t, json.Unmarshal(encoded, &got))
+			for key, want := range tt.want {
+				assert.Equal(t, want, got[key], "field %s", key)
+			}
+		})
+	}
+}
+
+func TestWorkerProtocolOneOfVariantInterfaces(t *testing.T) {
+	var _ WorkerAckRequest = Accept{}
+	var _ WorkerAckRequest = Reject{}
+	var _ WorkerCompleteRequest = SucceededCompletion{}
+	var _ WorkerCompleteRequest = FailedCompletion{}
+	var _ WorkerCompleteRequest = CancelledCompletion{}
+}
+
+
+--- /dev/null
++++ b/openspec/changes/archive/2026-05-08-codex-runner-protocol/spec.md
+# Codex runner protocol — handshake, streaming, error handling
+
+## ADDED Requirements
+
+### Requirement: Codex runner SHALL include `approvalPolicy` and `sandboxPolicy` in `thread/start` and `turn/start`
+
+`CodexRunner.Start` SHALL build the params for both `thread/start` and
+`turn/start` such that they include both `approvalPolicy` and
+`sandboxPolicy` keys. Values come from
+`CodexRunnerOptions.ApprovalPolicy` and
+`CodexRunnerOptions.Sandbox` if set; otherwise from the runner's
+defaults: `approvalPolicy="never"` and
+`sandboxPolicy={"type":"workspaceWrite","networkAccess":false}`.
+
+#### Scenario: Defaults applied when config is empty
+
+- GIVEN a `CodexRunner` constructed with empty `ApprovalPolicy` and
+  empty `Sandbox`
+- WHEN `Start` runs
+- THEN the wire-encoded `thread/start.params` contains
+  `"approvalPolicy":"never"` and
+  `"sandboxPolicy":{"type":"workspaceWrite","networkAccess":false}`,
+  AND the same fields appear in `turn/start.params`.
+
+#### Scenario: Workflow override is forwarded verbatim
+
+- GIVEN `ApprovalPolicy="on-request"` and `Sandbox={"type":"readOnly"}`
+- WHEN `Start` runs
+- THEN `thread/start.params.approvalPolicy == "on-request"` and
+  `thread/start.params.sandboxPolicy == {"type":"readOnly"}`. Same for
+  `turn/start.params`.
+
+### Requirement: Codex runner SHALL retry on `-32001 server overloaded`
+
+`awaitResponse` SHALL recognize JSON-RPC error responses whose code is
+`-32001` and return a sentinel `errCodexOverloaded` (in addition to or
+in place of the generic error string). Each handshake call site
+(`initialize`, `thread/start`, `turn/start`) SHALL retry the same
+request (preserving the same id) on `errCodexOverloaded` up to
+`r.overloadRetries` times (default 5) with exponential backoff capped
+at `r.overloadRetryCap` (default 4 s, starting at 100 ms, doubling
+each step). After the retry budget is exhausted the runner SHALL
+return the error and trigger `cleanupOnStartFailure` as before.
+
+#### Scenario: Single overload retried successfully
+
+- GIVEN the codex stub responds to `id=2` (`thread/start`) with
+  `{"id":2,"error":{"code":-32001,"message":"Server overloaded"}}` on
+  the first read and with `{"id":2,"result":{"thread":{"id":"t-1"}}}`
+  on the second read
+- WHEN `Start` runs
+- THEN `Start` returns successfully and the runner's stderr buffer
+  records exactly one overload retry log line.
+
+#### Scenario: Sustained overload exhausts retry budget
+
+- GIVEN the codex stub returns `-32001` for every read of `id=2`
+- AND `r.overloadRetries == 2` for the test
+- WHEN `Start` runs
+- THEN `Start` returns an error wrapping `errCodexOverloaded`, the
+  runner cleans up the subprocess, and `cleanupOnStartFailure` was
+  called exactly once.
+
+#### Scenario: Other JSON-RPC errors are not retried
+
+- GIVEN the codex stub returns
+  `{"id":2,"error":{"code":-32600,"message":"Invalid request"}}`
+- WHEN `Start` runs
+- THEN `Start` returns an error and zero overload retries are
+  attempted.
+
+### Requirement: Codex runner SHALL tolerate per-line sizes up to 32 MB without aborting the stream
+
+`streamEventsAndWait` SHALL parse JSONL output using a reader that
+admits per-line lengths up to `maxStreamLineSize` (default 32 MB).
+Lines exceeding the cap SHALL be logged at WARN, dropped from the
+event stream, and the loop SHALL continue reading subsequent lines.
+
+#### Scenario: 5 MB agent message is delivered
+
+- GIVEN the codex stub emits a single 5 MB JSON line whose `method` is
+  `item/agentMessage`
+- WHEN the streaming loop reads it
+- THEN exactly one `item/agentMessage` event reaches the events
+  channel and the loop continues reading subsequent lines.
+
+#### Scenario: Oversized line is skipped, stream survives
+
+- GIVEN the codex stub emits a 64 MB malformed JSON line followed by a
+  normal `turn/completed` line
+- WHEN the streaming loop reads them
+- THEN the oversized line produces zero events and one WARN log entry
+  (`maxStreamLineSize_exceeded` or equivalent), AND the
+  `turn/completed` event still reaches the events channel.
+
+### Requirement: Terminal events SHALL never be dropped
+
+For agent events whose type is in `terminalCodexEventTypes` =
+`{"turn/completed", "turn/failed", "turn/cancelled"}`, the runner
+SHALL deliver the event to the events channel using a blocking send
+(in tandem with context cancellation). Other events MAY use
+non-blocking send semantics (the existing `select { case ...:
+default: }`) so a slow consumer cannot deadlock the runner.
+
+#### Scenario: Slow consumer receives `turn/completed` after backpressure
+
+- GIVEN the events channel has buffer 4 and the consumer is paused
+- AND the runner emits 100 `item/*` events followed by one
+  `turn/completed`
+- WHEN the consumer eventually drains the channel
+- THEN the final event read is `turn/completed` (it survived the
+  backpressure period).
+- AND some `item/*` events MAY have been dropped (acceptable).
+
+#### Scenario: Context cancellation supersedes blocking send
+
+- GIVEN the consumer never reads the channel
+- AND the parent context is cancelled while the runner is trying to
+  send `turn/completed`
+- WHEN the runner reacts to the cancellation
+- THEN the blocking send returns within the cancellation window
+  (~tens of ms) and the streaming loop exits cleanly without
+  goroutine leak.
+
+### Requirement: Codex runner SHALL flush stdin after every JSON-RPC message
+
+Every code path that builds a JSON-RPC message via `sendMessage`
+SHALL invoke `bufio.Writer.Flush()` (or equivalent) before returning,
+and SHALL surface any flush error to the caller as the function's
+return value.
+
+#### Scenario: Flush error is surfaced
+
+- GIVEN the codex stub closes stdin before any message can be flushed
+- WHEN `sendMessage` runs
+- THEN it returns a non-nil error (`flush stdin: ...`) and does not
+  silently swallow the failure.
+
+### Requirement: Handshake timeout and per-line stream-read timeout SHALL be independently configurable
+
+The runner SHALL expose two distinct durations:
+
+- `handshakeTimeout` — applied to each `awaitResponse` call inside
+  `Start` (default 30 s).
+- `streamReadTimeout` — applied to each per-line read inside
+  `streamEventsAndWait` (default 0 == disabled).
+
+The constructor `NewCodexRunner(binaryPath, timeout)` retains its
+existing two-argument signature with `timeout` interpreted as
+`handshakeTimeout`. A new opt-in setter
+`(*CodexRunner).WithStreamReadTimeout(d time.Duration)` SHALL
+configure the per-line read budget and SHALL be invoked by
+`createRunner` in `cmd/contrabass/team.go` when
+`WorkflowConfig.StallTimeoutMs > 0`.
+
+#### Scenario: Handshake timeout enforced independently
+
+- GIVEN `handshakeTimeout = 1 s` and `streamReadTimeout = 0`
+- AND the codex stub never responds to `id=1`
+- WHEN `Start` runs
+- THEN it returns a handshake-timeout error within 1 s plus a small
+  margin.
+
+#### Scenario: Stream read timeout enforced independently
+
+- GIVEN `handshakeTimeout = 30 s` and `streamReadTimeout = 500 ms`
+- AND the codex stub completes the handshake but emits no further
+  lines
+- WHEN the streaming loop runs
+- THEN within ~500 ms the runner observes a stream stall and
+  `streamEventsAndWait` finishes with the corresponding error
+  (without hanging up the whole 30 s handshake budget).
+
+#### Scenario: Default behavior is unchanged for callers that don't opt in
+
+- GIVEN `streamReadTimeout` is left at its default 0
+- WHEN the streaming loop runs against a healthy codex stub
+- THEN behavior is identical to today's runner: the loop reads until
+  the underlying reader returns EOF, with no per-line deadline.
+
+### Requirement: Codex runner SHALL finalize the subprocess after a terminal turn event
+
+After `streamEventsAndWait` parses an event whose `Type` is in
+`terminalCodexEventTypes` (`turn/completed`, `turn/failed`,
+`turn/cancelled`), the runner SHALL close codex's stdin pipe exactly
+once via a `sync.Once` guard on `codexProcess`. The streaming loop
+SHALL continue to drain remaining stdout lines until natural EOF,
+and the existing `process.cmd.Wait()` path remains the single source
+of truth for the runner's exit status.
+
+#### Scenario: turn/completed triggers stdin close and clean exit
+
+- GIVEN a stub app-server that completes the handshake and emits
+  `turn/completed`, then sits idle on stdin and exits 0 only when
+  it observes EOF
+- WHEN the runner streams the events
+- THEN the runner closes stdin within ~50 ms of receiving
+  `turn/completed`, the stub then exits 0, and
+  `process.cmd.Wait()` returns nil; the parent contrabass code path
+  observes a clean run termination (no synthetic `Failed` from
+  `stall_timeout_ms`).
+
+#### Scenario: turn/failed triggers stdin close
+
+- GIVEN a stub that emits `turn/failed` instead of `turn/completed`
+- WHEN the runner streams the event
+- THEN the runner still closes stdin and `process.cmd.Wait()`
+  returns the underlying exit status; the runner does NOT synthesize
+  an extra failure on top of codex's own failure signal.
+
+#### Scenario: Multiple terminal events in a single run do not double-close
+
+- GIVEN a (degenerate) stub that emits `turn/completed` followed by
+  another `turn/cancelled`
+- WHEN both events arrive at `streamEventsAndWait`
+- THEN stdin is closed exactly once (no panic, no error from
+  duplicate close), and the runner exits the loop cleanly.
+
+#### Scenario: `Stop()` after a terminal event is idempotent
+
+- GIVEN `Stop()` is called after `turn/completed` has already
+  triggered stdin close
+- WHEN `Stop()` runs
+- THEN it does not panic and does not log an error about
+  already-closed stdin; codex's exit is allowed to complete
+  naturally per the existing graceful-stop budget.
+
+
+--- /dev/null
++++ b/openspec/changes/archive/2026-05-08-dashboard-status-rendering/spec.md
+# dashboard-status-rendering Specification
+
+## Purpose
+TBD - created by archiving change improve-dashboard-liveness. Update Purpose after archive.
+## Requirements
+### Requirement: Sessions table SHALL render a phase label, not a phase number
+
+The React `SessionsTable` (`packages/dashboard/src/components/SessionsTable.tsx`)
+SHALL render `running.phase_label` from the snapshot payload in the
+phase column. When `phase_label` is empty (older server), it SHALL
+fall back to a client-side mapping table keyed on `running.phase` so
+existing deployments don't show a bare integer.
+
+#### Scenario: Server provides label
+
+- GIVEN `running.phase_label == "AgentRunning · turn 3"`
+- WHEN the row renders
+- THEN the phase cell shows the string literally.
+
+#### Scenario: Server provides only the integer
+
+- GIVEN `running.phase_label == ""` and `running.phase == 4`
+- WHEN the row renders
+- THEN the phase cell shows the client-side mapping for `4`
+  (e.g. `"AgentRunning"`); never the bare number `4`.
+
+### Requirement: Sessions table SHALL render a "Last activity" indicator with traffic-light dot
+
+The sessions table SHALL include a column whose content for each row is:
+
+- a colored dot (green / yellow / red) reflecting the age of
+  `last_activity_at` relative to the wall clock,
+- followed by a relative-time string (`8s ago`, `2m ago`),
+- followed by `last_activity_kind` in subdued text.
+
+Color thresholds:
+| age | dot |
+|---|---|
+| `< 30 s` | green |
+| `30 – 180 s` | yellow |
+| `> 180 s` | red |
+| `last_activity_at == ""` | gray (no data yet) |
+
+#### Scenario: Recently active
+
+- GIVEN `last_activity_at` is 8 s ago and `last_activity_kind == "tool_call"`
+- WHEN the row renders
+- THEN it shows: green dot, `8s ago`, `tool_call`.
+
+#### Scenario: Stale activity warning
+
+- GIVEN `last_activity_at` is 4 minutes ago
+- WHEN the row renders
+- THEN the dot is red and the indicator includes the relative time.
+
+### Requirement: Sessions table SHALL render a diff summary column
+
+The sessions table SHALL include a `Diff` column whose content per row is:
+
+- `+{diff_added} -{diff_removed} ({diff_files} files)` when
+  `diff_status == "ok"` and any of the three counts is non-zero.
+- `—` when all three counts are zero and status is `"ok"`.
+- `?` (with a tooltip carrying the `diff_status` string) for
+  `"timeout"` or `"error"`.
+
+#### Scenario: Active edits visible
+
+- GIVEN `diff_added=47, diff_removed=3, diff_files=2, diff_status="ok"`
+- WHEN the row renders
+- THEN the diff cell shows `+47 -3 (2 files)`.
+
+#### Scenario: Quiet workspace
+
+- GIVEN `diff_added=0, diff_removed=0, diff_files=0, diff_status="ok"`
+- WHEN the row renders
+- THEN the diff cell shows `—`.
+
+#### Scenario: Diff probe failed
+
+- GIVEN `diff_status="timeout"`
+- WHEN the row renders
+- THEN the diff cell shows `?` with a hover tooltip that contains
+  the word `timeout`.
+
+### Requirement: Sessions table SHALL render an iteration progress badge
+
+When `iteration_max > 0`, the row SHALL display a small badge with
+`iter {iteration}/{iteration_max}`. When `iteration_max == 0` no
+badge is displayed (avoids `0/0` noise on non-omx runners).
+
+#### Scenario: Badge shown
+
+- GIVEN `iteration=3, iteration_max=50`
+- WHEN the row renders
+- THEN a badge with text `iter 3/50` is visible.
+
+#### Scenario: Badge hidden
+
+- GIVEN `iteration_max=0`
+- WHEN the row renders
+- THEN no iteration badge is in the DOM.
+
+### Requirement: Dashboard SHALL render a "Queue" panel for blocked-by skips
+
+The dashboard SHALL include a panel (component file
+`packages/dashboard/src/components/QueuePanel.tsx`) that subscribes
+to the SSE `event: queue` channel and renders one row per recently
+skipped issue. Each row shows:
+
+- the issue identifier,
+- a short label `blocked by`,
+- the comma-separated unresolved blockers from the event payload.
+
+The panel keeps each row visible for at least 5 seconds *after the
+most recent skip event for that issue* and then removes it
+(eventual eviction; the gate keeps re-emitting on every poll cycle,
+so an actively-blocked issue stays in the panel continuously).
+
+#### Scenario: Single blocker rendered
+
+- GIVEN a `queue` SSE event with payload
+  `{ issue_id: "...", identifier: "ZII-50", blockers: "ZII-49" }`
+- WHEN the panel processes the event
+- THEN a row is visible with text containing both `ZII-50` and
+  `ZII-49`.
+
+#### Scenario: Multiple blockers rendered
+
+- GIVEN payload `{ identifier: "ZII-52", blockers: "ZII-49,ZII-50" }`
+- WHEN the panel processes the event
+- THEN the row contains `ZII-49` and `ZII-50`, displayed as a
+  comma-separated list.
+
+#### Scenario: Stale entry expires
+
+- GIVEN a row was last refreshed 6 seconds ago and no further skip
+  events for that issue have arrived
+- WHEN the panel re-renders
+- THEN the row is no longer in the DOM.
+
+### Requirement: Agent log stream SHALL exclude heartbeats and queue events
+
+The dashboard's agent log component
+(`packages/dashboard/src/components/AgentLogs.tsx`) SHALL not display
+events whose type matches the heartbeat set (`team/stalled`) or whose
+SSE channel is `queue`. Both classes are surfaced through dedicated
+UI affordances (the activity dot, the queue panel) and would
+otherwise pollute the log view.
+
+#### Scenario: Heartbeat hidden
+
+- GIVEN a `team/stalled` agent event arrives
+- WHEN the agent log re-renders
+- THEN no log entry for it appears.
+
+#### Scenario: Real agent events still shown
+
+- GIVEN a `tool_call` agent event arrives
+- WHEN the agent log re-renders
+- THEN a corresponding entry appears.
+
+
+
+--- /dev/null
++++ b/openspec/changes/archive/2026-05-08-extract-config-composition-model/.openspec.yaml
+schema: spec-driven
+created: 2026-05-08
+
+
+--- /dev/null
++++ b/openspec/changes/archive/2026-05-08-extract-config-composition-model/design.md
+## Context
+
+`internal/config/config.go` parses one workflow YAML per file. The 8 testdata files duplicate ~80% of fields. Defaults live in Go const. Tracker/agent blocks are copied 3-5×.
+
+The next major direction is SaaS migration. SaaS config will live in a database, not yaml on disk. `--config <path>`, `--preset` flags, `scripts/start.sh`, and the testdata fixtures don't follow into SaaS — but the **composition model** does (defaults → tracker template → agent template → preset).
+
+This change extracts the schema + resolution logic only, so SaaS can reuse `Resolve(presetName)` against data fetched from DB instead of disk. CLI surface and file-organization work is deferred until the SaaS architecture is decided, to avoid building dead code.
+
+## Goals / Non-Goals
+
+**Goals**:
+- Define the composition schema: `defaults` + named `trackers` + named `agents` + `presets` that pick + override.
+- Implement deterministic deep-merge resolution.
+- ENV interpolation runs once, on the merged result.
+- Storage-agnostic loader (`io.Reader` in, no path knowledge).
+- Pluggable prompt loader so SaaS can swap disk for DB.
+
+**Non-Goals**:
+- Shipping `config/contrabass.yaml` in the repo (defer until SaaS schema is decided).
+- New CLI flags or subcommands (`--preset`, `list-presets`).
+- Modifying `scripts/start.sh`.
+- Removing or migrating `testdata/workflow.*.md`.
+- ENV var renames (`CONTRABASS_*`).
+- Equivalence test locking the current testdata layout.
+- Hot-reload of the new tree.
+
+## Decisions
+
+### D1: Layered composition over inheritance trees or YAML anchors
+
+Each preset SHALL deep-merge `defaults → trackers[<name>] → agents[<name>] → preset overrides`. Later layers win on scalar conflict; nested maps merge by key; slices are replaced wholesale.
+
+**Alternative**: YAML anchors (`<<: *base`). Rejected — clunky composition, doesn't survive a DB swap.
+
+### D2: ENV interpolation runs on the merged result, not per-layer
+
+After merge, the parser walks the final struct and resolves `$VAR` placeholders. Avoids "did defaults or preset win?" ambiguity for env-bearing fields. Reuses the existing `resolveEnvReferencesValue` semantics from PR #14 — same struct walker, same map-non-recursion limitation.
+
+### D3: Storage-agnostic loader
+
+`LoadRoot(io.Reader)` takes a stream, not a path. CLI callers wrap a `*os.File`; SaaS callers wrap a `bytes.Reader` over yaml derived from DB rows, or skip yaml entirely and construct `*RootConfig` directly. The composition logic doesn't know or care.
+
+### D4: Prompt loading is pluggable
+
+`PromptLoader` interface lets prompts come from disk now and DB later. Default `FilePromptLoader` keeps current behavior. `Resolve` takes the loader as a parameter (not as a `RootConfig` field) so `RootConfig` stays a pure data struct.
+
+### D5: No CLI surface in this change
+
+`--preset` flag, `list-presets`, `scripts/start.sh` rewrites all live in a follow-up if the OSS CLI keeps mattering post-SaaS. Deliberately deferred to avoid building code that SaaS will throw away.
+
+### D6: No legacy removal
+
+`testdata/workflow.*.md` stay as dev fixtures. The new composition model coexists with the old single-file path. `LoadWorkflow` and `LoadRoot` are siblings, not stages of a migration.
+
+## Risks / Trade-offs
+
+- **Risk**: Adding `RootConfig` without a real consumer creates orphan code. → **Mitigation**: ship at least one consumer in the same change — table-driven tests that exercise `Resolve` end-to-end on a representative preset set inline in the test file. SaaS becomes the production consumer when it lands.
+- **Risk**: Deep-merge precedence is subtle for nested maps (e.g. `tracker.linear.assignee_id` in defaults vs preset). → **Mitigation**: document precedence rules (maps merge by key, scalars replace, slices replace) in the package doc comment; cover with table-driven tests including a nested-map case.
+- **Risk**: SaaS data model may diverge from this composition shape. → **Mitigation**: keep the composition model small (4 sections, no extras); if SaaS adds tenant scoping, that wraps `RootConfig`, not replaces it.
+- **Trade-off**: Without a `config/contrabass.yaml` shipping in the repo, the new model is harder to demo. → **Mitigation**: tests + doc comment + one example yaml string inline in tests are sufficient demo until SaaS becomes the real consumer.
+
+### D7: Pointer-presence for scalar/slice/map merge semantics
+
+Scalar fields (`string`, `int`, `bool`) and slice fields (`[]string`) in `TrackerTemplate`, `AgentTemplate` (via `CodexTemplateConfig`, `OMXTemplateConfig`, etc.), and `PresetConfig` use pointer types (`*string`, `*int`, `*bool`, `*[]string`). nil = absent (do not override the merged value); non-nil = explicitly set (apply, even if the pointed-to value is zero, false, or empty). This eliminates the "non-zero overlay" bug where a later layer could not set a boolean to false, an int to 0, or an empty list to clear prior labels.
+
+When writing the final `WorkflowConfig` (which retains plain value types for downstream consumers), nil pointers fall back to zero values, matching today's `LoadWorkflow` behavior.
+
+**Rationale**: value types give no way to distinguish "field absent" from "field set to zero" in a YAML-parsed struct. Pointer types give presence tracking for free, and Go's `gopkg.in/yaml.v3` supports `*T` natively (nil if key absent; populated pointer if key present, even with a zero value).
+
+### D8: Inline agent uses `agent:` key; named reference uses `agent_ref:` key
+
+The YAML shape for presets distinguishes inline agent templates from named references:
+
+- `agent: <AgentTemplate struct>` — inline override, no named lookup. The preferred shape is flat, e.g. `agent: { type: omc, omc: { binary_path: omc } }`.
+- `agent_ref: <name>` — named reference into `RootConfig.Agents`.
+
+This matches the spec scenario wording ("inline data under `agent:`", "named ref under `agent_ref:`") and removes the prior ambiguity where `agent` was a string ref and `agent_inline` was the struct. Setting both is still a fail-fast error.
+
+### D9: AgentTemplate is flat and pointer-presence aware
+
+`AgentTemplate` carries `type` and runner blocks (`codex`, `opencode`, `omx`, `omc`, `oh_my_opencode`) at the same level. Named templates under top-level `agents:` and inline templates under preset `agent:` therefore share the same shape. `type` is `*string`, so an explicit `type: ""` can clear a default agent type while an omitted `type` inherits the prior layer.
+
+## Open Questions
+
+- Should `Resolve` take a `PromptLoader` parameter, or read it from a `RootConfig.PromptLoader` field set at construction time? **Initial cut**: parameter — keeps `RootConfig` a pure data struct.
+- Should the merge handle slice append vs replace? **Initial cut**: slice replace. Document and revisit only if a real use case for append emerges.
+- Does SaaS need per-tenant `defaults` and per-project `presets`? Probably yes, but that wraps `RootConfig` (e.g., `OrgConfig { Defaults; map[projectID]RootConfig }`) rather than changing it. Out of scope here.
+
+
+--- /dev/null
++++ b/openspec/changes/archive/2026-05-08-extract-config-composition-model/proposal.md
+## Why
+
+Today `internal/config/config.go` parses one workflow YAML per file. The 8 testdata files share ~80% of fields (model, agent_timeout_ms, prompt body, tracker block). Defaults live in Go const, not yaml. Tracker/agent blocks duplicate 3-5×.
+
+The next major direction is SaaS, where config will live in a database keyed by org/project, not a yaml on disk. The CLI-time pain points (file sprawl, `--preset` ergonomics, `start.sh` env validation, deletion of `testdata/*.md`) become irrelevant under SaaS. But the **composition model** — `defaults` + named `trackers` + named `agents` + lightweight `presets` that override only what differs — maps directly to the SaaS data model: `organization.defaults`, `tracker_credentials[]`, `agent_configs[]`, `project.preset` references both.
+
+This change extracts the durable part — schema types, deep-merge resolution, ENV interpolation through the merged result — and skips the file-organization and CLI-surface work that SaaS would throw away.
+
+## What Changes
+
+- New types in `internal/config/`: `RootConfig` (with `defaults`, `trackers`, `agents`, `presets` sections), `PresetConfig`, `TrackerTemplate`, `AgentTemplate`. Existing `WorkflowConfig` stays as the merge target, unchanged.
+- `(*RootConfig).Resolve(presetName) (*WorkflowConfig, error)`: deep-merges `defaults → trackers[<name>] → agents[<name>] → preset overrides`, runs ENV interpolation on the merged struct.
+- `LoadRoot(io.Reader) (*RootConfig, error)`: storage-agnostic stream parser. SaaS swaps in a DB-backed loader later by constructing `RootConfig` directly or feeding a DB-derived yaml stream.
+- Optional `PromptLoader` interface so prompt bodies can come from disk now and DB later without changing `Resolve`.
+
+## Capabilities
+
+### New Capabilities
+
+- `config-composition-model`: schema + resolution semantics for layered config (defaults → tracker template → agent template → preset). Storage-agnostic.
+
+### Modified Capabilities
+
+(none — additive; existing `LoadWorkflow` path is untouched)
+
+## Impact
+
+- **Code added**: `internal/config/composition.go`, `internal/config/composition_test.go`, plus a doc comment on the new types.
+- **Code unchanged**: `internal/config/config.go`'s existing `LoadWorkflow` path keeps working. Orchestrator, tracker adapters, agent runners, TUI, web, hub all unaffected.
+- **No CLI changes**: no `--preset` flag, no `list-presets` subcommand, no `scripts/start.sh` rewrite.
+- **No file deletions**: `testdata/workflow.*.md` stay as dev fixtures.
+- **No fsnotify changes**: existing per-file watch unchanged.
+- **No tracker/agent adapter changes.**
+- **SaaS portability**: when SaaS lands, it imports `Resolve` and calls it on data fetched from DB. The `LoadRoot` stream loader becomes one of several entry points.
+
+## Out of Scope
+
+- Shipping `config/contrabass.yaml` in the repo (defer until SaaS schema is decided).
+- `--preset` CLI flag, `list-presets` subcommand, `scripts/start.sh` integration.
+- Removal or migration of `testdata/workflow.*.md`.
+- ENV var rename to `CONTRABASS_*` prefix.
+- Equivalence test that locks in the current 8-preset layout.
+- Hot-reload semantics for the new tree (revisit when there is a real consumer).
+
+
+--- /dev/null
++++ b/openspec/changes/archive/2026-05-08-extract-config-composition-model/specs/config-composition-model/spec.md
+## ADDED Requirements
+
+### Requirement: A composition schema SHALL describe workflow configs as layered templates
+
+The system SHALL expose a `RootConfig` type with exactly four sections — `defaults`, `trackers`, `agents`, `presets` — such that a complete `WorkflowConfig` can be derived from any preset name by deep-merging, in order, `defaults → trackers[<preset.tracker>] → agents[<preset.agent>] → preset overrides`. Later layers MUST win on scalar conflict; nested maps MUST merge by key; slices MUST be replaced wholesale.
+
+#### Scenario: Preset selects a tracker template by name
+
+- **WHEN** `RootConfig` defines `trackers: { linear: { type: linear, project_url: $CONTRABASS_PROJECT_URL } }` and `presets: { demo: { tracker: linear, max_concurrency: 3 } }`
+- **AND** the caller invokes `Resolve("demo")`
+- **THEN** the resolved `WorkflowConfig` SHALL have `tracker.type = "linear"`, `tracker.project_url` populated from env, and `max_concurrency = 3`
+
+#### Scenario: Preset overrides a defaults field
+
+- **WHEN** `defaults.agent_timeout_ms = 900000` and `presets.hardening.agent_timeout_ms = 1800000`
+- **THEN** `Resolve("hardening")` SHALL return `agent_timeout_ms = 1800000`
+
+#### Scenario: Preset inlines an agent override instead of selecting a named template
+
+- **WHEN** `presets.omc = { agent: { type: omc, omc: { binary_path: omc } } }` and `agents` does not contain an `omc` entry
+- **THEN** `Resolve("omc")` SHALL succeed with `agent.type = "omc"` and `agent.omc.binary_path = "omc"`
+
+#### Scenario: Conflicting inline + named agent on the same preset fails fast
+
+- **WHEN** `presets.x = { agent: <inline override>, agent_ref: omc }` (or any equivalent shape carrying both)
+- **THEN** `Resolve("x")` SHALL return an error citing the preset name and the conflict
+
+#### Scenario: Missing tracker reference fails fast
+
+- **WHEN** a preset says `tracker: bogus` but `trackers` does not define `bogus`
+- **THEN** `Resolve(...)` SHALL fail with a clear error pointing at the preset name and the unknown reference
+
+#### Scenario: Unknown preset name fails fast
+
+- **WHEN** the caller invokes `Resolve("does-not-exist")`
+- **THEN** the call SHALL fail with a clear error listing the available preset names
+
+### Requirement: ENV interpolation SHALL run once, against the merged result
+
+After deep-merge of defaults + tracker + agent + preset overrides, the resolver SHALL resolve `$VAR` placeholders against the process environment in the final merged config. Resolution SHALL reuse the existing `resolveEnvReferencesValue` semantics (struct fields recurse; raw map values do not).
+
+#### Scenario: ENV var defined at defaults level resolves in the merged preset
+
+- **WHEN** `defaults.model = $CONTRABASS_MODEL` and the env has `CONTRABASS_MODEL=openai/gpt-5.5`
+- **AND** `Resolve("demo")` is called
+- **THEN** the resolved config's `model` field SHALL be `openai/gpt-5.5`
+
+#### Scenario: ENV var unset surfaces as empty string
+
+- **WHEN** `defaults.model = $CONTRABASS_MODEL` and the env has no `CONTRABASS_MODEL`
+- **THEN** the resolver SHALL set the field to an empty string (matching existing `LoadWorkflow` behavior)
+
+### Requirement: The loader SHALL be storage-agnostic
+
+The system SHALL expose `LoadRoot(r io.Reader) (*RootConfig, error)` that yaml-unmarshals into `RootConfig` from any byte stream — no file path knowledge inside the function. Callers (CLI, SaaS, tests) supply the stream.
+
+#### Scenario: LoadRoot accepts a yaml stream
+
+- **WHEN** a caller passes `bytes.NewReader([]byte(yamlString))` containing a valid `RootConfig`
+- **THEN** `LoadRoot` SHALL return a populated `*RootConfig` with no error
+
+#### Scenario: LoadRoot rejects unknown top-level sections
+
+- **WHEN** the input yaml has a top-level key outside `{defaults, trackers, agents, presets}`
+- **THEN** `LoadRoot` SHALL return an error citing the offending key
+
+### Requirement: Prompt bodies SHALL load through a pluggable interface
+
+The system SHALL expose a `PromptLoader` interface with `Load(ref string) (string, error)`. `Resolve` SHALL accept a `PromptLoader` parameter; passing `nil` SHALL fall back to a default `FilePromptLoader` rooted at the current directory. The interface lets SaaS substitute a DB-backed loader without changing `Resolve`.
+
+#### Scenario: Custom PromptLoader supplies the prompt body
+
+- **WHEN** the caller passes a `PromptLoader` whose `Load("standard")` returns `"hello {{ issue.title }}"`
+- **AND** the resolved preset's `prompt_ref = standard`
+- **THEN** the resolved `WorkflowConfig.Prompt` SHALL equal `"hello {{ issue.title }}"`
+
+#### Scenario: PromptLoader error propagates out of Resolve
+
+- **WHEN** the configured `PromptLoader.Load(ref)` returns an error
+- **THEN** `Resolve` SHALL return an error wrapping that loader error and citing the preset that requested the prompt
+
+
+--- /dev/null
++++ b/openspec/changes/archive/2026-05-08-extract-config-composition-model/tasks.md
+## 1. Schema types
+
+- [x] 1.1 Define `RootConfig`, `PresetConfig`, `TrackerTemplate`, `AgentTemplate` in `internal/config/composition.go`. `RootConfig` has `Defaults WorkflowDefaults`, `Trackers map[string]TrackerTemplate`, `Agents map[string]AgentTemplate`, `Presets map[string]PresetConfig`. Reuse existing `WorkflowConfig` field types so the merged result is the same struct downstream code already consumes.
+- [x] 1.2 Decide which fields belong on `WorkflowDefaults` vs a preset (rule of thumb: anything that has a sensible global value goes on defaults; anything that varies per preset stays per-preset). Document the split in a doc comment on `RootConfig`.
+
+## 2. Loader
+
+- [x] 2.1 Implement `LoadRoot(r io.Reader) (*RootConfig, error)` that yaml-unmarshals into `RootConfig`. Strict mode: reject unknown top-level sections. No file path knowledge in this function — pure stream-in.
+- [x] 2.2 Unit-test `LoadRoot` with valid input, missing required sections, unknown extra section (rejected), empty input.
+
+## 3. Resolve / merge
+
+- [x] 3.1 Implement `(*RootConfig).Resolve(presetName string) (*WorkflowConfig, error)`. Order: start from `Defaults`, deep-merge `Trackers[preset.Tracker]`, then `Agents[preset.Agent]` (or inline agent override on the preset), then preset's own field overrides. Later layers MUST win on scalar conflict; nested maps MUST merge by key; slices are replaced wholesale (document this).
+- [x] 3.2 Run existing `resolveEnvReferencesValue` on the final merged struct (not on each layer — env resolves once, against the merged result).
+- [x] 3.3 Fail fast on: unknown preset name, unknown tracker reference, unknown agent reference, conflicting inline-agent + named-agent on same preset.
+- [x] 3.4 Unit-test merge with table-driven cases: defaults-only preset, preset overrides defaults scalar, preset adds new tracker fields on top of template, inline agent override beats named agent, ENV resolution at defaults level survives merge, missing tracker reference fails fast, missing agent reference fails fast, slice-replace semantics on a list field.
+
+## 4. Prompt loader interface
+
+- [x] 4.1 Define `type PromptLoader interface { Load(ref string) (string, error) }` so prompt bodies can come from disk (`FilePromptLoader`) or DB (SaaS later). `Resolve` accepts a `PromptLoader` parameter; passing nil falls back to `FilePromptLoader{Root: "."}`.
+- [x] 4.2 Unit-test with a fake loader that returns canned content; verify the resolved `WorkflowConfig.Prompt` matches and a missing prompt-ref surfaces a clear error.
+
+## 5. Documentation
+
+- [x] 5.1 Add a package doc comment (top of `composition.go`) describing the composition model, merge order, ENV interpolation timing, and the SaaS portability rationale. No README changes.
+
+
+--- /dev/null
++++ b/openspec/changes/archive/2026-05-08-linear-comment-sync/spec.md
+# linear-comment-sync Specification
+
+## Purpose
+TBD - created by archiving change sync-linear-workflow-timeline. Update Purpose after archive.
+## Requirements
+### Requirement: Linear comment sync is opt-in
+Contrabass SHALL write workflow-node summaries to Linear comments only when the tracker type is Linear and `linear.sync_comments.enabled` is true.
+
+#### Scenario: Sync disabled preserves legacy comments
+- **WHEN** `linear.sync_comments.enabled` is false
+- **THEN** existing direct completion and unverified-success tracker comments remain unchanged
+
+#### Scenario: Sync enabled suppresses legacy Linear comments
+- **WHEN** `linear.sync_comments.enabled` is true and the tracker type is Linear
+- **THEN** direct legacy Linear completion and unverified-success comments are suppressed and equivalent timeline nodes are queued for Linear sync
+
+#### Scenario: Non-Linear tracker preserves legacy behavior
+- **WHEN** the tracker type is not Linear
+- **THEN** legacy `Tracker.PostComment` behavior remains unchanged regardless of Linear sync configuration
+
+### Requirement: Linear sync creates one root comment per run
+The Linear syncer SHALL maintain a run-level sync state keyed by `(issue_id, run_id, target)` and SHALL create at most one root comment for that run.
+
+#### Scenario: Multiple nodes share one root
+- **WHEN** two pending workflow nodes for the same issue and run are synced to Linear
+- **THEN** the syncer creates exactly one root comment and associates both node sync records with that run-level root
+
+#### Scenario: Restart after root creation
+- **WHEN** Contrabass restarts after creating a root comment but before creating a node reply
+- **THEN** the syncer reuses the persisted root comment ID and creates only the missing node reply or top-level fallback comment
+
+### Requirement: Linear sync creates idempotent node comments
+The Linear syncer SHALL create at most one effective Linear reply or top-level fallback comment per `(issue_id, run_id, node_id, target, content_hash)`.
+
+#### Scenario: Restart after node sync
+- **WHEN** Contrabass restarts after successfully syncing a node comment
+- **THEN** the syncer does not create a duplicate comment for the same node key and content hash
+
+#### Scenario: Node content hash changes
+- **WHEN** a node summary changes content hash after a previous sync
+- **THEN** the syncer updates the existing comment when supported or appends a superseding comment according to the effective sync mode
+
+### Requirement: Linear sync is asynchronous and non-blocking
+Linear comment writes SHALL be performed by an asynchronous syncer that does not block issue completion, release, retry enqueueing, or dashboard snapshot rendering.
+
+#### Scenario: Linear API failure during completion
+- **WHEN** Linear comment sync fails while an issue completes
+- **THEN** the issue completion path proceeds and the node sync state records `failed` with the last error
+
+#### Scenario: Web dashboard disabled
+- **WHEN** `linear.sync_comments.enabled` is true and the web dashboard port is disabled
+- **THEN** the Linear syncer still starts and processes pending timeline nodes
+
+### Requirement: Linear sync handles rate limits and mode fallback
+The Linear syncer SHALL persist retry state for rate limits and SHALL use deterministic behavior for unsupported comment modes.
+
+#### Scenario: Rate limited response
+- **WHEN** Linear returns a rate-limit response with Retry-After
+- **THEN** the syncer persists retry-after state and does not retry that node before the retry time
+
+#### Scenario: Default reply mode unsupported
+- **WHEN** the default `reply_thread` mode is unsupported by the verified Linear schema
+- **THEN** the syncer logs the fallback once and uses effective mode `top_level`
+
+#### Scenario: Explicit unsupported mode
+- **WHEN** the operator explicitly configures an unsupported Linear comment mode
+- **THEN** configuration validation fails before runtime sync starts
+
+
+
+--- /dev/null
++++ b/openspec/changes/archive/2026-05-08-linear-issue-detail/spec.md
+# linear-issue-detail Specification
+
+## Purpose
+TBD - created by archiving change sync-linear-workflow-timeline. Update Purpose after archive.
+## Requirements
+### Requirement: Backend fetches richer Linear issue details
+Contrabass SHALL provide a backend-only Linear issue detail read path that returns richer Linear metadata without adding those fields to every orchestration poll.
+
+#### Scenario: Detail fetch succeeds
+- **WHEN** the dashboard requests details for a cached Linear issue
+- **THEN** the backend fetches and returns richer Linear metadata including assignee, creator, team, project, cycle, estimate, due date, and relation summaries when available
+
+#### Scenario: Candidate polling remains lean
+- **WHEN** the orchestrator polls candidate Linear issues
+- **THEN** it uses the existing lean issue polling path rather than the richer detail query
+
+### Requirement: Dashboard never receives Linear credentials
+Contrabass SHALL keep Linear API credentials server-side and SHALL not expose them to browser code or dashboard payloads.
+
+#### Scenario: Dashboard loads issue details
+- **WHEN** the dashboard opens an issue detail view
+- **THEN** it requests issue details from the Contrabass backend and does not call Linear directly
+
+#### Scenario: Detail payload excludes secrets
+- **WHEN** the backend returns Linear issue details
+- **THEN** the response does not include Linear API tokens, Authorization headers, or other credentials
+
+### Requirement: Issue detail endpoint is separate from existing issue route
+Contrabass SHALL expose richer issue details through `/api/v1/issues/{issue_id}/details` and SHALL avoid extending the broad `/api/v1/{identifier}` route for this feature.
+
+#### Scenario: Detail endpoint returns payload
+- **WHEN** a client requests `GET /api/v1/issues/{issue_id}/details`
+- **THEN** the backend returns the normalized issue, Linear detail object when available, and generation timestamp
+
+#### Scenario: Detail provider unavailable
+- **WHEN** the tracker does not provide richer issue details
+- **THEN** the endpoint returns a non-success status or a payload that clearly indicates the detail provider is unavailable without breaking the base snapshot state
+
+### Requirement: Dashboard renders issue details and timeline together
+The dashboard SHALL render Linear issue details and local workflow timeline data in the issue detail sheet with non-blocking loading and error states.
+
+#### Scenario: Detail sheet opens
+- **WHEN** a user opens an issue detail sheet
+- **THEN** the dashboard loads `/api/v1/issues/{issue_id}/details` and `/api/v1/issues/{issue_id}/timeline` and continues to show base snapshot issue data while those requests are pending
+
+#### Scenario: Detail or timeline fetch fails
+- **WHEN** either detail or timeline fetch fails
+- **THEN** the dashboard shows an inline non-blocking error and preserves the base snapshot issue display
+
+
+
+--- /dev/null
++++ b/openspec/changes/archive/2026-05-08-orchestrator-claim/spec.md
+# orchestrator-claim Specification
+
+## Purpose
+TBD - created by archiving change gate-claims-on-blocked-by. Update Purpose after archive.
+## Requirements
+### Requirement: Orchestrator SHALL skip dispatch when an issue has unresolved blockers
+
+`dispatchUnclaimedIssues` SHALL, before invoking `dispatchIssue` for
+each `types.Unclaimed` issue, evaluate the issue's `BlockedBy` slice
+against the set of identifiers in the same dispatch batch (the slice
+of issues just returned by `Tracker.FetchIssues`). When at least one
+blocker identifier appears in that set, dispatch SHALL be skipped for
+this cycle and a `dispatch_skipped_blocked_by` log event SHALL be
+emitted recording the skipped issue and the unresolved blocker
+identifiers.
+
+#### Scenario: Skip when blocker is in the same batch
+
+- GIVEN `FetchIssues` returns
+  - `T1` — `Identifier="ZII-49"`, `State=Unclaimed`, `BlockedBy=[]`
+  - `T2` — `Identifier="ZII-50"`, `State=Unclaimed`, `BlockedBy=["ZII-49"]`
+- WHEN `dispatchUnclaimedIssues` runs against this batch
+- THEN `claimIssue` is called for `T1` only;
+  `T2` is skipped and a single
+  `dispatch_skipped_blocked_by` log event is emitted with
+  `blockers="ZII-49"`.
+
+#### Scenario: Dispatch when blocker is absent from the batch
+
+- GIVEN `FetchIssues` returns only
+  - `T2` — `BlockedBy=["ZII-49"]`
+  (because `ZII-49` has reached a terminal state and was filtered out
+  by the tracker)
+- WHEN `dispatchUnclaimedIssues` runs
+- THEN `claimIssue` is called for `T2` and no
+  `dispatch_skipped_blocked_by` event is emitted.
+
+#### Scenario: Multiple blockers — skip if any is unresolved
+
+- GIVEN a candidate has `BlockedBy=["ZII-49","ZII-44"]` and the batch
+  contains `ZII-44` (still open) but not `ZII-49`
+- WHEN dispatch runs
+- THEN the candidate is skipped and the log event records
+  `blockers="ZII-44"` (only the unresolved subset, not the entire
+  `BlockedBy` list).
+
+#### Scenario: Empty `BlockedBy` is unaffected
+
+- GIVEN a candidate has `BlockedBy=[]` (or nil)
+- WHEN dispatch runs
+- THEN the gate does not fire, dispatch proceeds, and no
+  `dispatch_skipped_blocked_by` event is emitted.
+
+#### Scenario: Backoff (`RetryQueued`) issues bypass the gate
+
+- GIVEN an issue `T2` with `BlockedBy=["ZII-49"]` and `ZII-49` is in
+  the batch
+- AND `T2` is being processed via the backoff continuation path
+  (`processContinuation`), not the unclaimed-dispatch path
+- WHEN the backoff cycle runs
+- THEN `T2` is dispatched as before; the gate added by this change
+  applies only to fresh `Unclaimed` dispatch in
+  `dispatchUnclaimedIssues`. Rationale: an in-flight retry must not
+  be silently re-blocked by upstream changes mid-attempt.
+
+### Requirement: Orchestrator SHALL skip dispatch when an issue's identifier is found on mainRef
+
+`dispatchUnclaimedIssues` SHALL, after the BlockedBy gate, search the git log
+of `cfg.TrackerMainRef()` for commits whose message contains the issue's
+`Identifier` as a whole word (using `git log <mainRef> --grep="\b<id>\b" -P`).
+
+When a matching commit is found (`found=true`), dispatch SHALL be skipped for
+this cycle. The orchestrator SHALL emit a `ClaimSkippedAlreadyImplemented` event
+carrying `IssueIdentifier`, `CommitSHA`, `CommitSubject`, and `MainRef`, and
+SHALL log a `dispatch_skipped_already_implemented` event. If
+`cfg.TrackerAutoCloseAlreadyImplemented()` returns true, the orchestrator SHALL
+call `TransitionToDone` on the tracker (Linear only; other adapters log a skip).
+
+When the mainRef cannot be resolved by git (`unresolvable=true`), the
+orchestrator SHALL emit `ClaimMainRefUnresolvable` at most once per dispatch
+cycle (warn-once semantics) and SHALL fail open — dispatch proceeds as normal.
+
+When no matching commit is found, dispatch proceeds without emitting any event.
+
+The gate SHALL NOT run when `Identifier` is empty or whitespace-only.
+
+#### Scenario: Skip when identifier is found on mainRef
+
+- GIVEN `FetchIssues` returns `T1` with `Identifier="ABC-1"`, `State=Unclaimed`
+- AND `git log main --grep='\bABC-1\b' -P -1` returns a commit SHA + subject
+- WHEN `dispatchUnclaimedIssues` runs
+- THEN `claimIssue` is NOT called for `T1`
+- AND a `ClaimSkippedAlreadyImplemented` event is emitted with the commit details
+
+#### Scenario: Word boundary prevents false positives
+
+- GIVEN commits on main contain "fix: close ABC-12 story"
+- WHEN searching for identifier "ABC-1"
+- THEN the ABC-12 commit SHALL NOT match (`\b` word-boundary prevents it)
+
+#### Scenario: Fail-open when mainRef is unresolvable
+
+- GIVEN `mainRef` resolves to "no-such-ref" (unknown revision)
+- WHEN `dispatchUnclaimedIssues` runs for any unclaimed issue
+- THEN `claimIssue` IS called (fail-open)
+- AND `ClaimMainRefUnresolvable` event is emitted at most once per cycle
+
+#### Scenario: Auto-close when enabled and gate fires
+
+- GIVEN `auto_close_already_implemented: true`
+- AND the gate fires for issue `T1`
+- AND the tracker implements `linearAutoCloser`
+- THEN `TransitionToDone` SHALL be called with a comment citing the commit SHA
+
+#### Scenario: Auto-close NOT called when disabled (default)
+
+- GIVEN `auto_close_already_implemented: false` (default)
+- AND the gate fires for issue `T1`
+- THEN `TransitionToDone` SHALL NOT be called
+
+
+
+--- /dev/null
++++ b/openspec/changes/archive/2026-05-08-orchestrator-completion/spec.md
+# orchestrator-completion Specification
+
+## Purpose
+TBD - created by archiving change verify-success-with-diff. Update Purpose after archive.
+## Requirements
+### Requirement: Orchestrator SHALL capture the workspace branch HEAD at claim time
+
+`claimIssue` SHALL, immediately after `tracker.ClaimIssue` returns
+without error and the workspace exists, resolve the workspace's
+branch HEAD via `git -C <workspace> rev-parse HEAD` and store the
+40-character SHA on the per-attempt state struct as
+`RunAttempt.ClaimHeadSha`. Errors from `git rev-parse` SHALL be
+logged at `WARN` and SHALL NOT abort the claim; instead
+`ClaimHeadSha` is left empty (the verifier interprets empty as
+"unknown" and fails open).
+
+#### Scenario: Successful claim records HEAD
+
+- GIVEN a fresh worktree at the issue branch with HEAD `abc1234…`
+- WHEN `claimIssue` runs to completion
+- THEN the persisted `RunAttempt` carries `ClaimHeadSha = "abc1234…"`
+  (full 40-char SHA).
+
+#### Scenario: `git rev-parse` failure does not block the claim
+
+- GIVEN `git rev-parse HEAD` fails (e.g. broken worktree)
+- WHEN `claimIssue` runs
+- THEN the claim still succeeds, `ClaimHeadSha = ""` is recorded,
+  and exactly one WARN-level log line names the issue and the git
+  error.
+
+### Requirement: Orchestrator SHALL verify branch advance before transitioning a Succeeded run to Released
+
+When the runtime processes an `agent_event=finished status=Succeeded`
+event for a run, it SHALL — before transitioning the issue to
+`Released` and before calling `tracker.UpdateIssueState(Released)` —
+invoke `verifyBranchAdvanced(workspace, branch, claimHead)` and act
+on its result:
+
+| verifier returns | orchestrator action |
+|---|---|
+| `(true, "", nil)` (advanced) | proceed with the existing Released path |
+| `(false, "branch_unchanged", nil)` | reroute to the backoff path with cause `success_unverified_branch_unchanged`; do NOT transition the issue to Released; do NOT call `tracker.UpdateIssueState(Released)` |
+| `(true, "git_error", err)` | log WARN with err, proceed with the existing Released path (fail open) |
+
+`verifyBranchAdvanced` SHALL resolve the *current* branch HEAD via
+`git -C <workspace> rev-parse <branch>` and compare against
+`claimHead`. An empty `claimHead` (per the previous requirement)
+SHALL be treated identically to `git_error`.
+
+#### Scenario: Branch HEAD advanced — proceed normally
+
+- GIVEN `claimHead = "abc1234…"`, current `git rev-parse <branch>` =
+  `def5678…`
+- WHEN the runner emits `finished status=Succeeded`
+- THEN the run transitions to Released, the tracker receives
+  `UpdateIssueState(Released)`, and **no**
+  `success_unverified_branch_unchanged` event is emitted.
+
+#### Scenario: Branch HEAD unchanged — reroute as backoff failure
+
+- GIVEN `claimHead = "abc1234…"`, current `git rev-parse <branch>` =
+  `abc1234…` (identical)
+- WHEN the runner emits `finished status=Succeeded`
+- THEN the orchestrator emits exactly one
+  `success_unverified_branch_unchanged` event whose payload includes
+  the issue id, attempt number, branch name, and the unchanged SHA;
+  AND the issue is enqueued for backoff with cause
+  `success_unverified_branch_unchanged`;
+  AND `tracker.UpdateIssueState(Released)` is NOT called for this
+  run.
+
+#### Scenario: Empty `ClaimHeadSha` fails open
+
+- GIVEN `RunAttempt.ClaimHeadSha == ""` (claim-time `git rev-parse`
+  had errored)
+- WHEN the runner emits `finished status=Succeeded`
+- THEN the run transitions to Released as if the verifier had
+  succeeded. Exactly one WARN-level log line names the issue and
+  the reason `verifier_skipped_no_claim_head`.
+
+#### Scenario: `git rev-parse` failure at success time fails open
+
+- GIVEN `claimHead = "abc1234…"` and current `git rev-parse <branch>`
+  errors
+- WHEN the runner emits `finished status=Succeeded`
+- THEN the run transitions to Released, exactly one WARN-level log
+  line names the issue and the rev-parse error, and no
+  `success_unverified_branch_unchanged` event is emitted.
+
+#### Scenario: Failed runs bypass the verifier
+
+- GIVEN the runner emits `agent_event=finished status=Failed`
+- WHEN the runtime processes that event
+- THEN the existing failure path runs unchanged; the verifier is NOT
+  invoked.
+
+### Requirement: The `success_unverified_branch_unchanged` event SHALL feed the existing backoff queue
+
+When the verifier rejects a hollow success, the orchestrator SHALL
+call its existing backoff entry point with cause
+`success_unverified_branch_unchanged`. The retry SHALL be subject to
+the same `MaxRetryBackoffMs` jitter and concurrency rules as any
+agent-error retry, and SHALL NOT bypass them.
+
+#### Scenario: Hollow success retries via the standard backoff queue
+
+- GIVEN the verifier rejected a Succeeded event for issue I, attempt
+  1
+- WHEN the next poll cycle runs
+- THEN the same backoff path that handles agent errors is observed
+  to schedule a retry for issue I at attempt 2, AND the
+  `BackoffEnqueued` event carries the `success_unverified_branch_unchanged`
+  cause.
+
+
+
+--- /dev/null
++++ b/openspec/changes/archive/2026-05-08-orphan-claim-recovery/spec.md
+# orphan-claim-recovery Specification
+
+## Purpose
+TBD - created by archiving change orchestrator-orphan-recovery. Update Purpose after archive.
+## Requirements
+### Requirement: Orchestrator recovers orphaned claimed issues on every poll tick
+Before each dispatch cycle the orchestrator SHALL cross-reference all issues whose internal state is `Claimed` against the live managed-issues set. Any `Claimed` issue not present in the managed set SHALL have its state overridden to `Unclaimed` so it is eligible for dispatch.
+
+#### Scenario: Orphaned issue re-dispatched after restart
+- **WHEN** the orchestrator restarts with an empty managed-issues map and Linear contains an issue with state type "started"
+- **THEN** on the first poll tick after restart the orchestrator overrides that issue's state to Unclaimed, dispatches an agent for it, and logs `orphan_claim_recovered`
+
+#### Scenario: Genuinely managed issue not affected
+- **WHEN** an issue is both "started" in Linear AND present in the managed-issues map
+- **THEN** the orchestrator does not override its state and does not re-dispatch it
+
+#### Scenario: Recovery fires every tick until dispatch succeeds
+- **WHEN** an orphaned issue is detected but dispatch is skipped (e.g. max concurrency reached)
+- **THEN** the override is applied again on the next tick until the issue is successfully dispatched
+
+#### Scenario: Unstarted and terminal issues are not affected
+- **WHEN** an issue has Linear state type "unstarted", "completed", or "canceled"
+- **THEN** `recoverOrphanedClaims` does not modify its state
+
+
+
+--- /dev/null
++++ b/openspec/changes/archive/2026-05-08-running-blocker-revalidation/spec.md
+# running-blocker-revalidation Specification
+
+## Purpose
+TBD - created by archiving change orchestrator-revalidate-blockers. Update Purpose after archive.
+## Requirements
+### Requirement: Orchestrator re-validates blockers for managed issues each poll tick
+On every poll cycle the orchestrator SHALL check whether any currently-managed (running or claimed) issue has acquired an unresolved blocker since it was dispatched. If so, the orchestrator SHALL stop the agent and revert the issue state to Todo.
+
+#### Scenario: Blocker relation added after dispatch
+- **WHEN** issue A is running and a new `blocks` relation is added in the tracker pointing at A while A's blocker B is still open
+- **THEN** on the next poll tick the orchestrator stops A's agent process, reverts A to Todo, and logs `running_released_blocked_by`
+
+#### Scenario: No blockers — managed issue untouched
+- **WHEN** a managed issue has an empty `BlockedBy` list
+- **THEN** the orchestrator does not stop the agent and continues normal execution
+
+#### Scenario: Blocker already resolved — managed issue untouched
+- **WHEN** a managed issue has a `BlockedBy` entry but that blocker is no longer in the open issue set (Done or Canceled)
+- **THEN** the orchestrator does not stop the agent and continues normal execution
+
+#### Scenario: Tracker revert fails
+- **WHEN** the orchestrator stops an agent but the `MoveIssue(Todo)` tracker call fails
+- **THEN** the orchestrator logs the error and retries the revert on the next poll tick; the issue is removed from the managed set so it is not re-stopped unnecessarily
+
+
+
+--- /dev/null
++++ b/openspec/changes/archive/2026-05-08-team-runtime/spec.md
+# team-runtime Specification
+
+## Purpose
+TBD - created by archiving change surface-omx-token-usage. Update Purpose after archive.
+## Requirements
+### Requirement: Team CLI runner SHALL surface omx token totals to the orchestrator
+
+`teamCLIRunner` SHALL read the omx-maintained metrics file at
+`<workspace>/.omx/metrics.json` on every poll cycle of `monitorProcess`
+and emit a `session.usage` agent event whenever any of the cumulative
+token totals strictly increase since the last emission.
+
+#### Scenario: First successful read produces an event
+
+- GIVEN a workspace whose `.omx/metrics.json` contains
+  `{"session_input_tokens": 1234, "session_output_tokens": 56,
+  "session_total_tokens": 1290}`
+- AND `monitorProcess` has not previously emitted `session.usage` for
+  this run
+- WHEN the next poll cycle reads the file
+- THEN exactly one `session.usage` event is emitted whose
+  `Data["usage"]` map contains
+  `input_tokens=1234`, `output_tokens=56`, `total_tokens=1290`.
+
+#### Scenario: Unchanged metrics suppress further events
+
+- GIVEN one `session.usage` event has already been emitted with
+  `total_tokens=1290`
+- AND the next poll cycle reads `metrics.json` whose
+  `session_total_tokens` is still `1290`
+- WHEN the cycle completes
+- THEN no further `session.usage` event is emitted.
+
+#### Scenario: Increasing metrics produce a new event
+
+- GIVEN the previously emitted total was `1290`
+- AND the next poll cycle reads `session_total_tokens: 2500`
+- WHEN the cycle completes
+- THEN exactly one new `session.usage` event is emitted with
+  the updated cumulative values.
+
+#### Scenario: Missing metrics file is silently tolerated
+
+- GIVEN `<workspace>/.omx/metrics.json` does not exist (e.g. the runner
+  is opencode/omc, or the omx team has not finished its first turn)
+- WHEN the poll cycle attempts to read the file
+- THEN no error is propagated, no log line above debug is produced,
+  and no `session.usage` event is emitted.
+
+#### Scenario: Partial / corrupt JSON is silently tolerated
+
+- GIVEN the metrics file is mid-write and JSON parsing fails
+- WHEN the poll cycle attempts to read the file
+- THEN the runner does not crash, no `session.usage` event is emitted
+  for that cycle, and the next successful read still emits.
+
+#### Scenario: Cumulative totals match orchestrator delta accounting
+
+- GIVEN `parseUsageTokens` in the orchestrator credits
+  `tokensIn - entry.attempt.TokensIn` as the delta
+- WHEN this runner emits cumulative values
+- THEN `parseUsageTokens` records correct deltas and the dashboard
+  `Stats.TotalTokensIn` / `TotalTokensOut` advance monotonically.
+
+
+
+--- /dev/null
++++ b/openspec/changes/archive/2026-05-08-tracker-linear/spec.md
+# tracker-linear Specification
+
+## Purpose
+TBD - created by archiving change gate-claims-on-blocked-by. Update Purpose after archive.
+## Requirements
+### Requirement: Linear tracker SHALL populate `Issue.BlockedBy` from `inverseRelations` of type `blocks`
+
+`LinearClient.FetchIssues` SHALL request each issue's
+`inverseRelations` field with a `type` filter and the related issue's
+`identifier`. `normalizeIssue` SHALL produce a non-nil `[]string`
+slice in `Issue.BlockedBy` whose elements are the `identifier`s of the
+issues whose relation to the current issue has `type == "blocks"` —
+i.e. the issues that *block* the current one. Issues with no
+incoming `blocks` relations SHALL keep `BlockedBy` as an empty (not
+nil) slice so the existing JSON-stable contract is preserved.
+
+#### Scenario: Issue with one inverse blocks relation
+
+- GIVEN a Linear issue `ZII-50` whose `inverseRelations` payload
+  contains `[{ "type": "blocks", "issue": { "identifier": "ZII-49" } }]`
+- WHEN `FetchIssues` returns the issue
+- THEN `issue.BlockedBy` equals `["ZII-49"]`.
+
+#### Scenario: Issue with multiple inverse blocks relations
+
+- GIVEN an issue whose `inverseRelations` contains two `type: blocks`
+  entries pointing at `ZII-49` and `ZII-50` and one `type: related`
+  entry pointing at `ZII-44`
+- WHEN `FetchIssues` returns the issue
+- THEN `issue.BlockedBy` is a slice that contains `ZII-49` and `ZII-50`
+  in deterministic (input) order, and does NOT contain `ZII-44`.
+
+#### Scenario: Issue with no inverse relations
+
+- GIVEN an issue whose `inverseRelations.nodes` is the empty list
+- WHEN `FetchIssues` returns the issue
+- THEN `issue.BlockedBy` is `[]string{}` (non-nil, length 0).
+
+#### Scenario: Outgoing `relations` of type `blocks` are ignored for `BlockedBy`
+
+- GIVEN an issue whose **outgoing** `relations` field contains
+  `[{ "type": "blocks", "relatedIssue": { "identifier": "ZII-99" } }]`
+  (i.e. this issue blocks `ZII-99`) but whose `inverseRelations` is
+  empty
+- WHEN `FetchIssues` returns the issue
+- THEN `issue.BlockedBy` is `[]string{}`.
+  Rationale: `BlockedBy` lists who blocks me, not who I block.
+
+#### Scenario: Missing identifier on a related issue is skipped
+
+- GIVEN an `inverseRelations` node whose `issue.identifier` is missing
+  or empty
+- WHEN `normalizeIssue` parses the response
+- THEN that node SHALL be silently skipped; well-formed nodes from the
+  same response SHALL still appear in `BlockedBy`.
+
+
+
+--- /dev/null
++++ b/openspec/changes/archive/2026-05-08-web-state-payload/spec.md
+# web-state-payload Specification
+
+## Purpose
+TBD - created by archiving change improve-dashboard-liveness. Update Purpose after archive.
+## Requirements
+### Requirement: Snapshot `Running` entries SHALL carry liveness fields
+
+The `OrchestratorSnapshot.Running[i]` entry returned by the
+`internal/orchestrator` package and serialized by `internal/web` at
+`GET /api/v1/state` SHALL include the following additive fields. All
+fields are required; runners that cannot compute a value supply the
+indicated zero value.
+
+| field | type | zero | semantics |
+|---|---|---|---|
+| `phase_label` | string | `""` | Human label for `phase`, taken from the `phase int → string` table next to the `Phase` enum |
+| `last_activity_at` | RFC3339 string | `""` | Wall-clock time of the most recent **non-heartbeat** agent event for this run |
+| `last_activity_kind` | string | `""` | Type of that event (e.g. `tool_call`, `turn/started`) |
+| `last_heartbeat_at` | RFC3339 string | `""` | Wall-clock time of the most recent agent event of any kind, including `team/stalled` |
+| `iteration` | int | `0` | Current iteration index from `.omx/state/run-state.json` if present, else `0` |
+| `iteration_max` | int | `0` | `max_iterations` from the same file, else `0` |
+| `diff_added` | int | `0` | Lines added in the workspace as reported by `git diff --stat HEAD`. `0` on timeout or no changes |
+| `diff_removed` | int | `0` | Lines removed |
+| `diff_files` | int | `0` | File count |
+| `diff_status` | string | `"ok"` | `"ok"` for a successful diff, `"timeout"` for the 1-second deadline, `"error"` for any other failure (the dashboard renders `?` for non-`ok`) |
+
+#### Scenario: Successful initial poll populates all liveness fields
+
+- GIVEN a running issue whose runner has emitted a `turn/started`
+  event 4 seconds ago
+- AND the workspace has 47 added / 3 removed lines vs `HEAD` across 2 files
+- AND `.omx/state/run-state.json` contains `{ "iteration": 0, "max_iterations": 50 }`
+- WHEN the snapshotter assembles the `Running` entry
+- THEN `phase_label != ""`, `last_activity_at` is within 5 seconds of
+  now, `last_activity_kind == "turn/started"`, `last_heartbeat_at`
+  is the same as `last_activity_at` (no heartbeats yet),
+  `iteration == 0`, `iteration_max == 50`, `diff_added == 47`,
+  `diff_removed == 3`, `diff_files == 2`, `diff_status == "ok"`.
+
+#### Scenario: `team/stalled` does not advance `last_activity_at`
+
+- GIVEN `last_activity_at` was set 30 seconds ago by a `tool_call`
+  event
+- AND four `team/stalled` heartbeats arrive in the next 30 seconds
+- WHEN the next snapshot is taken
+- THEN `last_activity_at` is still the original 30-seconds-ago timestamp
+- AND `last_activity_kind` is still `"tool_call"`
+- AND `last_heartbeat_at` advances on each stalled event.
+
+#### Scenario: Runner with no `.omx` directory leaves iteration fields zero
+
+- GIVEN a codex runner whose workspace contains no `.omx/state/`
+- WHEN the snapshotter runs
+- THEN `iteration == 0` and `iteration_max == 0`, no error is logged,
+  and the rest of the fields are populated normally.
+
+#### Scenario: Diff timeout reports `timeout` status with zero counts
+
+- GIVEN a workspace large enough that `git diff --stat HEAD` exceeds
+  the 1-second budget
+- WHEN the snapshotter assembles the entry
+- THEN `diff_added == 0`, `diff_removed == 0`, `diff_files == 0`,
+  `diff_status == "timeout"`, and the snapshot itself completes (no
+  panic, no fatal log).
+
+#### Scenario: Snapshot serialization is backward-compatible
+
+- GIVEN an external consumer that decodes the existing
+  `Running` JSON into a struct that knows only the original
+  `{issue_id, attempt, pid, session_id, workspace, started_at,
+  phase, tokens_in, tokens_out}` fields
+- WHEN the consumer decodes a snapshot from the upgraded server
+- THEN decoding succeeds and the consumer ignores the new fields.
+
+### Requirement: SSE event stream SHALL filter heartbeat events to dashboard subscribers
+
+The HTTP SSE endpoint at `GET /api/v1/events` SHALL drop agent events
+whose type is in the heartbeat set (currently `{"team/stalled"}`)
+before encoding to the wire. The orchestrator event hub SHALL still
+deliver these events to non-SSE subscribers (TUI bridge, IPC, tests)
+unchanged.
+
+#### Scenario: TUI bridge keeps receiving heartbeat events
+
+- GIVEN both an SSE client and the TUI bridge are subscribed
+- WHEN the runner emits a `team/stalled` event
+- THEN the TUI bridge receives it and the SSE client does not.
+
+#### Scenario: Non-heartbeat events still flow to SSE
+
+- GIVEN an SSE client is subscribed
+- WHEN the runner emits `tool_call`
+- THEN the SSE client receives it within the normal flush window.
+
+### Requirement: SSE event stream SHALL re-classify `dispatch_skipped_blocked_by` events
+
+The SSE endpoint SHALL forward `dispatch_skipped_blocked_by` events
+under a distinct event channel (e.g. `event: queue` instead of
+`event: agent`) so dashboard consumers can route them to the Queue
+panel without keyword-matching the payload. The underlying
+`OrchestratorEvent` payload is unchanged; only the SSE `event:` line
+differs.
+
+#### Scenario: Skip events arrive on the queue channel
+
+- GIVEN a candidate is gated by `dispatchUnclaimedIssues`
+- WHEN the orchestrator logs `dispatch_skipped_blocked_by`
+- THEN the SSE client receives one frame whose `event:` line is
+  `queue` and whose data carries the original
+  `{ issue_id, blockers }` payload.
+
+
+
+--- /dev/null
++++ b/openspec/changes/archive/2026-05-08-workflow-timeline/spec.md
+# workflow-timeline Specification
+
+## Purpose
+TBD - created by archiving change sync-linear-workflow-timeline. Update Purpose after archive.
+## Requirements
+### Requirement: Durable workflow timeline store
+Contrabass SHALL persist single-agent workflow run summaries, workflow-node summaries, and sync state in a durable local timeline store.
+
+#### Scenario: Persist node summary
+- **WHEN** a single-agent workflow node reaches a durable completion, failure, retry, or needs-review state
+- **THEN** the system persists a workflow-node summary with issue ID, run ID, node ID, attempt, status, timestamps, content hash, and available runtime metrics
+
+#### Scenario: Snapshot survives restart
+- **WHEN** Contrabass restarts after timeline records were written
+- **THEN** reducing the issue timeline file returns the same runs, nodes, run sync states, and node sync states that were present before restart
+
+### Requirement: Timeline writes are idempotent
+The workflow timeline store SHALL make node writes idempotent by `(issue_id, run_id, node_id, attempt)` and content hash.
+
+#### Scenario: Duplicate node write with same hash
+- **WHEN** the same workflow-node summary is written twice with the same content hash
+- **THEN** the timeline snapshot contains only one effective node summary for that key
+
+#### Scenario: Replacement node write with changed hash
+- **WHEN** a workflow-node summary is written again for the same key with a different content hash
+- **THEN** the timeline snapshot uses the newest content and content hash for that key
+
+### Requirement: Timeline writes are file locked
+The workflow timeline store SHALL acquire a file lock for every append or sync-state upsert against a per-issue JSONL file.
+
+#### Scenario: Concurrent timeline writes
+- **WHEN** multiple goroutines append run, node, run-sync, and node-sync records for the same issue concurrently
+- **THEN** the resulting JSONL file contains valid non-interleaved JSON records and the reduced snapshot includes all successful writes
+
+### Requirement: Pre-agent failures are timeline nodes
+Contrabass SHALL create syncable failed workflow-node summaries for failures that occur before the agent process is running.
+
+#### Scenario: Claim failure creates node
+- **WHEN** claiming an issue fails before workspace creation
+- **THEN** the timeline contains `run:attempt-<n>:claim-failed` with status `failed` and the error summary
+
+#### Scenario: Workspace creation failure creates node
+- **WHEN** workspace creation fails after claim
+- **THEN** the timeline contains `run:attempt-<n>:workspace-failed` with status `failed` and the error summary
+
+#### Scenario: Prompt render failure creates node
+- **WHEN** prompt rendering fails before agent start
+- **THEN** the timeline contains `run:attempt-<n>:prompt-failed` with status `failed` and the error summary
+
+#### Scenario: Agent start failure creates node
+- **WHEN** starting the agent process fails
+- **THEN** the timeline contains `run:attempt-<n>:agent-start-failed` with status `failed` and the error summary
+
+### Requirement: Timeline is exposed to dashboard through backend
+Contrabass SHALL expose an issue workflow timeline through a backend endpoint without requiring dashboard access to local timeline files.
+
+#### Scenario: Dashboard requests issue timeline
+- **WHEN** the dashboard requests `GET /api/v1/issues/{issue_id}/timeline`
+- **THEN** the backend returns a workflow timeline snapshot containing runs, nodes, run sync states, node sync states, and generation time
+
+
+
+--- /dev/null
++++ b/scripts/start.sh
+#!/usr/bin/env bash
+# Quick-start contrabass.
+#
+# Usage:
+#   scripts/start.sh                              # demo + dashboard on :8080
+#   scripts/start.sh demo                         # alias of above
+#   scripts/start.sh github | omx | omc | opencode | hardening | local | mock
+#   scripts/start.sh --port 9000                  # override port
+#   scripts/start.sh --host 0.0.0.0               # bind all interfaces
+#   scripts/start.sh --no-tui                     # headless
+#   scripts/start.sh --config <path>              # custom config
+#   scripts/start.sh --build                      # force rebuild SPA+binary
+#   scripts/start.sh --skip-env-check             # skip required-var validation
+#
+# Env loading:
+#   If a .env file exists at repo root, it is auto-sourced before launch.
+#
+# Env validation:
+#   Per preset, required vars are checked. Missing → exit 2 with hint.
+
+set -euo pipefail
+
+cd "$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)"
+
+PORT="${CONTRABASS_PORT:-8080}"
+HOST="${CONTRABASS_HOST:-localhost}"
+CONFIG="${CONTRABASS_CONFIG:-}"
+PRESET="demo"
+EXTRA_ARGS=()
+FORCE_BUILD=0
+SKIP_ENV_CHECK=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    demo|github|omx|omc|opencode|hardening|local|mock)
+      PRESET="$1"; shift ;;
+    --config)
+      CONFIG="$2"; shift 2 ;;
+    --port)
+      PORT="$2"; shift 2 ;;
+    --host)
+      HOST="$2"; shift 2 ;;
+    --no-tui)
+      EXTRA_ARGS+=("--no-tui"); shift ;;
+    --no-port)
+      PORT=""; shift ;;
+    --build)
+      FORCE_BUILD=1; shift ;;
+    --skip-env-check)
+      SKIP_ENV_CHECK=1; shift ;;
+    --help|-h)
+      sed -n '2,21p' "$0"; exit 0 ;;
+    *)
+      EXTRA_ARGS+=("$1"); shift ;;
+  esac
+done
+
+# Auto-source .env if present
+if [ -f .env ]; then
+  echo ">> sourcing .env"
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
+
+if [ -z "$CONFIG" ]; then
+  case "$PRESET" in
+    demo)      CONFIG="testdata/workflow.demo.md" ;;
+    github)    CONFIG="testdata/workflow.github.md" ;;
+    omx)       CONFIG="testdata/workflow.omx.md" ;;
+    omc)       CONFIG="testdata/workflow.omc.md" ;;
+    opencode)  CONFIG="testdata/workflow.ohmyopencode.md" ;;
+    hardening) CONFIG="testdata/workflow.hardening.md" ;;
+    local)     CONFIG="testdata/workflow.local.md" ;;
+    mock)      CONFIG="testdata/workflow.mock.md" ;;
+  esac
+fi
+
+[ -f "$CONFIG" ] || { echo "config not found: $CONFIG" >&2; exit 1; }
+
+# Per-preset required env vars
+required_for_preset() {
+  case "$1" in
+    demo|hardening|omx|omc)
+      echo "CONTRABASS_MODEL CONTRABASS_PROJECT_URL LINEAR_ASSIGNEE_ID LINEAR_API_KEY" ;;
+    github|opencode)
+      echo "CONTRABASS_MODEL GITHUB_OWNER GITHUB_REPO GITHUB_ASSIGNEE GITHUB_TOKEN" ;;
+    local|mock)
+      echo "" ;;  # internal/mock trackers don't require external creds
+    *)
+      echo "" ;;
+  esac
+}
+
+if [ "$SKIP_ENV_CHECK" = 0 ]; then
+  missing=()
+  for var in $(required_for_preset "$PRESET"); do
+    if [ -z "${!var:-}" ]; then
+      missing+=("$var")
+    fi
+  done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    echo "" >&2
+    echo "ERROR: preset '$PRESET' needs these env vars (missing):" >&2
+    for v in "${missing[@]}"; do echo "  - $v" >&2; done
+    echo "" >&2
+    echo "Hints:" >&2
+    echo "  - cp .env.example .env  # then edit" >&2
+    echo "  - or: export VAR=value before running" >&2
+    echo "  - or: scripts/start.sh --skip-env-check  (run anyway, expect failures)" >&2
+    exit 2
+  fi
+fi
+
+# Bun deps (only if missing)
+if [ ! -d node_modules ] || [ ! -d packages/dashboard/node_modules ]; then
+  echo ">> bun install"
+  bun install
+fi
+
+# Dashboard SPA (only if dist absent or --build)
+if [ "$FORCE_BUILD" = 1 ] || [ ! -d packages/dashboard/dist ]; then
+  echo ">> make build-dashboard"
+  make build-dashboard
+fi
+
+# Build binary if --build
+if [ "$FORCE_BUILD" = 1 ]; then
+  echo ">> make build"
+  make build
+fi
+
+CMD=(go run ./cmd/contrabass --config "$CONFIG")
+if [ -n "$PORT" ]; then
+  CMD+=(--port "$PORT")
+fi
+if [ -n "$HOST" ] && [ "$HOST" != "localhost" ]; then
+  CMD+=(--host "$HOST")
+fi
+if [ "${#EXTRA_ARGS[@]}" -gt 0 ]; then
+  CMD+=("${EXTRA_ARGS[@]}")
+fi
+
+echo ">> ${CMD[*]}"
+if [ -n "$PORT" ]; then
+  if [ "$HOST" = "0.0.0.0" ]; then
+    echo ">> dashboard: http://<your-host>:$PORT (binding all interfaces)"
+  else
+    echo ">> dashboard: http://$HOST:$PORT"
+  fi
+fi
+exec "${CMD[@]}"
+

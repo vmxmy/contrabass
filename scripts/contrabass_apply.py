@@ -418,6 +418,30 @@ def main() -> int:
     start = args.start
     started = not start
 
+    # Refuse to run on a dirty tree. Codex's diff would mix with the
+    # pre-existing dirty state, polluting review and commits.
+    # Tracked-file dirty: would taint the diff.
+    # Untracked: ignore .claude/auto-runs/ and .claude/worktrees/ which we own.
+    code, st, _ = run(["git", "status", "--porcelain"], cwd=REPO, check=False)
+    bad_lines = []
+    for ln in st.splitlines():
+        if not ln.strip():
+            continue
+        # ?? = untracked. Allow our own scratch dirs.
+        if ln.startswith("?? "):
+            path = ln[3:]
+            if path.startswith(".claude/auto-runs") or path.startswith(".claude/worktrees"):
+                continue
+        bad_lines.append(ln)
+    if bad_lines:
+        log("Refusing to run: working tree has uncommitted changes:")
+        for ln in bad_lines[:30]:
+            log(f"  {ln}")
+        log(f"  ... ({len(bad_lines)} total)" if len(bad_lines) > 30 else "")
+        log("Commit, stash, or discard these before running. The orchestrator must")
+        log("start with a clean tree so codex's diff is unambiguous.")
+        return 2
+
     tasks, _, groups = parse_tasks()
     pending = [t for t in tasks if not t.done]
     log(f"tasks total={len(tasks)} done={len(tasks) - len(pending)} pending={len(pending)}")
