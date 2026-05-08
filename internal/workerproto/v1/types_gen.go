@@ -776,6 +776,9 @@ type WorkerRegisterRequest struct {
 	// Maximum number of concurrently-acked runs the worker accepts.
 	MaxConcurrency int `json:"maxConcurrency"`
 
+	// ProtocolVersion corresponds to the JSON schema field "protocol_version".
+	ProtocolVersion ProtocolVersion `json:"protocol_version"`
+
 	// Semver list of protocol versions this worker can speak. Cloud picks one (1.0.0
 	// in v1).
 	SupportedProtocolVersions []string `json:"supported_protocol_versions"`

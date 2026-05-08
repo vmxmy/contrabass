@@ -11,7 +11,8 @@
     "capabilities",
     "maxConcurrency",
     "version",
-    "supported_protocol_versions"
+    "supported_protocol_versions",
+    "protocol_version"
   ],
   "properties": {
     "teamId":   { "$ref": "_common.json#/$defs/TeamId" },
@@ -46,6 +47,7 @@
       },
       "description": "Semver list of protocol versions this worker can speak. Cloud picks one (1.0.0 in v1)."
     },
+    "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" },
     "kind": {
       "type": "string",
       "enum": ["local", "container"],
