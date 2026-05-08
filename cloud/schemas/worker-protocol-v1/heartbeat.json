@@ -24,6 +24,46 @@
         "run_unknown",
         "run_terminal"
       ]
+    },
+    "LeaseRevokedError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "protocol_version"],
+      "properties": {
+        "error":            { "const": "lease_revoked" },
+        "message":          { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "LeaseHolderMismatchError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "protocol_version"],
+      "properties": {
+        "error":            { "const": "lease_holder_mismatch" },
+        "message":          { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "RunUnknownError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "protocol_version"],
+      "properties": {
+        "error":            { "const": "run_unknown" },
+        "message":          { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "RunTerminalError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "protocol_version"],
+      "properties": {
+        "error":            { "const": "run_terminal" },
+        "message":          { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
     }
   }
 }

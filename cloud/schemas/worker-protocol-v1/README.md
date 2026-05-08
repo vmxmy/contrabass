@@ -9,31 +9,42 @@ This directory is the **source of truth** for both the cloud-side (TypeScript) a
 
 The shape and field names defined here are **frozen** — see capability spec `openspec/changes/cloud-orchestrator-with-local-workers/specs/worker-protocol/spec.md` and design decision **D2** ("Worker protocol is the cross-phase contract; freeze v1 before any DO code lands").
 
-## Scope
-
-Schemas cover the wire payloads called out by §1 of the change tasks:
+## Files
 
 | File | Endpoint(s) | Direction |
 |---|---|---|
-| `register.json` | `POST /v1/workers/register` | request + response |
-| `dispatch.json` | WS frame `dispatch` (and `GET /v1/workers/{id}/dispatch?wait=` long-poll body) | server → worker |
-| `ack.json` | `POST /v1/runs/{runId}/ack` | request |
-| `heartbeat.json` | `POST /v1/runs/{runId}/heartbeat` | request |
-| `events.json` | `POST /v1/runs/{runId}/events` (one schema per NDJSON line) | request |
-| `complete.json` | `POST /v1/runs/{runId}/complete` | request |
+| `_common.json` | shared `$defs` (`ProtocolVersion`, identifiers, `ConfigHash`, `GitBranch`, `ErrorResponseBase`, …) | — |
+| `register-request.json` | `POST /v1/workers/register` | request |
+| `register-response.json` | `POST /v1/workers/register` (success + per-error `$defs`) | response |
+| `refresh-request.json` | `POST /v1/workers/refresh` | request |
+| `refresh-response.json` | `POST /v1/workers/refresh` (success + per-error `$defs`) | response |
+| `dispatch.json` | WS frame `dispatch` (and long-poll body) | server → worker |
+| `ack.json` | `POST /v1/runs/{runId}/ack` (Accept ∪ Reject `oneOf`; per-error `$defs`) | request |
+| `heartbeat.json` | `POST /v1/runs/{runId}/heartbeat` (per-error `$defs`) | request |
+| `event-line.json` | one NDJSON line of `POST /v1/runs/{runId}/events` (per-`kind` `oneOf`) | request line |
+| `events-request.json` | logical decoded batch for tests/fixtures (`maxItems: 200`) + per-error `$defs` | request envelope |
+| `complete.json` | `POST /v1/runs/{runId}/complete` (`status`-discriminated `oneOf`: Succeeded ∪ Failed ∪ Cancelled) | request |
 | `lease-revoked.json` | WS frame `lease-revoked` | server → worker |
-| `refresh.json` | `POST /v1/workers/refresh` | request + response |
-| `_common.json` | shared `$defs` (`ProtocolVersion`, `ErrorResponse`, identifiers, timestamps, …) | — |
 
 ## Conventions
 
-- JSON Schema **2020-12** (`$schema: https://json-schema.org/draft/2020-12/schema`).
+- **JSON Schema 2020-12** (`$schema: https://json-schema.org/draft/2020-12/schema`).
 - Every schema sets a stable `$id` of the form `https://contrabass.dev/schemas/worker-protocol/v1/<file>.json` so generators can resolve `$ref` cross-file.
 - Shared types live in `_common.json#/$defs/<Name>` and are referenced via `$ref`.
-- Identifier shapes: `runId`, `workerId`, `teamId` are non-empty strings ≤ 255 chars; numeric quantities (`leaseSec`, `lastEventTs`, `maxConcurrency`, …) are integer-typed with explicit minimums.
-- HTTP error responses are NOT covered here per-endpoint; they share `_common.json#/$defs/ErrorResponse` plus a per-endpoint `errorCode` enum embedded in the file.
-- WebSocket frames carry a `type` discriminator (`dispatch`, `lease-revoked`) and `protocol_version` (mirrors REST).
-- `additionalProperties: false` on every object — additions require a v2.
+- **Discriminated `oneOf`** is preferred over `if/then` for codegen friendliness:
+  - `ack.json` discriminates on `accept` (true|false).
+  - `complete.json` discriminates on `status` (succeeded|failed|cancelled).
+  - `event-line.json` discriminates on `kind` (start|log|tool_call|diff|error|phase).
+- **Error response shapes** are defined per-endpoint as `$defs` inside the response file (or, for request-only endpoints, inside the request file). They use `additionalProperties: false` and freeze the structured fields the spec calls out (e.g., `events_too_large` carries `max_events: 200, max_bytes: 524288`). The generic `_common.json#/$defs/ErrorResponseBase` exists only as documentation of the shared envelope and uses `additionalProperties: true`.
+- `additionalProperties: false` on every wire-payload object — additions require a v2.
+- **`event-line.json` payload shapes** are sealed per-`kind` in the schema itself; downstream agents do NOT need to consult external TS files for payload structure.
+
+## Field-naming rule
+
+- Domain payload fields: **lowerCamelCase** (`teamId`, `workerId`, `runId`, `leaseSec`, `configHash`, `lastEventTs`, `artifactUploadURLs`, …).
+- Protocol-negotiation metadata: **snake_case** (`protocol_version`, `supported_protocol_versions`).
+
+This split is intentional: the snake_case fields participate in cross-language version-negotiation handshakes where the casing is the wire literal; the camelCase fields are domain payloads where Go/TS struct conventions match naturally. Codegen MUST honor both.
 
 ## Versioning rule (frozen)
 
@@ -41,9 +52,22 @@ Field shapes in this directory MUST NOT change in a backward-incompatible way af
 
 ## Validation
 
-Schemas are linted as part of task **1.4** (golden fixture set under `testdata/workerproto/v1/`). Quick local check (Bun):
+Quick local check (Bun + ajv-cli):
 
 ```bash
-bunx ajv-cli validate -s cloud/schemas/worker-protocol-v1/register.json \
-  -d testdata/workerproto/v1/register/request-valid.json --strict=false --spec=draft2020
+bunx --bun ajv-cli@5 compile -s 'cloud/schemas/worker-protocol-v1/_common.json' \
+  -s 'cloud/schemas/worker-protocol-v1/dispatch.json' \
+  -s 'cloud/schemas/worker-protocol-v1/event-line.json' \
+  -s 'cloud/schemas/worker-protocol-v1/events-request.json' \
+  -s 'cloud/schemas/worker-protocol-v1/ack.json' \
+  -s 'cloud/schemas/worker-protocol-v1/heartbeat.json' \
+  -s 'cloud/schemas/worker-protocol-v1/complete.json' \
+  -s 'cloud/schemas/worker-protocol-v1/lease-revoked.json' \
+  -s 'cloud/schemas/worker-protocol-v1/register-request.json' \
+  -s 'cloud/schemas/worker-protocol-v1/register-response.json' \
+  -s 'cloud/schemas/worker-protocol-v1/refresh-request.json' \
+  -s 'cloud/schemas/worker-protocol-v1/refresh-response.json' \
+  --spec=draft2020 --strict=false
 ```
+
+Golden fixtures (per task **1.4**) live under `testdata/workerproto/v1/<endpoint>/` and are exercised by both Go and TS test suites.

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contrabass.dev/schemas/worker-protocol/v1/refresh-response.json",
+  "title": "WorkerRefreshResponse",
+  "description": "POST /v1/workers/refresh success response (HTTP 200) and structured error response shapes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sessionToken", "expiresAt", "protocol_version"],
+  "properties": {
+    "sessionToken":     { "$ref": "_common.json#/$defs/BearerToken" },
+    "expiresAt":        { "$ref": "_common.json#/$defs/EpochMillis" },
+    "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+  },
+  "$defs": {
+    "ErrorCode": {
+      "type": "string",
+      "enum": ["refresh_revoked", "refresh_expired", "refresh_invalid"]
+    },
+    "RefreshRevokedError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "protocol_version"],
+      "properties": {
+        "error":   { "const": "refresh_revoked" },
+        "message": { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "RefreshExpiredError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "protocol_version"],
+      "properties": {
+        "error":   { "const": "refresh_expired" },
+        "message": { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "RefreshInvalidError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "protocol_version"],
+      "properties": {
+        "error":   { "const": "refresh_invalid" },
+        "message": { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    }
+  }
+}

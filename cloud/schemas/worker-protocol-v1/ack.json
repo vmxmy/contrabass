@@ -2,37 +2,44 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://contrabass.dev/schemas/worker-protocol/v1/ack.json",
   "title": "WorkerAckRequest",
-  "description": "POST /v1/runs/{runId}/ack — worker accepts or rejects a dispatch within ackDeadlineSec (default 5s). See worker-protocol spec: 'Dispatch acknowledgement'.",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["accept", "protocol_version"],
-  "properties": {
-    "accept": { "type": "boolean" },
-    "reason": {
-      "type": "string",
-      "enum": [
-        "at_capacity",
-        "missing_capability",
-        "config_hash_unknown",
-        "worker_shutting_down",
-        "other"
-      ],
-      "description": "Required when accept=false. Cloud uses to skip this worker on retry."
-    },
-    "reasonDetail": {
-      "type": "string",
-      "maxLength": 512
-    },
-    "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
-  },
-  "if": {
-    "properties": { "accept": { "const": false } },
-    "required": ["accept"]
-  },
-  "then": {
-    "required": ["accept", "reason", "protocol_version"]
-  },
+  "description": "POST /v1/runs/{runId}/ack — worker accepts or rejects a dispatch within ackDeadlineSec (default 5s). See worker-protocol spec: 'Dispatch acknowledgement'. The schema discriminates on `accept` so codegen produces a sealed union of Accept/Reject.",
+  "oneOf": [
+    { "$ref": "#/$defs/Accept" },
+    { "$ref": "#/$defs/Reject" }
+  ],
   "$defs": {
+    "Accept": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accept", "protocol_version"],
+      "properties": {
+        "accept":           { "const": true },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "Reject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accept", "reason", "protocol_version"],
+      "properties": {
+        "accept": { "const": false },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "at_capacity",
+            "missing_capability",
+            "config_hash_unknown",
+            "worker_shutting_down",
+            "other"
+          ]
+        },
+        "reasonDetail": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
     "ErrorCode": {
       "type": "string",
       "enum": [
@@ -40,6 +47,36 @@
         "lease_revoked",
         "run_unknown"
       ]
+    },
+    "LeaseAlreadyHeldError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "protocol_version"],
+      "properties": {
+        "error":            { "const": "lease_already_held" },
+        "message":          { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "LeaseRevokedError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "protocol_version"],
+      "properties": {
+        "error":            { "const": "lease_revoked" },
+        "message":          { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "RunUnknownError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "protocol_version"],
+      "properties": {
+        "error":            { "const": "run_unknown" },
+        "message":          { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
     }
   }
 }

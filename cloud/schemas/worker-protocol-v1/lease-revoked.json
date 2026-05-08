@@ -12,7 +12,7 @@
       "const": "lease-revoked"
     },
     "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" },
-    "runId": { "$ref": "_common.json#/$defs/RunId" },
+    "runId":  { "$ref": "_common.json#/$defs/RunId" },
     "reason": {
       "type": "string",
       "enum": [
@@ -22,8 +22,16 @@
         "cancelled",
         "team_paused",
         "config_invalidated",
-        "server_shutdown"
+        "server_shutdown",
+        "worker_evicted_by_admin",
+        "session_expired",
+        "protocol_version_renegotiation"
       ]
+    },
+    "reasonDetail": {
+      "type": "string",
+      "maxLength": 1024,
+      "description": "Optional human-readable detail (e.g., admin name on worker_evicted_by_admin)."
     },
     "revokedAt": { "$ref": "_common.json#/$defs/EpochMillis" }
   }

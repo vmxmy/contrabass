@@ -2,22 +2,20 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://contrabass.dev/schemas/worker-protocol/v1/complete.json",
   "title": "WorkerCompleteRequest",
-  "description": "POST /v1/runs/{runId}/complete — worker reports terminal state. See worker-protocol spec: 'Run completion'.",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["status", "summary", "artifactKeys", "finalConfigHash", "protocol_version"],
-  "properties": {
-    "status": {
+  "description": "POST /v1/runs/{runId}/complete — worker reports terminal state. See worker-protocol spec: 'Run completion'. Discriminated on `status` so codegen produces a sealed union; `errorClass` is required only on failed completions, and `artifactKeys` is required only on successful completions.",
+  "oneOf": [
+    { "$ref": "#/$defs/SucceededCompletion" },
+    { "$ref": "#/$defs/FailedCompletion" },
+    { "$ref": "#/$defs/CancelledCompletion" }
+  ],
+  "$defs": {
+    "R2ObjectKey": {
       "type": "string",
-      "enum": ["succeeded", "failed", "cancelled"]
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9_./-]+$"
     },
-    "summary": {
-      "type": "string",
-      "minLength": 0,
-      "maxLength": 4096,
-      "description": "Short human-readable summary surfaced in dashboard and tracker comment."
-    },
-    "artifactKeys": {
+    "ArtifactKeysFull": {
       "type": "object",
       "additionalProperties": false,
       "required": ["logs", "diff", "summary"],
@@ -31,30 +29,65 @@
           "maxItems": 32,
           "items": { "$ref": "#/$defs/R2ObjectKey" }
         }
+      }
+    },
+    "ArtifactKeysPartial": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "logs":    { "$ref": "#/$defs/R2ObjectKey" },
+        "diff":    { "$ref": "#/$defs/R2ObjectKey" },
+        "summary": { "$ref": "#/$defs/R2ObjectKey" },
+        "screenshots": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/R2ObjectKey" }
+        }
       },
-      "description": "R2 object keys for artifacts the worker uploaded via the presigned PUT URLs from the dispatch frame."
+      "description": "Failed/cancelled runs may not have produced all artifacts; any subset is allowed."
     },
-    "finalConfigHash": { "$ref": "_common.json#/$defs/ConfigHash" },
-    "errorClass": {
-      "type": "string",
-      "maxLength": 128,
-      "description": "Required iff status='failed'. Stable error category (e.g., 'agent_runner_crash', 'tests_failed', 'merge_conflict')."
+    "SucceededCompletion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "summary", "artifactKeys", "finalConfigHash", "protocol_version"],
+      "properties": {
+        "status":  { "const": "succeeded" },
+        "summary": { "type": "string", "minLength": 0, "maxLength": 4096 },
+        "artifactKeys":    { "$ref": "#/$defs/ArtifactKeysFull" },
+        "finalConfigHash": { "$ref": "_common.json#/$defs/ConfigHash" },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
     },
-    "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
-  },
-  "if": {
-    "properties": { "status": { "const": "failed" } },
-    "required": ["status"]
-  },
-  "then": {
-    "required": ["status", "summary", "artifactKeys", "finalConfigHash", "errorClass", "protocol_version"]
-  },
-  "$defs": {
-    "R2ObjectKey": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 1024,
-      "pattern": "^[A-Za-z0-9_./-]+$"
+    "FailedCompletion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "summary", "errorClass", "artifactKeys", "finalConfigHash", "protocol_version"],
+      "properties": {
+        "status":  { "const": "failed" },
+        "summary": { "type": "string", "minLength": 0, "maxLength": 4096 },
+        "errorClass": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Stable error category (e.g., 'agent_runner_crash', 'tests_failed', 'merge_conflict')."
+        },
+        "artifactKeys":    { "$ref": "#/$defs/ArtifactKeysPartial" },
+        "finalConfigHash": { "$ref": "_common.json#/$defs/ConfigHash" },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "CancelledCompletion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "summary", "artifactKeys", "finalConfigHash", "protocol_version"],
+      "properties": {
+        "status":  { "const": "cancelled" },
+        "summary": { "type": "string", "minLength": 0, "maxLength": 4096 },
+        "artifactKeys":    { "$ref": "#/$defs/ArtifactKeysPartial" },
+        "finalConfigHash": { "$ref": "_common.json#/$defs/ConfigHash" },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
     },
     "ErrorCode": {
       "type": "string",

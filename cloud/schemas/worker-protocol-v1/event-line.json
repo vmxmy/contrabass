@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contrabass.dev/schemas/worker-protocol/v1/event-line.json",
+  "title": "WorkerEventLine",
+  "description": "Schema for ONE NDJSON line of POST /v1/runs/{runId}/events (Content-Type: application/x-ndjson). Per-kind payload shapes are sealed via discriminated oneOf. The endpoint accepts up to 200 lines or 512 KiB total per request — see events-request.json for the logical batch contract used by tests and golden fixtures.",
+  "oneOf": [
+    { "$ref": "#/$defs/StartEvent" },
+    { "$ref": "#/$defs/LogEvent" },
+    { "$ref": "#/$defs/ToolCallEvent" },
+    { "$ref": "#/$defs/DiffEvent" },
+    { "$ref": "#/$defs/ErrorEvent" },
+    { "$ref": "#/$defs/PhaseEvent" }
+  ],
+  "$defs": {
+    "BaseFields": {
+      "type": "object",
+      "required": ["ts", "kind", "payload", "protocol_version"],
+      "properties": {
+        "ts":   { "$ref": "_common.json#/$defs/EpochMillis" },
+        "seq":  { "type": "integer", "minimum": 0, "description": "Monotonic per-run sequence number assigned by the worker. Optional but recommended for replay deduplication." },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "StartEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ts", "kind", "payload", "protocol_version"],
+      "properties": {
+        "ts":   { "$ref": "_common.json#/$defs/EpochMillis" },
+        "seq":  { "type": "integer", "minimum": 0 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" },
+        "kind": { "const": "start" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["agentRunner"],
+          "properties": {
+            "agentRunner": { "type": "string", "maxLength": 64, "description": "Which runner started: codex|opencode|omx|omc|mock|other." },
+            "worktreePath": { "type": "string", "maxLength": 1024 },
+            "branch": { "$ref": "_common.json#/$defs/GitBranch" }
+          }
+        }
+      }
+    },
+    "LogEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ts", "kind", "payload", "protocol_version"],
+      "properties": {
+        "ts":   { "$ref": "_common.json#/$defs/EpochMillis" },
+        "seq":  { "type": "integer", "minimum": 0 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" },
+        "kind": { "const": "log" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["level", "message"],
+          "properties": {
+            "level":   { "type": "string", "enum": ["debug", "info", "warn", "error"] },
+            "message": { "type": "string", "maxLength": 8192 },
+            "source":  { "type": "string", "maxLength": 64, "description": "Optional source tag (e.g., 'agent', 'runner', 'tmux')." }
+          }
+        }
+      }
+    },
+    "ToolCallEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ts", "kind", "payload", "protocol_version"],
+      "properties": {
+        "ts":   { "$ref": "_common.json#/$defs/EpochMillis" },
+        "seq":  { "type": "integer", "minimum": 0 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" },
+        "kind": { "const": "tool_call" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tool", "phase"],
+          "properties": {
+            "tool":     { "type": "string", "maxLength": 128 },
+            "phase":    { "type": "string", "enum": ["start", "result", "error"] },
+            "args":     { "description": "Argument summary; truncate before send. Free-form.", "type": ["object", "string", "null"] },
+            "outputSummary": { "type": "string", "maxLength": 4096 },
+            "tokensIn":  { "type": "integer", "minimum": 0 },
+            "tokensOut": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "DiffEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ts", "kind", "payload", "protocol_version"],
+      "properties": {
+        "ts":   { "$ref": "_common.json#/$defs/EpochMillis" },
+        "seq":  { "type": "integer", "minimum": 0 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" },
+        "kind": { "const": "diff" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["filesChanged"],
+          "properties": {
+            "filesChanged": { "type": "integer", "minimum": 0 },
+            "additions":    { "type": "integer", "minimum": 0 },
+            "deletions":    { "type": "integer", "minimum": 0 },
+            "summary":      { "type": "string", "maxLength": 4096, "description": "Optional inline summary; full diff goes to R2 via the dispatch presigned URL." }
+          }
+        }
+      }
+    },
+    "ErrorEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ts", "kind", "payload", "protocol_version"],
+      "properties": {
+        "ts":   { "$ref": "_common.json#/$defs/EpochMillis" },
+        "seq":  { "type": "integer", "minimum": 0 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" },
+        "kind": { "const": "error" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["errorClass", "message"],
+          "properties": {
+            "errorClass": { "type": "string", "maxLength": 128 },
+            "message":    { "type": "string", "maxLength": 8192 },
+            "fatal":      { "type": "boolean", "default": false }
+          }
+        }
+      }
+    },
+    "PhaseEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ts", "kind", "payload", "protocol_version"],
+      "properties": {
+        "ts":   { "$ref": "_common.json#/$defs/EpochMillis" },
+        "seq":  { "type": "integer", "minimum": 0 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" },
+        "kind": { "const": "phase" },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["phase"],
+          "properties": {
+            "phase":  { "type": "string", "enum": ["plan", "exec", "verify", "review", "complete"] },
+            "label":  { "type": "string", "maxLength": 256 }
+          }
+        }
+      }
+    }
+  }
+}
