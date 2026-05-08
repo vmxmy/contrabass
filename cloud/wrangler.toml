@@ -7,3 +7,25 @@ workers_dev = true
 [observability]
 enabled = true
 head_sampling_rate = 1.0
+
+[env.staging]
+name = "contrabass-cloud-staging"
+workers_dev = true
+
+[env.staging.vars]
+CONTRABASS_ENV = "staging"
+
+[env.staging.observability]
+enabled = true
+head_sampling_rate = 1.0
+
+[env.production]
+name = "contrabass-cloud"
+workers_dev = true
+
+[env.production.vars]
+CONTRABASS_ENV = "production"
+
+[env.production.observability]
+enabled = true
+head_sampling_rate = 1.0

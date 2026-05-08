@@ -13,7 +13,7 @@
 - [x] 2.2 Add `cloud/` to root `package.json` workspaces and Bun lockfile
 - [x] 2.3 Add `make cloud-build`, `make cloud-deploy`, `make cloud-deploy-dry`, `make cloud-test` targets
 - [x] 2.4 Add CI lane: build cloud + `wrangler deploy --dry-run` on PRs touching `cloud/**` or `cloud/schemas/**`
-- [ ] 2.5 Set up two Wrangler environments: `staging` and `production`
+- [x] 2.5 Set up two Wrangler environments: `staging` and `production`
 
 ## 3. D1 schema and bindings
 
