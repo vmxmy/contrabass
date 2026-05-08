@@ -9,6 +9,14 @@ binding = "CONTROL_PLANE_DB"
 database_name = "contrabass-control-plane"
 database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
 
+[[r2_buckets]]
+binding = "ARTIFACTS_BUCKET"
+bucket_name = "contrabass-artifacts"
+
+[[r2_buckets]]
+binding = "EVENTS_ARCHIVE_BUCKET"
+bucket_name = "contrabass-events-archive"
+
 [observability]
 enabled = true
 head_sampling_rate = 1.0
@@ -21,6 +29,14 @@ workers_dev = true
 binding = "CONTROL_PLANE_DB"
 database_name = "contrabass-control-plane"
 database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
+
+[[env.staging.r2_buckets]]
+binding = "ARTIFACTS_BUCKET"
+bucket_name = "contrabass-artifacts"
+
+[[env.staging.r2_buckets]]
+binding = "EVENTS_ARCHIVE_BUCKET"
+bucket_name = "contrabass-events-archive"
 
 [env.staging.vars]
 CONTRABASS_ENV = "staging"
@@ -37,6 +53,14 @@ workers_dev = true
 binding = "CONTROL_PLANE_DB"
 database_name = "contrabass-control-plane"
 database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
+
+[[env.production.r2_buckets]]
+binding = "ARTIFACTS_BUCKET"
+bucket_name = "contrabass-artifacts"
+
+[[env.production.r2_buckets]]
+binding = "EVENTS_ARCHIVE_BUCKET"
+bucket_name = "contrabass-events-archive"
 
 [env.production.vars]
 CONTRABASS_ENV = "production"
