@@ -18,7 +18,7 @@
 ## 3. D1 schema and bindings
 
 - [x] 3.1 Create D1 database `contrabass-control-plane` and add binding to `wrangler.toml`
-- [ ] 3.2 Write migrations: `team_configs`, `team_configs_active`, `runs`, `internal_board`, `audit_log`, `worker_enrollments`
+- [x] 3.2 Write migrations: `team_configs`, `team_configs_active`, `runs`, `internal_board`, `audit_log`, `worker_enrollments`
 - [ ] 3.3 Add D1 migration tooling (`wrangler d1 migrations`) and `make cloud-migrate`
 - [ ] 3.4 Write seed script for the synthetic test team used by smoke tests
 
