@@ -1,5 +1,5 @@
 import type { EventArchiveMessage } from "../queues/events-archive";
-import type { WorkerEventLine } from "../workerproto/v1";
+import type { WorkerCompleteRequest, WorkerEventLine } from "../workerproto/v1";
 
 export const ISSUE_RUN_STATES = [
   "queued",
@@ -24,6 +24,7 @@ export type IssueRunRecord = {
   leaseHolder?: string;
   leaseExpiresAt?: number;
   leaseSec?: number;
+  workerKind?: string;
 };
 
 export type IssueRunTransitionResult = {
@@ -43,6 +44,15 @@ type IssueRunQueue<T> = {
   send(message: T): Promise<void>;
 };
 
+type IssueRunD1Statement = {
+  bind(...values: readonly unknown[]): IssueRunD1Statement;
+  run(): Promise<unknown>;
+};
+
+type IssueRunD1Database = {
+  prepare(query: string): IssueRunD1Statement;
+};
+
 type TeamCoordinatorStub = {
   fetch(input: string | Request, init?: RequestInit): Promise<Response>;
 };
@@ -53,6 +63,7 @@ type TeamCoordinatorNamespace = {
 };
 
 export type IssueRunEnv = {
+  CONTROL_PLANE_DB?: IssueRunD1Database;
   EVENTS_ARCHIVE_QUEUE?: IssueRunQueue<EventArchiveMessage>;
   TEAM_COORDINATOR?: TeamCoordinatorNamespace;
 };
@@ -89,7 +100,23 @@ type IssueRunTransitionOptions = {
   leaseHolder?: string;
   leaseSec?: number;
   leaseExpiresAt?: number;
+  workerKind?: string;
   clearLease?: boolean;
+};
+
+type IssueRunCompletionRecord = {
+  runId: string;
+  teamId: string;
+  issueRef: string;
+  workerId: string;
+  kind: string;
+  startedAt: number;
+  endedAt: number;
+  status: "succeeded" | "failed" | "cancelled";
+  summary: string;
+  artifactKeys: Record<string, unknown>;
+  finalConfigHash: string;
+  errorClass?: string;
 };
 
 const RECORD_KEY = "issue-run:record";
@@ -153,6 +180,7 @@ export class IssueRun {
       return this.acquireDispatch(body, {
         leaseHolder: getStringField(body, "workerId"),
         leaseSec: getLeaseSecField(body, "leaseSec"),
+        workerKind: getWorkerKindField(body),
       });
     }
 
@@ -187,16 +215,14 @@ export class IssueRun {
 
     if (request.method === "POST" && url.pathname === "/complete") {
       const body = await readObjectBody(request);
-      const status = getStringField(body, "status");
-      if (!isIssueRunStatus(status) || !isTerminalIssueRunStatus(status)) {
+      if (!isWorkerCompleteRequest(body)) {
         return jsonResponse(
-          { error: "invalid_request", message: "status must be succeeded, failed, or cancelled" },
+          { error: "invalid_request", message: "complete body must match worker protocol v1" },
           400,
         );
       }
 
-      const record = await this.ensureRecord();
-      return this.transition(record, status, { clearLease: true });
+      return this.handleComplete(request, body);
     }
 
     return jsonResponse({ error: "not_found" }, 404);
@@ -274,6 +300,7 @@ export class IssueRun {
         updatedAt: now,
         leaseHolder: options.leaseHolder ?? record.leaseHolder,
         leaseSec: options.leaseSec ?? record.leaseSec,
+        workerKind: options.workerKind ?? record.workerKind,
       };
 
       await txn.put(RECORD_KEY, updated);
@@ -323,6 +350,7 @@ export class IssueRun {
       leaseHolder: options.leaseHolder ?? record.leaseHolder,
       leaseExpiresAt: options.leaseExpiresAt ?? record.leaseExpiresAt,
       leaseSec: options.leaseSec ?? record.leaseSec,
+      workerKind: options.workerKind ?? record.workerKind,
     };
 
     if (options.clearLease) {
@@ -443,6 +471,116 @@ export class IssueRun {
     return jsonResponse({ protocol_version: "1.0.0", accepted: messages.length });
   }
 
+  private async handleComplete(
+    request: Request,
+    body: WorkerCompleteRequest,
+  ): Promise<Response> {
+    const record = await this.state.storage.get<IssueRunRecord>(RECORD_KEY);
+    if (record === undefined) {
+      return completionError("run_unknown", "run was not found", 404);
+    }
+    if (isTerminalIssueRunStatus(record.status)) {
+      return completionError("run_terminal", "run is already terminal", 409);
+    }
+    if (record.status !== "running" || record.leaseExpiresAt === undefined) {
+      return completionError("lease_revoked", "run lease has been revoked", 409);
+    }
+
+    const workerId = getRequestWorkerId(request, {});
+    if (record.leaseHolder !== undefined && workerId !== record.leaseHolder) {
+      return completionError(
+        "lease_holder_mismatch",
+        "completion came from a worker that does not hold the lease",
+        409,
+      );
+    }
+
+    const now = Date.now();
+    if (record.leaseExpiresAt <= now) {
+      return completionError("lease_revoked", "run lease has been revoked", 409);
+    }
+
+    const completion = buildCompletionRecord(record, body, now);
+    if (completion === undefined) {
+      return completionError("run_metadata_missing", "run is missing completion metadata", 409);
+    }
+
+    await this.persistCompletion(completion);
+    await this.broadcastRunComplete(completion);
+
+    const terminal = await this.transitionRecord(record, body.status, now, { clearLease: true });
+    return jsonResponse({ run: terminal.updated, transition: terminal.result });
+  }
+
+  private async persistCompletion(completion: IssueRunCompletionRecord): Promise<void> {
+    if (this.env.CONTROL_PLANE_DB === undefined) {
+      return;
+    }
+
+    await this.env.CONTROL_PLANE_DB.prepare(`
+      INSERT INTO runs (
+        run_id,
+        team_id,
+        issue_ref,
+        worker_id,
+        kind,
+        started_at,
+        ended_at,
+        status,
+        summary,
+        artifact_keys,
+        final_config_hash,
+        error_class
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id) DO UPDATE SET
+        team_id = excluded.team_id,
+        issue_ref = excluded.issue_ref,
+        worker_id = excluded.worker_id,
+        kind = excluded.kind,
+        started_at = excluded.started_at,
+        ended_at = excluded.ended_at,
+        status = excluded.status,
+        summary = excluded.summary,
+        artifact_keys = excluded.artifact_keys,
+        final_config_hash = excluded.final_config_hash,
+        error_class = excluded.error_class
+    `).bind(
+      completion.runId,
+      completion.teamId,
+      completion.issueRef,
+      completion.workerId,
+      completion.kind,
+      toIsoString(completion.startedAt),
+      toIsoString(completion.endedAt),
+      completion.status,
+      completion.summary,
+      JSON.stringify(completion.artifactKeys),
+      completion.finalConfigHash,
+      completion.errorClass ?? null,
+    ).run();
+  }
+
+  private async broadcastRunComplete(completion: IssueRunCompletionRecord): Promise<void> {
+    if (this.env.TEAM_COORDINATOR === undefined) {
+      return;
+    }
+
+    const id = this.env.TEAM_COORDINATOR.idFromName(completion.teamId);
+    const teamCoordinator = this.env.TEAM_COORDINATOR.get(id);
+    const response = await teamCoordinator.fetch("https://team-coordinator.internal/run-complete", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "run-complete",
+        protocol_version: "1.0.0",
+        ...completion,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`run-complete broadcast failed with status ${response.status}`);
+    }
+  }
+
   private async forwardEventsToTeamCoordinator(
     record: IssueRunRecord,
     messages: readonly EventArchiveMessage[],
@@ -505,8 +643,112 @@ function getLeaseSecField(record: Record<string, unknown>, key: string): number 
   return value;
 }
 
+function getWorkerKindField(record: Record<string, unknown>): string | undefined {
+  const value = getStringField(record, "workerKind") ?? getStringField(record, "kind");
+  return value === "local" || value === "container" ? value : undefined;
+}
+
 function getRequestWorkerId(request: Request, body: Record<string, unknown>): string | undefined {
   return request.headers.get("x-contrabass-worker-id") ?? getStringField(body, "workerId");
+}
+
+function isWorkerCompleteRequest(value: unknown): value is WorkerCompleteRequest {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  if (value.protocol_version !== "1.0.0") {
+    return false;
+  }
+
+  const status = value.status;
+  if (status !== "succeeded" && status !== "failed" && status !== "cancelled") {
+    return false;
+  }
+
+  if (typeof value.summary !== "string" || !isConfigHash(value.finalConfigHash) || !isArtifactKeys(value.artifactKeys)) {
+    return false;
+  }
+
+  return status !== "failed" || typeof value.errorClass === "string";
+}
+
+function isConfigHash(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
+}
+
+function isArtifactKeys(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return isOptionalString(value.logs)
+    && isOptionalString(value.diff)
+    && isOptionalString(value.summary)
+    && isOptionalStringArray(value.screenshots);
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+function isOptionalStringArray(value: unknown): boolean {
+  return value === undefined
+    || (Array.isArray(value) && value.every((item) => typeof item === "string"));
+}
+
+function buildCompletionRecord(
+  active: IssueRunRecord,
+  body: WorkerCompleteRequest,
+  endedAt: number,
+): IssueRunCompletionRecord | undefined {
+  const workerId = active.leaseHolder;
+  const kind = active.workerKind;
+  if (
+    active.runId === undefined
+    || active.teamId === undefined
+    || active.issueRef === undefined
+    || workerId === undefined
+    || kind === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    runId: active.runId,
+    teamId: active.teamId,
+    issueRef: active.issueRef,
+    workerId,
+    kind,
+    startedAt: active.startedAt ?? active.createdAt,
+    endedAt,
+    status: body.status,
+    summary: body.summary,
+    artifactKeys: artifactKeysToRecord(body.artifactKeys),
+    finalConfigHash: body.finalConfigHash,
+    errorClass: body.status === "failed" ? body.errorClass : undefined,
+  };
+}
+
+function artifactKeysToRecord(value: WorkerCompleteRequest["artifactKeys"]): Record<string, unknown> {
+  const record: Record<string, unknown> = {};
+  if (value.logs !== undefined) {
+    record.logs = value.logs;
+  }
+  if (value.diff !== undefined) {
+    record.diff = value.diff;
+  }
+  if (value.summary !== undefined) {
+    record.summary = value.summary;
+  }
+  if (value.screenshots !== undefined) {
+    record.screenshots = value.screenshots;
+  }
+  return record;
+}
+
+function toIsoString(epochMillis: number): string {
+  return new Date(epochMillis).toISOString();
 }
 
 type EventParseResult = {
@@ -575,6 +817,10 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function heartbeatError(error: string, message: string, status: number): Response {
+  return jsonResponse({ protocol_version: "1.0.0", error, message }, status);
+}
+
+function completionError(error: string, message: string, status: number): Response {
   return jsonResponse({ protocol_version: "1.0.0", error, message }, status);
 }
 

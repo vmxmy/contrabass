@@ -43,7 +43,7 @@
 - [x] 6.2 Implement lease tracking (`leaseHolder`, `leaseExpiresAt`, `leaseSec`) with DO alarms
 - [x] 6.3 Implement heartbeat handler that extends lease and resets alarm
 - [x] 6.4 Implement events append + forward to `TeamCoordinator` + enqueue to events Queue
-- [ ] 6.5 Implement CAS dispatch acquire (single-leaseholder guarantee)
+- [x] 6.5 Implement CAS dispatch acquire (single-leaseholder guarantee)
 - [ ] 6.6 Implement `complete` handler that writes terminal record to D1 and broadcasts `run-complete`
 - [ ] 6.7 Implement `cancel` handler called by `TeamCoordinator`
 - [ ] 6.8 Implement late-event window (24h retention for terminal runs)
