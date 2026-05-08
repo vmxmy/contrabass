@@ -546,6 +546,107 @@ describe("IssueRun Durable Object", () => {
     });
   });
 
+  it("cancels a running run, revokes the lease, and persists cancellation", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const { issueRun, storage, db, teamCoordinator } = createIssueRunWithBindings();
+
+    await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      teamId: "team-1",
+      issueRef: "LIN-123",
+      workerId: "worker-1",
+      kind: "local",
+      leaseSec: 30,
+      configHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    });
+    await post(issueRun, "/ack", { accept: true, workerId: "worker-1" });
+
+    now.mockReturnValue(20_000);
+    const response = await post(issueRun, "/cancel", {
+      summary: "operator cancelled from dashboard",
+    });
+
+    expect(response.status).toBe(200);
+    const body = await readIssueRunResponse(response);
+    expect(body).toMatchObject({
+      run: {
+        status: "cancelled",
+      },
+      transition: { previous: "running", current: "cancelled", changed: true },
+    });
+    expect(body.run?.leaseHolder).toBeUndefined();
+    expect(body.run?.leaseExpiresAt).toBeUndefined();
+    await expect(storage.getAlarm()).resolves.toBeNull();
+    expect(db.executions).toHaveLength(1);
+    expect(db.executions[0]?.values).toEqual([
+      "run-1",
+      "team-1",
+      "LIN-123",
+      "worker-1",
+      "local",
+      "1970-01-01T00:00:01.000Z",
+      "1970-01-01T00:00:20.000Z",
+      "cancelled",
+      "operator cancelled from dashboard",
+      JSON.stringify({}),
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      null,
+    ]);
+    expect(teamCoordinator.names).toEqual(["team-1", "team-1"]);
+    expect(teamCoordinator.coordinator.requests).toHaveLength(2);
+    expect(teamCoordinator.coordinator.requests[0]?.input).toBe("https://team-coordinator.internal/lease-revoked");
+    expect(JSON.parse(String(teamCoordinator.coordinator.requests[0]?.init?.body))).toEqual({
+      type: "lease-revoked",
+      protocol_version: "1.0.0",
+      runId: "run-1",
+      workerId: "worker-1",
+      reason: "cancelled",
+    });
+    expect(teamCoordinator.coordinator.requests[1]?.input).toBe("https://team-coordinator.internal/run-complete");
+    expect(JSON.parse(String(teamCoordinator.coordinator.requests[1]?.init?.body))).toMatchObject({
+      type: "run-complete",
+      protocol_version: "1.0.0",
+      runId: "run-1",
+      teamId: "team-1",
+      issueRef: "LIN-123",
+      workerId: "worker-1",
+      status: "cancelled",
+    });
+  });
+
+  it("rejects cancel without final config hash and leaves the lease active", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const { issueRun, db, teamCoordinator } = createIssueRunWithBindings();
+
+    await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      teamId: "team-1",
+      issueRef: "LIN-123",
+      workerId: "worker-1",
+      kind: "local",
+      leaseSec: 30,
+    });
+    await post(issueRun, "/ack", { accept: true, workerId: "worker-1" });
+
+    now.mockReturnValue(20_000);
+    const response = await post(issueRun, "/cancel", {});
+
+    expect(response.status).toBe(400);
+    await expect(readIssueRunResponse(response)).resolves.toMatchObject({
+      protocol_version: "1.0.0",
+      error: "invalid_request",
+    });
+    expect(db.executions).toEqual([]);
+    expect(teamCoordinator.coordinator.requests).toEqual([]);
+
+    const state = await readIssueRunResponse(await issueRun.fetch(new Request("https://issue-run.test/state")));
+    expect(state.run).toMatchObject({
+      status: "running",
+      leaseHolder: "worker-1",
+      leaseExpiresAt: 31_000,
+    });
+  });
+
   it("rejects completion without matching lease holder", async () => {
     const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
     const { issueRun, db, teamCoordinator } = createIssueRunWithBindings();

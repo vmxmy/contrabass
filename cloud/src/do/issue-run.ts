@@ -1,5 +1,5 @@
 import type { EventArchiveMessage } from "../queues/events-archive";
-import type { WorkerCompleteRequest, WorkerEventLine } from "../workerproto/v1";
+import type { ArtifactKeysPartial, WorkerCompleteRequest, WorkerEventLine } from "../workerproto/v1";
 
 export const ISSUE_RUN_STATES = [
   "queued",
@@ -25,6 +25,7 @@ export type IssueRunRecord = {
   leaseExpiresAt?: number;
   leaseSec?: number;
   workerKind?: string;
+  configHash?: string;
 };
 
 export type IssueRunTransitionResult = {
@@ -101,6 +102,7 @@ type IssueRunTransitionOptions = {
   leaseSec?: number;
   leaseExpiresAt?: number;
   workerKind?: string;
+  configHash?: string;
   clearLease?: boolean;
 };
 
@@ -181,6 +183,7 @@ export class IssueRun {
         leaseHolder: getStringField(body, "workerId"),
         leaseSec: getLeaseSecField(body, "leaseSec"),
         workerKind: getWorkerKindField(body),
+        configHash: getConfigHashField(body),
       });
     }
 
@@ -223,6 +226,11 @@ export class IssueRun {
       }
 
       return this.handleComplete(request, body);
+    }
+
+    if (request.method === "POST" && url.pathname === "/cancel") {
+      const body = await readObjectBody(request);
+      return this.handleCancel(body);
     }
 
     return jsonResponse({ error: "not_found" }, 404);
@@ -301,6 +309,7 @@ export class IssueRun {
         leaseHolder: options.leaseHolder ?? record.leaseHolder,
         leaseSec: options.leaseSec ?? record.leaseSec,
         workerKind: options.workerKind ?? record.workerKind,
+        configHash: options.configHash ?? record.configHash,
       };
 
       await txn.put(RECORD_KEY, updated);
@@ -351,6 +360,7 @@ export class IssueRun {
       leaseExpiresAt: options.leaseExpiresAt ?? record.leaseExpiresAt,
       leaseSec: options.leaseSec ?? record.leaseSec,
       workerKind: options.workerKind ?? record.workerKind,
+      configHash: options.configHash ?? record.configHash,
     };
 
     if (options.clearLease) {
@@ -512,6 +522,37 @@ export class IssueRun {
     return jsonResponse({ run: terminal.updated, transition: terminal.result });
   }
 
+  private async handleCancel(body: Record<string, unknown>): Promise<Response> {
+    const record = await this.state.storage.get<IssueRunRecord>(RECORD_KEY);
+    if (record === undefined) {
+      return cancelError("run_unknown", "run was not found", 404);
+    }
+    if (isTerminalIssueRunStatus(record.status)) {
+      return cancelError("run_terminal", "run is already terminal", 409);
+    }
+    if (record.status !== "running") {
+      return cancelError("run_not_running", "only running runs can be cancelled", 409);
+    }
+
+    const cancelBody = buildCancelCompletionBody(body, record);
+    if (cancelBody === undefined) {
+      return cancelError("invalid_request", "cancel requires finalConfigHash or dispatch configHash", 400);
+    }
+
+    const now = Date.now();
+    const completion = buildCompletionRecord(record, cancelBody, now);
+    if (completion === undefined) {
+      return cancelError("run_metadata_missing", "run is missing completion metadata", 409);
+    }
+
+    await this.sendLeaseRevoked(record, "cancelled");
+    await this.persistCompletion(completion);
+    await this.broadcastRunComplete(completion);
+
+    const terminal = await this.transitionRecord(record, "cancelled", now, { clearLease: true });
+    return jsonResponse({ run: terminal.updated, transition: terminal.result });
+  }
+
   private async persistCompletion(completion: IssueRunCompletionRecord): Promise<void> {
     if (this.env.CONTROL_PLANE_DB === undefined) {
       return;
@@ -578,6 +619,34 @@ export class IssueRun {
     });
     if (!response.ok) {
       throw new Error(`run-complete broadcast failed with status ${response.status}`);
+    }
+  }
+
+  private async sendLeaseRevoked(record: IssueRunRecord, reason: "cancelled"): Promise<void> {
+    if (
+      this.env.TEAM_COORDINATOR === undefined
+      || record.teamId === undefined
+      || record.runId === undefined
+      || record.leaseHolder === undefined
+    ) {
+      return;
+    }
+
+    const id = this.env.TEAM_COORDINATOR.idFromName(record.teamId);
+    const teamCoordinator = this.env.TEAM_COORDINATOR.get(id);
+    const response = await teamCoordinator.fetch("https://team-coordinator.internal/lease-revoked", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "lease-revoked",
+        protocol_version: "1.0.0",
+        runId: record.runId,
+        workerId: record.leaseHolder,
+        reason,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`lease-revoked delivery failed with status ${response.status}`);
     }
   }
 
@@ -648,6 +717,11 @@ function getWorkerKindField(record: Record<string, unknown>): string | undefined
   return value === "local" || value === "container" ? value : undefined;
 }
 
+function getConfigHashField(record: Record<string, unknown>): string | undefined {
+  const value = getStringField(record, "configHash") ?? getStringField(record, "finalConfigHash");
+  return isConfigHash(value) ? value : undefined;
+}
+
 function getRequestWorkerId(request: Request, body: Record<string, unknown>): string | undefined {
   return request.headers.get("x-contrabass-worker-id") ?? getStringField(body, "workerId");
 }
@@ -673,11 +747,34 @@ function isWorkerCompleteRequest(value: unknown): value is WorkerCompleteRequest
   return status !== "failed" || typeof value.errorClass === "string";
 }
 
+function buildCancelCompletionBody(
+  body: Record<string, unknown>,
+  record: IssueRunRecord,
+): WorkerCompleteRequest | undefined {
+  const finalConfigHash = getConfigHashField(body) ?? record.configHash;
+  if (!isConfigHash(finalConfigHash)) {
+    return undefined;
+  }
+
+  const artifactKeys = body.artifactKeys === undefined ? {} : body.artifactKeys;
+  if (!isArtifactKeys(artifactKeys)) {
+    return undefined;
+  }
+
+  return {
+    protocol_version: "1.0.0",
+    status: "cancelled",
+    summary: getStringField(body, "summary") ?? "cancelled by operator",
+    artifactKeys,
+    finalConfigHash,
+  };
+}
+
 function isConfigHash(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
 }
 
-function isArtifactKeys(value: unknown): value is Record<string, unknown> {
+function isArtifactKeys(value: unknown): value is ArtifactKeysPartial {
   if (!isRecord(value)) {
     return false;
   }
@@ -821,6 +918,10 @@ function heartbeatError(error: string, message: string, status: number): Respons
 }
 
 function completionError(error: string, message: string, status: number): Response {
+  return jsonResponse({ protocol_version: "1.0.0", error, message }, status);
+}
+
+function cancelError(error: string, message: string, status: number): Response {
   return jsonResponse({ protocol_version: "1.0.0", error, message }, status);
 }
 
