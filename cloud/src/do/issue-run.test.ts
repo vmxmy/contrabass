@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   IssueRun,
@@ -11,6 +11,7 @@ import {
 
 class MemoryIssueRunStorage implements IssueRunStorage {
   private readonly values = new Map<string, unknown>();
+  private alarm: number | null = null;
 
   async get<T>(key: string): Promise<T | undefined> {
     return this.values.get(key) as T | undefined;
@@ -18,6 +19,18 @@ class MemoryIssueRunStorage implements IssueRunStorage {
 
   async put<T>(key: string, value: T): Promise<void> {
     this.values.set(key, value);
+  }
+
+  async setAlarm(scheduledTime: number | Date): Promise<void> {
+    this.alarm = typeof scheduledTime === "number" ? scheduledTime : scheduledTime.getTime();
+  }
+
+  async getAlarm(): Promise<number | null> {
+    return this.alarm;
+  }
+
+  async deleteAlarm(): Promise<void> {
+    this.alarm = null;
   }
 }
 
@@ -63,6 +76,10 @@ describe("IssueRun state machine", () => {
 });
 
 describe("IssueRun Durable Object", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("materializes a new run in queued state", async () => {
     const issueRun = createIssueRun();
 
@@ -102,6 +119,91 @@ describe("IssueRun Durable Object", () => {
     });
   });
 
+  it("stores lease holder and starts an alarm when dispatch is accepted", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const { issueRun, storage } = createIssueRunWithStorage();
+
+    await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      workerId: "worker-1",
+      leaseSec: 45,
+    });
+    const response = await post(issueRun, "/ack", { accept: true, workerId: "worker-1" });
+
+    expect(response.status).toBe(200);
+    expect(await storage.getAlarm()).toBe(46_000);
+    await expect(readIssueRunResponse(response)).resolves.toMatchObject({
+      run: {
+        status: "running",
+        leaseHolder: "worker-1",
+        leaseExpiresAt: 46_000,
+        leaseSec: 45,
+      },
+    });
+  });
+
+  it("rejects an accepted ack from a non-holder", async () => {
+    const issueRun = createIssueRun();
+
+    await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      workerId: "worker-1",
+      leaseSec: 45,
+    });
+    const response = await post(issueRun, "/ack", { accept: true, workerId: "worker-2" });
+
+    expect(response.status).toBe(409);
+    await expect(readIssueRunResponse(response)).resolves.toMatchObject({
+      error: "lease_holder_mismatch",
+    });
+  });
+
+  it("requeues and clears the lease when the alarm fires after expiry", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const { issueRun, storage } = createIssueRunWithStorage();
+
+    await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      workerId: "worker-1",
+      leaseSec: 2,
+    });
+    await post(issueRun, "/ack", { accept: true, workerId: "worker-1" });
+
+    now.mockReturnValue(3_001);
+    await issueRun.alarm();
+
+    expect(await storage.getAlarm()).toBeNull();
+    const state = await readIssueRunResponse(await issueRun.fetch(new Request("https://issue-run.test/state")));
+    expect(state.run).toMatchObject({ status: "queued" });
+    expect(state.run?.leaseHolder).toBeUndefined();
+    expect(state.run?.leaseExpiresAt).toBeUndefined();
+    expect(state.run?.leaseSec).toBeUndefined();
+  });
+
+  it("keeps the run and resets the alarm when an early alarm fires", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const { issueRun, storage } = createIssueRunWithStorage();
+
+    await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      workerId: "worker-1",
+      leaseSec: 5,
+    });
+    await post(issueRun, "/ack", { accept: true, workerId: "worker-1" });
+
+    now.mockReturnValue(2_000);
+    await issueRun.alarm();
+
+    expect(await storage.getAlarm()).toBe(6_000);
+    const state = await readIssueRunResponse(await issueRun.fetch(new Request("https://issue-run.test/state")));
+    expect(state.run).toMatchObject({
+      status: "running",
+      leaseHolder: "worker-1",
+      leaseExpiresAt: 6_000,
+      leaseSec: 5,
+    });
+  });
+
   it("requeues rejected dispatch acknowledgements", async () => {
     const issueRun = createIssueRun();
 
@@ -128,7 +230,12 @@ describe("IssueRun Durable Object", () => {
 });
 
 function createIssueRun(): IssueRun {
-  return new IssueRun({ storage: new MemoryIssueRunStorage() }, {});
+  return createIssueRunWithStorage().issueRun;
+}
+
+function createIssueRunWithStorage(): { issueRun: IssueRun; storage: MemoryIssueRunStorage } {
+  const storage = new MemoryIssueRunStorage();
+  return { issueRun: new IssueRun({ storage }, {}), storage };
 }
 
 function post(issueRun: IssueRun, path: string, body: Record<string, unknown>): Promise<Response> {

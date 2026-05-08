@@ -18,6 +18,9 @@ export type IssueRunRecord = {
   updatedAt: number;
   startedAt?: number;
   endedAt?: number;
+  leaseHolder?: string;
+  leaseExpiresAt?: number;
+  leaseSec?: number;
 };
 
 export type IssueRunTransitionResult = {
@@ -41,12 +44,23 @@ export class IssueRunTransitionError extends Error {
 export type IssueRunStorage = {
   get<T>(key: string): Promise<T | undefined>;
   put<T>(key: string, value: T): Promise<void>;
+  setAlarm(scheduledTime: number | Date): Promise<void>;
+  getAlarm(): Promise<number | null>;
+  deleteAlarm(): Promise<void>;
 };
 type IssueRunDurableState = {
   storage: IssueRunStorage;
 };
 
+type IssueRunTransitionOptions = {
+  leaseHolder?: string;
+  leaseSec?: number;
+  leaseExpiresAt?: number;
+  clearLease?: boolean;
+};
+
 const RECORD_KEY = "issue-run:record";
+const DEFAULT_LEASE_SEC = 60;
 const TERMINAL_STATES = new Set<IssueRunStatus>(["succeeded", "failed", "cancelled"]);
 const ALLOWED_TRANSITIONS: Record<IssueRunStatus, readonly IssueRunStatus[]> = {
   queued: ["dispatched"],
@@ -101,7 +115,10 @@ export class IssueRun {
     if (request.method === "POST" && url.pathname === "/dispatch") {
       const body = await readObjectBody(request);
       const record = await this.ensureRecord(body);
-      return this.transition(record, "dispatched");
+      return this.transition(record, "dispatched", {
+        leaseHolder: getStringField(body, "workerId"),
+        leaseSec: getLeaseSecField(body, "leaseSec"),
+      });
     }
 
     if (request.method === "POST" && url.pathname === "/ack") {
@@ -112,7 +129,16 @@ export class IssueRun {
       }
 
       const record = await this.ensureRecord();
-      return this.transition(record, accept ? "running" : "queued");
+      const workerId = getStringField(body, "workerId");
+      if (accept && record.leaseHolder !== undefined && workerId !== undefined && workerId !== record.leaseHolder) {
+        return jsonResponse({ error: "lease_holder_mismatch" }, 409);
+      }
+
+      const leaseSec = record.leaseSec ?? DEFAULT_LEASE_SEC;
+      return this.transition(record, accept ? "running" : "queued", accept ? {
+        leaseExpiresAt: Date.now() + leaseSec * 1000,
+        leaseSec,
+      } : { clearLease: true });
     }
 
     if (request.method === "POST" && url.pathname === "/complete") {
@@ -126,10 +152,27 @@ export class IssueRun {
       }
 
       const record = await this.ensureRecord();
-      return this.transition(record, status);
+      return this.transition(record, status, { clearLease: true });
     }
 
     return jsonResponse({ error: "not_found" }, 404);
+  }
+
+  async alarm(): Promise<void> {
+    const record = await this.state.storage.get<IssueRunRecord>(RECORD_KEY);
+    if (record === undefined || record.status !== "running" || record.leaseExpiresAt === undefined) {
+      await this.state.storage.deleteAlarm();
+      return;
+    }
+
+    const now = Date.now();
+    if (record.leaseExpiresAt > now) {
+      await this.state.storage.setAlarm(record.leaseExpiresAt);
+      return;
+    }
+
+    await this.transitionRecord(record, "queued", now, { clearLease: true });
+    await this.state.storage.deleteAlarm();
   }
 
   private async ensureRecord(metadata: Record<string, unknown> = {}): Promise<IssueRunRecord> {
@@ -152,22 +195,14 @@ export class IssueRun {
     return record;
   }
 
-  private async transition(record: IssueRunRecord, next: IssueRunStatus): Promise<Response> {
+  private async transition(
+    record: IssueRunRecord,
+    next: IssueRunStatus,
+    options: IssueRunTransitionOptions = {},
+  ): Promise<Response> {
     try {
-      const result = transitionIssueRunStatus(record.status, next);
       const now = Date.now();
-      const updated: IssueRunRecord = {
-        ...record,
-        status: result.current,
-        updatedAt: now,
-        startedAt: result.current === "running" && record.startedAt === undefined ? now : record.startedAt,
-        endedAt: isTerminalIssueRunStatus(result.current) && record.endedAt === undefined ? now : record.endedAt,
-      };
-
-      if (result.changed) {
-        await this.state.storage.put(RECORD_KEY, updated);
-      }
-
+      const { updated, result } = await this.transitionRecord(record, next, now, options);
       return jsonResponse({ run: updated, transition: result });
     } catch (error) {
       if (error instanceof IssueRunTransitionError) {
@@ -175,6 +210,43 @@ export class IssueRun {
       }
       throw error;
     }
+  }
+
+  private async transitionRecord(
+    record: IssueRunRecord,
+    next: IssueRunStatus,
+    now: number,
+    options: IssueRunTransitionOptions = {},
+  ): Promise<{ updated: IssueRunRecord; result: IssueRunTransitionResult }> {
+    const result = transitionIssueRunStatus(record.status, next);
+    const updated: IssueRunRecord = {
+      ...record,
+      status: result.current,
+      updatedAt: now,
+      startedAt: result.current === "running" && record.startedAt === undefined ? now : record.startedAt,
+      endedAt: isTerminalIssueRunStatus(result.current) && record.endedAt === undefined ? now : record.endedAt,
+      leaseHolder: options.leaseHolder ?? record.leaseHolder,
+      leaseExpiresAt: options.leaseExpiresAt ?? record.leaseExpiresAt,
+      leaseSec: options.leaseSec ?? record.leaseSec,
+    };
+
+    if (options.clearLease) {
+      delete updated.leaseHolder;
+      delete updated.leaseExpiresAt;
+      delete updated.leaseSec;
+    }
+
+    if (result.changed || leaseFieldsChanged(record, updated)) {
+      await this.state.storage.put(RECORD_KEY, updated);
+    }
+
+    if (updated.status === "running" && updated.leaseExpiresAt !== undefined) {
+      await this.state.storage.setAlarm(updated.leaseExpiresAt);
+    } else if (record.leaseExpiresAt !== undefined || options.clearLease) {
+      await this.state.storage.deleteAlarm();
+    }
+
+    return { updated, result };
   }
 }
 
@@ -199,6 +271,20 @@ function getStringField(record: Record<string, unknown>, key: string): string | 
 function getBooleanField(record: Record<string, unknown>, key: string): boolean | undefined {
   const value = record[key];
   return typeof value === "boolean" ? value : undefined;
+}
+
+function getLeaseSecField(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    return undefined;
+  }
+  return value;
+}
+
+function leaseFieldsChanged(previous: IssueRunRecord, next: IssueRunRecord): boolean {
+  return previous.leaseHolder !== next.leaseHolder
+    || previous.leaseExpiresAt !== next.leaseExpiresAt
+    || previous.leaseSec !== next.leaseSec;
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
