@@ -17,6 +17,16 @@ bucket_name = "contrabass-artifacts"
 binding = "EVENTS_ARCHIVE_BUCKET"
 bucket_name = "contrabass-events-archive"
 
+[[queues.producers]]
+binding = "EVENTS_ARCHIVE_QUEUE"
+queue = "events-archive"
+
+[[queues.consumers]]
+queue = "events-archive"
+max_batch_size = 100
+max_batch_timeout = 30
+max_retries = 3
+
 [observability]
 enabled = true
 head_sampling_rate = 1.0
@@ -37,6 +47,16 @@ bucket_name = "contrabass-artifacts"
 [[env.staging.r2_buckets]]
 binding = "EVENTS_ARCHIVE_BUCKET"
 bucket_name = "contrabass-events-archive"
+
+[[env.staging.queues.producers]]
+binding = "EVENTS_ARCHIVE_QUEUE"
+queue = "events-archive"
+
+[[env.staging.queues.consumers]]
+queue = "events-archive"
+max_batch_size = 100
+max_batch_timeout = 30
+max_retries = 3
 
 [env.staging.vars]
 CONTRABASS_ENV = "staging"
@@ -61,6 +81,16 @@ bucket_name = "contrabass-artifacts"
 [[env.production.r2_buckets]]
 binding = "EVENTS_ARCHIVE_BUCKET"
 bucket_name = "contrabass-events-archive"
+
+[[env.production.queues.producers]]
+binding = "EVENTS_ARCHIVE_QUEUE"
+queue = "events-archive"
+
+[[env.production.queues.consumers]]
+queue = "events-archive"
+max_batch_size = 100
+max_batch_timeout = 30
+max_retries = 3
 
 [env.production.vars]
 CONTRABASS_ENV = "production"
