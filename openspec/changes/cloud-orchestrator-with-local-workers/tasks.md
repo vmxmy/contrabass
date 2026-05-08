@@ -34,7 +34,7 @@
 ## 5. Secrets Store
 
 - [x] 5.1 Create Secrets Store and document per-team secret naming convention (`tracker/{teamId}/linear`, `tracker/{teamId}/github`)
-- [ ] 5.2 Bind Secrets Store only to the tracker poller Worker (NOT to API Worker or DOs)
+- [x] 5.2 Bind Secrets Store only to the tracker poller Worker (NOT to API Worker or DOs)
 - [ ] 5.3 Add `make cloud-secret-set` helper
 
 ## 6. `IssueRun` Durable Object

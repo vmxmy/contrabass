@@ -1,9 +1,11 @@
 # Contrabass — Build Tooling
 # Build order: dashboard SPA must build before Go binary (embed.FS requires dist/)
 
-.PHONY: build-dashboard build-landing build cloud-build cloud-deploy cloud-deploy-dry cloud-migrate cloud-test dev-dashboard dev-dashboard-stack dev-landing dev test test-race test-cover test-dashboard test-landing test-quick test-all ci clean lint release-dry
+.PHONY: build-dashboard build-landing build cloud-build cloud-deploy cloud-deploy-dry cloud-migrate cloud-secret-set cloud-test dev-dashboard dev-dashboard-stack dev-landing dev test test-race test-cover test-dashboard test-landing test-quick test-all ci clean lint release-dry
 
 CLOUD_MIGRATE_FLAGS ?= --remote
+CLOUD_SECRET_STORE_ID ?= a6568877039e4cd6a86448cb73b20066
+CLOUD_SECRET_SCOPES ?= workers
 
 # Build the React dashboard SPA to packages/dashboard/dist/
 build-dashboard:
@@ -32,6 +34,17 @@ cloud-deploy-dry:
 # Apply pending D1 migrations. Override with CLOUD_MIGRATE_FLAGS="--local" for local Wrangler state.
 cloud-migrate:
 	cd cloud && bun run migrate -- $(CLOUD_MIGRATE_FLAGS)
+
+# Set a tracker token in Cloudflare Secrets Store. Example:
+#   make cloud-secret-set TEAM_ID=my-team PROVIDER=linear
+cloud-secret-set:
+	@cd cloud && \
+		TEAM_ID="$(TEAM_ID)" \
+		PROVIDER="$(PROVIDER)" \
+		CLOUD_SECRET_STORE_ID="$(CLOUD_SECRET_STORE_ID)" \
+		CLOUD_SECRET_SCOPES="$(CLOUD_SECRET_SCOPES)" \
+		CLOUD_SECRET_VALUE="$(CLOUD_SECRET_VALUE)" \
+		../scripts/cloud-secret-set.sh
 
 # Run cloud TypeScript checks and tests
 cloud-test:
