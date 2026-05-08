@@ -13,6 +13,7 @@ import {
 
 class MemoryIssueRunStorage implements IssueRunStorage {
   private readonly values = new Map<string, unknown>();
+  private transactionLock: Promise<void> = Promise.resolve();
   private alarm: number | null = null;
 
   async get<T>(key: string): Promise<T | undefined> {
@@ -21,6 +22,21 @@ class MemoryIssueRunStorage implements IssueRunStorage {
 
   async put<T>(key: string, value: T): Promise<void> {
     this.values.set(key, value);
+  }
+
+  async transaction<T>(closure: (txn: MemoryIssueRunStorage) => Promise<T> | T): Promise<T> {
+    const previous = this.transactionLock;
+    let release = () => {};
+    this.transactionLock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await previous;
+    try {
+      return await closure(this);
+    } finally {
+      release();
+    }
   }
 
   async setAlarm(scheduledTime: number | Date): Promise<void> {
@@ -174,6 +190,81 @@ describe("IssueRun Durable Object", () => {
         leaseHolder: "worker-1",
         leaseExpiresAt: 46_000,
         leaseSec: 45,
+      },
+    });
+  });
+
+  it("allows only one concurrent dispatch lease acquisition", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const issueRun = createIssueRun();
+
+    const [first, second] = await Promise.all([
+      post(issueRun, "/dispatch", {
+        runId: "run-1",
+        teamId: "team-1",
+        issueRef: "LIN-123",
+        workerId: "worker-1",
+        leaseSec: 45,
+      }),
+      post(issueRun, "/dispatch", {
+        runId: "run-1",
+        teamId: "team-1",
+        issueRef: "LIN-123",
+        workerId: "worker-2",
+        leaseSec: 45,
+      }),
+    ]);
+
+    const responses = [
+      { status: first.status, body: await readIssueRunResponse(first) },
+      { status: second.status, body: await readIssueRunResponse(second) },
+    ];
+
+    const acquired = responses.filter((response) => response.status === 200);
+    const rejected = responses.filter((response) => response.status === 409);
+    const acquiredHolder = acquired[0]?.body.run?.leaseHolder;
+
+    expect(acquired).toHaveLength(1);
+    expect(["worker-1", "worker-2"]).toContain(acquiredHolder);
+    expect(acquired[0]?.body).toMatchObject({
+      run: {
+        status: "dispatched",
+        leaseHolder: acquiredHolder,
+        leaseSec: 45,
+      },
+      transition: { previous: "queued", current: "dispatched", changed: true },
+    });
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.body).toMatchObject({
+      error: "lease_already_held",
+      run: {
+        status: "dispatched",
+        leaseHolder: acquiredHolder,
+      },
+    });
+  });
+
+  it("rejects a second dispatch while a lease is already held", async () => {
+    const issueRun = createIssueRun();
+
+    const first = await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      workerId: "worker-1",
+      leaseSec: 45,
+    });
+    const second = await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      workerId: "worker-2",
+      leaseSec: 45,
+    });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(409);
+    await expect(readIssueRunResponse(second)).resolves.toMatchObject({
+      error: "lease_already_held",
+      run: {
+        status: "dispatched",
+        leaseHolder: "worker-1",
       },
     });
   });

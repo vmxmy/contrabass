@@ -72,9 +72,14 @@ export class IssueRunTransitionError extends Error {
 export type IssueRunStorage = {
   get<T>(key: string): Promise<T | undefined>;
   put<T>(key: string, value: T): Promise<void>;
+  transaction<T>(closure: (txn: IssueRunStorageTransaction) => Promise<T> | T): Promise<T>;
   setAlarm(scheduledTime: number | Date): Promise<void>;
   getAlarm(): Promise<number | null>;
   deleteAlarm(): Promise<void>;
+};
+export type IssueRunStorageTransaction = {
+  get<T>(key: string): Promise<T | undefined>;
+  put<T>(key: string, value: T): Promise<void>;
 };
 type IssueRunDurableState = {
   storage: IssueRunStorage;
@@ -145,8 +150,7 @@ export class IssueRun {
 
     if (request.method === "POST" && url.pathname === "/dispatch") {
       const body = await readObjectBody(request);
-      const record = await this.ensureRecord(body);
-      return this.transition(record, "dispatched", {
+      return this.acquireDispatch(body, {
         leaseHolder: getStringField(body, "workerId"),
         leaseSec: getLeaseSecField(body, "leaseSec"),
       });
@@ -250,6 +254,57 @@ export class IssueRun {
       }
       throw error;
     }
+  }
+
+  private async acquireDispatch(
+    metadata: Record<string, unknown>,
+    options: IssueRunTransitionOptions = {},
+  ): Promise<Response> {
+    const now = Date.now();
+    const acquisition = await this.state.storage.transaction(async (txn) => {
+      const record = await this.getDispatchCandidate(txn, metadata, now);
+      if (record.status !== "queued" || record.leaseHolder !== undefined) {
+        return { acquired: false, record };
+      }
+
+      const result = transitionIssueRunStatus(record.status, "dispatched");
+      const updated: IssueRunRecord = {
+        ...record,
+        status: result.current,
+        updatedAt: now,
+        leaseHolder: options.leaseHolder ?? record.leaseHolder,
+        leaseSec: options.leaseSec ?? record.leaseSec,
+      };
+
+      await txn.put(RECORD_KEY, updated);
+      return { acquired: true, record: updated, result };
+    });
+
+    if (!acquisition.acquired) {
+      return jsonResponse({ error: "lease_already_held", run: acquisition.record }, 409);
+    }
+
+    return jsonResponse({ run: acquisition.record, transition: acquisition.result });
+  }
+
+  private async getDispatchCandidate(
+    txn: IssueRunStorageTransaction,
+    metadata: Record<string, unknown>,
+    now: number,
+  ): Promise<IssueRunRecord> {
+    const existing = await txn.get<IssueRunRecord>(RECORD_KEY);
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    return {
+      runId: getStringField(metadata, "runId"),
+      teamId: getStringField(metadata, "teamId"),
+      issueRef: getStringField(metadata, "issueRef"),
+      status: "queued",
+      createdAt: now,
+      updatedAt: now,
+    };
   }
 
   private async transitionRecord(
