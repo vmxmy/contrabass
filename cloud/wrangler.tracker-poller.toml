@@ -1,0 +1,78 @@
+name = "contrabass-tracker-poller"
+main = "src/index.ts"
+compatibility_date = "2026-05-08"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+
+# Secrets Store bindings are intentionally scoped to this tracker poller Worker.
+# Do not add tracker token bindings to cloud/wrangler.toml (API Worker) or DO configs.
+[[secrets_store_secrets]]
+binding = "TRACKER_SYNTHETIC_SMOKE_LINEAR_TOKEN"
+store_id = "a6568877039e4cd6a86448cb73b20066"
+secret_name = "tracker/synthetic-smoke/linear"
+
+[[secrets_store_secrets]]
+binding = "TRACKER_SYNTHETIC_SMOKE_GITHUB_TOKEN"
+store_id = "a6568877039e4cd6a86448cb73b20066"
+secret_name = "tracker/synthetic-smoke/github"
+
+[[d1_databases]]
+binding = "CONTROL_PLANE_DB"
+database_name = "contrabass-control-plane"
+database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
+
+[observability]
+enabled = true
+head_sampling_rate = 1.0
+
+[env.staging]
+name = "contrabass-tracker-poller-staging"
+workers_dev = false
+
+[[env.staging.secrets_store_secrets]]
+binding = "TRACKER_SYNTHETIC_SMOKE_LINEAR_TOKEN"
+store_id = "a6568877039e4cd6a86448cb73b20066"
+secret_name = "tracker/synthetic-smoke/linear"
+
+[[env.staging.secrets_store_secrets]]
+binding = "TRACKER_SYNTHETIC_SMOKE_GITHUB_TOKEN"
+store_id = "a6568877039e4cd6a86448cb73b20066"
+secret_name = "tracker/synthetic-smoke/github"
+
+[[env.staging.d1_databases]]
+binding = "CONTROL_PLANE_DB"
+database_name = "contrabass-control-plane"
+database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
+
+[env.staging.vars]
+CONTRABASS_ENV = "staging"
+
+[env.staging.observability]
+enabled = true
+head_sampling_rate = 1.0
+
+[env.production]
+name = "contrabass-tracker-poller"
+workers_dev = false
+
+[[env.production.secrets_store_secrets]]
+binding = "TRACKER_SYNTHETIC_SMOKE_LINEAR_TOKEN"
+store_id = "a6568877039e4cd6a86448cb73b20066"
+secret_name = "tracker/synthetic-smoke/linear"
+
+[[env.production.secrets_store_secrets]]
+binding = "TRACKER_SYNTHETIC_SMOKE_GITHUB_TOKEN"
+store_id = "a6568877039e4cd6a86448cb73b20066"
+secret_name = "tracker/synthetic-smoke/github"
+
+[[env.production.d1_databases]]
+binding = "CONTROL_PLANE_DB"
+database_name = "contrabass-control-plane"
+database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
+
+[env.production.vars]
+CONTRABASS_ENV = "production"
+
+[env.production.observability]
+enabled = true
+head_sampling_rate = 1.0
