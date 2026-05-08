@@ -200,11 +200,24 @@ If truly blocked, write "BLOCKED: <reason>" as the LAST line and explain.
 
 def build_review_prompt(task: Task, diff: str) -> str:
     truncated = diff if len(diff) < 60000 else diff[:60000] + "\n... [diff truncated]"
-    return f"""You are an independent reviewer. You did NOT see the implementation conversation. Review the diff below for correctness against the OpenSpec change at `openspec/changes/cloud-orchestrator-with-local-workers/`.
+    return f"""You are an independent reviewer. You did NOT see the implementation conversation. Review the diff below ONLY against the literal task statement.
 
 # Task being reviewed
 
-{task.num}: {task.text}
+**{task.num}:** {task.text}
+
+# Severity rubric (READ CAREFULLY — STRICT)
+
+The implementation passes if it satisfies the LITERAL task statement above and the surrounding spec scenarios are not REGRESSED. The reviewer's job is NOT to expand the task to cover the whole spec.
+
+- **critical**: code does not compile, tests fail, runtime panic, security hole, data loss.
+- **high**: the literal task statement is NOT satisfied; OR the diff makes an existing test/scenario fail.
+- **medium**: the diff exposes a real issue elsewhere in the spec/schema/code that this task did not cause and is not in scope to fix. **Do NOT block on these — file them as a MEDIUM finding so they become a follow-up note.**
+- **low** / **nit**: style, doc, naming.
+
+**Cross-task spec gaps** (e.g. "schema X is missing field Y", "endpoint Z has no error type") are MEDIUM by default — even if they look serious — because fixing them belongs to a different task. Only escalate to HIGH if THIS task's literal statement explicitly required addressing them.
+
+# What to read
 
 Read the relevant capability spec(s) under `openspec/changes/cloud-orchestrator-with-local-workers/specs/<capability>/spec.md` based on what the diff touches. Verify the diff against the spec text directly.
 
@@ -214,9 +227,9 @@ Read the relevant capability spec(s) under `openspec/changes/cloud-orchestrator-
 {truncated}
 ```
 
-# Output rubric
+# Output
 
-For each finding:
+For each finding, emit one block:
 
 [severity: critical|high|medium|low|nit]
 File: <path>:<line or json-pointer>
@@ -230,9 +243,11 @@ VERDICT: APPROVE
 VERDICT: REQUEST_CHANGES
 VERDICT: BLOCK
 
-Use BLOCK only if the change should be reverted and reworked from scratch.
-Use REQUEST_CHANGES if there are critical/high issues that must be fixed before commit.
-Use APPROVE if no critical/high findings (medium/low/nit are acceptable for follow-up).
+- BLOCK only if the change should be reverted and reworked from scratch (rare).
+- REQUEST_CHANGES only if there is a CRITICAL or HIGH finding (per rubric above).
+- APPROVE if there are zero critical/high findings — MEDIUM/LOW/NIT are acceptable for follow-up.
+
+Be opinionated but stay in scope. Do not invent extra requirements that aren't in the literal task statement.
 """
 
 
@@ -275,7 +290,30 @@ def has_critical_or_high(text: str) -> bool:
 
 
 # ---------- git ----------
+HOOK_NOISE_PATHS = [
+    "AGENTS.md",  # gitnexus indexer updates the symbol-count line on hook; not codex's work
+]
+
+
+def revert_hook_noise() -> None:
+    """Hooks (gitnexus indexer, etc.) silently mutate tracked files
+    independent of codex's task. Revert those before capturing the diff
+    so the reviewer sees only codex's changes."""
+    for p in HOOK_NOISE_PATHS:
+        full = REPO / p
+        if not full.exists():
+            continue
+        # Only revert if dirty. `git checkout` is a no-op on a clean file.
+        code, status, _ = run(["git", "status", "--porcelain", p], cwd=REPO, check=False)
+        if not status.strip():
+            continue
+        # Drop both staged and unstaged changes for this path.
+        run(["git", "checkout", "HEAD", "--", p], cwd=REPO, check=False)
+        log(f"reverted hook-noise change in {p}")
+
+
 def git_diff_full() -> str:
+    revert_hook_noise()
     code, out, _ = run(["git", "diff", "--no-color"], cwd=REPO, check=False)
     code2, untracked, _ = run(["git", "ls-files", "--others", "--exclude-standard"], cwd=REPO, check=False)
     block = ""
