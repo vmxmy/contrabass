@@ -26,6 +26,7 @@ queue = "events-archive"
 max_batch_size = 100
 max_batch_timeout = 30
 max_retries = 3
+dead_letter_queue = "events-archive-dlq"
 
 [observability]
 enabled = true
@@ -57,6 +58,7 @@ queue = "events-archive"
 max_batch_size = 100
 max_batch_timeout = 30
 max_retries = 3
+dead_letter_queue = "events-archive-dlq"
 
 [env.staging.vars]
 CONTRABASS_ENV = "staging"
@@ -91,6 +93,7 @@ queue = "events-archive"
 max_batch_size = 100
 max_batch_timeout = 30
 max_retries = 3
+dead_letter_queue = "events-archive-dlq"
 
 [env.production.vars]
 CONTRABASS_ENV = "production"
