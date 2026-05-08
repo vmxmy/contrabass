@@ -36,12 +36,14 @@ class MemoryIssueRunStorage implements IssueRunStorage {
 
 type IssueRunResponseBody = {
   run?: IssueRunRecord;
+  leaseExpiresAt?: number;
   transition?: {
     previous: IssueRunStatus;
     current: IssueRunStatus;
     changed: boolean;
   };
   error?: string;
+  protocol_version?: string;
 };
 
 describe("IssueRun state machine", () => {
@@ -204,6 +206,94 @@ describe("IssueRun Durable Object", () => {
     });
   });
 
+  it("extends the lease and resets the alarm on heartbeat from holder", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const { issueRun, storage } = createIssueRunWithStorage();
+
+    await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      workerId: "worker-1",
+      leaseSec: 5,
+    });
+    await post(issueRun, "/ack", { accept: true, workerId: "worker-1" });
+
+    now.mockReturnValue(3_000);
+    const response = await post(issueRun, "/heartbeat", {
+      protocol_version: "1.0.0",
+      lastEventTs: 2_500,
+    }, { "x-contrabass-worker-id": "worker-1" });
+
+    expect(response.status).toBe(200);
+    expect(await storage.getAlarm()).toBe(8_000);
+    await expect(readIssueRunResponse(response)).resolves.toMatchObject({
+      leaseExpiresAt: 8_000,
+      run: {
+        status: "running",
+        leaseHolder: "worker-1",
+        leaseExpiresAt: 8_000,
+        leaseSec: 5,
+      },
+    });
+  });
+
+  it("rejects heartbeat from a non-holder without extending the lease", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const { issueRun, storage } = createIssueRunWithStorage();
+
+    await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      workerId: "worker-1",
+      leaseSec: 5,
+    });
+    await post(issueRun, "/ack", { accept: true, workerId: "worker-1" });
+
+    now.mockReturnValue(3_000);
+    const response = await post(issueRun, "/heartbeat", {
+      protocol_version: "1.0.0",
+      lastEventTs: 2_500,
+    }, { "x-contrabass-worker-id": "worker-2" });
+
+    expect(response.status).toBe(409);
+    expect(await storage.getAlarm()).toBe(6_000);
+    await expect(readIssueRunResponse(response)).resolves.toMatchObject({
+      protocol_version: "1.0.0",
+      error: "lease_holder_mismatch",
+    });
+
+    const state = await readIssueRunResponse(await issueRun.fetch(new Request("https://issue-run.test/state")));
+    expect(state.run).toMatchObject({
+      status: "running",
+      leaseHolder: "worker-1",
+      leaseExpiresAt: 6_000,
+      leaseSec: 5,
+    });
+  });
+
+  it("rejects heartbeat after lease expiry without resetting the alarm", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const { issueRun, storage } = createIssueRunWithStorage();
+
+    await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      workerId: "worker-1",
+      leaseSec: 5,
+    });
+    await post(issueRun, "/ack", { accept: true, workerId: "worker-1" });
+
+    now.mockReturnValue(6_001);
+    const response = await post(issueRun, "/heartbeat", {
+      protocol_version: "1.0.0",
+      lastEventTs: 5_500,
+    }, { "x-contrabass-worker-id": "worker-1" });
+
+    expect(response.status).toBe(409);
+    expect(await storage.getAlarm()).toBe(6_000);
+    await expect(readIssueRunResponse(response)).resolves.toMatchObject({
+      protocol_version: "1.0.0",
+      error: "lease_revoked",
+    });
+  });
+
   it("requeues rejected dispatch acknowledgements", async () => {
     const issueRun = createIssueRun();
 
@@ -238,12 +328,17 @@ function createIssueRunWithStorage(): { issueRun: IssueRun; storage: MemoryIssue
   return { issueRun: new IssueRun({ storage }, {}), storage };
 }
 
-function post(issueRun: IssueRun, path: string, body: Record<string, unknown>): Promise<Response> {
+function post(
+  issueRun: IssueRun,
+  path: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+): Promise<Response> {
   return issueRun.fetch(
     new Request(`https://issue-run.test${path}`, {
       method: "POST",
       body: JSON.stringify(body),
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...headers },
     }),
   );
 }

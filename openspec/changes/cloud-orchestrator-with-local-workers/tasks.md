@@ -40,7 +40,7 @@
 ## 6. `IssueRun` Durable Object
 
 - [x] 6.1 Implement `IssueRun` DO class under `cloud/src/do/issue-run.ts` with state machine `queued | dispatched | running | succeeded | failed | cancelled`
-- [ ] 6.2 Implement lease tracking (`leaseHolder`, `leaseExpiresAt`, `leaseSec`) with DO alarms
+- [x] 6.2 Implement lease tracking (`leaseHolder`, `leaseExpiresAt`, `leaseSec`) with DO alarms
 - [ ] 6.3 Implement heartbeat handler that extends lease and resets alarm
 - [ ] 6.4 Implement events append + forward to `TeamCoordinator` + enqueue to events Queue
 - [ ] 6.5 Implement CAS dispatch acquire (single-leaseholder guarantee)

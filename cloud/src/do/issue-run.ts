@@ -29,6 +29,11 @@ export type IssueRunTransitionResult = {
   changed: boolean;
 };
 
+export type IssueRunHeartbeatResult = {
+  run: IssueRunRecord;
+  leaseExpiresAt: number;
+};
+
 export class IssueRunTransitionError extends Error {
   readonly code = "invalid_state_transition";
 
@@ -141,6 +146,11 @@ export class IssueRun {
       } : { clearLease: true });
     }
 
+    if (request.method === "POST" && url.pathname === "/heartbeat") {
+      const body = await readObjectBody(request);
+      return this.handleHeartbeat(request, body);
+    }
+
     if (request.method === "POST" && url.pathname === "/complete") {
       const body = await readObjectBody(request);
       const status = getStringField(body, "status");
@@ -248,6 +258,48 @@ export class IssueRun {
 
     return { updated, result };
   }
+
+  private async handleHeartbeat(
+    request: Request,
+    body: Record<string, unknown>,
+  ): Promise<Response> {
+    const record = await this.state.storage.get<IssueRunRecord>(RECORD_KEY);
+    if (record === undefined) {
+      return heartbeatError("run_unknown", "run was not found", 404);
+    }
+    if (isTerminalIssueRunStatus(record.status)) {
+      return heartbeatError("run_terminal", "run is already terminal", 409);
+    }
+    if (record.status !== "running" || record.leaseExpiresAt === undefined || record.leaseSec === undefined) {
+      return heartbeatError("lease_revoked", "run lease has been revoked", 409);
+    }
+
+    const workerId = getRequestWorkerId(request, body);
+    if (record.leaseHolder !== undefined && workerId !== record.leaseHolder) {
+      return heartbeatError(
+        "lease_holder_mismatch",
+        "heartbeat came from a worker that does not hold the lease",
+        409,
+      );
+    }
+
+    const now = Date.now();
+    if (record.leaseExpiresAt <= now) {
+      return heartbeatError("lease_revoked", "run lease has been revoked", 409);
+    }
+
+    const leaseExpiresAt = now + record.leaseSec * 1000;
+    const updated: IssueRunRecord = {
+      ...record,
+      updatedAt: now,
+      leaseExpiresAt,
+    };
+
+    await this.state.storage.put(RECORD_KEY, updated);
+    await this.state.storage.setAlarm(leaseExpiresAt);
+
+    return jsonResponse({ run: updated, leaseExpiresAt });
+  }
 }
 
 async function readObjectBody(request: Request): Promise<Record<string, unknown>> {
@@ -281,6 +333,10 @@ function getLeaseSecField(record: Record<string, unknown>, key: string): number 
   return value;
 }
 
+function getRequestWorkerId(request: Request, body: Record<string, unknown>): string | undefined {
+  return request.headers.get("x-contrabass-worker-id") ?? getStringField(body, "workerId");
+}
+
 function leaseFieldsChanged(previous: IssueRunRecord, next: IssueRunRecord): boolean {
   return previous.leaseHolder !== next.leaseHolder
     || previous.leaseExpiresAt !== next.leaseExpiresAt
@@ -289,4 +345,8 @@ function leaseFieldsChanged(previous: IssueRunRecord, next: IssueRunRecord): boo
 
 function jsonResponse(body: unknown, status = 200): Response {
   return Response.json(body, { status });
+}
+
+function heartbeatError(error: string, message: string, status: number): Response {
+  return jsonResponse({ protocol_version: "1.0.0", error, message }, status);
 }
