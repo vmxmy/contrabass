@@ -24,6 +24,10 @@ class MemoryIssueRunStorage implements IssueRunStorage {
     this.values.set(key, value);
   }
 
+  async delete(key: string): Promise<boolean> {
+    return this.values.delete(key);
+  }
+
   async transaction<T>(closure: (txn: MemoryIssueRunStorage) => Promise<T> | T): Promise<T> {
     const previous = this.transactionLock;
     let release = () => {};
@@ -576,7 +580,7 @@ describe("IssueRun Durable Object", () => {
     });
     expect(body.run?.leaseHolder).toBeUndefined();
     expect(body.run?.leaseExpiresAt).toBeUndefined();
-    await expect(storage.getAlarm()).resolves.toBeNull();
+    await expect(storage.getAlarm()).resolves.toBe(86_420_000);
     expect(db.executions).toHaveLength(1);
     expect(db.executions[0]?.values).toEqual([
       "run-1",
@@ -869,6 +873,86 @@ describe("IssueRun Durable Object", () => {
     const forwarded = teamCoordinator.coordinator.requests[0];
     expect(forwarded?.input).toBe("https://team-coordinator.internal/run-event");
     expect(JSON.parse(String(forwarded?.init?.body))).toEqual(storedEvents?.[0]);
+  });
+
+  it("rejects terminal late events for 24 hours and counts them without appending", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    const { issueRun, storage, queue, teamCoordinator } = createIssueRunWithBindings();
+
+    await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      teamId: "team-1",
+      issueRef: "LIN-123",
+      workerId: "worker-1",
+      kind: "local",
+      leaseSec: 30,
+    });
+    await post(issueRun, "/ack", { accept: true, workerId: "worker-1" });
+
+    const event = {
+      protocol_version: "1.0.0",
+      ts: 9_500,
+      kind: "phase",
+      payload: { phase: "exec" },
+    };
+    await postNdjson(issueRun, "/events", `${JSON.stringify(event)}\n`, {
+      "x-contrabass-worker-id": "worker-1",
+    });
+
+    now.mockReturnValue(20_000);
+    const complete = await post(issueRun, "/complete", completeBody("succeeded"), {
+      "x-contrabass-worker-id": "worker-1",
+    });
+    expect(complete.status).toBe(200);
+    await expect(storage.get<IssueRunStoredEvent[]>("issue-run:events")).resolves.toBeUndefined();
+    await expect(storage.getAlarm()).resolves.toBe(86_420_000);
+
+    now.mockReturnValue(20_001);
+    const late = await postNdjson(issueRun, "/events", `${JSON.stringify(event)}\n`, {
+      "x-contrabass-worker-id": "worker-1",
+    });
+
+    expect(late.status).toBe(409);
+    await expect(readIssueRunResponse(late)).resolves.toMatchObject({
+      protocol_version: "1.0.0",
+      error: "run_terminal",
+    });
+    const state = await readIssueRunResponse(await issueRun.fetch(new Request("https://issue-run.test/state")));
+    expect(state.run).toMatchObject({
+      status: "succeeded",
+      lateEvents: 1,
+      terminalRetentionExpiresAt: 86_420_000,
+    });
+    await expect(storage.get<IssueRunStoredEvent[]>("issue-run:events")).resolves.toBeUndefined();
+    expect(queue.messages).toHaveLength(1);
+    expect(teamCoordinator.coordinator.requests).toHaveLength(2);
+  });
+
+  it("evicts terminal retention state after 24 hours", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    const { issueRun, storage } = createIssueRunWithBindings();
+
+    await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      teamId: "team-1",
+      issueRef: "LIN-123",
+      workerId: "worker-1",
+      kind: "local",
+      leaseSec: 30,
+    });
+    await post(issueRun, "/ack", { accept: true, workerId: "worker-1" });
+
+    now.mockReturnValue(20_000);
+    await post(issueRun, "/complete", completeBody("succeeded"), {
+      "x-contrabass-worker-id": "worker-1",
+    });
+
+    now.mockReturnValue(86_420_000);
+    await issueRun.alarm();
+
+    await expect(storage.get<IssueRunRecord>("issue-run:record")).resolves.toBeUndefined();
+    await expect(storage.get<IssueRunStoredEvent[]>("issue-run:events")).resolves.toBeUndefined();
+    await expect(storage.getAlarm()).resolves.toBeNull();
   });
 
   it("rejects event batches for non-running runs without side effects", async () => {

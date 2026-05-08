@@ -26,6 +26,8 @@ export type IssueRunRecord = {
   leaseSec?: number;
   workerKind?: string;
   configHash?: string;
+  terminalRetentionExpiresAt?: number;
+  lateEvents?: number;
 };
 
 export type IssueRunTransitionResult = {
@@ -84,6 +86,7 @@ export class IssueRunTransitionError extends Error {
 export type IssueRunStorage = {
   get<T>(key: string): Promise<T | undefined>;
   put<T>(key: string, value: T): Promise<void>;
+  delete(key: string): Promise<boolean>;
   transaction<T>(closure: (txn: IssueRunStorageTransaction) => Promise<T> | T): Promise<T>;
   setAlarm(scheduledTime: number | Date): Promise<void>;
   getAlarm(): Promise<number | null>;
@@ -126,6 +129,7 @@ const EVENT_LOG_KEY = "issue-run:events";
 const DEFAULT_LEASE_SEC = 60;
 const MAX_EVENTS_PER_REQUEST = 200;
 const MAX_EVENTS_BYTES = 512 * 1024;
+const TERMINAL_RETENTION_MS = 24 * 60 * 60 * 1000;
 const TERMINAL_STATES = new Set<IssueRunStatus>(["succeeded", "failed", "cancelled"]);
 const ALLOWED_TRANSITIONS: Record<IssueRunStatus, readonly IssueRunStatus[]> = {
   queued: ["dispatched"],
@@ -238,12 +242,27 @@ export class IssueRun {
 
   async alarm(): Promise<void> {
     const record = await this.state.storage.get<IssueRunRecord>(RECORD_KEY);
-    if (record === undefined || record.status !== "running" || record.leaseExpiresAt === undefined) {
+    if (record === undefined) {
       await this.state.storage.deleteAlarm();
       return;
     }
 
     const now = Date.now();
+    if (isTerminalIssueRunStatus(record.status)) {
+      if (record.terminalRetentionExpiresAt !== undefined && record.terminalRetentionExpiresAt > now) {
+        await this.state.storage.setAlarm(record.terminalRetentionExpiresAt);
+        return;
+      }
+
+      await this.pruneTerminalRetention();
+      return;
+    }
+
+    if (record.status !== "running" || record.leaseExpiresAt === undefined) {
+      await this.state.storage.deleteAlarm();
+      return;
+    }
+
     if (record.leaseExpiresAt > now) {
       await this.state.storage.setAlarm(record.leaseExpiresAt);
       return;
@@ -356,6 +375,9 @@ export class IssueRun {
       updatedAt: now,
       startedAt: result.current === "running" && record.startedAt === undefined ? now : record.startedAt,
       endedAt: isTerminalIssueRunStatus(result.current) && record.endedAt === undefined ? now : record.endedAt,
+      terminalRetentionExpiresAt: isTerminalIssueRunStatus(result.current)
+        ? (record.terminalRetentionExpiresAt ?? now + TERMINAL_RETENTION_MS)
+        : undefined,
       leaseHolder: options.leaseHolder ?? record.leaseHolder,
       leaseExpiresAt: options.leaseExpiresAt ?? record.leaseExpiresAt,
       leaseSec: options.leaseSec ?? record.leaseSec,
@@ -375,6 +397,9 @@ export class IssueRun {
 
     if (updated.status === "running" && updated.leaseExpiresAt !== undefined) {
       await this.state.storage.setAlarm(updated.leaseExpiresAt);
+    } else if (isTerminalIssueRunStatus(updated.status) && updated.terminalRetentionExpiresAt !== undefined) {
+      await this.state.storage.delete(EVENT_LOG_KEY);
+      await this.state.storage.setAlarm(updated.terminalRetentionExpiresAt);
     } else if (record.leaseExpiresAt !== undefined || options.clearLease) {
       await this.state.storage.deleteAlarm();
     }
@@ -430,6 +455,14 @@ export class IssueRun {
       return eventError("run_unknown", "run was not found", 404);
     }
     if (isTerminalIssueRunStatus(record.status)) {
+      const retentionExpiresAt = record.terminalRetentionExpiresAt
+        ?? (record.endedAt === undefined ? undefined : record.endedAt + TERMINAL_RETENTION_MS);
+      if (retentionExpiresAt !== undefined && Date.now() >= retentionExpiresAt) {
+        await this.pruneTerminalRetention();
+        return eventError("run_unknown", "run was not found", 404);
+      }
+
+      await this.recordLateEvent(record);
       return eventError("run_terminal", "run is already terminal", 409);
     }
     if (record.status !== "running") {
@@ -678,6 +711,20 @@ export class IssueRun {
     for (const message of messages) {
       await this.env.EVENTS_ARCHIVE_QUEUE.send(message);
     }
+  }
+
+  private async recordLateEvent(record: IssueRunRecord): Promise<void> {
+    await this.state.storage.put(RECORD_KEY, {
+      ...record,
+      lateEvents: (record.lateEvents ?? 0) + 1,
+      updatedAt: Date.now(),
+    });
+  }
+
+  private async pruneTerminalRetention(): Promise<void> {
+    await this.state.storage.delete(EVENT_LOG_KEY);
+    await this.state.storage.delete(RECORD_KEY);
+    await this.state.storage.deleteAlarm();
   }
 }
 
