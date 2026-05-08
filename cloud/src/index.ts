@@ -1,3 +1,4 @@
+export { IssueRun } from "./do/issue-run";
 import { archiveEventsBatch, type EventArchiveMessage } from "./queues/events-archive";
 
 export interface Env {
