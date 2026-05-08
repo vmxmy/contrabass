@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contrabass.dev/schemas/worker-protocol/v1/register.json",
+  "title": "WorkerRegister",
+  "description": "POST /v1/workers/register — worker bootstraps a session. See worker-protocol spec: 'Worker registration and session bootstrap', 'Versioned protocol identity'.",
+  "$defs": {
+    "Request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "teamId",
+        "workerId",
+        "capabilities",
+        "maxConcurrency",
+        "version",
+        "supported_protocol_versions"
+      ],
+      "properties": {
+        "teamId":   { "$ref": "_common.json#/$defs/TeamId" },
+        "workerId": { "$ref": "_common.json#/$defs/WorkerId" },
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "_common.json#/$defs/Capability" }
+        },
+        "maxConcurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64,
+          "description": "Maximum number of concurrently-acked runs the worker accepts."
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Worker build version (e.g., contrabass git sha or semver)."
+        },
+        "supported_protocol_versions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+          },
+          "description": "Semver list of protocol versions this worker can speak. Cloud picks one (1.0.0 in v1)."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["local", "container"],
+          "default": "local",
+          "description": "Optional self-declared worker type. Cloud uses for selection policy. Phase 2 sets 'container'."
+        }
+      }
+    },
+    "Response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionToken",
+        "refreshToken",
+        "dispatchChannel",
+        "heartbeatIntervalSec",
+        "leaseSec",
+        "protocol_version"
+      ],
+      "properties": {
+        "sessionToken": { "$ref": "_common.json#/$defs/BearerToken" },
+        "refreshToken": { "$ref": "_common.json#/$defs/BearerToken" },
+        "dispatchChannel": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["wsUrl", "longPollUrl"],
+          "properties": {
+            "wsUrl":       { "$ref": "_common.json#/$defs/WsUrl" },
+            "longPollUrl": { "$ref": "_common.json#/$defs/Url" }
+          }
+        },
+        "heartbeatIntervalSec": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1800,
+          "description": "Cadence (seconds) at which the worker MUST send heartbeats per active run."
+        },
+        "leaseSec": { "$ref": "_common.json#/$defs/LeaseSec" },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "protocol_version_unsupported",
+        "team_forbidden",
+        "team_worker_cap_exceeded",
+        "auth_invalid"
+      ]
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/Request" },
+    { "$ref": "#/$defs/Response" }
+  ]
+}

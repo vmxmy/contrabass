@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contrabass.dev/schemas/worker-protocol/v1/refresh.json",
+  "title": "WorkerRefresh",
+  "description": "POST /v1/workers/refresh — worker exchanges a long-lived refresh token for a fresh session token. See worker-protocol spec: 'Session refresh'.",
+  "$defs": {
+    "Request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["refreshToken", "protocol_version"],
+      "properties": {
+        "refreshToken":     { "$ref": "_common.json#/$defs/BearerToken" },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "Response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionToken", "expiresAt", "protocol_version"],
+      "properties": {
+        "sessionToken":     { "$ref": "_common.json#/$defs/BearerToken" },
+        "expiresAt":        { "$ref": "_common.json#/$defs/EpochMillis" },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "refresh_revoked",
+        "refresh_expired",
+        "refresh_invalid"
+      ]
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/Request" },
+    { "$ref": "#/$defs/Response" }
+  ]
+}

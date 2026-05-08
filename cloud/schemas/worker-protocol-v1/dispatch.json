@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contrabass.dev/schemas/worker-protocol/v1/dispatch.json",
+  "title": "WorkerDispatchFrame",
+  "description": "Server-to-worker dispatch payload. Sent over WebSocket as a single text frame ({type: 'dispatch', ...}) and reused as the JSON body of GET /v1/workers/{workerId}/dispatch?wait=25s long-poll responses. See worker-protocol spec: 'Dispatch over WebSocket', 'Long-poll dispatch fallback'.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "protocol_version",
+    "runId",
+    "issueRef",
+    "branch",
+    "prompt",
+    "configHash",
+    "leaseSec",
+    "artifactUploadURLs"
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "dispatch"
+    },
+    "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" },
+    "runId":    { "$ref": "_common.json#/$defs/RunId" },
+    "issueRef": { "$ref": "_common.json#/$defs/IssueRef" },
+    "branch": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9._/-]+$",
+      "description": "Git branch name the worker SHOULD use for its worktree."
+    },
+    "prompt": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536,
+      "description": "Rendered Liquid template from active config (no secret references)."
+    },
+    "configHash": { "$ref": "_common.json#/$defs/ConfigHash" },
+    "leaseSec":   { "$ref": "_common.json#/$defs/LeaseSec" },
+    "ackDeadlineSec": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60,
+      "default": 5,
+      "description": "Seconds the cloud waits for an ack before revoking the lease."
+    },
+    "artifactUploadURLs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logs", "diff", "summary"],
+      "properties": {
+        "logs":    { "$ref": "_common.json#/$defs/Url" },
+        "diff":    { "$ref": "_common.json#/$defs/Url" },
+        "summary": { "$ref": "_common.json#/$defs/Url" },
+        "screenshots": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 32,
+          "items": { "$ref": "_common.json#/$defs/Url" }
+        }
+      },
+      "description": "R2 presigned PUT URLs valid for the lease duration. Workers MUST upload large outputs here, NOT via the events endpoint."
+    },
+    "dispatchedAt": { "$ref": "_common.json#/$defs/EpochMillis" }
+  }
+}

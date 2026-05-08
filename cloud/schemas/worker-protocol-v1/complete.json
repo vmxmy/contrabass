@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contrabass.dev/schemas/worker-protocol/v1/complete.json",
+  "title": "WorkerCompleteRequest",
+  "description": "POST /v1/runs/{runId}/complete — worker reports terminal state. See worker-protocol spec: 'Run completion'.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "artifactKeys", "finalConfigHash", "protocol_version"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["succeeded", "failed", "cancelled"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 0,
+      "maxLength": 4096,
+      "description": "Short human-readable summary surfaced in dashboard and tracker comment."
+    },
+    "artifactKeys": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["logs", "diff", "summary"],
+      "properties": {
+        "logs":    { "$ref": "#/$defs/R2ObjectKey" },
+        "diff":    { "$ref": "#/$defs/R2ObjectKey" },
+        "summary": { "$ref": "#/$defs/R2ObjectKey" },
+        "screenshots": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/R2ObjectKey" }
+        }
+      },
+      "description": "R2 object keys for artifacts the worker uploaded via the presigned PUT URLs from the dispatch frame."
+    },
+    "finalConfigHash": { "$ref": "_common.json#/$defs/ConfigHash" },
+    "errorClass": {
+      "type": "string",
+      "maxLength": 128,
+      "description": "Required iff status='failed'. Stable error category (e.g., 'agent_runner_crash', 'tests_failed', 'merge_conflict')."
+    },
+    "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+  },
+  "if": {
+    "properties": { "status": { "const": "failed" } },
+    "required": ["status"]
+  },
+  "then": {
+    "required": ["status", "summary", "artifactKeys", "finalConfigHash", "errorClass", "protocol_version"]
+  },
+  "$defs": {
+    "R2ObjectKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9_./-]+$"
+    },
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "lease_revoked",
+        "lease_holder_mismatch",
+        "run_unknown",
+        "run_terminal",
+        "artifact_missing"
+      ]
+    }
+  }
+}
