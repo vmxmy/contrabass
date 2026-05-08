@@ -1,0 +1,12 @@
+{
+  "protocol_version": "1.0.0",
+  "sessionToken": "session-token-abc123",
+  "sessionTokenExpiresAt": 1767229200000,
+  "refreshToken": "refresh-token-def456",
+  "dispatchChannel": {
+    "wsUrl": "wss://team-alpha.contrabass.dev/api/v1/workers/worker-local-001/dispatch-ws",
+    "longPollUrl": "https://team-alpha.contrabass.dev/api/v1/workers/worker-local-001/dispatch?wait=25s"
+  },
+  "heartbeatIntervalSec": 20,
+  "leaseSec": 60
+}

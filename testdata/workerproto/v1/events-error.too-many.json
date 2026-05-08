@@ -1,0 +1,6 @@
+{
+  "protocol_version": "1.0.0",
+  "error": "events_too_many",
+  "max_events": 200,
+  "message": "event post includes too many NDJSON lines"
+}

@@ -3,7 +3,7 @@
 - [x] 1.1 Create `cloud/schemas/worker-protocol-v1/` with JSON Schema files for register/dispatch/ack/heartbeat/events/complete/lease-revoked/refresh payloads
 - [x] 1.2 Generate Go types from those schemas under `internal/workerproto/v1/` and add `go generate` step
 - [x] 1.3 Generate TypeScript types from the same schemas under `cloud/src/workerproto/v1/` and wire into the cloud package's `tsconfig`
-- [ ] 1.4 Add a contract-test fixture set (golden JSON for every frame) under `testdata/workerproto/v1/` consumed by both Go and TS test suites
+- [x] 1.4 Add a contract-test fixture set (golden JSON for every frame) under `testdata/workerproto/v1/` consumed by both Go and TS test suites
 - [x] 1.5 Add `protocol_version` field to every frame schema and lock value to `1.0.0`
 - [ ] 1.6 Document protocol invariants and v1 non-goals in `docs/worker-protocol.md`
 

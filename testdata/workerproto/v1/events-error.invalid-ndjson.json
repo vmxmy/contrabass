@@ -1,0 +1,6 @@
+{
+  "protocol_version": "1.0.0",
+  "error": "invalid_ndjson",
+  "lineNumber": 3,
+  "message": "line 3 is not valid JSON"
+}

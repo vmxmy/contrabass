@@ -1,0 +1,11 @@
+{
+  "protocol_version": "1.0.0",
+  "ts": 1767225605000,
+  "seq": 5,
+  "kind": "error",
+  "payload": {
+    "errorClass": "tests_failed",
+    "message": "one focused package failed",
+    "fatal": false
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "protocol_version": "1.0.0",
+  "status": "cancelled",
+  "summary": "cancelled by operator before completion",
+  "artifactKeys": {},
+  "finalConfigHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}

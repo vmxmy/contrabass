@@ -1,0 +1,10 @@
+{
+  "protocol_version": "1.0.0",
+  "ts": 1767225606000,
+  "seq": 6,
+  "kind": "phase",
+  "payload": {
+    "phase": "verify",
+    "label": "running contract tests"
+  }
+}

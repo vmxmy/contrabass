@@ -1,0 +1,8 @@
+{
+  "type": "lease-revoked",
+  "protocol_version": "1.0.0",
+  "runId": "run-20260509-0001",
+  "reason": "heartbeat_timeout",
+  "reasonDetail": "no heartbeat before lease deadline",
+  "revokedAt": 1767225720000
+}

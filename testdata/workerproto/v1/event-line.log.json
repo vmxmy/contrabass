@@ -1,0 +1,11 @@
+{
+  "protocol_version": "1.0.0",
+  "ts": 1767225602000,
+  "seq": 2,
+  "kind": "log",
+  "payload": {
+    "level": "info",
+    "message": "started focused test run",
+    "source": "runner"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "protocol_version": "1.0.0",
+  "status": "failed",
+  "summary": "focused tests failed after attempted fix",
+  "errorClass": "tests_failed",
+  "artifactKeys": {
+    "logs": "teams/team-alpha/runs/run-20260509-0001/log.txt",
+    "summary": "teams/team-alpha/runs/run-20260509-0001/summary.md"
+  },
+  "finalConfigHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
