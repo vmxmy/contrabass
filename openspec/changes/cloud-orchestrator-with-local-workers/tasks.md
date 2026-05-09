@@ -116,7 +116,7 @@
 - [x] 12.6 Implement ack handling within 5-second SLA
 - [x] 12.7 Implement run executor that calls `internal/workspace.Provision`, `internal/tmux.OpenPane` (when capable), `internal/agent.Run`
 - [x] 12.8 Implement event batching adapter: agent runner output → NDJSON POST batches (≤200 events, ≤512KB, ≤2s latency)
-- [ ] 12.9 Implement heartbeat scheduler at `leaseSec / 3` with jitter, with `progress` and `lastEventTs`
+- [x] 12.9 Implement heartbeat scheduler at `leaseSec / 3` with jitter, with `progress` and `lastEventTs`
 - [ ] 12.10 Implement R2 presigned PUT uploader for logs/diff/screenshots
 - [ ] 12.11 Implement `lease-revoked` handler: SIGTERM → SIGKILL after 5s, attempt artifact upload, release worktree
 - [ ] 12.12 Implement config cache by hash and `GET /config/{hash}` fetch on miss

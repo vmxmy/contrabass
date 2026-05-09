@@ -31,6 +31,7 @@ type workerRunExecutor struct {
 	runAgent   func(context.Context, agent.AgentRunner, types.Issue, string, string) error
 	newRunner  func(string) (agent.AgentRunner, error)
 	postEvents workerEventPostFunc
+	heartbeat  *workerHeartbeatScheduler
 }
 
 type workerRunExecutorConfig struct {
@@ -45,6 +46,7 @@ type workerRunExecutorConfig struct {
 	RunAgent   func(context.Context, agent.AgentRunner, types.Issue, string, string) error
 	NewRunner  func(string) (agent.AgentRunner, error)
 	PostEvents workerEventPostFunc
+	Heartbeat  *workerHeartbeatScheduler
 }
 
 func newWorkerRunExecutor(cfg workerRunExecutorConfig) (*workerRunExecutor, error) {
@@ -76,6 +78,10 @@ func newWorkerRunExecutor(cfg workerRunExecutorConfig) (*workerRunExecutor, erro
 			return postWorkerEvents(ctx, registration, runID, events)
 		}
 	}
+	heartbeat := cfg.Heartbeat
+	if heartbeat == nil && cfg.Registration.APIBaseURL != "" {
+		heartbeat = newWorkerHeartbeatScheduler(cfg.Registration, nil)
+	}
 
 	return &workerRunExecutor{
 		teamID:       strings.TrimSpace(cfg.TeamID),
@@ -90,6 +96,7 @@ func newWorkerRunExecutor(cfg workerRunExecutorConfig) (*workerRunExecutor, erro
 		runAgent:     runAgent,
 		newRunner:    newRunner,
 		postEvents:   postEvents,
+		heartbeat:    heartbeat,
 	}, nil
 }
 
@@ -120,10 +127,13 @@ func (e *workerRunExecutor) Run(ctx context.Context, frame workerv1.WorkerDispat
 	defer runner.Close()
 
 	runAgent := e.runAgent
-	if runAgent == nil {
-		runAgent = e.runAgentWithEventUpload
+	if runAgent != nil {
+		if err := runAgent(ctx, runner, issue, workspacePath, frame.Prompt); err != nil {
+			return fmt.Errorf("run agent for run %q: %w", frame.RunID, err)
+		}
+		return nil
 	}
-	if err := runAgent(ctx, runner, issue, workspacePath, frame.Prompt); err != nil {
+	if err := e.runAgentWithEventUpload(ctx, runner, issue, workspacePath, frame.Prompt, frame.LeaseSec); err != nil {
 		return fmt.Errorf("run agent for run %q: %w", frame.RunID, err)
 	}
 	return nil
@@ -135,6 +145,7 @@ func (e *workerRunExecutor) runAgentWithEventUpload(
 	issue types.Issue,
 	workspacePath string,
 	prompt string,
+	leaseSec workerv1.LeaseSec,
 ) error {
 	if runner == nil {
 		return errors.New("agent runner is nil")
@@ -154,23 +165,61 @@ func (e *workerRunExecutor) runAgentWithEventUpload(
 		return errors.New("agent runner returned nil process")
 	}
 
+	progress := newWorkerRunProgressTracker(time.Now())
+	trackedEvents := make(chan types.AgentEvent)
 	batcher := newWorkerEventBatcher(e.postEvents)
 	g, gCtx := errgroup.WithContext(ctx)
+	heartbeatCtx, stopHeartbeat := context.WithCancel(gCtx)
+	defer stopHeartbeat()
 	g.Go(func() error {
-		err := batcher.Consume(gCtx, workerv1.RunID(issue.ID), proc.Events)
+		defer close(trackedEvents)
+		for {
+			select {
+			case <-gCtx.Done():
+				return nil
+			case event, ok := <-proc.Events:
+				if !ok {
+					return nil
+				}
+				progress.Observe(event, time.Now())
+				select {
+				case trackedEvents <- event:
+				case <-gCtx.Done():
+					return nil
+				}
+			}
+		}
+	})
+	g.Go(func() error {
+		err := batcher.Consume(gCtx, workerv1.RunID(issue.ID), trackedEvents)
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil
 		}
 		return err
 	})
+	if e.heartbeat != nil {
+		runID := workerv1.RunID(issue.ID)
+		g.Go(func() error {
+			err := e.heartbeat.Run(heartbeatCtx, runID, leaseSec, progress)
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil
+			}
+			if errors.Is(err, errWorkerLeaseRevoked) {
+				cancel()
+			}
+			return err
+		})
+	}
 	g.Go(func() error {
 		select {
 		case <-gCtx.Done():
 			return gCtx.Err()
 		case err, ok := <-proc.Done:
 			if !ok {
+				stopHeartbeat()
 				return nil
 			}
+			stopHeartbeat()
 			if err != nil {
 				cancel()
 			}
