@@ -103,7 +103,7 @@
 - [x] 11.5 Implement team picker, board view, run detail view, config history view, tracker health view
 - [x] 11.6 Implement SPA / API version-skew banner
 - [x] 11.7 Create Cloudflare Pages project for `packages/landing` and verify README rendering
-- [ ] 11.8 Add Pages preview environment for staging API
+- [x] 11.8 Add Pages preview environment for staging API
 - [ ] 11.9 Bun-test coverage for SPA components and reconnect logic
 
 ## 12. `contrabass worker` Go subcommand

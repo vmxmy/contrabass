@@ -1,3 +1,9 @@
 name = "contrabass-dashboard"
 compatibility_date = "2026-05-09"
 pages_build_output_dir = "dist"
+
+[vars]
+VITE_CONTRABASS_API_BASE = "https://api.contrabass.dev"
+
+[env.preview.vars]
+VITE_CONTRABASS_API_BASE = "https://api.staging.contrabass.dev"
