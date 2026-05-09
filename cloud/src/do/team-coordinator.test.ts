@@ -7,6 +7,7 @@ import {
   type TeamCoordinatorNotification,
   type TeamCoordinatorRecord,
   type TeamCoordinatorStorage,
+  type TeamCoordinatorUsageCaps,
   type TeamCoordinatorWorkerRecord,
   type TeamCoordinatorWorkerRegistry,
 } from "./team-coordinator";
@@ -104,6 +105,10 @@ type TeamCoordinatorResponseBody = {
   accepted?: boolean;
   type?: TeamCoordinatorNotification["type"];
   error?: string;
+  max_active_workers?: number;
+  max_runs_per_day?: number;
+  max_events_per_day?: number;
+  protocol_version?: string;
 };
 
 describe("TeamCoordinator Durable Object", () => {
@@ -231,6 +236,116 @@ describe("TeamCoordinator Durable Object", () => {
     });
   });
 
+  it("rejects new worker registration after the active worker cap is reached", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(21_000);
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/config-changed", {
+      type: "config-changed",
+      usageCaps: { max_active_workers: 1 },
+    });
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 1,
+      kind: "local",
+      version: "0.2.0",
+    });
+
+    const response = await post(coordinator, "/workers/register", {
+      workerId: "worker-2",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 1,
+      kind: "local",
+      version: "0.2.0",
+    });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(429);
+    expect(body).toMatchObject({
+      error: "team_worker_cap_exceeded",
+      max_active_workers: 1,
+      protocol_version: "1.0.0",
+    });
+    await expect(storage.get<TeamCoordinatorWorkerRegistry>("team-coordinator:worker-registry")).resolves.toEqual({
+      "worker-1": expect.objectContaining({ workerId: "worker-1" }),
+    });
+  });
+
+  it("counts unhealthy registered workers toward the active worker cap", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(21_000);
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/config-changed", {
+      type: "config-changed",
+      usageCaps: { max_active_workers: 1 },
+    });
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 1,
+      kind: "local",
+      version: "0.2.0",
+    });
+
+    now.mockReturnValue(112_000);
+    await coordinator.fetch(new Request("https://team-coordinator.test/workers"));
+    const response = await post(coordinator, "/workers/register", {
+      workerId: "worker-2",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 1,
+      kind: "local",
+      version: "0.2.0",
+    });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(429);
+    expect(body).toMatchObject({
+      error: "team_worker_cap_exceeded",
+      max_active_workers: 1,
+      protocol_version: "1.0.0",
+    });
+    await expect(storage.get<TeamCoordinatorWorkerRegistry>("team-coordinator:worker-registry")).resolves.toMatchObject({
+      "worker-1": { status: "unhealthy" },
+    });
+  });
+
+  it("ignores worker registration body caps when enforcing active worker limits", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(21_000);
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/config-changed", {
+      type: "config-changed",
+      usageCaps: { max_active_workers: 1 },
+    });
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 1,
+      kind: "local",
+      version: "0.2.0",
+    });
+
+    const response = await post(coordinator, "/workers/register", {
+      workerId: "worker-2",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 1,
+      kind: "local",
+      version: "0.2.0",
+      usageCaps: { max_active_workers: 2 },
+    });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(429);
+    expect(body).toMatchObject({
+      error: "team_worker_cap_exceeded",
+      max_active_workers: 1,
+    });
+    await expect(storage.get<TeamCoordinatorUsageCaps>("team-coordinator:usage-caps")).resolves.toEqual({
+      max_active_workers: 1,
+    });
+  });
+
   it("updates registry keepalive load and derives busy status", async () => {
     const now = vi.spyOn(Date, "now").mockReturnValue(30_000);
     const { coordinator, storage } = createTeamCoordinatorWithStorage();
@@ -346,6 +461,167 @@ describe("TeamCoordinator Durable Object", () => {
     await expect(storage.get<TeamCoordinatorWorkerRegistry>("team-coordinator:worker-registry")).resolves.toMatchObject({
       "worker-1": { currentLoad: 1, status: "busy" },
     });
+  });
+
+  it("rejects dispatch after the daily run cap is reached", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 4, 9, 12));
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/config-changed", {
+      type: "config-changed",
+      usage_caps: { max_runs_per_day: 1 },
+    });
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 2,
+      kind: "local",
+      version: "0.2.0",
+    });
+    await post(coordinator, "/dispatch", {
+      runId: "run-1",
+      issueRef: "LIN-1",
+      requiredCapabilities: ["agent:codex"],
+    });
+
+    const response = await post(coordinator, "/dispatch", {
+      runId: "run-2",
+      issueRef: "LIN-2",
+      requiredCapabilities: ["agent:codex"],
+    });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(429);
+    expect(body).toMatchObject({
+      error: "team_run_cap_exceeded",
+      max_runs_per_day: 1,
+      protocol_version: "1.0.0",
+    });
+    await expect(storage.get<TeamCoordinatorBoard>("team-coordinator:board")).resolves.toMatchObject({
+      claimed: [{ runId: "run-1" }],
+    });
+  });
+
+  it("ignores dispatch body caps when enforcing daily run limits", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 4, 9, 12));
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/config-changed", {
+      type: "config-changed",
+      usage_caps: { max_runs_per_day: 1 },
+    });
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 2,
+      kind: "local",
+      version: "0.2.0",
+    });
+    await post(coordinator, "/dispatch", {
+      runId: "run-1",
+      issueRef: "LIN-1",
+      requiredCapabilities: ["agent:codex"],
+    });
+
+    const response = await post(coordinator, "/dispatch", {
+      runId: "run-2",
+      issueRef: "LIN-2",
+      requiredCapabilities: ["agent:codex"],
+      usage_caps: { max_runs_per_day: 2 },
+    });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(429);
+    expect(body).toMatchObject({
+      error: "team_run_cap_exceeded",
+      max_runs_per_day: 1,
+    });
+    await expect(storage.get<TeamCoordinatorUsageCaps>("team-coordinator:usage-caps")).resolves.toEqual({
+      max_runs_per_day: 1,
+    });
+  });
+
+  it("rejects paused dispatches after accepted runs reach the daily cap", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 4, 9, 12));
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/config-changed", {
+      type: "config-changed",
+      usage_caps: { max_runs_per_day: 1 },
+    });
+    await post(coordinator, "/board/pause", {}, { "x-contrabass-team-id": "team-1" });
+    const firstResponse = await post(coordinator, "/dispatch", {
+      runId: "run-1",
+      issueRef: "LIN-1",
+      requiredCapabilities: ["agent:codex"],
+    });
+
+    const secondResponse = await post(coordinator, "/dispatch", {
+      runId: "run-2",
+      issueRef: "LIN-2",
+      requiredCapabilities: ["agent:codex"],
+    });
+    const secondBody = await readTeamCoordinatorResponse(secondResponse);
+
+    expect(firstResponse.status).toBe(202);
+    expect(secondResponse.status).toBe(429);
+    expect(secondBody).toMatchObject({
+      error: "team_run_cap_exceeded",
+      max_runs_per_day: 1,
+      protocol_version: "1.0.0",
+    });
+    await expect(storage.get<TeamCoordinatorBoard>("team-coordinator:board")).resolves.toMatchObject({
+      open: [{ runId: "run-1" }],
+    });
+  });
+
+  it("counts no-worker queued dispatches against the daily run cap", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 4, 9, 12));
+    const { coordinator } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/config-changed", {
+      type: "config-changed",
+      usage_caps: { max_runs_per_day: 1 },
+    });
+    const firstResponse = await post(coordinator, "/dispatch", {
+      runId: "run-1",
+      issueRef: "LIN-1",
+      requiredCapabilities: ["agent:omx"],
+    });
+
+    const secondResponse = await post(coordinator, "/dispatch", {
+      runId: "run-2",
+      issueRef: "LIN-2",
+      requiredCapabilities: ["agent:omx"],
+    });
+    const secondBody = await readTeamCoordinatorResponse(secondResponse);
+
+    expect(firstResponse.status).toBe(202);
+    expect(secondResponse.status).toBe(429);
+    expect(secondBody).toMatchObject({
+      error: "team_run_cap_exceeded",
+      max_runs_per_day: 1,
+      protocol_version: "1.0.0",
+    });
+  });
+
+  it("rejects invalid dispatch capabilities before paused queuing", async () => {
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/board/pause", {}, { "x-contrabass-team-id": "team-1" });
+    const response = await post(coordinator, "/dispatch", {
+      runId: "run-1",
+      issueRef: "LIN-1",
+      requiredCapabilities: ["agent:codex", 42],
+    });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(400);
+    expect(body).toMatchObject({
+      error: "invalid_request",
+      message: "required capabilities must be strings",
+    });
+    await expect(storage.get<TeamCoordinatorBoard>("team-coordinator:board")).resolves.toBeUndefined();
   });
 
   it("prefers matching local workers over less-loaded containers", async () => {
@@ -494,6 +770,55 @@ describe("TeamCoordinator Durable Object", () => {
       });
     },
   );
+
+  it("rejects run events after the daily event cap is reached", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 4, 9, 12));
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/config-changed", {
+      type: "config-changed",
+      config: { max_events_per_day: 1 },
+    });
+    await post(coordinator, "/run-event", { runId: "run-1", event: { kind: "phase" } });
+
+    const response = await post(coordinator, "/run-event", { runId: "run-1", event: { kind: "log" } });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(429);
+    expect(body).toMatchObject({
+      error: "team_event_cap_exceeded",
+      max_events_per_day: 1,
+      protocol_version: "1.0.0",
+    });
+    await expect(storage.get<TeamCoordinatorNotification[]>("team-coordinator:notifications")).resolves.toHaveLength(2);
+  });
+
+  it("ignores run-event body caps when enforcing daily event limits", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 4, 9, 12));
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/config-changed", {
+      type: "config-changed",
+      config: { max_events_per_day: 1 },
+    });
+    await post(coordinator, "/run-event", { runId: "run-1", event: { kind: "phase" } });
+
+    const response = await post(coordinator, "/run-event", {
+      runId: "run-1",
+      event: { kind: "log" },
+      usageCaps: { max_events_per_day: 2 },
+    });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(429);
+    expect(body).toMatchObject({
+      error: "team_event_cap_exceeded",
+      max_events_per_day: 1,
+    });
+    await expect(storage.get<TeamCoordinatorUsageCaps>("team-coordinator:usage-caps")).resolves.toEqual({
+      max_events_per_day: 1,
+    });
+  });
 
   it("accepts websocket subscribers and fans out stored notification frames", async () => {
     vi.spyOn(Date, "now").mockReturnValue(2_000);

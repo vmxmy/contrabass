@@ -5,6 +5,12 @@ export type TeamCoordinatorRecord = {
   paused: boolean;
 };
 
+export type TeamCoordinatorUsageCaps = {
+  max_active_workers?: number;
+  max_runs_per_day?: number;
+  max_events_per_day?: number;
+};
+
 export type TeamCoordinatorBoardPhase = "open" | "claimed" | "running" | "done";
 
 export type TeamCoordinatorBoardEntry = {
@@ -87,12 +93,20 @@ const TEAM_RECORD_KEY = "team-coordinator:record";
 const BOARD_KEY = "team-coordinator:board";
 const NOTIFICATIONS_KEY = "team-coordinator:notifications";
 const WORKER_REGISTRY_KEY = "team-coordinator:worker-registry";
+const USAGE_CAPS_KEY = "team-coordinator:usage-caps";
+const USAGE_COUNTERS_KEY = "team-coordinator:usage-counters";
 const INTERNAL_NOTIFICATION_PATHS = new Set(["/run-event", "/run-complete", "/lease-revoked", "/config-changed"]);
 const BOARD_PHASES: TeamCoordinatorBoardPhase[] = ["open", "claimed", "running", "done"];
 const PROTOCOL_VERSION = "1.0.0";
 const EVENT_RING_BUFFER_LIMIT = 100;
 const DEFAULT_WORKER_MAX_CONCURRENCY = 1;
 const DEFAULT_REGISTRY_HEARTBEAT_INTERVAL_SEC = 30;
+
+type TeamCoordinatorUsageCounters = {
+  day: string;
+  runs: number;
+  events: number;
+};
 
 export class TeamCoordinator {
   private readonly subscribers = new Set<WebSocket>();
@@ -109,7 +123,7 @@ export class TeamCoordinator {
 
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/state")) {
       const record = await this.ensureRecord(request);
-      return jsonResponse({ team: record });
+      return jsonResponse({ team: record, usageCaps: await this.ensureUsageCaps(request) });
     }
 
     if (request.method === "GET" && url.pathname === "/board") {
@@ -231,13 +245,22 @@ export class TeamCoordinator {
 
     const registry = {
       ...await this.ensureWorkerRegistry(),
+    };
+    const existing = registry[worker.workerId];
+    const usageCaps = await this.ensureUsageCaps(request);
+    if (existing === undefined && exceedsActiveWorkerCap(registry, usageCaps)) {
+      return teamWorkerCapExceededResponse(usageCaps.max_active_workers);
+    }
+
+    const updatedRegistry = {
+      ...registry,
       [worker.workerId]: worker,
     };
-    await this.persistWorkerRegistry(registry);
+    await this.persistWorkerRegistry(updatedRegistry);
     await this.touchRecord(request);
     this.broadcast(workerStatusFrame(worker));
 
-    return jsonResponse({ worker, registry });
+    return jsonResponse({ worker, registry: updatedRegistry });
   }
 
   private async recordWorkerHeartbeat(request: Request): Promise<Response> {
@@ -290,6 +313,18 @@ export class TeamCoordinator {
       return jsonResponse({ error: "invalid_request", message: "runId and issueRef are required" }, 400);
     }
 
+    const requiredCapabilities = getDispatchRequiredCapabilities(body);
+    if (requiredCapabilities === undefined) {
+      return jsonResponse({ error: "invalid_request", message: "required capabilities must be strings" }, 400);
+    }
+
+    const usageCaps = await this.ensureUsageCaps(request);
+    const counters = await this.ensureUsageCounters();
+    if (usageCaps.max_runs_per_day !== undefined && counters.runs >= usageCaps.max_runs_per_day) {
+      return usageCapExceededResponse("team_run_cap_exceeded", "max_runs_per_day", usageCaps.max_runs_per_day);
+    }
+
+    const acceptedCounters = { ...counters, runs: counters.runs + 1 };
     const record = await this.ensureRecord(request);
     if (record.paused) {
       const board = mergeBoard(await this.ensureBoard(), boardWithEntries([
@@ -301,20 +336,17 @@ export class TeamCoordinator {
         },
       ]));
       await this.state.storage.put(BOARD_KEY, board);
+      await this.persistUsageCounters(acceptedCounters);
       await this.touchRecord(request);
       this.broadcast(boardUpdateFrame(board));
 
       return jsonResponse({ dispatched: false, paused: true, board }, 202);
     }
 
-    const requiredCapabilities = getDispatchRequiredCapabilities(body);
-    if (requiredCapabilities === undefined) {
-      return jsonResponse({ error: "invalid_request", message: "required capabilities must be strings" }, 400);
-    }
-
     const registry = await this.ensureWorkerRegistry();
     const selectedWorker = selectDispatchWorker(registry, requiredCapabilities);
     if (selectedWorker === undefined) {
+      await this.persistUsageCounters(acceptedCounters);
       const event = await this.emitNoWorkerAvailable(request, body, requiredCapabilities);
       return jsonResponse({ dispatched: false, event }, 202);
     }
@@ -325,6 +357,7 @@ export class TeamCoordinator {
       [worker.workerId]: worker,
     };
     await this.persistWorkerRegistry(updatedRegistry);
+    await this.persistUsageCounters(acceptedCounters);
 
     const board = mergeBoard(await this.ensureBoard(), boardWithEntries([
       {
@@ -551,6 +584,18 @@ export class TeamCoordinator {
     }
 
     const now = Date.now();
+    const usageCaps = pathname === "/config-changed"
+      ? (parseUsageCaps(body) ?? await this.ensureUsageCaps(request))
+      : await this.ensureUsageCaps(request);
+    const counters = await this.ensureUsageCounters();
+    if (
+      pathname === "/run-event"
+      && usageCaps.max_events_per_day !== undefined
+      && counters.events >= usageCaps.max_events_per_day
+    ) {
+      return usageCapExceededResponse("team_event_cap_exceeded", "max_events_per_day", usageCaps.max_events_per_day);
+    }
+
     const notifications = await this.state.storage.get<TeamCoordinatorNotification[]>(NOTIFICATIONS_KEY);
     const notification: TeamCoordinatorNotification = {
       eventId: nextNotificationEventId(notifications ?? []),
@@ -560,6 +605,15 @@ export class TeamCoordinator {
     };
 
     await this.state.storage.put(NOTIFICATIONS_KEY, appendNotification(notifications ?? [], notification));
+    if (notification.type === "run-event") {
+      await this.persistUsageCounters({ ...counters, events: counters.events + 1 });
+    }
+    if (notification.type === "config-changed") {
+      const updatedCaps = parseUsageCaps(body);
+      if (updatedCaps !== undefined) {
+        await this.state.storage.put(USAGE_CAPS_KEY, updatedCaps);
+      }
+    }
     await this.state.storage.put(TEAM_RECORD_KEY, {
       ...record,
       updatedAt: now,
@@ -610,6 +664,41 @@ export class TeamCoordinator {
       ...record,
       updatedAt: Date.now(),
     });
+  }
+
+  private async ensureUsageCaps(request: Request): Promise<TeamCoordinatorUsageCaps> {
+    const stored = await this.state.storage.get<TeamCoordinatorUsageCaps>(USAGE_CAPS_KEY);
+    if (stored !== undefined) {
+      return normalizeUsageCaps(stored) ?? {};
+    }
+
+    const headers = usageCapsFromHeaders(request.headers);
+    if (headers !== undefined) {
+      await this.state.storage.put(USAGE_CAPS_KEY, headers);
+      return headers;
+    }
+
+    return {};
+  }
+
+  private async ensureUsageCounters(): Promise<TeamCoordinatorUsageCounters> {
+    const day = usageDay(Date.now());
+    const stored = await this.state.storage.get<TeamCoordinatorUsageCounters>(USAGE_COUNTERS_KEY);
+    if (stored !== undefined && stored.day === day) {
+      return {
+        day,
+        runs: Math.max(0, Math.trunc(stored.runs)),
+        events: Math.max(0, Math.trunc(stored.events)),
+      };
+    }
+
+    const counters = { day, runs: 0, events: 0 };
+    await this.persistUsageCounters(counters);
+    return counters;
+  }
+
+  private async persistUsageCounters(counters: TeamCoordinatorUsageCounters): Promise<void> {
+    await this.state.storage.put(USAGE_COUNTERS_KEY, counters);
   }
 
   webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
@@ -992,6 +1081,17 @@ function isDispatchCandidate(
   return requiredCapabilities.every((capability) => capabilities.has(capability));
 }
 
+function exceedsActiveWorkerCap(
+  registry: TeamCoordinatorWorkerRegistry,
+  usageCaps: TeamCoordinatorUsageCaps,
+): boolean {
+  if (usageCaps.max_active_workers === undefined) {
+    return false;
+  }
+
+  return Object.keys(registry).length >= usageCaps.max_active_workers;
+}
+
 function compareDispatchWorkers(a: TeamCoordinatorWorkerRecord, b: TeamCoordinatorWorkerRecord): number {
   const kindComparison = workerKindRank(a.kind) - workerKindRank(b.kind);
   if (kindComparison !== 0) {
@@ -1059,19 +1159,25 @@ function dispatchFrameFromBody(
 }
 
 function getDispatchRequiredCapabilities(body: Record<string, unknown>): string[] | undefined {
-  const direct = getStringArrayField(body, "requiredCapabilities")
-    ?? getStringArrayField(body, "required_capabilities")
-    ?? getStringArrayField(body, "capabilities");
-  if (direct !== undefined) {
-    return direct;
+  for (const key of ["requiredCapabilities", "required_capabilities", "capabilities"]) {
+    if (hasOwnField(body, key)) {
+      return getStringArrayField(body, key);
+    }
   }
 
   const requirements = getObjectField(body, "requirements");
   if (requirements === undefined) {
     return [];
   }
+  if (!hasOwnField(requirements, "capabilities")) {
+    return [];
+  }
 
   return getStringArrayField(requirements, "capabilities");
+}
+
+function hasOwnField(body: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(body, key);
 }
 
 function getTeamId(request: Request): string | undefined {
@@ -1112,6 +1218,10 @@ function getLastEventId(request: Request): number | undefined {
 
   const eventId = Number.parseInt(raw, 10);
   return Number.isFinite(eventId) ? eventId : undefined;
+}
+
+function usageDay(now: number): string {
+  return new Date(now).toISOString().slice(0, 10);
 }
 
 async function readObjectBody(request: Request): Promise<Record<string, unknown> | undefined> {
@@ -1279,6 +1389,67 @@ function getPositiveIntegerField(body: Record<string, unknown>, key: string): nu
   return value;
 }
 
+function parseUsageCaps(body: Record<string, unknown>): TeamCoordinatorUsageCaps | undefined {
+  const source = getObjectField(body, "usageCaps")
+    ?? getObjectField(body, "usage_caps")
+    ?? getObjectField(body, "config")
+    ?? getObjectField(body, "limits")
+    ?? getObjectField(body, "team")
+    ?? body;
+  return normalizeUsageCaps(source);
+}
+
+function normalizeUsageCaps(body: Record<string, unknown>): TeamCoordinatorUsageCaps | undefined {
+  const caps: TeamCoordinatorUsageCaps = {};
+  const maxActiveWorkers = getPositiveIntegerField(body, "max_active_workers")
+    ?? getPositiveIntegerField(body, "maxActiveWorkers");
+  const maxRunsPerDay = getPositiveIntegerField(body, "max_runs_per_day")
+    ?? getPositiveIntegerField(body, "maxRunsPerDay");
+  const maxEventsPerDay = getPositiveIntegerField(body, "max_events_per_day")
+    ?? getPositiveIntegerField(body, "maxEventsPerDay");
+
+  if (maxActiveWorkers !== undefined) {
+    caps.max_active_workers = maxActiveWorkers;
+  }
+  if (maxRunsPerDay !== undefined) {
+    caps.max_runs_per_day = maxRunsPerDay;
+  }
+  if (maxEventsPerDay !== undefined) {
+    caps.max_events_per_day = maxEventsPerDay;
+  }
+
+  return Object.keys(caps).length === 0 ? undefined : caps;
+}
+
+function usageCapsFromHeaders(headers: Headers): TeamCoordinatorUsageCaps | undefined {
+  const caps: TeamCoordinatorUsageCaps = {};
+  const maxActiveWorkers = positiveIntegerHeader(headers, "x-contrabass-max-active-workers");
+  const maxRunsPerDay = positiveIntegerHeader(headers, "x-contrabass-max-runs-per-day");
+  const maxEventsPerDay = positiveIntegerHeader(headers, "x-contrabass-max-events-per-day");
+
+  if (maxActiveWorkers !== undefined) {
+    caps.max_active_workers = maxActiveWorkers;
+  }
+  if (maxRunsPerDay !== undefined) {
+    caps.max_runs_per_day = maxRunsPerDay;
+  }
+  if (maxEventsPerDay !== undefined) {
+    caps.max_events_per_day = maxEventsPerDay;
+  }
+
+  return Object.keys(caps).length === 0 ? undefined : caps;
+}
+
+function positiveIntegerHeader(headers: Headers, key: string): number | undefined {
+  const value = headers.get(key);
+  if (value === null || value.trim() === "") {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed >= 1 ? parsed : undefined;
+}
+
 function getWorkerKindField(body: Record<string, unknown>): TeamCoordinatorWorkerKind | undefined {
   const kind = getStringField(body, "kind");
   if (kind === "local" || kind === "container") {
@@ -1305,6 +1476,24 @@ function jsonResponse(body: Record<string, unknown>, status = 200): Response {
       "content-type": "application/json",
     },
   });
+}
+
+function teamWorkerCapExceededResponse(maxActiveWorkers: number | undefined): Response {
+  return jsonResponse({
+    error: "team_worker_cap_exceeded",
+    max_active_workers: maxActiveWorkers ?? 0,
+    message: "team has reached the active worker limit",
+    protocol_version: PROTOCOL_VERSION,
+  }, 429);
+}
+
+function usageCapExceededResponse(error: string, capKey: string, cap: number): Response {
+  return jsonResponse({
+    error,
+    [capKey]: cap,
+    message: "team has reached the daily usage limit",
+    protocol_version: PROTOCOL_VERSION,
+  }, 429);
 }
 
 async function forwardErrorResponse(response: Response): Promise<Response> {
