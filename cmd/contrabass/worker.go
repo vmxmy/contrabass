@@ -33,6 +33,7 @@ type workerRegistration struct {
 }
 
 var workerLookupPath = exec.LookPath
+var workerDispatchConsumer = consumeWorkerDispatches
 
 var workerCmd = &cobra.Command{
 	Use:   "worker",
@@ -94,7 +95,9 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		enrollment.TeamID,
 		registration.DispatchChannel.WsURL,
 	)
-	return nil
+	return workerDispatchConsumer(cmd.Context(), registration, func(context.Context, workerv1.WorkerDispatchFrame) error {
+		return nil
+	})
 }
 
 func workerOptionsFromFlags(cmd *cobra.Command) (workerOptions, error) {
@@ -222,8 +225,8 @@ func registerWorker(
 		}
 		return workerRegistration{}, fmt.Errorf("worker registration failed: HTTP %d", resp.StatusCode)
 	}
-	if response.SessionToken == "" || response.DispatchChannel.WsURL == "" {
-		return workerRegistration{}, errors.New("registration response missing sessionToken or dispatchChannel.wsUrl")
+	if response.SessionToken == "" || response.DispatchChannel.WsURL == "" || response.DispatchChannel.LongPollURL == "" {
+		return workerRegistration{}, errors.New("registration response missing sessionToken, dispatchChannel.wsUrl, or dispatchChannel.longPollUrl")
 	}
 
 	return workerRegistration{

@@ -10,9 +10,13 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	workerv1 "github.com/junhoyeo/contrabass/internal/workerproto/v1"
 )
 
 func TestWorkerCommandIsRegistered(t *testing.T) {
@@ -135,6 +139,10 @@ func TestWorkerCommandRegistersWithDetectedCapabilities(t *testing.T) {
 
 	restoreDeps := stubWorkerLoginDependencies(t, server.Client(), store)
 	defer restoreDeps()
+	restoreConsumer := stubWorkerDispatchConsumer(func(context.Context, workerRegistration, workerDispatchHandler) error {
+		return nil
+	})
+	defer restoreConsumer()
 	restoreLookup := stubWorkerLookupPath(func(name string) (string, error) {
 		switch name {
 		case "codex", "omx", "git", "tmux":
@@ -177,6 +185,194 @@ func TestWorkerCommandRegistersWithDetectedCapabilities(t *testing.T) {
 	assert.Contains(t, buf.String(), "wss://api.test/v1/workers/worker-1/dispatch-ws")
 	assert.NotContains(t, buf.String(), "registered-session")
 	assert.NotContains(t, buf.String(), "rotated-refresh")
+}
+
+func TestConsumeWorkerDispatchesReadsWebSocketDispatch(t *testing.T) {
+	dispatchJSON := `{
+		"type": "dispatch",
+		"runId": "run-1",
+		"issueRef": "LIN-123",
+		"branch": "contrabass/run-1",
+		"prompt": "fix it",
+		"configHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"leaseSec": 60,
+		"artifactUploadURLs": {
+			"logs": "https://r2.test/logs",
+			"diff": "https://r2.test/diff",
+			"summary": "https://r2.test/summary"
+		},
+		"protocol_version": "1.0.0"
+	}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer session-token", r.Header.Get("Authorization"))
+		conn, err := websocket.Accept(w, r, nil)
+		require.NoError(t, err)
+		defer conn.CloseNow()
+		require.NoError(t, conn.Write(r.Context(), websocket.MessageText, []byte(dispatchJSON)))
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var got workerv1.WorkerDispatchFrame
+	err := consumeWorkerDispatches(ctx, workerRegistration{
+		SessionToken: "session-token",
+		DispatchChannel: workerv1.WorkerRegisterResponseDispatchChannel{
+			WsURL: workerv1.WsURL(strings.Replace(server.URL, "http://", "ws://", 1)),
+		},
+	}, func(_ context.Context, frame workerv1.WorkerDispatchFrame) error {
+		got = frame
+		cancel()
+		return nil
+	})
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, workerv1.RunID("run-1"), got.RunID)
+	assert.Equal(t, workerv1.IssueRef("LIN-123"), got.IssueRef)
+	assert.Equal(t, workerv1.ProtocolVersionCurrent, got.ProtocolVersion)
+}
+
+func TestConsumeWorkerDispatchesFallsBackToLongPollAfterThreeWSFailures(t *testing.T) {
+	oldReconnectDelay := workerWSReconnectDelay
+	oldFallbackRetryDelay := workerWSFallbackRetryDelay
+	workerWSReconnectDelay = 0
+	workerWSFallbackRetryDelay = time.Hour
+	defer func() {
+		workerWSReconnectDelay = oldReconnectDelay
+		workerWSFallbackRetryDelay = oldFallbackRetryDelay
+	}()
+
+	dispatchJSON := `{
+		"type": "dispatch",
+		"runId": "run-long-poll",
+		"issueRef": "LIN-456",
+		"branch": "contrabass/run-long-poll",
+		"prompt": "fix via long poll",
+		"configHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"leaseSec": 60,
+		"artifactUploadURLs": {
+			"logs": "https://r2.test/logs",
+			"diff": "https://r2.test/diff",
+			"summary": "https://r2.test/summary"
+		},
+		"protocol_version": "1.0.0"
+	}`
+	wsAttempts := 0
+	longPollAttempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/dispatch-ws":
+			wsAttempts++
+			http.Error(w, "websocket blocked", http.StatusUpgradeRequired)
+		case "/dispatch":
+			longPollAttempts++
+			assert.Equal(t, "25s", r.URL.Query().Get("wait"))
+			assert.Equal(t, "Bearer session-token", r.Header.Get("Authorization"))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(dispatchJSON))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	restoreDeps := stubWorkerLoginDependencies(t, server.Client(), &fakeWorkerEnrollmentStore{})
+	defer restoreDeps()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var got workerv1.WorkerDispatchFrame
+	err := consumeWorkerDispatches(ctx, workerRegistration{
+		SessionToken: "session-token",
+		DispatchChannel: workerv1.WorkerRegisterResponseDispatchChannel{
+			WsURL:       workerv1.WsURL(strings.Replace(server.URL, "http://", "ws://", 1) + "/dispatch-ws"),
+			LongPollURL: workerv1.URL(server.URL + "/dispatch?wait=25s"),
+		},
+	}, func(_ context.Context, frame workerv1.WorkerDispatchFrame) error {
+		got = frame
+		cancel()
+		return nil
+	})
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 3, wsAttempts)
+	assert.Equal(t, 1, longPollAttempts)
+	assert.Equal(t, workerv1.RunID("run-long-poll"), got.RunID)
+}
+
+func TestConsumeWorkerDispatchesRetriesWebSocketWhileInLongPollFallback(t *testing.T) {
+	oldReconnectDelay := workerWSReconnectDelay
+	oldFallbackRetryDelay := workerWSFallbackRetryDelay
+	workerWSReconnectDelay = 0
+	workerWSFallbackRetryDelay = time.Millisecond
+	defer func() {
+		workerWSReconnectDelay = oldReconnectDelay
+		workerWSFallbackRetryDelay = oldFallbackRetryDelay
+	}()
+
+	dispatchJSON := `{
+		"type": "dispatch",
+		"runId": "run-ws-recovered",
+		"issueRef": "LIN-789",
+		"branch": "contrabass/run-ws-recovered",
+		"prompt": "fix after recovery",
+		"configHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"leaseSec": 60,
+		"artifactUploadURLs": {
+			"logs": "https://r2.test/logs",
+			"diff": "https://r2.test/diff",
+			"summary": "https://r2.test/summary"
+		},
+		"protocol_version": "1.0.0"
+	}`
+	wsAttempts := 0
+	longPollAttempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/dispatch-ws":
+			wsAttempts++
+			if wsAttempts <= 3 {
+				http.Error(w, "websocket blocked", http.StatusUpgradeRequired)
+				return
+			}
+			conn, err := websocket.Accept(w, r, nil)
+			require.NoError(t, err)
+			defer conn.CloseNow()
+			require.NoError(t, conn.Write(r.Context(), websocket.MessageText, []byte(dispatchJSON)))
+		case "/dispatch":
+			longPollAttempts++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	restoreDeps := stubWorkerLoginDependencies(t, server.Client(), &fakeWorkerEnrollmentStore{})
+	defer restoreDeps()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var got workerv1.WorkerDispatchFrame
+	err := consumeWorkerDispatches(ctx, workerRegistration{
+		SessionToken: "session-token",
+		DispatchChannel: workerv1.WorkerRegisterResponseDispatchChannel{
+			WsURL:       workerv1.WsURL(strings.Replace(server.URL, "http://", "ws://", 1) + "/dispatch-ws"),
+			LongPollURL: workerv1.URL(server.URL + "/dispatch?wait=25s"),
+		},
+	}, func(_ context.Context, frame workerv1.WorkerDispatchFrame) error {
+		got = frame
+		cancel()
+		return nil
+	})
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.GreaterOrEqual(t, wsAttempts, 4)
+	assert.GreaterOrEqual(t, longPollAttempts, 1)
+	assert.Equal(t, workerv1.RunID("run-ws-recovered"), got.RunID)
+}
+
+func TestDecodeWorkerDispatchFrameRejectsUnsupportedType(t *testing.T) {
+	_, err := decodeWorkerDispatchFrame([]byte(`{"type":"lease-revoked","runId":"run-1","protocol_version":"1.0.0"}`))
+	require.ErrorIs(t, err, errWorkerDispatchUnsupported)
 }
 
 func TestDetectWorkerCapabilities(t *testing.T) {
@@ -376,6 +572,14 @@ func stubWorkerLookupPath(lookup func(string) (string, error)) func() {
 	workerLookupPath = lookup
 	return func() {
 		workerLookupPath = oldLookup
+	}
+}
+
+func stubWorkerDispatchConsumer(consumer func(context.Context, workerRegistration, workerDispatchHandler) error) func() {
+	oldConsumer := workerDispatchConsumer
+	workerDispatchConsumer = consumer
+	return func() {
+		workerDispatchConsumer = oldConsumer
 	}
 }
 

@@ -112,7 +112,7 @@
 - [x] 12.2 Add `cmd/contrabass/worker_login.go` for one-time-code enrollment
 - [x] 12.3 Add OS-credential-store integration: macOS Keychain, libsecret on Linux, Credential Manager on Windows (use `99designs/keyring` or equivalent)
 - [x] 12.4 Implement registration flow with capability detection (codex/opencode/omx/omc/mock, tmux availability, OS, arch, version)
-- [ ] 12.5 Implement WebSocket dispatch consumer with auto-reconnect and long-poll fallback after 3 WS failures
+- [x] 12.5 Implement WebSocket dispatch consumer with auto-reconnect and long-poll fallback after 3 WS failures
 - [ ] 12.6 Implement ack handling within 5-second SLA
 - [ ] 12.7 Implement run executor that calls `internal/workspace.Provision`, `internal/tmux.OpenPane` (when capable), `internal/agent.Run`
 - [ ] 12.8 Implement event batching adapter: agent runner output → NDJSON POST batches (≤200 events, ≤512KB, ≤2s latency)
