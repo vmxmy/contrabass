@@ -24,6 +24,11 @@ export type TeamCoordinatorBoardEntry = {
 
 export type TeamCoordinatorBoard = Record<TeamCoordinatorBoardPhase, TeamCoordinatorBoardEntry[]>;
 
+type BoardRefreshStats = {
+  issuesNew: number;
+  issuesUpdated: number;
+};
+
 export type TeamCoordinatorWorkerStatus = "idle" | "busy" | "unhealthy";
 
 export type TeamCoordinatorWorkerKind = "local" | "container";
@@ -423,12 +428,14 @@ export class TeamCoordinator {
       return jsonResponse({ error: "invalid_request", message: "body must include a valid board or entries" }, 400);
     }
 
-    const board = isFullBoardRefreshBody(body) ? refreshedBoard : mergeBoard(await this.ensureBoard(), refreshedBoard);
+    const existingBoard = await this.ensureBoard();
+    const issueStats = boardRefreshStats(existingBoard, refreshedBoard);
+    const board = isFullBoardRefreshBody(body) ? refreshedBoard : mergeBoard(existingBoard, refreshedBoard);
     await this.state.storage.put(BOARD_KEY, board);
     await this.touchRecord(request);
     this.broadcast(boardUpdateFrame(board));
 
-    return jsonResponse({ board });
+    return jsonResponse({ board, issueStats });
   }
 
   private async reassignRun(request: Request): Promise<Response> {
@@ -962,6 +969,34 @@ function normalizeBoardEntries(
 function isFullBoardRefreshBody(body: Record<string, unknown>): boolean {
   const maybeBoard = getObjectField(body, "board") ?? body;
   return hasBoardLists(maybeBoard);
+}
+
+function boardRefreshStats(existing: TeamCoordinatorBoard, updates: TeamCoordinatorBoard): BoardRefreshStats {
+  const updatedEntries = BOARD_PHASES.flatMap((phase) => updates[phase]);
+  let issuesNew = 0;
+  let issuesUpdated = 0;
+
+  for (const update of updatedEntries) {
+    const existingEntry = BOARD_PHASES
+      .flatMap((phase) => existing[phase])
+      .find((entry) => boardEntriesReferToSameIssue(entry, update));
+    if (existingEntry === undefined) {
+      issuesNew += 1;
+    } else if (!boardEntriesEqual(existingEntry, update)) {
+      issuesUpdated += 1;
+    }
+  }
+
+  return { issuesNew, issuesUpdated };
+}
+
+function boardEntriesEqual(left: TeamCoordinatorBoardEntry, right: TeamCoordinatorBoardEntry): boolean {
+  return left.issueRef === right.issueRef
+    && left.externalId === right.externalId
+    && left.runId === right.runId
+    && left.assignedWorkerId === right.assignedWorkerId
+    && left.phase === right.phase
+    && left.lastUpdated === right.lastUpdated;
 }
 
 function mergeBoard(existing: TeamCoordinatorBoard, updates: TeamCoordinatorBoard): TeamCoordinatorBoard {

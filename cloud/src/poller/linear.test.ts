@@ -125,7 +125,7 @@ describe("pollLinear", () => {
 
     const result = await pollLinear(invocation(env, `tracker:\n  linear:\n    project_slug: alpha\n    page_size: 5\n`), fetcher);
 
-    expect(result).toEqual({ teamId: "team-alpha", issuesSeen: 1, issuesPosted: 1 });
+    expect(result).toEqual({ teamId: "team-alpha", issuesSeen: 1, issuesNew: 1, issuesUpdated: 0 });
     expect(postedRequests).toHaveLength(1);
     const posted = postedRequests[0];
     expect(posted?.url).toBe("https://team-coordinator.internal/board/refresh");
@@ -154,7 +154,7 @@ describe("pollLinear", () => {
 
     const result = await pollLinear(invocation(env, `tracker:\n  linear:\n    token: $LINEAR_TOKEN_REF\n    query: |\n      query TeamIssues($first: Int!) {\n        issues(first: $first) { nodes { id } pageInfo { hasNextPage endCursor } }\n      }\n`), fetcher);
 
-    expect(result).toEqual({ teamId: "team-alpha", issuesSeen: 0, issuesPosted: 0 });
+    expect(result).toEqual({ teamId: "team-alpha", issuesSeen: 0, issuesNew: 0, issuesUpdated: 0 });
     expect(fetcher).toHaveBeenCalledOnce();
   });
 

@@ -94,6 +94,7 @@ class FakeIssueRunNamespace {
 type TeamCoordinatorResponseBody = {
   team?: TeamCoordinatorRecord;
   board?: TeamCoordinatorBoard;
+  issueStats?: { issuesNew: number; issuesUpdated: number };
   registry?: TeamCoordinatorWorkerRegistry;
   worker?: TeamCoordinatorWorkerRecord;
   dispatch?: TeamCoordinatorDispatchFrame;
@@ -212,7 +213,7 @@ describe("TeamCoordinator Durable Object", () => {
     vi.spyOn(Date, "now").mockReturnValue(13_000);
     const { coordinator, storage } = createTeamCoordinatorWithStorage();
 
-    await post(coordinator, "/board/refresh", {
+    const newResponse = await post(coordinator, "/board/refresh", {
       issues: [
         {
           issueRef: "LIN-1",
@@ -222,6 +223,10 @@ describe("TeamCoordinator Durable Object", () => {
         },
       ],
     });
+    const newBody = await readTeamCoordinatorResponse(newResponse);
+
+    expect(newResponse.status).toBe(200);
+    expect(newBody.issueStats).toEqual({ issuesNew: 1, issuesUpdated: 0 });
 
     const noChangeResponse = await post(coordinator, "/board/refresh", {
       issues: [
@@ -236,6 +241,7 @@ describe("TeamCoordinator Durable Object", () => {
     const noChangeBody = await readTeamCoordinatorResponse(noChangeResponse);
 
     expect(noChangeResponse.status).toBe(200);
+    expect(noChangeBody.issueStats).toEqual({ issuesNew: 0, issuesUpdated: 0 });
     expect(noChangeBody.board?.open).toEqual([
       {
         issueRef: "LIN-1",
@@ -260,6 +266,7 @@ describe("TeamCoordinator Durable Object", () => {
     const changedBody = await readTeamCoordinatorResponse(changedResponse);
 
     expect(changedResponse.status).toBe(200);
+    expect(changedBody.issueStats).toEqual({ issuesNew: 0, issuesUpdated: 1 });
     expect(changedBody.board).toEqual({
       open: [],
       claimed: [],

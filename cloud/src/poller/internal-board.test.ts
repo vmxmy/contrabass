@@ -19,7 +19,7 @@ describe("pollInternalBoard", () => {
 
     const result = await pollInternalBoard(invocation(env));
 
-    expect(result).toEqual({ teamId: "team-alpha", issuesSeen: 2, issuesPosted: 2 });
+    expect(result).toEqual({ teamId: "team-alpha", issuesSeen: 2, issuesNew: 2, issuesUpdated: 0 });
     expect(postedRequests).toHaveLength(1);
     const posted = postedRequests[0];
     expect(posted?.url).toBe("https://team-coordinator.internal/board/refresh");

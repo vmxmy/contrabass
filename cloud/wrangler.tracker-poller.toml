@@ -29,6 +29,10 @@ name = "TEAM_COORDINATOR"
 class_name = "TeamCoordinator"
 script_name = "contrabass-api"
 
+[[analytics_engine_datasets]]
+binding = "TRACKER_POLLER_METRICS"
+dataset = "contrabass_tracker_poller_metrics"
+
 [observability]
 enabled = true
 head_sampling_rate = 1.0
@@ -56,6 +60,10 @@ database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
 name = "TEAM_COORDINATOR"
 class_name = "TeamCoordinator"
 script_name = "contrabass-api"
+
+[[env.staging.analytics_engine_datasets]]
+binding = "TRACKER_POLLER_METRICS"
+dataset = "contrabass_tracker_poller_metrics_staging"
 
 [env.staging.triggers]
 crons = [ "* * * * *" ]
@@ -90,6 +98,10 @@ database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
 name = "TEAM_COORDINATOR"
 class_name = "TeamCoordinator"
 script_name = "contrabass-api"
+
+[[env.production.analytics_engine_datasets]]
+binding = "TRACKER_POLLER_METRICS"
+dataset = "contrabass_tracker_poller_metrics"
 
 [env.production.triggers]
 crons = [ "* * * * *" ]

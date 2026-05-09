@@ -4,6 +4,7 @@ import { linearAdapter } from "./linear";
 
 export type PollerEnv = {
   CONTROL_PLANE_DB?: D1Database;
+  TRACKER_POLLER_METRICS?: AnalyticsEngineDataset;
   TEAM_COORDINATOR?: DurableObjectNamespace;
   [binding: string]: unknown;
 };
@@ -24,7 +25,16 @@ export type PollerInvocation = {
   env: PollerEnv;
 };
 
-export type PollerAdapter = (invocation: PollerInvocation) => Promise<void> | void;
+export type PollerAdapterResult = {
+  teamId: string;
+  issuesSeen: number;
+  issuesNew?: number;
+  issuesUpdated?: number;
+};
+
+export type PollerAdapter = (
+  invocation: PollerInvocation,
+) => Promise<PollerAdapterResult | void> | PollerAdapterResult | void;
 
 export type PollerAdapters = Partial<Record<PollerAdapterName, PollerAdapter>>;
 
@@ -128,9 +138,40 @@ export async function runTrackerPoller(
         continue;
       }
       adapterCalls += 1;
+      const startedAt = Date.now();
       try {
-        await pollAdapter({ team, adapter, scheduledTime: controller.scheduledTime, cron: controller.cron, env });
+        const adapterResult = await pollAdapter({
+          team,
+          adapter,
+          scheduledTime: controller.scheduledTime,
+          cron: controller.cron,
+          env,
+        });
+        emitPollerMetric(env, {
+          teamId: team.teamId,
+          adapter,
+          cron: controller.cron,
+          scheduledTime: controller.scheduledTime,
+          durationMs: Date.now() - startedAt,
+          issuesSeen: adapterResult?.issuesSeen ?? 0,
+          issuesNew: adapterResult?.issuesNew ?? 0,
+          issuesUpdated: adapterResult?.issuesUpdated ?? 0,
+          errors: 0,
+        });
       } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        emitPollerMetric(env, {
+          teamId: team.teamId,
+          adapter,
+          cron: controller.cron,
+          scheduledTime: controller.scheduledTime,
+          durationMs: Date.now() - startedAt,
+          issuesSeen: 0,
+          issuesNew: 0,
+          issuesUpdated: 0,
+          errors: 1,
+          errorMessage: message,
+        });
         if (isRateLimitError(error)) {
           const retryAfterMs = Math.max(0, error.retryAfterMs);
           const retryAtMs = Date.now() + retryAfterMs;
@@ -143,7 +184,7 @@ export async function runTrackerPoller(
             retryAfterMs,
             retryAtMs,
             backoffCount,
-            message: error.message,
+            message,
           }));
           break;
         }
@@ -151,7 +192,7 @@ export async function runTrackerPoller(
           event: "tracker_poller_adapter_error",
           teamId: team.teamId,
           adapter,
-          message: error instanceof Error ? error.message : String(error),
+          message,
         }));
       }
     }
@@ -165,6 +206,49 @@ export async function runTrackerPoller(
     teamsSkippedBackoff,
     adapterCalls,
   };
+}
+
+type PollerMetric = {
+  teamId: string;
+  adapter: PollerAdapterName;
+  cron: string;
+  scheduledTime: number;
+  durationMs: number;
+  issuesSeen: number;
+  issuesNew: number;
+  issuesUpdated: number;
+  errors: number;
+  errorMessage?: string;
+};
+
+function emitPollerMetric(env: PollerEnv, metric: PollerMetric): void {
+  try {
+    env.TRACKER_POLLER_METRICS?.writeDataPoint({
+      indexes: [metric.teamId],
+      doubles: [
+        metric.durationMs,
+        metric.issuesSeen,
+        metric.issuesNew,
+        metric.issuesUpdated,
+        metric.errors,
+        metric.scheduledTime,
+      ],
+      blobs: [
+        "tracker_poller_adapter",
+        metric.teamId,
+        metric.adapter,
+        metric.cron,
+        metric.errorMessage ?? "",
+      ],
+    });
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "tracker_poller_metrics_error",
+      teamId: metric.teamId,
+      adapter: metric.adapter,
+      message: error instanceof Error ? error.message : String(error),
+    }));
+  }
 }
 
 export function enabledTrackersFromConfig(contentYaml: string): PollerAdapterName[] {

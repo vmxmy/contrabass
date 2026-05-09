@@ -31,10 +31,16 @@ export type InternalBoardIssue = {
 export type InternalBoardAdapterResult = {
   teamId: string;
   issuesSeen: number;
-  issuesPosted: number;
+  issuesNew: number;
+  issuesUpdated: number;
 };
 
 type InternalBoardPhase = "open" | "claimed" | "done";
+
+type CoordinatorRefreshStats = {
+  issuesNew: number;
+  issuesUpdated: number;
+};
 
 type InternalBoardRow = {
   id: string;
@@ -64,17 +70,24 @@ export async function pollInternalBoard(invocation: PollerInvocation): Promise<I
 
   const rows = await listInternalBoardRows(invocation.env, invocation.team.teamId);
   const issues = rows.map(normalizeInternalBoardIssue);
-  await postIssuesToTeamCoordinator(invocation.env, invocation.team.teamId, issues);
+  const refreshStats = await postIssuesToTeamCoordinator(invocation.env, invocation.team.teamId, issues);
 
   return {
     teamId: invocation.team.teamId,
     issuesSeen: issues.length,
-    issuesPosted: issues.length,
+    issuesNew: refreshStats.issuesNew,
+    issuesUpdated: refreshStats.issuesUpdated,
   };
 }
 
 export const internalBoardAdapter: PollerAdapter = async (invocation) => {
-  await pollInternalBoard(invocation);
+  const result = await pollInternalBoard(invocation);
+  return {
+    teamId: result.teamId,
+    issuesSeen: result.issuesSeen,
+    issuesNew: result.issuesNew,
+    issuesUpdated: result.issuesUpdated,
+  };
 };
 
 export function normalizeInternalBoardIssue(row: InternalBoardRow): InternalBoardIssue {
@@ -141,9 +154,13 @@ async function listInternalBoardRows(env: PollerEnv, teamId: string): Promise<In
   return result.results ?? [];
 }
 
-async function postIssuesToTeamCoordinator(env: PollerEnv, teamId: string, issues: InternalBoardIssue[]): Promise<void> {
+async function postIssuesToTeamCoordinator(
+  env: PollerEnv,
+  teamId: string,
+  issues: InternalBoardIssue[],
+): Promise<CoordinatorRefreshStats> {
   if (issues.length === 0) {
-    return;
+    return { issuesNew: 0, issuesUpdated: 0 };
   }
   if (env.TEAM_COORDINATOR === undefined) {
     throw new Error("TEAM_COORDINATOR binding required for Internal Board poller");
@@ -173,6 +190,26 @@ async function postIssuesToTeamCoordinator(env: PollerEnv, teamId: string, issue
   if (!response.ok) {
     throw new Error(`TeamCoordinator rejected Internal Board issues for team ${teamId}: ${response.status}`);
   }
+  return coordinatorRefreshStatsFromResponse(response, issues.length);
+}
+
+async function coordinatorRefreshStatsFromResponse(
+  response: Response,
+  fallbackIssuesNew: number,
+): Promise<CoordinatorRefreshStats> {
+  const fallback = { issuesNew: fallbackIssuesNew, issuesUpdated: 0 };
+  const body: unknown = await response.json().catch(() => undefined);
+  if (!isRecord(body)) {
+    return fallback;
+  }
+
+  const stats = isRecord(body.issueStats) ? body.issueStats : body;
+  const issuesNew = getNumberField(stats, "issuesNew");
+  const issuesUpdated = getNumberField(stats, "issuesUpdated");
+  if (issuesNew === undefined || issuesUpdated === undefined) {
+    return fallback;
+  }
+  return { issuesNew, issuesUpdated };
 }
 
 function stateFromStatus(status: InternalBoardStatus): InternalBoardIssueState {
@@ -226,4 +263,9 @@ function safeDateParse(value: string | undefined): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function getNumberField(value: Record<string, unknown>, key: string): number | undefined {
+  const field = value[key];
+  return typeof field === "number" && Number.isFinite(field) ? field : undefined;
 }

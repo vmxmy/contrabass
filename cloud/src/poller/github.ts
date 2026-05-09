@@ -28,7 +28,8 @@ export type GitHubPollIssue = {
 export type GitHubAdapterResult = {
   teamId: string;
   issuesSeen: number;
-  issuesPosted: number;
+  issuesNew: number;
+  issuesUpdated: number;
 };
 
 type GitHubRepoConfig = {
@@ -62,6 +63,11 @@ type GitHubAuthFailureMarker = {
 };
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+type CoordinatorRefreshStats = {
+  issuesNew: number;
+  issuesUpdated: number;
+};
 
 type GitHubIssueResponse = {
   number: number;
@@ -222,7 +228,8 @@ export async function pollGitHub(invocation: PollerInvocation, fetcher?: Fetcher
     return {
       teamId: invocation.team.teamId,
       issuesSeen: 0,
-      issuesPosted: 0,
+      issuesNew: 0,
+      issuesUpdated: 0,
     };
   }
 
@@ -238,11 +245,12 @@ export async function pollGitHub(invocation: PollerInvocation, fetcher?: Fetcher
 
   try {
     const issues = await client.fetchIssues();
-    await postIssuesToTeamCoordinator(invocation.env, invocation.team.teamId, issues);
+    const refreshStats = await postIssuesToTeamCoordinator(invocation.env, invocation.team.teamId, issues);
     return {
       teamId: invocation.team.teamId,
       issuesSeen: issues.length,
-      issuesPosted: issues.length,
+      issuesNew: refreshStats.issuesNew,
+      issuesUpdated: refreshStats.issuesUpdated,
     };
   } catch (error) {
     if (error instanceof GitHubAuthError) {
@@ -250,7 +258,8 @@ export async function pollGitHub(invocation: PollerInvocation, fetcher?: Fetcher
       return {
         teamId: invocation.team.teamId,
         issuesSeen: 0,
-        issuesPosted: 0,
+        issuesNew: 0,
+        issuesUpdated: 0,
       };
     }
     throw error;
@@ -258,7 +267,13 @@ export async function pollGitHub(invocation: PollerInvocation, fetcher?: Fetcher
 }
 
 export const githubAdapter: PollerAdapter = async (invocation) => {
-  await pollGitHub(invocation);
+  const result = await pollGitHub(invocation);
+  return {
+    teamId: result.teamId,
+    issuesSeen: result.issuesSeen,
+    issuesNew: result.issuesNew,
+    issuesUpdated: result.issuesUpdated,
+  };
 };
 
 export function normalizeGitHubIssue(repo: GitHubRepoConfig, item: GitHubIssueResponse): GitHubPollIssue {
@@ -380,9 +395,13 @@ function resolveGitHubToken(env: PollerEnv, teamId: string, tokenRef: string | u
   throw new Error(`github tracker secret binding not found for team ${teamId}`);
 }
 
-async function postIssuesToTeamCoordinator(env: PollerEnv, teamId: string, issues: GitHubPollIssue[]): Promise<void> {
+async function postIssuesToTeamCoordinator(
+  env: PollerEnv,
+  teamId: string,
+  issues: GitHubPollIssue[],
+): Promise<CoordinatorRefreshStats> {
   if (issues.length === 0) {
-    return;
+    return { issuesNew: 0, issuesUpdated: 0 };
   }
   if (env.TEAM_COORDINATOR === undefined) {
     throw new Error("TEAM_COORDINATOR binding required for GitHub poller");
@@ -412,6 +431,26 @@ async function postIssuesToTeamCoordinator(env: PollerEnv, teamId: string, issue
   if (!response.ok) {
     throw new Error(`TeamCoordinator rejected GitHub issues for team ${teamId}: ${response.status}`);
   }
+  return coordinatorRefreshStatsFromResponse(response, issues.length);
+}
+
+async function coordinatorRefreshStatsFromResponse(
+  response: Response,
+  fallbackIssuesNew: number,
+): Promise<CoordinatorRefreshStats> {
+  const fallback = { issuesNew: fallbackIssuesNew, issuesUpdated: 0 };
+  const body: unknown = await response.json().catch(() => undefined);
+  if (!isRecord(body)) {
+    return fallback;
+  }
+
+  const stats = isRecord(body.issueStats) ? body.issueStats : body;
+  const issuesNew = getNumberField(stats, "issuesNew");
+  const issuesUpdated = getNumberField(stats, "issuesUpdated");
+  if (issuesNew === undefined || issuesUpdated === undefined) {
+    return fallback;
+  }
+  return { issuesNew, issuesUpdated };
 }
 
 async function gitHubAuthFailureMarkerForInvocation(

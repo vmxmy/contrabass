@@ -125,7 +125,7 @@ describe("pollGitHub", () => {
 
     const result = await pollGitHub(invocation(env, `tracker:\n  github:\n    repos:\n      - octocat/hello-world\n    labels: bug,p0\n    page_size: 5\n`), fetcher);
 
-    expect(result).toEqual({ teamId: "team-alpha", issuesSeen: 1, issuesPosted: 1 });
+    expect(result).toEqual({ teamId: "team-alpha", issuesSeen: 1, issuesNew: 1, issuesUpdated: 0 });
     expect(postedRequests).toHaveLength(1);
     const posted = postedRequests[0];
     expect(posted?.url).toBe("https://team-coordinator.internal/board/refresh");
@@ -153,7 +153,7 @@ describe("pollGitHub", () => {
 
     const result = await pollGitHub(invocation(env, `tracker:\n  github:\n    token: $GITHUB_TOKEN_REF\n    owner: acme\n    repo: api\n`), fetcher);
 
-    expect(result).toEqual({ teamId: "team-alpha", issuesSeen: 0, issuesPosted: 0 });
+    expect(result).toEqual({ teamId: "team-alpha", issuesSeen: 0, issuesNew: 0, issuesUpdated: 0 });
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
@@ -192,7 +192,7 @@ describe("pollGitHub", () => {
 
     const result = await pollGitHub(invocation(env, `tracker:\n  github:\n    repo: octocat/hello-world\n    assignees:\n      - alice\n      - bob\n`), fetcher);
 
-    expect(result).toEqual({ teamId: "team-alpha", issuesSeen: 2, issuesPosted: 2 });
+    expect(result).toEqual({ teamId: "team-alpha", issuesSeen: 2, issuesNew: 2, issuesUpdated: 0 });
     expect(requestAssignees).toEqual(["alice", "bob"]);
     expect(postedRequests).toHaveLength(1);
     await expect(postedRequests[0]?.json()).resolves.toMatchObject({
@@ -217,7 +217,7 @@ describe("pollGitHub", () => {
 
     const firstResult = await pollGitHub(invocation(env, `tracker:\n  github:\n    repo: octocat/hello-world\n`), fetcher);
 
-    expect(firstResult).toEqual({ teamId: "team-alpha", issuesSeen: 0, issuesPosted: 0 });
+    expect(firstResult).toEqual({ teamId: "team-alpha", issuesSeen: 0, issuesNew: 0, issuesUpdated: 0 });
     expect(fetcher).toHaveBeenCalledOnce();
     expect(auditRuns).toHaveLength(1);
     expect(auditRuns[0]?.query).toContain("INSERT INTO audit_log");
@@ -235,14 +235,14 @@ describe("pollGitHub", () => {
 
     const skippedResult = await pollGitHub(invocation(env, `tracker:\n  github:\n    repo: octocat/hello-world\n`), fetcher);
 
-    expect(skippedResult).toEqual({ teamId: "team-alpha", issuesSeen: 0, issuesPosted: 0 });
+    expect(skippedResult).toEqual({ teamId: "team-alpha", issuesSeen: 0, issuesNew: 0, issuesUpdated: 0 });
     expect(fetcher).toHaveBeenCalledOnce();
     expect(auditRuns).toHaveLength(1);
 
     env.TRACKER_TEAM_ALPHA_GITHUB_TOKEN = "refreshed-token";
     const refreshedResult = await pollGitHub(invocation(env, `tracker:\n  github:\n    repo: octocat/hello-world\n`), fetcher);
 
-    expect(refreshedResult).toEqual({ teamId: "team-alpha", issuesSeen: 0, issuesPosted: 0 });
+    expect(refreshedResult).toEqual({ teamId: "team-alpha", issuesSeen: 0, issuesNew: 0, issuesUpdated: 0 });
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 

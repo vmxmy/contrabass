@@ -27,7 +27,8 @@ export type LinearPollIssue = {
 export type LinearAdapterResult = {
   teamId: string;
   issuesSeen: number;
-  issuesPosted: number;
+  issuesNew: number;
+  issuesUpdated: number;
 };
 
 type LinearAdapterConfig = {
@@ -46,6 +47,11 @@ type LinearClientOptions = {
 };
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+type CoordinatorRefreshStats = {
+  issuesNew: number;
+  issuesUpdated: number;
+};
 
 type GraphQLRequestBody = {
   query: string;
@@ -192,17 +198,24 @@ export async function pollLinear(invocation: PollerInvocation, fetcher?: Fetcher
     pageSize: config.pageSize,
   });
   const issues = await client.fetchIssues(config.query, config.variables);
-  await postIssuesToTeamCoordinator(invocation.env, invocation.team.teamId, issues);
+  const refreshStats = await postIssuesToTeamCoordinator(invocation.env, invocation.team.teamId, issues);
 
   return {
     teamId: invocation.team.teamId,
     issuesSeen: issues.length,
-    issuesPosted: issues.length,
+    issuesNew: refreshStats.issuesNew,
+    issuesUpdated: refreshStats.issuesUpdated,
   };
 }
 
 export const linearAdapter: PollerAdapter = async (invocation) => {
-  await pollLinear(invocation);
+  const result = await pollLinear(invocation);
+  return {
+    teamId: result.teamId,
+    issuesSeen: result.issuesSeen,
+    issuesNew: result.issuesNew,
+    issuesUpdated: result.issuesUpdated,
+  };
 };
 
 export function normalizeLinearIssue(node: Record<string, unknown>): LinearPollIssue {
@@ -287,9 +300,13 @@ function resolveLinearToken(env: PollerEnv, teamId: string, tokenRef: string | u
   throw new Error(`linear tracker secret binding not found for team ${teamId}`);
 }
 
-async function postIssuesToTeamCoordinator(env: PollerEnv, teamId: string, issues: LinearPollIssue[]): Promise<void> {
+async function postIssuesToTeamCoordinator(
+  env: PollerEnv,
+  teamId: string,
+  issues: LinearPollIssue[],
+): Promise<CoordinatorRefreshStats> {
   if (issues.length === 0) {
-    return;
+    return { issuesNew: 0, issuesUpdated: 0 };
   }
   if (env.TEAM_COORDINATOR === undefined) {
     throw new Error("TEAM_COORDINATOR binding required for Linear poller");
@@ -319,6 +336,26 @@ async function postIssuesToTeamCoordinator(env: PollerEnv, teamId: string, issue
   if (!response.ok) {
     throw new Error(`TeamCoordinator rejected Linear issues for team ${teamId}: ${response.status}`);
   }
+  return coordinatorRefreshStatsFromResponse(response, issues.length);
+}
+
+async function coordinatorRefreshStatsFromResponse(
+  response: Response,
+  fallbackIssuesNew: number,
+): Promise<CoordinatorRefreshStats> {
+  const fallback = { issuesNew: fallbackIssuesNew, issuesUpdated: 0 };
+  const body: unknown = await response.json().catch(() => undefined);
+  if (!isRecord(body)) {
+    return fallback;
+  }
+
+  const stats = getObjectField(body, "issueStats") ?? body;
+  const issuesNew = getNumberField(stats, "issuesNew");
+  const issuesUpdated = getNumberField(stats, "issuesUpdated");
+  if (issuesNew === undefined || issuesUpdated === undefined) {
+    return fallback;
+  }
+  return { issuesNew, issuesUpdated };
 }
 
 function decodeIssuesResponse(data: Record<string, unknown>): { nodes: Record<string, unknown>[]; pageInfo: LinearPageInfo } {
@@ -566,6 +603,10 @@ function parsePositiveInt(value: string | undefined): number | undefined {
   }
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function getObjectField(value: Record<string, unknown>, key: string): Record<string, unknown> | undefined {

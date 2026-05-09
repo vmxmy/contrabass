@@ -95,6 +95,55 @@ describe("tracker poller entry point", () => {
     }
   });
 
+  it("emits per-team adapter metrics to Workers Analytics Engine", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const metrics: AnalyticsEngineDataPoint[] = [];
+    const env = createEnv([
+      {
+        teamId: "metrics-team",
+        contentHash: hashFor("metrics"),
+        contentYaml: "tracker:\n  github:\n    repo: octocat/hello-world\n  linear:\n    project_slug: alpha\n",
+      },
+    ]);
+    env.TRACKER_POLLER_METRICS = {
+      writeDataPoint(event?: AnalyticsEngineDataPoint) {
+        if (event !== undefined) {
+          metrics.push(event);
+        }
+      },
+    };
+
+    try {
+      await runTrackerPoller(env, { cron: "* * * * *", scheduledTime: 1710000000000 }, {
+        github() {
+          throw new Error("github failed");
+        },
+        linear(invocation) {
+          return {
+            teamId: invocation.team.teamId,
+            issuesSeen: 5,
+            issuesNew: 2,
+            issuesUpdated: 3,
+          };
+        },
+      });
+
+      expect(metrics).toHaveLength(2);
+      expect(metrics[0]).toMatchObject({
+        indexes: ["metrics-team"],
+        blobs: ["tracker_poller_adapter", "metrics-team", "github", "* * * * *", "github failed"],
+      });
+      expect(metrics[0]?.doubles?.slice(1)).toEqual([0, 0, 0, 1, 1710000000000]);
+      expect(metrics[1]).toMatchObject({
+        indexes: ["metrics-team"],
+        blobs: ["tracker_poller_adapter", "metrics-team", "linear", "* * * * *", ""],
+      });
+      expect(metrics[1]?.doubles?.slice(1)).toEqual([5, 2, 3, 0, 1710000000000]);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("isolates rate-limited teams and skips them until Retry-After expires", async () => {
     const calls: Array<{ teamId: string; adapter: PollerAdapterName }> = [];
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -203,6 +252,8 @@ describe("tracker poller wrangler config", () => {
     expect(wranglerToml.default).toContain('crons = [ "* * * * *" ]');
     expect(wranglerToml.default).toContain("[env.staging.triggers]");
     expect(wranglerToml.default).toContain("[env.production.triggers]");
+    expect(wranglerToml.default).toContain("[[analytics_engine_datasets]]");
+    expect(wranglerToml.default).toContain('binding = "TRACKER_POLLER_METRICS"');
   });
 });
 
