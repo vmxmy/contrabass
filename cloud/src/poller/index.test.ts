@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import poller, { enabledTrackersFromConfig, runTrackerPoller, type PollerAdapterName, type PollerEnv } from "./index";
 
@@ -57,6 +57,41 @@ describe("tracker poller entry point", () => {
       { teamId: "multi-team", adapter: "internal-board", cron: "* * * * *", scheduledTime: 1710000000000 },
       { teamId: "multi-team", adapter: "linear", cron: "* * * * *", scheduledTime: 1710000000000 },
     ]);
+  });
+
+  it("continues polling remaining adapters after one adapter fails", async () => {
+    const calls: Array<{ teamId: string; adapter: PollerAdapterName }> = [];
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const env = createEnv([
+      { teamId: "failing-team", contentHash: hashFor("failing"), contentYaml: "tracker:\n  type: linear\n" },
+      { teamId: "healthy-team", contentHash: hashFor("healthy"), contentYaml: "tracker:\n  type: github\n" },
+    ]);
+
+    try {
+      const result = await runTrackerPoller(env, { cron: "* * * * *", scheduledTime: 1710000000000 }, {
+        linear(invocation) {
+          calls.push({ teamId: invocation.team.teamId, adapter: invocation.adapter });
+          throw new Error("linear auth failed");
+        },
+        github(invocation) {
+          calls.push({ teamId: invocation.team.teamId, adapter: invocation.adapter });
+        },
+      });
+
+      expect(result).toMatchObject({ teamsSeen: 2, teamsEnabled: 2, adapterCalls: 2 });
+      expect(calls).toEqual([
+        { teamId: "failing-team", adapter: "linear" },
+        { teamId: "healthy-team", adapter: "github" },
+      ]);
+      expect(consoleError).toHaveBeenCalledWith(JSON.stringify({
+        event: "tracker_poller_adapter_error",
+        teamId: "failing-team",
+        adapter: "linear",
+        message: "linear auth failed",
+      }));
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });
 

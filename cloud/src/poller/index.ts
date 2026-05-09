@@ -1,5 +1,9 @@
+import { linearAdapter } from "./linear";
+
 export type PollerEnv = {
   CONTROL_PLANE_DB?: D1Database;
+  TEAM_COORDINATOR?: DurableObjectNamespace;
+  [binding: string]: unknown;
 };
 
 export type PollerAdapterName = "linear" | "github" | "internal-board";
@@ -15,6 +19,7 @@ export type PollerInvocation = {
   adapter: PollerAdapterName;
   scheduledTime: number;
   cron: string;
+  env: PollerEnv;
 };
 
 export type PollerAdapter = (invocation: PollerInvocation) => Promise<void> | void;
@@ -43,7 +48,7 @@ type TrackerBlockState = {
 };
 
 const TRACKER_POLL_CRON = "* * * * *";
-const DEFAULT_ADAPTERS: PollerAdapters = {};
+const DEFAULT_ADAPTERS: PollerAdapters = { linear: linearAdapter };
 
 const worker: ExportedHandler<PollerEnv> = {
   fetch() {
@@ -81,8 +86,17 @@ export async function runTrackerPoller(
       if (pollAdapter === undefined) {
         continue;
       }
-      await pollAdapter({ team, adapter, scheduledTime: controller.scheduledTime, cron: controller.cron });
       adapterCalls += 1;
+      try {
+        await pollAdapter({ team, adapter, scheduledTime: controller.scheduledTime, cron: controller.cron, env });
+      } catch (error) {
+        console.error(JSON.stringify({
+          event: "tracker_poller_adapter_error",
+          teamId: team.teamId,
+          adapter,
+          message: error instanceof Error ? error.message : String(error),
+        }));
+      }
     }
   }
 

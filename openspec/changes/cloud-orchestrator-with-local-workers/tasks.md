@@ -86,7 +86,7 @@
 ## 10. Cloud tracker poller
 
 - [x] 10.1 Add Cron Trigger (every 1 minute) and `cloud/src/poller/index.ts` entry point
-- [ ] 10.2 Implement Linear adapter under `cloud/src/poller/linear.ts` (port logic from `internal/tracker/linear`)
+- [x] 10.2 Implement Linear adapter under `cloud/src/poller/linear.ts` (port logic from `internal/tracker/linear`)
 - [ ] 10.3 Implement GitHub Issues adapter under `cloud/src/poller/github.ts`
 - [ ] 10.4 Implement Internal Board (D1) adapter under `cloud/src/poller/internal-board.ts`
 - [ ] 10.5 Implement per-team error isolation and `Retry-After` handling

@@ -24,6 +24,11 @@ binding = "CONTROL_PLANE_DB"
 database_name = "contrabass-control-plane"
 database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
 
+[[durable_objects.bindings]]
+name = "TEAM_COORDINATOR"
+class_name = "TeamCoordinator"
+script_name = "contrabass-api"
+
 [observability]
 enabled = true
 head_sampling_rate = 1.0
@@ -46,6 +51,11 @@ secret_name = "tracker/synthetic-smoke/github"
 binding = "CONTROL_PLANE_DB"
 database_name = "contrabass-control-plane"
 database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
+
+[[env.staging.durable_objects.bindings]]
+name = "TEAM_COORDINATOR"
+class_name = "TeamCoordinator"
+script_name = "contrabass-api"
 
 [env.staging.triggers]
 crons = [ "* * * * *" ]
@@ -75,6 +85,11 @@ secret_name = "tracker/synthetic-smoke/github"
 binding = "CONTROL_PLANE_DB"
 database_name = "contrabass-control-plane"
 database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
+
+[[env.production.durable_objects.bindings]]
+name = "TEAM_COORDINATOR"
+class_name = "TeamCoordinator"
+script_name = "contrabass-api"
 
 [env.production.triggers]
 crons = [ "* * * * *" ]
