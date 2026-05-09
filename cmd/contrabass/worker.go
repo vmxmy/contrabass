@@ -24,6 +24,7 @@ type workerOptions struct {
 }
 
 type workerRegistration struct {
+	APIBaseURL           string
 	SessionToken         string
 	RefreshToken         string
 	DispatchChannel      workerv1.WorkerRegisterResponseDispatchChannel
@@ -95,9 +96,10 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		enrollment.TeamID,
 		registration.DispatchChannel.WsURL,
 	)
-	return workerDispatchConsumer(cmd.Context(), registration, func(context.Context, workerv1.WorkerDispatchFrame) error {
+	ackHandler := newWorkerAckingDispatchHandler(registration, opts.MaxConcurrency, func(context.Context, workerv1.WorkerDispatchFrame) error {
 		return nil
 	})
+	return workerDispatchConsumer(cmd.Context(), registration, ackHandler.Handle)
 }
 
 func workerOptionsFromFlags(cmd *cobra.Command) (workerOptions, error) {
@@ -230,6 +232,7 @@ func registerWorker(
 	}
 
 	return workerRegistration{
+		APIBaseURL:           opts.APIBaseURL,
 		SessionToken:         response.SessionToken,
 		RefreshToken:         response.RefreshToken,
 		DispatchChannel:      response.DispatchChannel,

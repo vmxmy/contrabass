@@ -370,6 +370,208 @@ func TestConsumeWorkerDispatchesRetriesWebSocketWhileInLongPollFallback(t *testi
 	assert.Equal(t, workerv1.RunID("run-ws-recovered"), got.RunID)
 }
 
+func TestWorkerAckingDispatchHandlerPostsAcceptBeforeStartingRun(t *testing.T) {
+	ackBody := make(chan map[string]any, 1)
+	started := make(chan struct{}, 1)
+	releaseStart := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/v1/runs/run-1/ack", r.URL.Path)
+		assert.Equal(t, "Bearer session-token", r.Header.Get("Authorization"))
+
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		ackBody <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	restoreDeps := stubWorkerLoginDependencies(t, server.Client(), &fakeWorkerEnrollmentStore{})
+	defer restoreDeps()
+
+	handler := newWorkerAckingDispatchHandler(workerRegistration{
+		APIBaseURL:   server.URL,
+		SessionToken: "session-token",
+	}, 1, func(ctx context.Context, _ workerv1.WorkerDispatchFrame) error {
+		started <- struct{}{}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-releaseStart:
+			return nil
+		}
+	})
+
+	err := handler.Handle(context.Background(), workerv1.WorkerDispatchFrame{RunID: "run-1"})
+	require.NoError(t, err)
+
+	select {
+	case got := <-ackBody:
+		assert.Equal(t, true, got["accept"])
+		assert.Equal(t, "1.0.0", got["protocol_version"])
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for ack")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for run start")
+	}
+
+	handler.mu.Lock()
+	_, inFlight := handler.inFlight["run-1"]
+	handler.mu.Unlock()
+	require.True(t, inFlight, "run should remain in flight until startRun exits")
+
+	close(releaseStart)
+	require.Eventually(t, func() bool {
+		handler.mu.Lock()
+		defer handler.mu.Unlock()
+		_, inFlight := handler.inFlight["run-1"]
+		return !inFlight
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestWorkerAckingDispatchHandlerRejectsAtCapacity(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/runs/run-2/ack", r.URL.Path)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	restoreDeps := stubWorkerLoginDependencies(t, server.Client(), &fakeWorkerEnrollmentStore{})
+	defer restoreDeps()
+
+	handler := newWorkerAckingDispatchHandler(workerRegistration{
+		APIBaseURL:   server.URL,
+		SessionToken: "session-token",
+	}, 1, func(context.Context, workerv1.WorkerDispatchFrame) error {
+		t.Fatal("startRun should not be called for at-capacity dispatch")
+		return nil
+	})
+	handler.inFlight["run-1"] = struct{}{}
+
+	err := handler.Handle(context.Background(), workerv1.WorkerDispatchFrame{RunID: "run-2"})
+	require.NoError(t, err)
+	assert.Equal(t, false, gotBody["accept"])
+	assert.Equal(t, "at_capacity", gotBody["reason"])
+	assert.Equal(t, "1.0.0", gotBody["protocol_version"])
+}
+
+func TestWorkerAckingDispatchHandlerRejectsSecondDispatchWhileFirstRunBlocked(t *testing.T) {
+	ackBodies := make(chan map[string]any, 2)
+	started := make(chan struct{}, 1)
+	releaseStart := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		body["path"] = r.URL.Path
+		ackBodies <- body
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	restoreDeps := stubWorkerLoginDependencies(t, server.Client(), &fakeWorkerEnrollmentStore{})
+	defer restoreDeps()
+
+	handler := newWorkerAckingDispatchHandler(workerRegistration{
+		APIBaseURL:   server.URL,
+		SessionToken: "session-token",
+	}, 1, func(ctx context.Context, _ workerv1.WorkerDispatchFrame) error {
+		started <- struct{}{}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-releaseStart:
+			return nil
+		}
+	})
+
+	err := handler.Handle(context.Background(), workerv1.WorkerDispatchFrame{RunID: "run-1"})
+	require.NoError(t, err)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first run start")
+	}
+
+	err = handler.Handle(context.Background(), workerv1.WorkerDispatchFrame{RunID: "run-2"})
+	require.NoError(t, err)
+
+	var firstAck, secondAck map[string]any
+	for range 2 {
+		select {
+		case got := <-ackBodies:
+			switch got["path"] {
+			case "/v1/runs/run-1/ack":
+				firstAck = got
+			case "/v1/runs/run-2/ack":
+				secondAck = got
+			default:
+				t.Fatalf("unexpected ack path %v", got["path"])
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for ack")
+		}
+	}
+
+	require.NotNil(t, firstAck)
+	require.NotNil(t, secondAck)
+	assert.Equal(t, true, firstAck["accept"])
+	assert.Equal(t, false, secondAck["accept"])
+	assert.Equal(t, "at_capacity", secondAck["reason"])
+	assert.Equal(t, "1.0.0", secondAck["protocol_version"])
+
+	close(releaseStart)
+	require.Eventually(t, func() bool {
+		handler.mu.Lock()
+		defer handler.mu.Unlock()
+		return len(handler.inFlight) == 0
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestPostWorkerDispatchAckReportsHTTPError(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		wantErr    string
+	}{
+		{
+			name:       "structured response body",
+			statusCode: http.StatusConflict,
+			body:       `{"error":"lease_revoked","protocol_version":"1.0.0"}`,
+			wantErr:    "lease_revoked",
+		},
+		{
+			name:       "empty response body",
+			statusCode: http.StatusInternalServerError,
+			wantErr:    "HTTP 500",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+			restoreDeps := stubWorkerLoginDependencies(t, server.Client(), &fakeWorkerEnrollmentStore{})
+			defer restoreDeps()
+
+			err := postWorkerDispatchAck(context.Background(), workerRegistration{
+				APIBaseURL:   server.URL,
+				SessionToken: "session-token",
+			}, "run-1", workerv1.Accept{
+				Accept:          true,
+				ProtocolVersion: workerv1.ProtocolVersionCurrent,
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestDecodeWorkerDispatchFrameRejectsUnsupportedType(t *testing.T) {
 	_, err := decodeWorkerDispatchFrame([]byte(`{"type":"lease-revoked","runId":"run-1","protocol_version":"1.0.0"}`))
 	require.ErrorIs(t, err, errWorkerDispatchUnsupported)
