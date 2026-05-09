@@ -627,6 +627,7 @@ func TestDetectWorkerCapabilities(t *testing.T) {
 }
 
 func TestWorkerCommandHelpDocumentsEnrollment(t *testing.T) {
+	defer resetWorkerFlagState()
 	cmd := newRootCmd()
 	buf := new(bytes.Buffer)
 	cmd.SetOut(buf)
@@ -732,6 +733,7 @@ func TestWorkerLoginCommandRequiresCode(t *testing.T) {
 }
 
 func TestWorkerCommandEphemeralFlagSendsHintInRegistration(t *testing.T) {
+	resetWorkerFlagState()
 	defer resetWorkerFlagState()
 
 	store := &fakeWorkerEnrollmentStore{byTeam: map[string]workerEnrollment{
@@ -786,6 +788,7 @@ func TestWorkerCommandEphemeralFlagSendsHintInRegistration(t *testing.T) {
 }
 
 func TestWorkerCommandEphemeralFlagAppliesClientSideDefaultLeaseSec(t *testing.T) {
+	resetWorkerFlagState()
 	defer resetWorkerFlagState()
 
 	store := &fakeWorkerEnrollmentStore{byTeam: map[string]workerEnrollment{
@@ -843,6 +846,7 @@ func TestWorkerCommandEphemeralFlagAppliesClientSideDefaultLeaseSec(t *testing.T
 }
 
 func TestWorkerCommandNonEphemeralDoesNotSendHint(t *testing.T) {
+	resetWorkerFlagState()
 	defer resetWorkerFlagState()
 
 	store := &fakeWorkerEnrollmentStore{byTeam: map[string]workerEnrollment{
@@ -981,7 +985,7 @@ func filterWorkerCapabilitiesForTest(raw any, excludedPrefixes ...string) []any 
 }
 
 func resetWorkerFlagState() {
-	for _, name := range []string{"team", "api-url", "max-concurrency", "ephemeral"} {
+	for _, name := range []string{"team", "api-url", "max-concurrency", "ephemeral", "help"} {
 		flag := workerCmd.Flags().Lookup(name)
 		if flag == nil {
 			continue
