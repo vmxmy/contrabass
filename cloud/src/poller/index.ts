@@ -1,4 +1,5 @@
 import { githubAdapter } from "./github";
+import { internalBoardAdapter } from "./internal-board";
 import { linearAdapter } from "./linear";
 
 export type PollerEnv = {
@@ -49,7 +50,11 @@ type TrackerBlockState = {
 };
 
 const TRACKER_POLL_CRON = "* * * * *";
-const DEFAULT_ADAPTERS: PollerAdapters = { github: githubAdapter, linear: linearAdapter };
+const DEFAULT_ADAPTERS: PollerAdapters = {
+  github: githubAdapter,
+  "internal-board": internalBoardAdapter,
+  linear: linearAdapter,
+};
 
 const worker: ExportedHandler<PollerEnv> = {
   fetch() {
