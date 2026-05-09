@@ -1,3 +1,5 @@
+//go:build localonly
+
 package web
 
 import "github.com/junhoyeo/contrabass/internal/orchestrator"

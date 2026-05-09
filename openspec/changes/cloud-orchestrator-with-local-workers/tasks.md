@@ -125,7 +125,7 @@
 
 ## 13. Build-tag split for legacy single-host code
 
-- [ ] 13.1 Add `//go:build localonly` to `internal/team`, `internal/orchestrator`, `internal/hub`, `internal/web`, `internal/ipc` package files
+- [x] 13.1 Add `//go:build localonly` to `internal/team`, `internal/orchestrator`, `internal/hub`, `internal/web`, `internal/ipc` package files
 - [ ] 13.2 Move `cmd/contrabass server` and team subcommand wiring behind the `localonly` tag
 - [ ] 13.3 Update `Makefile`: default `make build` excludes `localonly`; add `make build-local-only` (or `LOCAL_ONLY=1`) target
 - [ ] 13.4 Update `embed_dashboard.go` to be empty unless `localonly` is set
