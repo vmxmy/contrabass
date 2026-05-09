@@ -407,6 +407,7 @@ describe("TeamCoordinator Durable Object", () => {
     expect(body).toMatchObject({
       dispatched: false,
       event: {
+        eventId: "1",
         type: "no-worker-available",
         receivedAt: 60_000,
         payload: {
@@ -442,6 +443,7 @@ describe("TeamCoordinator Durable Object", () => {
       expect(body).toEqual({ accepted: true, type });
       await expect(storage.get<TeamCoordinatorNotification[]>("team-coordinator:notifications")).resolves.toEqual([
         {
+          eventId: "1",
           type,
           receivedAt: 2_000,
           payload: { runId: "run-1" },
@@ -506,6 +508,7 @@ describe("TeamCoordinator Durable Object", () => {
       {
         type: "run-event",
         protocol_version: "1.0.0",
+        event_id: "1",
         receivedAt: 2_000,
         payload: {
           protocol_version: "1.0.0",
@@ -517,6 +520,7 @@ describe("TeamCoordinator Durable Object", () => {
       {
         type: "run-complete",
         protocol_version: "1.0.0",
+        event_id: "2",
         runId: "run-1",
         teamId: "team-1",
         issueRef: "LIN-1",
@@ -526,6 +530,7 @@ describe("TeamCoordinator Durable Object", () => {
       {
         type: "lease-revoked",
         protocol_version: "1.0.0",
+        event_id: "3",
         runId: "run-1",
         workerId: "worker-1",
         reason: "heartbeat_timeout",
@@ -534,9 +539,63 @@ describe("TeamCoordinator Durable Object", () => {
       {
         type: "config-changed",
         protocol_version: "1.0.0",
+        event_id: "4",
         teamId: "team-1",
         activeContentHash: "cfg-2",
         receivedAt: 2_000,
+      },
+    ]);
+  });
+
+  it("replays missed notifications after last_event_id from a 100-event ring buffer", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(4_000);
+    Reflect.set(globalThis, "WebSocketPair", FakeWebSocketPair);
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    for (let index = 1; index <= 102; index += 1) {
+      await post(coordinator, "/run-event", {
+        protocol_version: "1.0.0",
+        teamId: "team-1",
+        runId: `run-${index}`,
+        event: { kind: "phase", index },
+      });
+    }
+
+    const storedNotifications = await storage.get<TeamCoordinatorNotification[]>("team-coordinator:notifications");
+    expect(storedNotifications).toHaveLength(100);
+    expect(storedNotifications?.[0]?.eventId).toBe("3");
+    expect(storedNotifications?.at(-1)?.eventId).toBe("102");
+
+    const response = await coordinator.fetch(new Request("https://team-coordinator.test/subscribe?last_event_id=100", {
+      headers: { upgrade: "websocket" },
+    }));
+
+    expect([101, 200]).toContain(response.status);
+    const server = fakeWebSocketPairs[0]?.[1];
+    expect(server?.sent.slice(1).map((message) => JSON.parse(message))).toEqual([
+      {
+        type: "run-event",
+        protocol_version: "1.0.0",
+        event_id: "101",
+        receivedAt: 4_000,
+        payload: {
+          protocol_version: "1.0.0",
+          teamId: "team-1",
+          runId: "run-101",
+          event: { kind: "phase", index: 101 },
+        },
+      },
+      {
+        type: "run-event",
+        protocol_version: "1.0.0",
+        event_id: "102",
+        receivedAt: 4_000,
+        payload: {
+          protocol_version: "1.0.0",
+          teamId: "team-1",
+          runId: "run-102",
+          event: { kind: "phase", index: 102 },
+        },
       },
     ]);
   });
@@ -589,6 +648,7 @@ describe("TeamCoordinator Durable Object", () => {
       {
         type: "config-changed",
         protocol_version: "1.0.0",
+        event_id: "1",
         teamId: "team-1",
         activeContentHash: "cfg-3",
         receivedAt: 3_000,

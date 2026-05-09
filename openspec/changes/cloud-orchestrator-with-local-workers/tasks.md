@@ -56,7 +56,7 @@
 - [x] 7.3 Implement task board persistence and `GET /board`, `POST /board/refresh` operations
 - [x] 7.4 Implement dispatch routing: capability filter + selection policy (default: prefer local over container, then least-loaded)
 - [x] 7.5 Implement WebSocket Hibernation handler for `/subscribe` with `board-update`, `run-event`, `worker-status`, `config-changed` frames
-- [ ] 7.6 Implement event ring buffer (last 100 per team) for reconnect replay via `last_event_id`
+- [x] 7.6 Implement event ring buffer (last 100 per team) for reconnect replay via `last_event_id`
 - [ ] 7.7 Implement operator actions: `reassign-run`, `cancel-run`, `pause-team`, `resume-team`
 - [ ] 7.8 Implement per-team usage caps (`max_active_workers`, `max_runs_per_day`, `max_events_per_day`)
 - [ ] 7.9 Vitest coverage: registry transitions, dispatch policy, fan-out, replay, caps

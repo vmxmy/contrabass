@@ -48,6 +48,7 @@ export type TeamCoordinatorDispatchFrame = {
 };
 
 export type TeamCoordinatorNotification = {
+  eventId: string;
   type: "run-event" | "run-complete" | "lease-revoked" | "no-worker-available" | "config-changed";
   receivedAt: number;
   payload: Record<string, unknown>;
@@ -76,6 +77,7 @@ const WORKER_REGISTRY_KEY = "team-coordinator:worker-registry";
 const INTERNAL_NOTIFICATION_PATHS = new Set(["/run-event", "/run-complete", "/lease-revoked", "/config-changed"]);
 const BOARD_PHASES: TeamCoordinatorBoardPhase[] = ["open", "claimed", "running", "done"];
 const PROTOCOL_VERSION = "1.0.0";
+const EVENT_RING_BUFFER_LIMIT = 100;
 const DEFAULT_WORKER_MAX_CONCURRENCY = 1;
 const DEFAULT_REGISTRY_HEARTBEAT_INTERVAL_SEC = 30;
 
@@ -335,7 +337,8 @@ export class TeamCoordinator {
 
       server.send(JSON.stringify(boardUpdateFrame(await this.ensureBoard())));
       const notifications = await this.state.storage.get<TeamCoordinatorNotification[]>(NOTIFICATIONS_KEY);
-      for (const notification of notifications ?? []) {
+      const lastEventId = getLastEventId(request);
+      for (const notification of replayNotifications(notifications ?? [], lastEventId)) {
         server.send(JSON.stringify(notificationFrame(notification)));
       }
     }
@@ -351,14 +354,15 @@ export class TeamCoordinator {
     }
 
     const now = Date.now();
+    const notifications = await this.state.storage.get<TeamCoordinatorNotification[]>(NOTIFICATIONS_KEY);
     const notification: TeamCoordinatorNotification = {
+      eventId: nextNotificationEventId(notifications ?? []),
       type: notificationTypeForPath(pathname),
       receivedAt: now,
       payload: body,
     };
-    const notifications = await this.state.storage.get<TeamCoordinatorNotification[]>(NOTIFICATIONS_KEY);
 
-    await this.state.storage.put(NOTIFICATIONS_KEY, [...(notifications ?? []), notification]);
+    await this.state.storage.put(NOTIFICATIONS_KEY, appendNotification(notifications ?? [], notification));
     await this.state.storage.put(TEAM_RECORD_KEY, {
       ...record,
       updatedAt: now,
@@ -375,7 +379,9 @@ export class TeamCoordinator {
   ): Promise<TeamCoordinatorNotification> {
     const record = await this.ensureRecord(request);
     const now = Date.now();
+    const notifications = await this.state.storage.get<TeamCoordinatorNotification[]>(NOTIFICATIONS_KEY);
     const notification: TeamCoordinatorNotification = {
+      eventId: nextNotificationEventId(notifications ?? []),
       type: "no-worker-available",
       receivedAt: now,
       payload: {
@@ -383,9 +389,8 @@ export class TeamCoordinator {
         requiredCapabilities,
       },
     };
-    const notifications = await this.state.storage.get<TeamCoordinatorNotification[]>(NOTIFICATIONS_KEY);
 
-    await this.state.storage.put(NOTIFICATIONS_KEY, [...(notifications ?? []), notification]);
+    await this.state.storage.put(NOTIFICATIONS_KEY, appendNotification(notifications ?? [], notification));
     await this.state.storage.put(TEAM_RECORD_KEY, {
       ...record,
       updatedAt: now,
@@ -665,6 +670,7 @@ function notificationFrame(notification: TeamCoordinatorNotification): Record<st
       protocol_version: PROTOCOL_VERSION,
       ...notification.payload,
       type: notification.type,
+      event_id: notification.eventId,
       receivedAt: notification.receivedAt,
     };
   }
@@ -672,9 +678,37 @@ function notificationFrame(notification: TeamCoordinatorNotification): Record<st
   return {
     type: notification.type,
     protocol_version: PROTOCOL_VERSION,
+    event_id: notification.eventId,
     receivedAt: notification.receivedAt,
     payload: notification.payload,
   };
+}
+
+function appendNotification(
+  notifications: TeamCoordinatorNotification[],
+  notification: TeamCoordinatorNotification,
+): TeamCoordinatorNotification[] {
+  return [...notifications, notification].slice(-EVENT_RING_BUFFER_LIMIT);
+}
+
+function nextNotificationEventId(notifications: TeamCoordinatorNotification[]): string {
+  const last = notifications.at(-1);
+  const lastEventId = last === undefined ? 0 : Number.parseInt(last.eventId, 10);
+  return String((Number.isFinite(lastEventId) ? lastEventId : 0) + 1);
+}
+
+function replayNotifications(
+  notifications: TeamCoordinatorNotification[],
+  lastEventId: number | undefined,
+): TeamCoordinatorNotification[] {
+  if (lastEventId === undefined) {
+    return notifications;
+  }
+
+  return notifications.filter((notification) => {
+    const eventId = Number.parseInt(notification.eventId, 10);
+    return Number.isFinite(eventId) && eventId > lastEventId;
+  });
 }
 
 function selectDispatchWorker(
@@ -797,6 +831,16 @@ function getSubscriptionWorkerId(request: Request): string | undefined {
   }
 
   return undefined;
+}
+
+function getLastEventId(request: Request): number | undefined {
+  const raw = new URL(request.url).searchParams.get("last_event_id");
+  if (raw === null || raw.trim() === "") {
+    return undefined;
+  }
+
+  const eventId = Number.parseInt(raw, 10);
+  return Number.isFinite(eventId) ? eventId : undefined;
 }
 
 async function readObjectBody(request: Request): Promise<Record<string, unknown> | undefined> {
