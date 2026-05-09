@@ -67,7 +67,7 @@
 - [x] 8.2 Implement `POST /v1/workers/register`, `POST /v1/workers/refresh`, `POST /v1/workers/enroll`
 - [x] 8.3 Implement `POST /v1/runs/{runId}/ack`, `/heartbeat`, `/events`, `/complete` forwarders to `IssueRun` DO
 - [x] 8.4 Implement `GET /v1/workers/{workerId}/dispatch?wait=25s` long-poll fallback
-- [ ] 8.5 Implement `GET /v1/teams/{teamId}/board`, `POST /v1/teams/{teamId}/board/*` forwarders to `TeamCoordinator`
+- [x] 8.5 Implement `GET /v1/teams/{teamId}/board`, `POST /v1/teams/{teamId}/board/*` forwarders to `TeamCoordinator`
 - [ ] 8.6 Implement WS upgrade for `/v1/teams/{teamId}/subscribe` (dashboard) and `/v1/workers/{workerId}/dispatch-ws` (worker)
 - [ ] 8.7 Add `X-Contrabass-Api-Version` response header on every response
 - [ ] 8.8 Add structured error responses with `error` codes matching the protocol spec

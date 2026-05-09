@@ -46,6 +46,56 @@ describe("API Worker router auth middleware", () => {
     });
   });
 
+  it("forwards board mutation posts to TeamCoordinator", async () => {
+    const seen: Array<{
+      name?: string;
+      url: string;
+      method: string;
+      teamId?: string;
+      contentType?: string;
+      body: unknown;
+    }> = [];
+    const env = createEnv(async (request) => {
+      seen.push({
+        url: request.url,
+        method: request.method,
+        teamId: request.headers.get("x-contrabass-team-id") ?? undefined,
+        contentType: request.headers.get("content-type") ?? undefined,
+        body: await request.json(),
+      });
+      return Response.json({ forwarded: true }, { status: 202 });
+    }, {});
+    const cases = [
+      { path: "refresh", body: { entries: [{ issueRef: "LIN-1", phase: "open" }] } },
+      { path: "reassign-run", body: { runId: "run-1", targetWorkerId: "worker-2" } },
+      { path: "cancel-run", body: { runId: "run-1" } },
+      { path: "pause", body: {} },
+      { path: "resume", body: {} },
+    ];
+
+    for (const testCase of cases) {
+      const response = await handleWorkerRequest(new Request(
+        `https://api.test/v1/teams/team-1/board/${testCase.path}?audit=1`,
+        {
+          method: "POST",
+          headers: { authorization: "Bearer worker-session", "content-type": "application/json" },
+          body: JSON.stringify(testCase.body),
+        },
+      ), envWithAuth(env, { workerTokens: "worker-session" }));
+
+      expect(response.status, testCase.path).toBe(202);
+      await expect(response.json(), testCase.path).resolves.toEqual({ forwarded: true });
+    }
+
+    expect(seen).toEqual(cases.map((testCase) => ({
+      url: `https://team-coordinator.internal/board/${testCase.path}?audit=1`,
+      method: "POST",
+      teamId: "team-1",
+      contentType: "application/json",
+      body: testCase.body,
+    })));
+  });
+
   it("forwards run ack, heartbeat, events, and complete posts to IssueRun", async () => {
     const seen: Array<{
       name?: string;

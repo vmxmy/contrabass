@@ -57,9 +57,7 @@ workerRouter.get("/v1/teams/:teamId/board", (context) => {
   return forwardTeamCoordinatorRequest(context, "/board");
 });
 
-workerRouter.post("/v1/teams/:teamId/board/refresh", (context) => {
-  return forwardTeamCoordinatorRequest(context, "/board/refresh");
-});
+workerRouter.post("/v1/teams/:teamId/board/*", forwardTeamCoordinatorBoardPostRequest);
 
 workerRouter.post("/v1/workers/register", registerWorker);
 workerRouter.post("/v1/workers/refresh", refreshWorkerSession);
@@ -82,10 +80,6 @@ workerRouter.get("/v1/workers/:workerId/dispatch", longPollWorkerDispatch);
 workerRouter.get("/v1/workers/:workerId/dispatch-ws", notImplemented);
 
 workerRouter.get("/v1/teams/:teamId/subscribe", notImplemented);
-workerRouter.post("/v1/teams/:teamId/board/reassign-run", notImplemented);
-workerRouter.post("/v1/teams/:teamId/board/cancel-run", notImplemented);
-workerRouter.post("/v1/teams/:teamId/board/pause", notImplemented);
-workerRouter.post("/v1/teams/:teamId/board/resume", notImplemented);
 
 workerRouter.notFound(() => {
   return jsonResponse({ error: "not_found" }, 404);
@@ -693,7 +687,7 @@ function getWorkerKindField(body: Record<string, unknown>): WorkerRegisterReques
 
 async function forwardTeamCoordinatorRequest(
   context: Context<WorkerRouterEnv>,
-  coordinatorPath: "/board" | "/board/refresh",
+  coordinatorPath: string,
 ): Promise<Response> {
   const teamId = (context.req.param("teamId") ?? "").trim();
   if (teamId === "") {
@@ -713,11 +707,32 @@ async function forwardTeamCoordinatorRequest(
 
   const body = request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer();
 
-  return stub.fetch(new Request(`https://team-coordinator.internal${coordinatorPath}`, {
+  const targetUrl = new URL(`https://team-coordinator.internal${coordinatorPath}`);
+  targetUrl.search = new URL(request.url).search;
+
+  return stub.fetch(new Request(targetUrl, {
     method: request.method,
     headers,
     body,
   }));
+}
+
+function forwardTeamCoordinatorBoardPostRequest(context: Context<WorkerRouterEnv>): Promise<Response> | Response {
+  const coordinatorPath = teamCoordinatorBoardPostPath(context.req.raw);
+  if (coordinatorPath === undefined) {
+    return jsonResponse({ error: "not_found" }, 404);
+  }
+  return forwardTeamCoordinatorRequest(context, coordinatorPath);
+}
+
+function teamCoordinatorBoardPostPath(request: Request): string | undefined {
+  const url = new URL(request.url);
+  const match = /^\/v1\/teams\/[^/]+\/board\/(.+)$/u.exec(url.pathname);
+  const actionPath = match?.[1];
+  if (actionPath === undefined || actionPath.trim() === "") {
+    return undefined;
+  }
+  return `/board/${actionPath}`;
 }
 
 async function forwardIssueRunRequest(
