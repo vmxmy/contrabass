@@ -121,8 +121,11 @@ def list_spec_paths() -> list[Path]:
 def codex_exec(prompt: str, last_msg_file: Path) -> tuple[int, str]:
     use_cc2 = os.environ.get("USE_CC2", "").strip() in ("1", "true", "yes")
     if use_cc2:
+        # cc2 is a shell alias for `claude-account max-2`, which sets
+        # CLAUDE_CONFIG_DIR=~/.claude-accounts/max-2 and execs claude.
+        cc2_env = {**os.environ, "CLAUDE_CONFIG_DIR": str(Path.home() / ".claude-accounts/max-2")}
         cmd = [
-            "cc2",
+            str(Path.home() / ".local/bin/claude"),
             "--model", "claude-sonnet-4-6",
             "--dangerously-skip-permissions",
             "--add-dir", str(REPO),
@@ -130,7 +133,10 @@ def codex_exec(prompt: str, last_msg_file: Path) -> tuple[int, str]:
             prompt,
         ]
         log(f"cc2 --print ({len(prompt)} chars prompt) ...")
-        code, out, err = run(cmd, cwd=REPO, check=False, timeout=CODEX_TIMEOUT_SEC)
+        log(f"$ {' '.join(shlex.quote(x) for x in cmd)}")
+        res = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO,
+                             timeout=CODEX_TIMEOUT_SEC, env=cc2_env)
+        code, out = res.returncode, res.stdout
         last_msg_file.write_text(out)
         return code, out
     cmd = [
