@@ -117,8 +117,22 @@ def list_spec_paths() -> list[Path]:
     return sorted(SPECS_DIR.glob("*/spec.md"))
 
 
-# ---------- codex driver ----------
+# ---------- codex/cc2 driver ----------
 def codex_exec(prompt: str, last_msg_file: Path) -> tuple[int, str]:
+    use_cc2 = os.environ.get("USE_CC2", "").strip() in ("1", "true", "yes")
+    if use_cc2:
+        cmd = [
+            "cc2",
+            "--model", "claude-sonnet-4-6",
+            "--dangerously-skip-permissions",
+            "--add-dir", str(REPO),
+            "--print",
+            prompt,
+        ]
+        log(f"cc2 --print ({len(prompt)} chars prompt) ...")
+        code, out, err = run(cmd, cwd=REPO, check=False, timeout=CODEX_TIMEOUT_SEC)
+        last_msg_file.write_text(out)
+        return code, out
     cmd = [
         "codex", "exec",
         "--cd", str(REPO),
