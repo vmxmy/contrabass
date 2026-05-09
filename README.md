@@ -11,13 +11,17 @@
 
 </div>
 
-Contrabass is a terminal-first orchestrator for issue-driven agent runs, with an optional local web dashboard for live visibility.
+Contrabass is a terminal-first orchestrator for issue-driven agent runs. The default mode connects your machine to the Cloudflare-hosted control plane: tracker polling and team coordination run in the cloud while agent execution stays on your laptop. A `--local-only` single-host build is also supported for offline or solo use.
 
 ## Current scope
 
 Today Contrabass ships with:
 
-- A Cobra CLI with TUI, headless, and optional embedded web dashboard modes
+- A cloud-hosted control plane (Cloudflare Durable Objects, D1, R2, Queues, Cron) for team coordination, tracker polling, and the live dashboard
+- A `contrabass worker` daemon that registers with the cloud, accepts dispatched issues, executes them locally using the existing agent runners, and streams events back
+- A cloud dashboard at `https://app.contrabass.dev` for live board, run detail, config history, and worker status — with WebSocket updates and GitHub OAuth login
+- A `contrabass migrate cloud` migration tool for seeding the cloud board and workflow config from an existing local project
+- A Cobra CLI with TUI, headless, and optional embedded web dashboard modes (local-only build)
 - A `WORKFLOW.md` parser with YAML front matter, Liquid prompt rendering, and `$ENV_VAR` interpolation
 - Issue tracker adapters for **Linear**, **GitHub Issues**, and a built-in **Internal Board** (local filesystem, no external service required)
 - Agent runners for **Codex app-server**, **OpenCode**, **oh-my-opencode**, **OMX (oh-my-codex)**, and **OMC (oh-my-claudecode)**
@@ -25,9 +29,8 @@ Today Contrabass ships with:
 - Teams: multi-agent coordination with a local task board, phased pipeline (plan → exec → verify), live TUI team table, and dual worker modes (tmux-based multi-process or goroutine-based in-process)
 - An orchestrator with claim/release, timeout detection, stall detection, deterministic retry backoff, and state snapshots
 - A Charm v2 terminal UI built with Bubble Tea, Bubbles, and Lip Gloss
-- A React dashboard served from the Go binary, with state snapshots and live SSE updates
 - Go unit/integration tests, TUI snapshot tests, and dashboard component/hook tests
-- A tmux-based multi-process worker mode (default) alongside the in-process goroutine mode, with JSONL event logging, file-based heartbeats, dispatch queue, governance policies, and crash recovery
+- A tmux-based multi-process worker mode alongside the in-process goroutine mode, with JSONL event logging, file-based heartbeats, dispatch queue, governance policies, and crash recovery
 
 ## Requirements
 
@@ -100,7 +103,51 @@ set -a && source .env && set +a
 | `workflow.local.md` | _(none — uses internal board, model is hardcoded)_ |
 | `workflow.mock.md` | _(none — test fixture)_ |
 
-## Quick start
+## Quick start (cloud mode)
+
+### 1. Enroll your machine
+
+Generate an enrollment code from the [team dashboard](https://app.contrabass.dev) and exchange it for a stored credential:
+
+```bash
+contrabass worker login --code <one-time-code>
+```
+
+The refresh token is stored in the OS-native credential store (Keychain on macOS, libsecret on Linux, Credential Manager on Windows) and never written to plain disk files.
+
+### 2. Start the worker daemon
+
+```bash
+contrabass worker --team <name>
+```
+
+The worker detects installed agent runtimes, git, and tmux availability, registers its capabilities with the cloud, and begins waiting for dispatched runs. The assigned worker ID and dispatch channel are printed on startup.
+
+### 3. Monitor from the dashboard
+
+Open **[https://app.contrabass.dev](https://app.contrabass.dev)** and log in with GitHub. The team board shows live run status, worker health, and configuration history via WebSocket updates.
+
+### Migrate an existing local project
+
+If you have a local Contrabass project, seed the cloud board and workflow config:
+
+```bash
+# Preview what will be uploaded (no writes):
+contrabass migrate cloud --team <name> --dry-run
+
+# Upload after review:
+contrabass migrate cloud --team <name> \
+  --api-base-url https://api.contrabass.dev \
+  --token "$CONTRABASS_MIGRATION_TOKEN"
+```
+
+See [`docs/cloud-migration.md`](docs/cloud-migration.md) for full migration instructions, post-migration checks, and rollback steps.
+
+---
+
+## Quick start (local-only mode)
+
+> **Note:** Build with `make build LOCAL_ONLY=1` for the local-only binary. See [Build from source](#build-from-source).
 
 ### Run with the demo workflow
 
@@ -142,6 +189,19 @@ LINEAR_API_KEY=your-linear-token \
 contrabass team run --config workflow.md [flags]
 
 --worker-mode string   override worker mode (goroutine|tmux, default from config)
+```
+
+#### Worker subcommand flags
+
+```text
+contrabass worker [flags]
+
+--team string          team name to register under (required)
+--ephemeral            use shorter lease defaults for CI / ephemeral runners
+
+contrabass worker login [flags]
+
+--code string          one-time enrollment code generated from the dashboard (required)
 ```
 
 ## How Contrabass works
@@ -366,9 +426,10 @@ All values are in milliseconds unless noted. Omitting a key uses the default.
 |---|---|
 | Trackers | Linear, GitHub Issues, Internal Board |
 | Agent runners | Codex app-server, OpenCode, oh-my-opencode, OMX, OMC |
-| Operator surfaces | Charm TUI, embedded web dashboard, headless mode |
-| Live config reload | Yes (`WORKFLOW.md` via `fsnotify`) |
-| State streaming | JSON snapshot API + SSE |
+| Cloud dashboard | `https://app.contrabass.dev` — board, run detail, config history, worker status (WebSocket + GitHub OAuth) |
+| Operator surfaces | Charm TUI, embedded web dashboard (local-only), headless mode |
+| Live config reload | Cloud: WebSocket `config-changed` push; local-only: `WORKFLOW.md` via `fsnotify` |
+| State streaming | Cloud: WebSocket subscription with `last_event_id` replay; local-only: JSON snapshot API + SSE |
 
 ### Trackers
 
@@ -465,6 +526,8 @@ go run ./cmd/contrabass --config testdata/workflow.demo.md --port 8080
 
 ## Docs and fixtures
 
+- [`docs/cloud-migration.md`](docs/cloud-migration.md) — migrating a local project to the cloud control plane, post-migration checks, and rollback steps
+- [`docs/worker-protocol.md`](docs/worker-protocol.md) — worker protocol v1 invariants, frame types, and non-goals
 - [`docs/codex-protocol.md`](docs/codex-protocol.md) — notes on the Codex app-server framing and lifecycle used here
 - [`docs/local-board.md`](docs/local-board.md) — internal board tracker file format and schema
 - [`docs/test-plan.md`](docs/test-plan.md) — ported test-plan notes from the Elixir codebase
