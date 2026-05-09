@@ -27,12 +27,13 @@ type workerRunExecutor struct {
 	registration workerRegistration
 	configCache  *workerConfigCache
 
-	provision  func(context.Context, *workspace.Manager, types.Issue) (string, error)
-	openPane   func(context.Context, *tmux.Session, string, string) (string, error)
-	runAgent   func(context.Context, agent.AgentRunner, types.Issue, string, string) error
-	newRunner  func(string) (agent.AgentRunner, error)
-	postEvents workerEventPostFunc
-	heartbeat  *workerHeartbeatScheduler
+	provision        func(context.Context, *workspace.Manager, types.Issue) (string, error)
+	openPane         func(context.Context, *tmux.Session, string, string) (string, error)
+	runAgent         func(context.Context, agent.AgentRunner, types.Issue, string, string) error
+	newRunner        func(string) (agent.AgentRunner, error)
+	postEvents       workerEventPostFunc
+	heartbeat        *workerHeartbeatScheduler
+	cleanupWorkspace func(context.Context, string) error
 }
 
 type workerRunExecutorConfig struct {
@@ -43,12 +44,15 @@ type workerRunExecutorConfig struct {
 	Registration     workerRegistration
 	ConfigCache      *workerConfigCache
 
-	Provision  func(context.Context, *workspace.Manager, types.Issue) (string, error)
-	OpenPane   func(context.Context, *tmux.Session, string, string) (string, error)
-	RunAgent   func(context.Context, agent.AgentRunner, types.Issue, string, string) error
-	NewRunner  func(string) (agent.AgentRunner, error)
-	PostEvents workerEventPostFunc
-	Heartbeat  *workerHeartbeatScheduler
+	Provision        func(context.Context, *workspace.Manager, types.Issue) (string, error)
+	OpenPane         func(context.Context, *tmux.Session, string, string) (string, error)
+	RunAgent         func(context.Context, agent.AgentRunner, types.Issue, string, string) error
+	NewRunner        func(string) (agent.AgentRunner, error)
+	PostEvents       workerEventPostFunc
+	Heartbeat        *workerHeartbeatScheduler
+	// CleanupWorkspace overrides workspace.Manager.Cleanup for tests. When nil the
+	// executor calls workspaceMgr.Cleanup directly.
+	CleanupWorkspace func(context.Context, string) error
 }
 
 func newWorkerRunExecutor(cfg workerRunExecutorConfig) (*workerRunExecutor, error) {
@@ -90,20 +94,21 @@ func newWorkerRunExecutor(cfg workerRunExecutorConfig) (*workerRunExecutor, erro
 	}
 
 	return &workerRunExecutor{
-		teamID:       strings.TrimSpace(cfg.TeamID),
-		workerID:     strings.TrimSpace(cfg.WorkerID),
-		agentType:    agentType,
-		tmuxCapable:  workerHasCapability(cfg.Capabilities, "tmux"),
-		workspaceMgr: workspace.NewManager(baseDir),
-		tmuxSession:  tmux.NewSession(firstNonEmpty(strings.TrimSpace(cfg.TeamID), "worker"), nil),
-		registration: cfg.Registration,
-		configCache:  configCache,
-		provision:    provision,
-		openPane:     openPane,
-		runAgent:     runAgent,
-		newRunner:    newRunner,
-		postEvents:   postEvents,
-		heartbeat:    heartbeat,
+		teamID:           strings.TrimSpace(cfg.TeamID),
+		workerID:         strings.TrimSpace(cfg.WorkerID),
+		agentType:        agentType,
+		tmuxCapable:      workerHasCapability(cfg.Capabilities, "tmux"),
+		workspaceMgr:     workspace.NewManager(baseDir),
+		tmuxSession:      tmux.NewSession(firstNonEmpty(strings.TrimSpace(cfg.TeamID), "worker"), nil),
+		registration:     cfg.Registration,
+		configCache:      configCache,
+		provision:        provision,
+		openPane:         openPane,
+		runAgent:         runAgent,
+		newRunner:        newRunner,
+		postEvents:       postEvents,
+		heartbeat:        heartbeat,
+		cleanupWorkspace: cfg.CleanupWorkspace,
 	}, nil
 }
 
@@ -156,7 +161,11 @@ func (e *workerRunExecutor) Run(ctx context.Context, frame workerv1.WorkerDispat
 		_, _ = newWorkerArtifactUploader(nil).UploadFiles(uploadCtx, frame.ArtifactUploadURLs, collectPartialArtifacts(workspacePath))
 		cancelUpload()
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
-		_ = e.workspaceMgr.Cleanup(cleanupCtx, issue.ID)
+		if e.cleanupWorkspace != nil {
+			_ = e.cleanupWorkspace(cleanupCtx, issue.ID)
+		} else {
+			_ = e.workspaceMgr.Cleanup(cleanupCtx, issue.ID)
+		}
 		cancelCleanup()
 	}
 
