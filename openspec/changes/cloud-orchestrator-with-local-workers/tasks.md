@@ -76,7 +76,7 @@
 ## 9. Cloud config store
 
 - [x] 9.1 Implement `POST /v1/teams/{teamId}/config` with parser ported from `internal/config` (re-implemented in TS or via WASM port — start with TS reimplementation)
-- [ ] 9.2 Implement `GET /v1/teams/{teamId}/config/{hash}` (immutable, cacheable)
+- [x] 9.2 Implement `GET /v1/teams/{teamId}/config/{hash}` (immutable, cacheable)
 - [ ] 9.3 Implement `POST /v1/teams/{teamId}/config/{version}/activate` updating `team_configs_active`
 - [ ] 9.4 Implement Liquid prompt rendering with secret-reference rejection
 - [ ] 9.5 Implement diff endpoint `GET /v1/teams/{teamId}/config/diff?from=v1&to=v2`

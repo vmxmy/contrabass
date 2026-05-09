@@ -1030,6 +1030,58 @@ describe("API Worker router auth middleware", () => {
     expect(configs).toHaveLength(1);
   });
 
+  it("returns immutable cacheable YAML config by content hash", async () => {
+    const contentYaml = "---\ntracker:\n  type: internal\n---\nPrompt.\n";
+    const contentHash = await testSha256Hex(contentYaml);
+    const env = envWithAuth({
+      ...createEnv(),
+      CONTROL_PLANE_DB: fakeD1({
+        configs: [{
+          team_id: "team-1",
+          version: 2,
+          content_hash: contentHash,
+          content_yaml: contentYaml,
+          created_by: "operator-1",
+          created_at: "2026-05-09T00:00:00.000Z",
+          notes: "stored",
+        }],
+      }),
+    }, { workerTokens: "worker-session" });
+
+    const response = await handleWorkerRequest(new Request(`https://api.test/v1/teams/team-1/config/${contentHash}`, {
+      headers: { authorization: "Bearer worker-session" },
+    }), env);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("public, max-age=86400, immutable");
+    expect(response.headers.get("content-type")).toBe("text/yaml; charset=utf-8");
+    await expect(response.text()).resolves.toBe(contentYaml);
+  });
+
+  it("returns structured errors for missing or malformed config hashes", async () => {
+    const validMissingHash = "a".repeat(64);
+    const env = envWithAuth({
+      ...createEnv(),
+      CONTROL_PLANE_DB: fakeD1({ configs: [] }),
+    }, { workerTokens: "worker-session" });
+    const cases: Array<{ name: string; hash: string; expectedStatus: number; expectedError: string }> = [
+      { name: "malformed", hash: "not-a-sha", expectedStatus: 400, expectedError: "invalid_config_hash" },
+      { name: "not found", hash: validMissingHash, expectedStatus: 404, expectedError: "config_not_found" },
+    ];
+
+    for (const testCase of cases) {
+      const response = await handleWorkerRequest(new Request(`https://api.test/v1/teams/team-1/config/${testCase.hash}`, {
+        headers: { authorization: "Bearer worker-session" },
+      }), env);
+
+      expect(response.status, testCase.name).toBe(testCase.expectedStatus);
+      await expect(response.json(), testCase.name).resolves.toEqual({
+        error: testCase.expectedError,
+        protocol_version: "1.0.0",
+      });
+    }
+  });
+
   it("rejects invalid config and does not write to D1", async () => {
     const configs: FakeConfigRow[] = [];
     const env = envWithAuth({

@@ -64,6 +64,7 @@ workerRouter.get("/v1/teams/:teamId/board", (context) => {
 
 workerRouter.post("/v1/teams/:teamId/board/*", forwardTeamCoordinatorBoardPostRequest);
 workerRouter.post("/v1/teams/:teamId/config", createTeamConfig);
+workerRouter.get("/v1/teams/:teamId/config/:hash", getTeamConfigByHash);
 
 workerRouter.post("/v1/workers/register", registerWorker);
 workerRouter.post("/v1/workers/refresh", refreshWorkerSession);
@@ -341,6 +342,43 @@ async function createTeamConfig(context: Context<WorkerRouterEnv>): Promise<Resp
     unchanged: false,
     protocol_version: PROTOCOL_VERSION_CURRENT,
   }, 201);
+}
+
+async function getTeamConfigByHash(context: Context<WorkerRouterEnv>): Promise<Response> {
+  const teamId = (context.req.param("teamId") ?? "").trim();
+  const hash = (context.req.param("hash") ?? "").trim();
+  if (teamId === "") {
+    return errorResponse("invalid_team_id", 400);
+  }
+  if (!isContentHash(hash)) {
+    return errorResponse("invalid_config_hash", 400);
+  }
+
+  const principal = context.get("principal");
+  if ("issued" in principal && principal.teamId !== teamId) {
+    return errorResponse("team_forbidden", 403);
+  }
+  if (context.env.CONTROL_PLANE_DB === undefined) {
+    return errorResponse("config_store_unavailable", 500);
+  }
+
+  const config = await context.env.CONTROL_PLANE_DB.prepare(`
+    SELECT content_yaml
+    FROM team_configs
+    WHERE team_id = ? AND content_hash = ?
+    LIMIT 1
+  `).bind(teamId, hash).first<{ content_yaml: string }>();
+  if (config === null) {
+    return errorResponse("config_not_found", 404);
+  }
+
+  return new Response(config.content_yaml, {
+    status: 200,
+    headers: {
+      "Cache-Control": "public, max-age=86400, immutable",
+      "Content-Type": "text/yaml; charset=utf-8",
+    },
+  });
 }
 
 function extractBearerToken(authorization: string | null): string | undefined {
@@ -681,6 +719,10 @@ function workerTokenConfigErrorResponse(): Response {
     error: "worker_token_secret_missing",
     protocol_version: PROTOCOL_VERSION_CURRENT,
   }, 500);
+}
+
+function isContentHash(value: string): boolean {
+  return /^[a-f0-9]{64}$/u.test(value);
 }
 
 function configInvalidResponse(details: ConfigValidationDetail[]): Response {
