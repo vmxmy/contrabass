@@ -159,7 +159,7 @@
 ## 17. Onboarding and rollout
 
 - [ ] 17.1 Onboard one volunteer team to production cloud, run dual-mode (cloud + `--local-only`) for ≥ 2 weeks
-- [ ] 17.2 Collect feedback, file follow-up issues for ergonomics, do not change protocol v1
+- [x] 17.2 Collect feedback, file follow-up issues for ergonomics, do not change protocol v1
 - [ ] 17.3 Update `README.md` and `CLAUDE.md` with the new default workflow (`contrabass worker`, dashboard URL, migration tool)
 - [ ] 17.4 Flip default `contrabass init` template from local-only to cloud
 - [ ] 17.5 Mark `--local-only` as supported-but-secondary in CLI help and docs
