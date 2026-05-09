@@ -29,13 +29,13 @@
 - [x] 4.2 Add R2 bindings to `wrangler.toml`
 - [x] 4.3 Implement R2 presigned PUT URL generation utility under `cloud/src/r2/presign.ts`
 - [x] 4.4 Create `events-archive` Queue and consumer Worker that batches events into `contrabass-events-archive`
-- [ ] 4.5 Set Queue dead-letter policy and document recovery procedure
+- [x] 4.5 Set Queue dead-letter policy and document recovery procedure
 
 ## 5. Secrets Store
 
 - [x] 5.1 Create Secrets Store and document per-team secret naming convention (`tracker/{teamId}/linear`, `tracker/{teamId}/github`)
 - [x] 5.2 Bind Secrets Store only to the tracker poller Worker (NOT to API Worker or DOs)
-- [ ] 5.3 Add `make cloud-secret-set` helper
+- [x] 5.3 Add `make cloud-secret-set` helper
 
 ## 6. `IssueRun` Durable Object
 
@@ -47,13 +47,13 @@
 - [x] 6.6 Implement `complete` handler that writes terminal record to D1 and broadcasts `run-complete`
 - [x] 6.7 Implement `cancel` handler called by `TeamCoordinator`
 - [x] 6.8 Implement late-event window (24h retention for terminal runs)
-- [ ] 6.9 Vitest coverage: state-machine transitions, alarm firing, CAS race, late events
+- [x] 6.9 Vitest coverage: state-machine transitions, alarm firing, CAS race, late events
 
 ## 7. `TeamCoordinator` Durable Object
 
 - [x] 7.1 Implement `TeamCoordinator` DO class under `cloud/src/do/team-coordinator.ts`
 - [x] 7.2 Implement worker registry (in-memory + DO storage) with `idle | busy | unhealthy` status
-- [ ] 7.3 Implement task board persistence and `GET /board`, `POST /board/refresh` operations
+- [x] 7.3 Implement task board persistence and `GET /board`, `POST /board/refresh` operations
 - [x] 7.4 Implement dispatch routing: capability filter + selection policy (default: prefer local over container, then least-loaded)
 - [ ] 7.5 Implement WebSocket Hibernation handler for `/subscribe` with `board-update`, `run-event`, `worker-status`, `config-changed` frames
 - [ ] 7.6 Implement event ring buffer (last 100 per team) for reconnect replay via `last_event_id`
