@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   TeamCoordinator,
   type TeamCoordinatorBoard,
+  type TeamCoordinatorDispatchFrame,
   type TeamCoordinatorNotification,
   type TeamCoordinatorRecord,
   type TeamCoordinatorStorage,
@@ -57,6 +58,9 @@ type TeamCoordinatorResponseBody = {
   board?: TeamCoordinatorBoard;
   registry?: TeamCoordinatorWorkerRegistry;
   worker?: TeamCoordinatorWorkerRecord;
+  dispatch?: TeamCoordinatorDispatchFrame;
+  dispatched?: boolean;
+  event?: TeamCoordinatorNotification;
   accepted?: boolean;
   type?: TeamCoordinatorNotification["type"];
   error?: string;
@@ -247,6 +251,176 @@ describe("TeamCoordinator Durable Object", () => {
     });
   });
 
+  it("dispatches to the only available local worker matching capabilities", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(50_000);
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["agent:codex", "tmux", "git"],
+      maxConcurrency: 1,
+      kind: "local",
+      version: "0.2.0",
+    });
+
+    const response = await post(coordinator, "/dispatch", {
+      runId: "run-1",
+      issueRef: "LIN-1",
+      requiredCapabilities: ["agent:codex", "tmux"],
+      branch: "contrabass/LIN-1",
+      prompt: "Fix LIN-1",
+      configHash: "cfg-1",
+      leaseSec: 60,
+      artifactUploadURLs: { logs: "https://r2.test/logs" },
+    });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(200);
+    expect(body.dispatched).toBe(true);
+    expect(body.worker).toMatchObject({
+      workerId: "worker-1",
+      currentLoad: 1,
+      status: "busy",
+    });
+    expect(body.dispatch).toEqual({
+      type: "dispatch",
+      protocol_version: "1.0.0",
+      runId: "run-1",
+      issueRef: "LIN-1",
+      workerId: "worker-1",
+      branch: "contrabass/LIN-1",
+      prompt: "Fix LIN-1",
+      configHash: "cfg-1",
+      leaseSec: 60,
+      artifactUploadURLs: { logs: "https://r2.test/logs" },
+    });
+    expect(body.board?.claimed).toEqual([
+      {
+        issueRef: "LIN-1",
+        runId: "run-1",
+        assignedWorkerId: "worker-1",
+        phase: "claimed",
+        lastUpdated: 50_000,
+      },
+    ]);
+    await expect(storage.get<TeamCoordinatorWorkerRegistry>("team-coordinator:worker-registry")).resolves.toMatchObject({
+      "worker-1": { currentLoad: 1, status: "busy" },
+    });
+  });
+
+  it("prefers matching local workers over less-loaded containers", async () => {
+    const { coordinator } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/workers/register", {
+      workerId: "container-1",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 3,
+      kind: "container",
+      version: "0.2.0",
+    });
+    await post(coordinator, "/workers/heartbeat", {
+      workerId: "container-1",
+      currentLoad: 0,
+    });
+    await post(coordinator, "/workers/register", {
+      workerId: "local-1",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 3,
+      kind: "local",
+      version: "0.2.0",
+    });
+    await post(coordinator, "/workers/heartbeat", {
+      workerId: "local-1",
+      currentLoad: 2,
+    });
+
+    const response = await post(coordinator, "/dispatch", {
+      runId: "run-1",
+      issueRef: "LIN-1",
+      capabilities: ["agent:codex"],
+    });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(200);
+    expect(body.worker?.workerId).toBe("local-1");
+    expect(body.dispatch?.workerId).toBe("local-1");
+  });
+
+  it("selects the least-loaded matching worker when kinds match", async () => {
+    const { coordinator } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/workers/register", {
+      workerId: "local-busy",
+      capabilities: ["agent:codex", "git"],
+      maxConcurrency: 3,
+      kind: "local",
+      version: "0.2.0",
+    });
+    await post(coordinator, "/workers/heartbeat", {
+      workerId: "local-busy",
+      currentLoad: 2,
+    });
+    await post(coordinator, "/workers/register", {
+      workerId: "local-less-loaded",
+      capabilities: ["agent:codex", "git"],
+      maxConcurrency: 3,
+      kind: "local",
+      version: "0.2.0",
+    });
+    await post(coordinator, "/workers/heartbeat", {
+      workerId: "local-less-loaded",
+      currentLoad: 1,
+    });
+
+    const response = await post(coordinator, "/dispatch", {
+      runId: "run-1",
+      issueRef: "LIN-1",
+      requirements: { capabilities: ["agent:codex", "git"] },
+    });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(200);
+    expect(body.worker?.workerId).toBe("local-less-loaded");
+  });
+
+  it("leaves runs queued and emits no-worker-available when nothing matches", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(60_000);
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 1,
+      kind: "local",
+      version: "0.2.0",
+    });
+
+    const response = await post(coordinator, "/dispatch", {
+      runId: "run-1",
+      issueRef: "LIN-1",
+      required_capabilities: ["agent:omx"],
+    });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(202);
+    expect(body).toMatchObject({
+      dispatched: false,
+      event: {
+        type: "no-worker-available",
+        receivedAt: 60_000,
+        payload: {
+          runId: "run-1",
+          issueRef: "LIN-1",
+          requiredCapabilities: ["agent:omx"],
+        },
+      },
+    });
+    await expect(storage.get<TeamCoordinatorBoard>("team-coordinator:board")).resolves.toBeUndefined();
+    await expect(storage.get<TeamCoordinatorNotification[]>("team-coordinator:notifications")).resolves.toMatchObject([
+      { type: "no-worker-available" },
+    ]);
+  });
+
   it.each([
     ["/run-event", "run-event"],
     ["/run-complete", "run-complete"],
@@ -350,6 +524,100 @@ describe("TeamCoordinator Durable Object", () => {
         receivedAt: 2_000,
       },
     ]);
+  });
+
+  it("routes dispatch frames only to the selected worker subscriber", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(50_000);
+    Reflect.set(globalThis, "WebSocketPair", FakeWebSocketPair);
+    const coordinator = createTeamCoordinator();
+
+    await coordinator.fetch(new Request("https://team-coordinator.test/subscribe", {
+      headers: { upgrade: "websocket" },
+    }));
+    await coordinator.fetch(new Request("https://team-coordinator.test/subscribe?workerId=worker-1", {
+      headers: { upgrade: "websocket" },
+    }));
+    await coordinator.fetch(new Request("https://team-coordinator.test/subscribe?workerId=worker-2", {
+      headers: { upgrade: "websocket" },
+    }));
+
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 1,
+      kind: "local",
+      version: "0.2.0",
+    });
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-2",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 1,
+      kind: "local",
+      version: "0.2.0",
+    });
+
+    const response = await post(coordinator, "/dispatch", {
+      runId: "run-1",
+      issueRef: "LIN-1",
+      requiredCapabilities: ["agent:codex"],
+      prompt: "Fix LIN-1",
+      leaseSec: 60,
+      artifactUploadURLs: { logs: "https://r2.test/logs" },
+    });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(200);
+    expect(body.dispatch?.workerId).toBe("worker-1");
+    const dashboardServer = fakeWebSocketPairs[0]?.[1];
+    const selectedWorkerServer = fakeWebSocketPairs[1]?.[1];
+    const otherWorkerServer = fakeWebSocketPairs[2]?.[1];
+
+    expect(dashboardServer?.sent.map((message) => JSON.parse(message))).toEqual([
+      {
+        type: "board-update",
+        protocol_version: "1.0.0",
+        board: { open: [], claimed: [], running: [], done: [] },
+      },
+      {
+        type: "worker-status",
+        protocol_version: "1.0.0",
+        worker: expect.objectContaining({ workerId: "worker-1" }),
+      },
+      {
+        type: "worker-status",
+        protocol_version: "1.0.0",
+        worker: expect.objectContaining({ workerId: "worker-2" }),
+      },
+      {
+        type: "worker-status",
+        protocol_version: "1.0.0",
+        worker: expect.objectContaining({ workerId: "worker-1", currentLoad: 1, status: "busy" }),
+      },
+      {
+        type: "board-update",
+        protocol_version: "1.0.0",
+        board: expect.objectContaining({
+          claimed: [expect.objectContaining({
+            issueRef: "LIN-1",
+            runId: "run-1",
+            assignedWorkerId: "worker-1",
+          })],
+        }),
+      },
+    ]);
+    expect(selectedWorkerServer?.sent.map((message) => JSON.parse(message))).toEqual([
+      {
+        type: "dispatch",
+        protocol_version: "1.0.0",
+        runId: "run-1",
+        issueRef: "LIN-1",
+        workerId: "worker-1",
+        prompt: "Fix LIN-1",
+        leaseSec: 60,
+        artifactUploadURLs: { logs: "https://r2.test/logs" },
+      },
+    ]);
+    expect(otherWorkerServer?.sent).toEqual([]);
   });
 
   it("rejects non-websocket subscribe requests", async () => {

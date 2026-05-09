@@ -34,8 +34,21 @@ export type TeamCoordinatorWorkerRecord = {
 
 export type TeamCoordinatorWorkerRegistry = Record<string, TeamCoordinatorWorkerRecord>;
 
+export type TeamCoordinatorDispatchFrame = {
+  type: "dispatch";
+  protocol_version: string;
+  runId: string;
+  issueRef: string;
+  workerId: string;
+  branch?: string;
+  prompt?: string;
+  configHash?: string;
+  leaseSec?: number;
+  artifactUploadURLs?: Record<string, unknown>;
+};
+
 export type TeamCoordinatorNotification = {
-  type: "run-event" | "run-complete" | "lease-revoked";
+  type: "run-event" | "run-complete" | "lease-revoked" | "no-worker-available";
   receivedAt: number;
   payload: Record<string, unknown>;
 };
@@ -66,6 +79,7 @@ const DEFAULT_REGISTRY_HEARTBEAT_INTERVAL_SEC = 30;
 
 export class TeamCoordinator {
   private readonly subscribers = new Set<WebSocket>();
+  private readonly workerDispatchSubscribers = new Map<string, Set<WebSocket>>();
   private workerRegistry: TeamCoordinatorWorkerRegistry | undefined;
 
   constructor(private readonly state: TeamCoordinatorDurableState) {}
@@ -92,6 +106,10 @@ export class TeamCoordinator {
 
     if (request.method === "POST" && url.pathname === "/workers/heartbeat") {
       return this.recordWorkerHeartbeat(request);
+    }
+
+    if (request.method === "POST" && url.pathname === "/dispatch") {
+      return this.dispatchRun(request);
     }
 
     if (request.method === "POST" && url.pathname === "/board/refresh") {
@@ -224,6 +242,57 @@ export class TeamCoordinator {
     return jsonResponse({ worker, registry: updatedRegistry });
   }
 
+  private async dispatchRun(request: Request): Promise<Response> {
+    const body = await readObjectBody(request);
+    if (body === undefined) {
+      return jsonResponse({ error: "invalid_request", message: "body must be a JSON object" }, 400);
+    }
+
+    const runId = getStringField(body, "runId") ?? getStringField(body, "run_id");
+    const issueRef = getStringField(body, "issueRef") ?? getStringField(body, "issue_ref");
+    if (runId === undefined || issueRef === undefined) {
+      return jsonResponse({ error: "invalid_request", message: "runId and issueRef are required" }, 400);
+    }
+
+    const requiredCapabilities = getDispatchRequiredCapabilities(body);
+    if (requiredCapabilities === undefined) {
+      return jsonResponse({ error: "invalid_request", message: "required capabilities must be strings" }, 400);
+    }
+
+    const registry = await this.ensureWorkerRegistry();
+    const selectedWorker = selectDispatchWorker(registry, requiredCapabilities);
+    if (selectedWorker === undefined) {
+      const event = await this.emitNoWorkerAvailable(request, body, requiredCapabilities);
+      return jsonResponse({ dispatched: false, event }, 202);
+    }
+
+    const worker = incrementWorkerLoad(selectedWorker);
+    const updatedRegistry = {
+      ...registry,
+      [worker.workerId]: worker,
+    };
+    await this.persistWorkerRegistry(updatedRegistry);
+
+    const board = mergeBoard(await this.ensureBoard(), boardWithEntries([
+      {
+        issueRef,
+        runId,
+        assignedWorkerId: worker.workerId,
+        phase: "claimed",
+        lastUpdated: Date.now(),
+      },
+    ]));
+    await this.state.storage.put(BOARD_KEY, board);
+    await this.touchRecord(request);
+
+    const dispatch = dispatchFrameFromBody(body, worker.workerId, runId, issueRef);
+    this.broadcast(workerStatusFrame(worker));
+    this.broadcast(boardUpdateFrame(board));
+    this.sendToWorker(worker.workerId, dispatch);
+
+    return jsonResponse({ dispatched: true, worker, dispatch, board });
+  }
+
   private async refreshBoard(request: Request): Promise<Response> {
     const body = await readObjectBody(request);
     if (body === undefined) {
@@ -256,17 +325,22 @@ export class TeamCoordinator {
 
     const [client, server] = pair;
     server.accept();
-    this.subscribers.add(server);
-    const removeSubscriber = () => {
-      this.subscribers.delete(server);
-    };
-    server.addEventListener("close", removeSubscriber);
-    server.addEventListener("error", removeSubscriber);
+    const workerId = getSubscriptionWorkerId(request);
+    if (workerId !== undefined) {
+      this.addWorkerDispatchSubscriber(workerId, server);
+    } else {
+      this.subscribers.add(server);
+      const removeSubscriber = () => {
+        this.subscribers.delete(server);
+      };
+      server.addEventListener("close", removeSubscriber);
+      server.addEventListener("error", removeSubscriber);
 
-    server.send(JSON.stringify(boardUpdateFrame(await this.ensureBoard())));
-    const notifications = await this.state.storage.get<TeamCoordinatorNotification[]>(NOTIFICATIONS_KEY);
-    for (const notification of notifications ?? []) {
-      server.send(JSON.stringify(notificationFrame(notification)));
+      server.send(JSON.stringify(boardUpdateFrame(await this.ensureBoard())));
+      const notifications = await this.state.storage.get<TeamCoordinatorNotification[]>(NOTIFICATIONS_KEY);
+      for (const notification of notifications ?? []) {
+        server.send(JSON.stringify(notificationFrame(notification)));
+      }
     }
 
     return webSocketResponse(client);
@@ -297,6 +371,33 @@ export class TeamCoordinator {
     return jsonResponse({ accepted: true, type: notification.type });
   }
 
+  private async emitNoWorkerAvailable(
+    request: Request,
+    payload: Record<string, unknown>,
+    requiredCapabilities: string[],
+  ): Promise<TeamCoordinatorNotification> {
+    const record = await this.ensureRecord(request);
+    const now = Date.now();
+    const notification: TeamCoordinatorNotification = {
+      type: "no-worker-available",
+      receivedAt: now,
+      payload: {
+        ...payload,
+        requiredCapabilities,
+      },
+    };
+    const notifications = await this.state.storage.get<TeamCoordinatorNotification[]>(NOTIFICATIONS_KEY);
+
+    await this.state.storage.put(NOTIFICATIONS_KEY, [...(notifications ?? []), notification]);
+    await this.state.storage.put(TEAM_RECORD_KEY, {
+      ...record,
+      updatedAt: now,
+    });
+    this.broadcast(notificationFrame(notification));
+
+    return notification;
+  }
+
   private async touchRecord(request: Request): Promise<void> {
     const record = await this.ensureRecord(request);
     await this.state.storage.put(TEAM_RECORD_KEY, {
@@ -313,6 +414,40 @@ export class TeamCoordinator {
       } catch {
         this.subscribers.delete(subscriber);
       }
+    }
+  }
+
+  private addWorkerDispatchSubscriber(workerId: string, socket: WebSocket): void {
+    const sockets = this.workerDispatchSubscribers.get(workerId) ?? new Set<WebSocket>();
+    sockets.add(socket);
+    this.workerDispatchSubscribers.set(workerId, sockets);
+
+    const removeSubscriber = () => {
+      sockets.delete(socket);
+      if (sockets.size === 0) {
+        this.workerDispatchSubscribers.delete(workerId);
+      }
+    };
+    socket.addEventListener("close", removeSubscriber);
+    socket.addEventListener("error", removeSubscriber);
+  }
+
+  private sendToWorker(workerId: string, frame: Record<string, unknown>): void {
+    const sockets = this.workerDispatchSubscribers.get(workerId);
+    if (sockets === undefined) {
+      return;
+    }
+
+    const message = JSON.stringify(frame);
+    for (const socket of sockets) {
+      try {
+        socket.send(message);
+      } catch {
+        sockets.delete(socket);
+      }
+    }
+    if (sockets.size === 0) {
+      this.workerDispatchSubscribers.delete(workerId);
     }
   }
 }
@@ -505,6 +640,98 @@ function notificationFrame(notification: TeamCoordinatorNotification): Record<st
   };
 }
 
+function selectDispatchWorker(
+  registry: TeamCoordinatorWorkerRegistry,
+  requiredCapabilities: readonly string[],
+): TeamCoordinatorWorkerRecord | undefined {
+  const candidates = Object.values(registry)
+    .filter((worker) => isDispatchCandidate(worker, requiredCapabilities))
+    .sort(compareDispatchWorkers);
+
+  return candidates[0];
+}
+
+function isDispatchCandidate(
+  worker: TeamCoordinatorWorkerRecord,
+  requiredCapabilities: readonly string[],
+): boolean {
+  if (worker.status !== "idle" && !(worker.status === "busy" && worker.currentLoad < worker.maxConcurrency)) {
+    return false;
+  }
+
+  const capabilities = new Set(worker.capabilities);
+  return requiredCapabilities.every((capability) => capabilities.has(capability));
+}
+
+function compareDispatchWorkers(a: TeamCoordinatorWorkerRecord, b: TeamCoordinatorWorkerRecord): number {
+  const kindComparison = workerKindRank(a.kind) - workerKindRank(b.kind);
+  if (kindComparison !== 0) {
+    return kindComparison;
+  }
+
+  const loadComparison = a.currentLoad - b.currentLoad;
+  if (loadComparison !== 0) {
+    return loadComparison;
+  }
+
+  return a.workerId.localeCompare(b.workerId);
+}
+
+function workerKindRank(kind: TeamCoordinatorWorkerKind): number {
+  return kind === "local" ? 0 : 1;
+}
+
+function incrementWorkerLoad(worker: TeamCoordinatorWorkerRecord): TeamCoordinatorWorkerRecord {
+  const currentLoad = clampWorkerLoad(worker.currentLoad + 1, worker.maxConcurrency);
+  return {
+    ...worker,
+    currentLoad,
+    status: statusForWorkerLoad(currentLoad),
+  };
+}
+
+function dispatchFrameFromBody(
+  body: Record<string, unknown>,
+  workerId: string,
+  runId: string,
+  issueRef: string,
+): TeamCoordinatorDispatchFrame {
+  const branch = getStringField(body, "branch");
+  const prompt = getStringField(body, "prompt");
+  const configHash = getStringField(body, "configHash") ?? getStringField(body, "config_hash");
+  const leaseSec = getPositiveIntegerField(body, "leaseSec") ?? getPositiveIntegerField(body, "lease_sec");
+  const artifactUploadURLs = getObjectField(body, "artifactUploadURLs") ?? getObjectField(body, "artifact_upload_urls");
+
+  return {
+    type: "dispatch",
+    protocol_version: PROTOCOL_VERSION,
+    runId,
+    issueRef,
+    workerId,
+    ...(branch === undefined ? {} : { branch }),
+    ...(prompt === undefined ? {} : { prompt }),
+    ...(configHash === undefined ? {} : { configHash }),
+    ...(leaseSec === undefined ? {} : { leaseSec }),
+    ...(artifactUploadURLs === undefined ? {} : { artifactUploadURLs }),
+  };
+}
+
+function getDispatchRequiredCapabilities(body: Record<string, unknown>): string[] | undefined {
+  const direct = getStringArrayField(body, "requiredCapabilities")
+    ?? getStringArrayField(body, "required_capabilities")
+    ?? getStringArrayField(body, "capabilities");
+  if (direct !== undefined) {
+    return direct;
+  }
+
+  const requirements = getObjectField(body, "requirements");
+  if (requirements === undefined) {
+    return [];
+  }
+
+  return getStringArrayField(requirements, "capabilities");
+}
+
 function getTeamId(request: Request): string | undefined {
   const header = request.headers.get("x-contrabass-team-id");
   if (header !== null && header.trim() !== "") {
@@ -513,6 +740,21 @@ function getTeamId(request: Request): string | undefined {
 
   const url = new URL(request.url);
   const query = url.searchParams.get("teamId");
+  if (query !== null && query.trim() !== "") {
+    return query;
+  }
+
+  return undefined;
+}
+
+function getSubscriptionWorkerId(request: Request): string | undefined {
+  const header = request.headers.get("x-contrabass-worker-id");
+  if (header !== null && header.trim() !== "") {
+    return header;
+  }
+
+  const url = new URL(request.url);
+  const query = url.searchParams.get("workerId") ?? url.searchParams.get("worker_id");
   if (query !== null && query.trim() !== "") {
     return query;
   }
