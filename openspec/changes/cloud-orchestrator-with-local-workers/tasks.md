@@ -85,14 +85,14 @@
 
 ## 10. Cloud tracker poller
 
-- [ ] 10.1 Add Cron Trigger (every 1 minute) and `cloud/src/poller/index.ts` entry point
-- [ ] 10.2 Implement Linear adapter under `cloud/src/poller/linear.ts` (port logic from `internal/tracker/linear`)
-- [ ] 10.3 Implement GitHub Issues adapter under `cloud/src/poller/github.ts`
-- [ ] 10.4 Implement Internal Board (D1) adapter under `cloud/src/poller/internal-board.ts`
-- [ ] 10.5 Implement per-team error isolation and `Retry-After` handling
-- [ ] 10.6 Implement idempotent upsert by `external_id` into `TeamCoordinator`
-- [ ] 10.7 Wire metrics emission to Workers Analytics Engine
-- [ ] 10.8 Vitest coverage with mocked Linear/GitHub clients
+- [x] 10.1 Add Cron Trigger (every 1 minute) and `cloud/src/poller/index.ts` entry point
+- [x] 10.2 Implement Linear adapter under `cloud/src/poller/linear.ts` (port logic from `internal/tracker/linear`)
+- [x] 10.3 Implement GitHub Issues adapter under `cloud/src/poller/github.ts`
+- [x] 10.4 Implement Internal Board (D1) adapter under `cloud/src/poller/internal-board.ts`
+- [x] 10.5 Implement per-team error isolation and `Retry-After` handling
+- [x] 10.6 Implement idempotent upsert by `external_id` into `TeamCoordinator`
+- [x] 10.7 Wire metrics emission to Workers Analytics Engine
+- [x] 10.8 Vitest coverage with mocked Linear/GitHub clients
 
 ## 11. Dashboard hosting
 
