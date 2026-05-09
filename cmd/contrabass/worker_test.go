@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -22,10 +25,13 @@ func TestWorkerCommandIsRegistered(t *testing.T) {
 }
 
 func TestWorkerCommandValidation(t *testing.T) {
+	defer resetWorkerFlagState()
+
 	tests := []struct {
 		name        string
 		args        []string
 		store       *fakeWorkerEnrollmentStore
+		lookup      func(string) (string, error)
 		wantErr     string
 		wantNoError bool
 	}{
@@ -50,7 +56,8 @@ func TestWorkerCommandValidation(t *testing.T) {
 					RefreshToken: "refresh-token-123",
 				},
 			}},
-			wantErr: `registration flow is not implemented yet`,
+			lookup:  missingWorkerLookupPath,
+			wantErr: `no supported agent runner found on PATH`,
 		},
 	}
 
@@ -58,6 +65,10 @@ func TestWorkerCommandValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.store != nil {
 				restore := stubWorkerLoginDependencies(t, http.DefaultClient, tt.store)
+				defer restore()
+			}
+			if tt.lookup != nil {
+				restore := stubWorkerLookupPath(tt.lookup)
 				defer restore()
 			}
 
@@ -75,6 +86,144 @@ func TestWorkerCommandValidation(t *testing.T) {
 
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestWorkerCommandRegistersWithDetectedCapabilities(t *testing.T) {
+	defer resetWorkerFlagState()
+
+	store := &fakeWorkerEnrollmentStore{byTeam: map[string]workerEnrollment{
+		"team-1": {
+			TeamID:       "team-1",
+			WorkerID:     "worker-1",
+			RefreshToken: "stored-refresh",
+		},
+	}}
+	var refreshBody map[string]any
+	var registerBody map[string]any
+	var registerAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/workers/refresh":
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&refreshBody))
+			_, _ = w.Write([]byte(`{
+				"sessionToken": "session-from-refresh",
+				"expiresAt": 123456,
+				"protocol_version": "1.0.0"
+			}`))
+		case "/v1/workers/register":
+			registerAuth = r.Header.Get("Authorization")
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&registerBody))
+			_, _ = w.Write([]byte(`{
+				"sessionToken": "registered-session",
+				"refreshToken": "rotated-refresh",
+				"dispatchChannel": {
+					"wsUrl": "wss://api.test/v1/workers/worker-1/dispatch-ws",
+					"longPollUrl": "https://api.test/v1/workers/worker-1/dispatch?wait=25s"
+				},
+				"heartbeatIntervalSec": 20,
+				"leaseSec": 60,
+				"protocol_version": "1.0.0"
+			}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	restoreDeps := stubWorkerLoginDependencies(t, server.Client(), store)
+	defer restoreDeps()
+	restoreLookup := stubWorkerLookupPath(func(name string) (string, error) {
+		switch name {
+		case "codex", "omx", "git", "tmux":
+			return "/usr/bin/" + name, nil
+		default:
+			return "", errors.New("not found")
+		}
+	})
+	defer restoreLookup()
+
+	cmd := newRootCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{
+		"worker",
+		"--team", "team-1",
+		"--api-url", server.URL,
+		"--max-concurrency", "3",
+	})
+
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, map[string]any{
+		"refreshToken":     "stored-refresh",
+		"protocol_version": "1.0.0",
+	}, refreshBody)
+	assert.Equal(t, "Bearer session-from-refresh", registerAuth)
+	assert.Equal(t, "team-1", registerBody["teamId"])
+	assert.Equal(t, "worker-1", registerBody["workerId"])
+	assert.Equal(t, float64(3), registerBody["maxConcurrency"])
+	assert.Equal(t, "dev", registerBody["version"])
+	assert.Equal(t, "local", registerBody["kind"])
+	assert.Equal(t, "1.0.0", registerBody["protocol_version"])
+	assert.ElementsMatch(t,
+		[]any{"agent:codex", "agent:omx", "git", "tmux", "os:" + runtime.GOOS},
+		filterWorkerCapabilitiesForTest(registerBody["capabilities"], "arch:"),
+	)
+	assert.Equal(t, "rotated-refresh", store.byTeam["team-1"].RefreshToken)
+	assert.Contains(t, buf.String(), `Registered worker "worker-1" for team "team-1"`)
+	assert.Contains(t, buf.String(), "wss://api.test/v1/workers/worker-1/dispatch-ws")
+	assert.NotContains(t, buf.String(), "registered-session")
+	assert.NotContains(t, buf.String(), "rotated-refresh")
+}
+
+func TestDetectWorkerCapabilities(t *testing.T) {
+	tests := []struct {
+		name    string
+		found   map[string]bool
+		want    []string
+		wantErr string
+	}{
+		{
+			name:  "detects runners and host capabilities",
+			found: map[string]bool{"codex": true, "opencode": true, "git": true},
+			want:  []string{"agent:codex", "agent:opencode", "git"},
+		},
+		{
+			name:    "refuses to run without an agent runner",
+			found:   map[string]bool{"git": true, "tmux": true},
+			wantErr: "missing runners: codex, opencode, omx, omc, mock",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			restore := stubWorkerLookupPath(func(name string) (string, error) {
+				if tt.found[name] {
+					return "/usr/bin/" + name, nil
+				}
+				return "", errors.New("not found")
+			})
+			defer restore()
+
+			got, err := detectWorkerCapabilities()
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+
+			require.NoError(t, err)
+			gotStrings := make([]string, 0, len(got))
+			for _, capability := range got {
+				gotStrings = append(gotStrings, string(capability))
+			}
+			for _, want := range tt.want {
+				assert.Contains(t, gotStrings, want)
+			}
+			assert.Contains(t, gotStrings, "os:"+runtime.GOOS)
 		})
 	}
 }
@@ -219,6 +368,54 @@ func stubWorkerLoginDependencies(t *testing.T, client *http.Client, store worker
 	return func() {
 		workerLoginHTTPClient = oldClient
 		newWorkerLoginStore = oldStore
+	}
+}
+
+func stubWorkerLookupPath(lookup func(string) (string, error)) func() {
+	oldLookup := workerLookupPath
+	workerLookupPath = lookup
+	return func() {
+		workerLookupPath = oldLookup
+	}
+}
+
+func missingWorkerLookupPath(string) (string, error) {
+	return "", errors.New("not found")
+}
+
+func filterWorkerCapabilitiesForTest(raw any, excludedPrefixes ...string) []any {
+	values, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	filtered := make([]any, 0, len(values))
+	for _, value := range values {
+		text, ok := value.(string)
+		if !ok {
+			continue
+		}
+		excluded := false
+		for _, prefix := range excludedPrefixes {
+			if strings.HasPrefix(text, prefix) {
+				excluded = true
+				break
+			}
+		}
+		if !excluded {
+			filtered = append(filtered, text)
+		}
+	}
+	return filtered
+}
+
+func resetWorkerFlagState() {
+	for _, name := range []string{"team", "api-url", "max-concurrency"} {
+		flag := workerCmd.Flags().Lookup(name)
+		if flag == nil {
+			continue
+		}
+		_ = flag.Value.Set(flag.DefValue)
+		flag.Changed = false
 	}
 }
 
