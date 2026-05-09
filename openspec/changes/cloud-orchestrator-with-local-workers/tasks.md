@@ -144,7 +144,7 @@
 - [x] 15.1 Implement `contrabass migrate cloud --team <name>` reading `.contrabass/state/team/<name>/*.json`, `WORKFLOW.md`, `.contrabass/board/`
 - [x] 15.2 Implement idempotent uploads: skip rows already present (by hash for config, by `external_id` for board)
 - [x] 15.3 Print a dry-run plan with `--dry-run` and require explicit confirmation without it
-- [ ] 15.4 Document the migration in `docs/cloud-migration.md` with rollback instructions
+- [x] 15.4 Document the migration in `docs/cloud-migration.md` with rollback instructions
 
 ## 16. End-to-end validation
 
