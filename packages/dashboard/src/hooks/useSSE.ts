@@ -14,6 +14,7 @@ import type {
   WorkerState,
 } from '../types'
 import { zhCN } from '../i18n/messages'
+import { apiFetch, createApiEventSource } from '../lib/api'
 
 export interface SSEState {
   state: StateSnapshot | null
@@ -503,7 +504,7 @@ export function useSSE() {
   const connect = useCallback(() => {
     eventSourceRef.current?.close()
 
-    const eventSource = new EventSource('/api/v1/events')
+    const eventSource = createApiEventSource('/api/v1/events')
     eventSourceRef.current = eventSource
 
     eventSource.addEventListener('snapshot', (event) => {
@@ -569,7 +570,7 @@ export function useSSE() {
   // snapshot so per-row numbers stay live without a manual page reload.
   const refresh = useCallback(async () => {
     try {
-      const response = await fetch('/api/v1/state')
+      const response = await apiFetch('/api/v1/state')
       if (!response.ok) {
         return
       }

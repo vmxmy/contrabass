@@ -18,6 +18,7 @@ import { getLinearState } from "./AppLayout";
 import { diffSummary } from "./IssueDataTable";
 import { formatElapsedSince, formatRelativeTime } from "../i18n/format";
 import { zhCN } from "../i18n/messages";
+import { apiFetch } from "../lib/api";
 
 interface IssueDetailSheetProps {
   data: SheetData | null;
@@ -54,7 +55,7 @@ function formatRetryIn(retryAt: string): string {
 }
 
 async function fetchJSON<T>(url: string, signal: AbortSignal): Promise<T> {
-  const response = await fetch(url, { signal });
+  const response = await apiFetch(url, { signal });
   const payload = (await response.json().catch(() => ({}))) as T & {
     error?: string;
   };
@@ -108,7 +109,7 @@ export function IssueDetailSheet({
     setStopping(true);
     setStopError(null);
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `/api/v1/running/${encodeURIComponent(targetID)}/stop`,
         { method: "POST" },
       );

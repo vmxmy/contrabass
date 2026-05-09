@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { BoardIssue } from '../types'
 import { formatDateTime, formatIssueState } from '../i18n/format'
 import { zhCN } from '../i18n/messages'
+import { apiFetch } from '../lib/api'
 import './BoardView.css'
 
 interface BoardViewProps {
@@ -104,7 +105,7 @@ export function BoardView({ issues }: BoardViewProps) {
     setSubmitting(true)
 
     try {
-      const response = await fetch('/api/v1/board/issues', {
+      const response = await apiFetch('/api/v1/board/issues', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -137,7 +138,7 @@ export function BoardView({ issues }: BoardViewProps) {
     setErrorMessage('')
 
     try {
-      const response = await fetch(`/api/v1/board/issues/${encodeURIComponent(identifier)}`, {
+      const response = await apiFetch(`/api/v1/board/issues/${encodeURIComponent(identifier)}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
