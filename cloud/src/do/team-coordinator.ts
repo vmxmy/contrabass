@@ -59,10 +59,23 @@ export type TeamCoordinatorStorage = {
   put<T>(key: string, value: T): Promise<void>;
 };
 
+type DurableObjectStub = {
+  fetch(input: string | Request, init?: RequestInit): Promise<Response>;
+};
+
+type IssueRunNamespace = {
+  idFromName(name: string): unknown;
+  get(id: unknown): DurableObjectStub;
+};
+
 type TeamCoordinatorDurableState = {
   storage: TeamCoordinatorStorage;
   acceptWebSocket?: (socket: WebSocket, tags?: string[]) => void;
   getWebSockets?: (tag?: string) => WebSocket[];
+};
+
+type TeamCoordinatorEnv = {
+  ISSUE_RUN?: IssueRunNamespace;
 };
 
 type WebSocketPairConstructor = new () => {
@@ -86,7 +99,10 @@ export class TeamCoordinator {
   private readonly workerDispatchSubscribers = new Map<string, Set<WebSocket>>();
   private workerRegistry: TeamCoordinatorWorkerRegistry | undefined;
 
-  constructor(private readonly state: TeamCoordinatorDurableState) {}
+  constructor(
+    private readonly state: TeamCoordinatorDurableState,
+    private readonly env: TeamCoordinatorEnv = {},
+  ) {}
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -118,6 +134,22 @@ export class TeamCoordinator {
 
     if (request.method === "POST" && url.pathname === "/board/refresh") {
       return this.refreshBoard(request);
+    }
+
+    if (request.method === "POST" && url.pathname === "/board/reassign-run") {
+      return this.reassignRun(request);
+    }
+
+    if (request.method === "POST" && url.pathname === "/board/cancel-run") {
+      return this.cancelRun(request);
+    }
+
+    if (request.method === "POST" && (url.pathname === "/board/pause" || url.pathname === "/board/pause-team")) {
+      return this.setTeamPaused(request, true);
+    }
+
+    if (request.method === "POST" && (url.pathname === "/board/resume" || url.pathname === "/board/resume-team")) {
+      return this.setTeamPaused(request, false);
     }
 
     if (request.method === "GET" && url.pathname === "/subscribe") {
@@ -258,6 +290,23 @@ export class TeamCoordinator {
       return jsonResponse({ error: "invalid_request", message: "runId and issueRef are required" }, 400);
     }
 
+    const record = await this.ensureRecord(request);
+    if (record.paused) {
+      const board = mergeBoard(await this.ensureBoard(), boardWithEntries([
+        {
+          issueRef,
+          runId,
+          phase: "open",
+          lastUpdated: Date.now(),
+        },
+      ]));
+      await this.state.storage.put(BOARD_KEY, board);
+      await this.touchRecord(request);
+      this.broadcast(boardUpdateFrame(board));
+
+      return jsonResponse({ dispatched: false, paused: true, board }, 202);
+    }
+
     const requiredCapabilities = getDispatchRequiredCapabilities(body);
     if (requiredCapabilities === undefined) {
       return jsonResponse({ error: "invalid_request", message: "required capabilities must be strings" }, 400);
@@ -317,6 +366,154 @@ export class TeamCoordinator {
     return jsonResponse({ board });
   }
 
+  private async reassignRun(request: Request): Promise<Response> {
+    const body = await readObjectBody(request);
+    if (body === undefined) {
+      return jsonResponse({ error: "invalid_request", message: "body must be a JSON object" }, 400);
+    }
+
+    const runId = getStringField(body, "runId") ?? getStringField(body, "run_id");
+    const targetWorkerId = getStringField(body, "targetWorkerId") ?? getStringField(body, "target_worker_id");
+    if (runId === undefined || targetWorkerId === undefined) {
+      return jsonResponse({ error: "invalid_request", message: "runId and targetWorkerId are required" }, 400);
+    }
+
+    const board = await this.ensureBoard();
+    const existingEntry = findBoardEntryByRunId(board, runId);
+    if (existingEntry === undefined) {
+      return jsonResponse({ error: "run_not_found" }, 404);
+    }
+
+    const registry = await this.ensureWorkerRegistry();
+    const targetWorker = registry[targetWorkerId];
+    if (targetWorker === undefined) {
+      return jsonResponse({ error: "target_worker_not_registered" }, 404);
+    }
+    if (!isDispatchCandidate(targetWorker, [])) {
+      return jsonResponse({ error: "target_worker_unavailable" }, 409);
+    }
+
+    const issueRun = await this.issueRunStub(request, body, existingEntry);
+    if (issueRun === undefined) {
+      return jsonResponse({ error: "issue_run_binding_unavailable" }, 503);
+    }
+
+    const revokeResponse = await issueRun.fetch("https://issue-run.internal/revoke", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "manual_reassign" }),
+    });
+    if (!revokeResponse.ok) {
+      return forwardErrorResponse(revokeResponse);
+    }
+
+    const dispatch = dispatchFrameFromBody(body, targetWorkerId, runId, existingEntry.issueRef);
+    const dispatchResponse = await issueRun.fetch("https://issue-run.internal/dispatch", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(dispatch),
+    });
+    if (!dispatchResponse.ok) {
+      return forwardErrorResponse(dispatchResponse);
+    }
+
+    const updatedRegistry: TeamCoordinatorWorkerRegistry = {
+      ...registry,
+      [targetWorkerId]: incrementWorkerLoad(targetWorker),
+    };
+    if (existingEntry.assignedWorkerId !== undefined) {
+      const previousWorker = decrementWorkerLoad(registry[existingEntry.assignedWorkerId]);
+      if (previousWorker !== undefined) {
+        updatedRegistry[existingEntry.assignedWorkerId] = previousWorker;
+      }
+    }
+    await this.persistWorkerRegistry(updatedRegistry);
+
+    const updatedBoard = moveBoardEntry(board, runId, {
+      assignedWorkerId: targetWorkerId,
+      phase: "claimed",
+      lastUpdated: Date.now(),
+    });
+    await this.state.storage.put(BOARD_KEY, updatedBoard);
+    await this.touchRecord(request);
+
+    if (existingEntry.assignedWorkerId !== undefined && updatedRegistry[existingEntry.assignedWorkerId] !== undefined) {
+      this.broadcast(workerStatusFrame(updatedRegistry[existingEntry.assignedWorkerId]));
+    }
+    this.broadcast(workerStatusFrame(updatedRegistry[targetWorkerId]));
+    this.broadcast(boardUpdateFrame(updatedBoard));
+    this.sendToWorker(targetWorkerId, dispatch);
+
+    return jsonResponse({ reassigned: true, dispatch, board: updatedBoard, registry: updatedRegistry });
+  }
+
+  private async cancelRun(request: Request): Promise<Response> {
+    const body = await readObjectBody(request);
+    if (body === undefined) {
+      return jsonResponse({ error: "invalid_request", message: "body must be a JSON object" }, 400);
+    }
+
+    const runId = getStringField(body, "runId") ?? getStringField(body, "run_id");
+    if (runId === undefined) {
+      return jsonResponse({ error: "invalid_request", message: "runId is required" }, 400);
+    }
+
+    const board = await this.ensureBoard();
+    const existingEntry = findBoardEntryByRunId(board, runId);
+    if (existingEntry === undefined) {
+      return jsonResponse({ error: "run_not_found" }, 404);
+    }
+
+    const issueRun = await this.issueRunStub(request, body, existingEntry);
+    if (issueRun === undefined) {
+      return jsonResponse({ error: "issue_run_binding_unavailable" }, 503);
+    }
+
+    const cancelResponse = await issueRun.fetch("https://issue-run.internal/cancel", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!cancelResponse.ok) {
+      return forwardErrorResponse(cancelResponse);
+    }
+
+    const registry = await this.ensureWorkerRegistry();
+    const updatedRegistry: TeamCoordinatorWorkerRegistry = { ...registry };
+    if (existingEntry.assignedWorkerId !== undefined) {
+      const previousWorker = decrementWorkerLoad(registry[existingEntry.assignedWorkerId]);
+      if (previousWorker !== undefined) {
+        updatedRegistry[existingEntry.assignedWorkerId] = previousWorker;
+      }
+      await this.persistWorkerRegistry(updatedRegistry);
+      if (updatedRegistry[existingEntry.assignedWorkerId] !== undefined) {
+        this.broadcast(workerStatusFrame(updatedRegistry[existingEntry.assignedWorkerId]));
+      }
+    }
+
+    const updatedBoard = moveBoardEntry(board, runId, {
+      phase: "done",
+      lastUpdated: Date.now(),
+    });
+    await this.state.storage.put(BOARD_KEY, updatedBoard);
+    await this.touchRecord(request);
+    this.broadcast(boardUpdateFrame(updatedBoard));
+
+    return jsonResponse({ cancelled: true, board: updatedBoard, registry: updatedRegistry });
+  }
+
+  private async setTeamPaused(request: Request, paused: boolean): Promise<Response> {
+    const record = await this.ensureRecord(request);
+    const updated = {
+      ...record,
+      paused,
+      updatedAt: Date.now(),
+    };
+    await this.state.storage.put(TEAM_RECORD_KEY, updated);
+
+    return jsonResponse({ team: updated });
+  }
+
   private async subscribe(request: Request): Promise<Response> {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
       return jsonResponse({ error: "websocket_required" }, 426);
@@ -367,7 +564,14 @@ export class TeamCoordinator {
       ...record,
       updatedAt: now,
     });
-    this.broadcast(notificationFrame(notification));
+    const frame = notificationFrame(notification);
+    if (notification.type === "lease-revoked") {
+      const workerId = getStringField(body, "workerId") ?? getStringField(body, "worker_id");
+      if (workerId !== undefined) {
+        this.sendToWorker(workerId, frame);
+      }
+    }
+    this.broadcast(frame);
 
     return jsonResponse({ accepted: true, type: notification.type });
   }
@@ -489,6 +693,25 @@ export class TeamCoordinator {
       this.workerDispatchSubscribers.delete(workerId);
     }
   }
+
+  private async issueRunStub(
+    request: Request,
+    body: Record<string, unknown>,
+    entry: TeamCoordinatorBoardEntry,
+  ): Promise<DurableObjectStub | undefined> {
+    if (this.env.ISSUE_RUN === undefined) {
+      return undefined;
+    }
+
+    const record = await this.ensureRecord(request);
+    const teamId = getStringField(body, "teamId") ?? getStringField(body, "team_id") ?? record.teamId ?? getTeamId(request);
+    if (teamId === undefined) {
+      return undefined;
+    }
+
+    const id = this.env.ISSUE_RUN.idFromName(`${teamId}:${entry.issueRef}`);
+    return this.env.ISSUE_RUN.get(id);
+  }
 }
 
 function notificationTypeForPath(pathname: string): TeamCoordinatorNotification["type"] {
@@ -599,6 +822,41 @@ function boardWithEntries(entries: TeamCoordinatorBoardEntry[]): TeamCoordinator
     board[entry.phase].push(entry);
   }
   return board;
+}
+
+function findBoardEntryByRunId(
+  board: TeamCoordinatorBoard,
+  runId: string,
+): TeamCoordinatorBoardEntry | undefined {
+  for (const phase of BOARD_PHASES) {
+    const entry = board[phase].find((candidate) => candidate.runId === runId);
+    if (entry !== undefined) {
+      return entry;
+    }
+  }
+  return undefined;
+}
+
+function moveBoardEntry(
+  board: TeamCoordinatorBoard,
+  runId: string,
+  updates: Partial<TeamCoordinatorBoardEntry> & { phase: TeamCoordinatorBoardPhase },
+): TeamCoordinatorBoard {
+  const existing = findBoardEntryByRunId(board, runId);
+  if (existing === undefined) {
+    return board;
+  }
+
+  const moved = {
+    ...existing,
+    ...updates,
+  };
+  const next = emptyBoard();
+  for (const phase of BOARD_PHASES) {
+    next[phase] = board[phase].filter((entry) => entry.runId !== runId);
+  }
+  next[moved.phase].push(moved);
+  return next;
 }
 
 function normalizeBoardEntry(
@@ -754,6 +1012,19 @@ function workerKindRank(kind: TeamCoordinatorWorkerKind): number {
 
 function incrementWorkerLoad(worker: TeamCoordinatorWorkerRecord): TeamCoordinatorWorkerRecord {
   const currentLoad = clampWorkerLoad(worker.currentLoad + 1, worker.maxConcurrency);
+  return {
+    ...worker,
+    currentLoad,
+    status: statusForWorkerLoad(currentLoad),
+  };
+}
+
+function decrementWorkerLoad(worker: TeamCoordinatorWorkerRecord | undefined): TeamCoordinatorWorkerRecord | undefined {
+  if (worker === undefined) {
+    return undefined;
+  }
+
+  const currentLoad = clampWorkerLoad(worker.currentLoad - 1, worker.maxConcurrency);
   return {
     ...worker,
     currentLoad,
@@ -1034,4 +1305,18 @@ function jsonResponse(body: Record<string, unknown>, status = 200): Response {
       "content-type": "application/json",
     },
   });
+}
+
+async function forwardErrorResponse(response: Response): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    body = { error: "upstream_error" };
+  }
+
+  return Response.json(
+    body === null || typeof body !== "object" || Array.isArray(body) ? { error: "upstream_error" } : body,
+    { status: response.status },
+  );
 }

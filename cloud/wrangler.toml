@@ -32,9 +32,13 @@ dead_letter_queue = "events-archive-dlq"
 name = "TEAM_COORDINATOR"
 class_name = "TeamCoordinator"
 
+[[durable_objects.bindings]]
+name = "ISSUE_RUN"
+class_name = "IssueRun"
+
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["TeamCoordinator"]
+new_sqlite_classes = ["TeamCoordinator", "IssueRun"]
 
 [observability]
 enabled = true
@@ -71,6 +75,10 @@ dead_letter_queue = "events-archive-dlq"
 [[env.staging.durable_objects.bindings]]
 name = "TEAM_COORDINATOR"
 class_name = "TeamCoordinator"
+
+[[env.staging.durable_objects.bindings]]
+name = "ISSUE_RUN"
+class_name = "IssueRun"
 
 [env.staging.vars]
 CONTRABASS_ENV = "staging"
@@ -110,6 +118,10 @@ dead_letter_queue = "events-archive-dlq"
 [[env.production.durable_objects.bindings]]
 name = "TEAM_COORDINATOR"
 class_name = "TeamCoordinator"
+
+[[env.production.durable_objects.bindings]]
+name = "ISSUE_RUN"
+class_name = "IssueRun"
 
 [env.production.vars]
 CONTRABASS_ENV = "production"

@@ -237,6 +237,11 @@ export class IssueRun {
       return this.handleCancel(body);
     }
 
+    if (request.method === "POST" && url.pathname === "/revoke") {
+      const body = await readObjectBody(request);
+      return this.handleManualRevoke(body);
+    }
+
     return jsonResponse({ error: "not_found" }, 404);
   }
 
@@ -587,6 +592,24 @@ export class IssueRun {
     return jsonResponse({ run: terminal.updated, transition: terminal.result });
   }
 
+  private async handleManualRevoke(body: Record<string, unknown>): Promise<Response> {
+    const record = await this.state.storage.get<IssueRunRecord>(RECORD_KEY);
+    if (record === undefined) {
+      return jsonResponse({ error: "run_unknown", message: "run was not found" }, 404);
+    }
+    if (isTerminalIssueRunStatus(record.status)) {
+      return jsonResponse({ error: "run_terminal", message: "run is already terminal" }, 409);
+    }
+    if (record.status !== "running" && record.status !== "dispatched") {
+      return jsonResponse({ error: "run_not_active", message: "only dispatched or running runs can be revoked" }, 409);
+    }
+
+    const reason = getLeaseRevokedReasonField(body) ?? "manual_reassign";
+    await this.sendLeaseRevoked(record, reason);
+    const revoked = await this.transitionRecord(record, "queued", Date.now(), { clearLease: true });
+    return jsonResponse({ run: revoked.updated, transition: revoked.result });
+  }
+
   private async persistCompletion(completion: IssueRunCompletionRecord): Promise<void> {
     if (this.env.CONTROL_PLANE_DB === undefined) {
       return;
@@ -768,6 +791,25 @@ function getWorkerKindField(record: Record<string, unknown>): string | undefined
 function getConfigHashField(record: Record<string, unknown>): string | undefined {
   const value = getStringField(record, "configHash") ?? getStringField(record, "finalConfigHash");
   return isConfigHash(value) ? value : undefined;
+}
+
+function getLeaseRevokedReasonField(record: Record<string, unknown>): LeaseRevokedFrame["reason"] | undefined {
+  const value = getStringField(record, "reason");
+  if (
+    value === "heartbeat_timeout"
+    || value === "ack_timeout"
+    || value === "manual_reassign"
+    || value === "cancelled"
+    || value === "team_paused"
+    || value === "config_invalidated"
+    || value === "server_shutdown"
+    || value === "worker_evicted_by_admin"
+    || value === "session_expired"
+    || value === "protocol_version_renegotiation"
+  ) {
+    return value;
+  }
+  return undefined;
 }
 
 function getRequestWorkerId(request: Request, body: Record<string, unknown>): string | undefined {

@@ -54,6 +54,42 @@ class FakeWebSocketPair {
 
 const fakeWebSocketPairs: FakeWebSocketPair[] = [];
 
+class FakeIssueRunStub {
+  readonly requests: Array<{ input: string | Request; init?: RequestInit }> = [];
+  revokeResponse = Response.json({ run: { status: "queued" } });
+  dispatchResponse = Response.json({ run: { status: "dispatched" } });
+  cancelResponse = Response.json({ run: { status: "cancelled" } });
+
+  async fetch(input: string | Request, init?: RequestInit): Promise<Response> {
+    this.requests.push({ input, init });
+    const pathname = typeof input === "string" ? new URL(input).pathname : new URL(input.url).pathname;
+    if (pathname === "/revoke") {
+      return this.revokeResponse;
+    }
+    if (pathname === "/dispatch") {
+      return this.dispatchResponse;
+    }
+    if (pathname === "/cancel") {
+      return this.cancelResponse;
+    }
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
+}
+
+class FakeIssueRunNamespace {
+  readonly stub = new FakeIssueRunStub();
+  readonly names: string[] = [];
+
+  idFromName(name: string): string {
+    this.names.push(name);
+    return name;
+  }
+
+  get(): FakeIssueRunStub {
+    return this.stub;
+  }
+}
+
 type TeamCoordinatorResponseBody = {
   team?: TeamCoordinatorRecord;
   board?: TeamCoordinatorBoard;
@@ -61,6 +97,9 @@ type TeamCoordinatorResponseBody = {
   worker?: TeamCoordinatorWorkerRecord;
   dispatch?: TeamCoordinatorDispatchFrame;
   dispatched?: boolean;
+  reassigned?: boolean;
+  cancelled?: boolean;
+  paused?: boolean;
   event?: TeamCoordinatorNotification;
   accepted?: boolean;
   type?: TeamCoordinatorNotification["type"];
@@ -750,6 +789,193 @@ describe("TeamCoordinator Durable Object", () => {
     expect(otherWorkerServer?.sent).toEqual([]);
   });
 
+  it("pauses and resumes dispatch without dropping queued arrivals", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(70_000);
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    const pauseResponse = await post(coordinator, "/board/pause", {}, { "x-contrabass-team-id": "team-1" });
+    const pauseBody = await readTeamCoordinatorResponse(pauseResponse);
+    expect(pauseResponse.status).toBe(200);
+    expect(pauseBody.team).toMatchObject({ teamId: "team-1", paused: true, updatedAt: 70_000 });
+
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 1,
+      kind: "local",
+      version: "0.2.0",
+    });
+    const dispatchResponse = await post(coordinator, "/dispatch", {
+      runId: "run-1",
+      issueRef: "LIN-1",
+      requiredCapabilities: ["agent:codex"],
+    }, { "x-contrabass-team-id": "team-1" });
+    const dispatchBody = await readTeamCoordinatorResponse(dispatchResponse);
+
+    expect(dispatchResponse.status).toBe(202);
+    expect(dispatchBody).toMatchObject({
+      dispatched: false,
+      paused: true,
+      board: { open: [{ issueRef: "LIN-1", runId: "run-1", phase: "open", lastUpdated: 70_000 }] },
+    });
+    await expect(storage.get<TeamCoordinatorWorkerRegistry>("team-coordinator:worker-registry")).resolves.toMatchObject({
+      "worker-1": { currentLoad: 0, status: "idle" },
+    });
+
+    const resumeResponse = await post(coordinator, "/board/resume", {}, { "x-contrabass-team-id": "team-1" });
+    await expect(readTeamCoordinatorResponse(resumeResponse)).resolves.toMatchObject({
+      team: { teamId: "team-1", paused: false, updatedAt: 70_000 },
+    });
+  });
+
+  it("reassigns a run through IssueRun and dispatches to the target worker", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(80_000);
+    Reflect.set(globalThis, "WebSocketPair", FakeWebSocketPair);
+    const { coordinator, issueRun } = createTeamCoordinatorWithIssueRun();
+
+    await coordinator.fetch(new Request("https://team-coordinator.test/subscribe?workerId=worker-old", {
+      headers: { upgrade: "websocket" },
+    }));
+    await coordinator.fetch(new Request("https://team-coordinator.test/subscribe?workerId=worker-new", {
+      headers: { upgrade: "websocket" },
+    }));
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-old",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 2,
+      kind: "local",
+      version: "0.2.0",
+    });
+    await post(coordinator, "/workers/heartbeat", { workerId: "worker-old", currentLoad: 1 });
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-new",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 2,
+      kind: "local",
+      version: "0.2.0",
+    });
+    await post(coordinator, "/board/refresh", {
+      issueRef: "LIN-1",
+      runId: "run-1",
+      assignedWorkerId: "worker-old",
+      phase: "running",
+    });
+
+    const response = await post(coordinator, "/board/reassign-run", {
+      runId: "run-1",
+      targetWorkerId: "worker-new",
+      prompt: "Continue LIN-1",
+      configHash: "cfg-1",
+    }, { "x-contrabass-team-id": "team-1" });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(200);
+    expect(issueRun.names).toEqual(["team-1:LIN-1"]);
+    expect(issueRun.stub.requests.map((request) => typeof request.input === "string" ? new URL(request.input).pathname : "")).toEqual([
+      "/revoke",
+      "/dispatch",
+    ]);
+    expect(JSON.parse(String(issueRun.stub.requests[0]?.init?.body))).toEqual({ reason: "manual_reassign" });
+    expect(JSON.parse(String(issueRun.stub.requests[1]?.init?.body))).toMatchObject({
+      type: "dispatch",
+      runId: "run-1",
+      issueRef: "LIN-1",
+      workerId: "worker-new",
+      prompt: "Continue LIN-1",
+      configHash: "cfg-1",
+    });
+    expect(body).toMatchObject({
+      reassigned: true,
+      dispatch: { runId: "run-1", workerId: "worker-new" },
+      registry: {
+        "worker-old": { currentLoad: 0, status: "idle" },
+        "worker-new": { currentLoad: 1, status: "busy" },
+      },
+      board: {
+        claimed: [{ issueRef: "LIN-1", runId: "run-1", assignedWorkerId: "worker-new" }],
+        running: [],
+      },
+    });
+    expect(fakeWebSocketPairs[1]?.[1].sent.map((message) => JSON.parse(message))).toEqual([
+      expect.objectContaining({ type: "dispatch", runId: "run-1", workerId: "worker-new" }),
+    ]);
+  });
+
+  it("cancels a run through IssueRun and marks the board entry done", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(90_000);
+    const { coordinator, issueRun } = createTeamCoordinatorWithIssueRun();
+
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 2,
+      kind: "local",
+      version: "0.2.0",
+    });
+    await post(coordinator, "/workers/heartbeat", { workerId: "worker-1", currentLoad: 1 });
+    await post(coordinator, "/board/refresh", {
+      issueRef: "LIN-1",
+      runId: "run-1",
+      assignedWorkerId: "worker-1",
+      phase: "running",
+    });
+
+    const response = await post(coordinator, "/board/cancel-run", {
+      runId: "run-1",
+      finalConfigHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    }, { "x-contrabass-team-id": "team-1" });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(200);
+    expect(issueRun.names).toEqual(["team-1:LIN-1"]);
+    expect(issueRun.stub.requests.map((request) => typeof request.input === "string" ? new URL(request.input).pathname : "")).toEqual(["/cancel"]);
+    expect(JSON.parse(String(issueRun.stub.requests[0]?.init?.body))).toMatchObject({
+      runId: "run-1",
+      finalConfigHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    });
+    expect(body).toMatchObject({
+      cancelled: true,
+      registry: { "worker-1": { currentLoad: 0, status: "idle" } },
+      board: {
+        running: [],
+        done: [{ issueRef: "LIN-1", runId: "run-1", assignedWorkerId: "worker-1", phase: "done", lastUpdated: 90_000 }],
+      },
+    });
+  });
+
+  it("forwards lease-revoked notifications to the affected worker subscriber", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(95_000);
+    Reflect.set(globalThis, "WebSocketPair", FakeWebSocketPair);
+    const coordinator = createTeamCoordinator();
+
+    await coordinator.fetch(new Request("https://team-coordinator.test/subscribe", {
+      headers: { upgrade: "websocket" },
+    }));
+    await coordinator.fetch(new Request("https://team-coordinator.test/subscribe?workerId=worker-1", {
+      headers: { upgrade: "websocket" },
+    }));
+
+    await post(coordinator, "/lease-revoked", {
+      type: "lease-revoked",
+      protocol_version: "1.0.0",
+      runId: "run-1",
+      workerId: "worker-1",
+      reason: "manual_reassign",
+    });
+
+    expect(fakeWebSocketPairs[1]?.[1].sent.map((message) => JSON.parse(message))).toEqual([
+      {
+        type: "lease-revoked",
+        protocol_version: "1.0.0",
+        event_id: "1",
+        runId: "run-1",
+        workerId: "worker-1",
+        reason: "manual_reassign",
+        receivedAt: 95_000,
+      },
+    ]);
+  });
+
   it("rejects non-websocket subscribe requests", async () => {
     const coordinator = createTeamCoordinator();
 
@@ -774,6 +1000,20 @@ function createTeamCoordinatorWithStorage(): {
   return {
     coordinator: new TeamCoordinator({ storage }),
     storage,
+  };
+}
+
+function createTeamCoordinatorWithIssueRun(): {
+  coordinator: TeamCoordinator;
+  storage: MemoryTeamCoordinatorStorage;
+  issueRun: FakeIssueRunNamespace;
+} {
+  const storage = new MemoryTeamCoordinatorStorage();
+  const issueRun = new FakeIssueRunNamespace();
+  return {
+    coordinator: new TeamCoordinator({ storage }, { ISSUE_RUN: issueRun }),
+    storage,
+    issueRun,
   };
 }
 
