@@ -74,7 +74,7 @@ progress in a terminal UI built with the Charm stack.`,
 
 	_ = cmd.MarkFlagRequired("config")
 
-	cmd.AddCommand(teamCmd, boardCmd, configCmd, workerCmd, tuiCmd)
+	cmd.AddCommand(teamCmd, boardCmd, configCmd, workerCmd, tuiCmd, migrateCmd, newInitCmd())
 	for _, sub := range localOnlySubcmds() {
 		cmd.AddCommand(sub)
 	}

@@ -160,9 +160,9 @@ describe("TeamCoordinator Durable Object", () => {
 
     const response = await post(coordinator, "/board/refresh", {
       entries: [
-        { issueRef: "LIN-1", phase: "open" },
+        { issueRef: "LIN-1", external_id: "linear:team:LIN-1", phase: "open" },
         { issue_ref: "LIN-2", phase: "dispatched", run_id: "run-2", worker_id: "worker-2" },
-        { issueRef: "LIN-3", phase: "running", runId: "run-3", assignedWorkerId: "worker-3" },
+        { issueRef: "LIN-3", externalId: "linear:team:LIN-3", phase: "running", runId: "run-3", assignedWorkerId: "worker-3" },
         { issueRef: "LIN-4", phase: "succeeded", lastUpdated: 9_000 },
       ],
     });
@@ -170,12 +170,48 @@ describe("TeamCoordinator Durable Object", () => {
 
     expect(response.status).toBe(200);
     expect(body.board).toEqual({
-      open: [{ issueRef: "LIN-1", phase: "open", lastUpdated: 10_000 }],
+      open: [{ issueRef: "LIN-1", externalId: "linear:team:LIN-1", phase: "open", lastUpdated: 10_000 }],
       claimed: [{ issueRef: "LIN-2", runId: "run-2", assignedWorkerId: "worker-2", phase: "claimed", lastUpdated: 10_000 }],
-      running: [{ issueRef: "LIN-3", runId: "run-3", assignedWorkerId: "worker-3", phase: "running", lastUpdated: 10_000 }],
+      running: [{
+        issueRef: "LIN-3",
+        externalId: "linear:team:LIN-3",
+        runId: "run-3",
+        assignedWorkerId: "worker-3",
+        phase: "running",
+        lastUpdated: 10_000,
+      }],
       done: [{ issueRef: "LIN-4", phase: "done", lastUpdated: 9_000 }],
     });
     await expect(storage.get<TeamCoordinatorBoard>("team-coordinator:board")).resolves.toEqual(body.board);
+
+    const boardResponse = await coordinator.fetch(new Request("https://team-coordinator.test/board"));
+    await expect(readTeamCoordinatorResponse(boardResponse)).resolves.toEqual({ board: body.board });
+  });
+
+  it("upserts board refresh entries by external id", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(12_000);
+    const { coordinator } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/board/refresh", {
+      entries: [{ issueRef: "CB-1", external_id: "internal:alpha:CB-1", phase: "open", lastUpdated: 11_000 }],
+    });
+
+    const response = await post(coordinator, "/board/refresh", {
+      entries: [{ issueRef: "CB-1-renamed", external_id: "internal:alpha:CB-1", phase: "running" }],
+    });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(body.board).toEqual({
+      open: [],
+      claimed: [],
+      running: [{
+        issueRef: "CB-1-renamed",
+        externalId: "internal:alpha:CB-1",
+        phase: "running",
+        lastUpdated: 12_000,
+      }],
+      done: [],
+    });
   });
 
 
