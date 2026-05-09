@@ -15,6 +15,7 @@ export type TeamCoordinatorBoardPhase = "open" | "claimed" | "running" | "done";
 
 export type TeamCoordinatorBoardEntry = {
   issueRef: string;
+  externalId?: string;
   runId?: string;
   assignedWorkerId?: string;
   phase: TeamCoordinatorBoardPhase;
@@ -965,9 +966,17 @@ function isFullBoardRefreshBody(body: Record<string, unknown>): boolean {
 
 function mergeBoard(existing: TeamCoordinatorBoard, updates: TeamCoordinatorBoard): TeamCoordinatorBoard {
   const updatedRefs = new Set(BOARD_PHASES.flatMap((phase) => updates[phase].map((entry) => entry.issueRef)));
+  const updatedExternalIds = new Set(
+    BOARD_PHASES.flatMap((phase) => updates[phase].map((entry) => entry.externalId).filter(isDefined)),
+  );
   const merged = emptyBoard();
   for (const phase of BOARD_PHASES) {
-    merged[phase] = existing[phase].filter((entry) => !updatedRefs.has(entry.issueRef));
+    merged[phase] = existing[phase].filter((entry) => {
+      if (updatedRefs.has(entry.issueRef)) {
+        return false;
+      }
+      return entry.externalId === undefined || !updatedExternalIds.has(entry.externalId);
+    });
   }
   for (const phase of BOARD_PHASES) {
     merged[phase].push(...updates[phase]);
@@ -1068,6 +1077,7 @@ function normalizeBoardEntry(
   }
 
   const phase = phaseFromUnknown(entry.phase) ?? defaultPhase ?? "open";
+  const externalId = getStringField(entry, "externalId") ?? getStringField(entry, "external_id");
   const runId = getStringField(entry, "runId") ?? getStringField(entry, "run_id");
   const assignedWorkerId = getStringField(entry, "assignedWorkerId")
     ?? getStringField(entry, "assigned_worker_id")
@@ -1076,6 +1086,7 @@ function normalizeBoardEntry(
 
   return {
     issueRef,
+    ...(externalId === undefined ? {} : { externalId }),
     ...(runId === undefined ? {} : { runId }),
     ...(assignedWorkerId === undefined ? {} : { assignedWorkerId }),
     phase,
@@ -1374,6 +1385,10 @@ function getObjectField(body: Record<string, unknown>, key: string): Record<stri
 function getStringField(body: Record<string, unknown>, key: string): string | undefined {
   const value = body[key];
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined;
 }
 
 function getNumberField(body: Record<string, unknown>, key: string): number | undefined {

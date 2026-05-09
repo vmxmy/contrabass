@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,14 +36,18 @@ var migrateCloudCmd = &cobra.Command{
 }
 
 type migrateCloudOptions struct {
-	TeamName string
-	RootDir  string
+	TeamName   string
+	RootDir    string
+	APIBaseURL string
+	AuthToken  string
+	HTTPClient *http.Client
 }
 
 type migrateWorkflowSource struct {
 	Path        string
 	Bytes       int
 	ContentHash string
+	Content     string
 }
 
 type migrateJSONFile struct {
@@ -60,10 +67,26 @@ type migrateBoardSource struct {
 
 type migrateCloudBoardEntry struct {
 	IssueRef         string `json:"issueRef"`
+	ExternalID       string `json:"external_id"`
 	RunID            string `json:"runId,omitempty"`
 	AssignedWorkerID string `json:"assignedWorkerId,omitempty"`
 	Phase            string `json:"phase"`
 	LastUpdated      int64  `json:"lastUpdated"`
+}
+
+type migrateCloudUploadResult struct {
+	Config migrateCloudUploadItemResult
+	Board  migrateCloudBoardUploadResult
+}
+
+type migrateCloudUploadItemResult struct {
+	Skipped bool
+	Reason  string
+}
+
+type migrateCloudBoardUploadResult struct {
+	Uploaded []migrateCloudBoardEntry
+	Skipped  []migrateCloudBoardEntry
 }
 
 type migrateCloudSource struct {
@@ -76,6 +99,8 @@ type migrateCloudSource struct {
 func init() {
 	migrateCloudCmd.Flags().String("team", "", "team name to migrate from .contrabass/state/team/<name>")
 	migrateCloudCmd.Flags().String("root", ".", "project root containing WORKFLOW.md and .contrabass")
+	migrateCloudCmd.Flags().String("api-base-url", "", "cloud API base URL used to upload migration rows")
+	migrateCloudCmd.Flags().String("token", "", "bearer token for cloud migration uploads")
 	_ = migrateCloudCmd.MarkFlagRequired("team")
 
 	migrateCmd.AddCommand(migrateCloudCmd)
@@ -90,6 +115,14 @@ func runMigrateCloud(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("getting root flag: %w", err)
 	}
+	apiBaseURL, err := cmd.Flags().GetString("api-base-url")
+	if err != nil {
+		return fmt.Errorf("getting api-base-url flag: %w", err)
+	}
+	authToken, err := cmd.Flags().GetString("token")
+	if err != nil {
+		return fmt.Errorf("getting token flag: %w", err)
+	}
 
 	source, err := loadMigrateCloudSource(cmd.Context(), migrateCloudOptions{
 		TeamName: teamName,
@@ -100,6 +133,19 @@ func runMigrateCloud(cmd *cobra.Command, _ []string) error {
 	}
 
 	printMigrateCloudSummary(cmd.OutOrStdout(), source)
+	if strings.TrimSpace(apiBaseURL) == "" {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "uploads require --api-base-url")
+		return nil
+	}
+
+	result, err := uploadMigrateCloudSource(cmd.Context(), source, migrateCloudOptions{
+		APIBaseURL: apiBaseURL,
+		AuthToken:  authToken,
+	})
+	if err != nil {
+		return err
+	}
+	printMigrateCloudUploadResult(cmd.OutOrStdout(), result)
 	return nil
 }
 
@@ -133,6 +179,8 @@ func loadMigrateCloudSource(ctx context.Context, opts migrateCloudOptions) (*mig
 		return nil, fmt.Errorf("reading local board from %s: %w", boardDir, err)
 	}
 
+	board.Entries = migrationBoardEntries(teamName, board.Issues)
+
 	return &migrateCloudSource{
 		TeamName:  teamName,
 		Workflow:  workflow,
@@ -163,6 +211,7 @@ func readMigrationWorkflow(ctx context.Context, path string) (migrateWorkflowSou
 		Path:        path,
 		Bytes:       len(content),
 		ContentHash: hex.EncodeToString(sum[:]),
+		Content:     string(content),
 	}, cfg, nil
 }
 
@@ -226,7 +275,7 @@ func readMigrationBoard(ctx context.Context, dir string) (migrateBoardSource, er
 		Manifest:     &manifest,
 		Issues:       issues,
 		Comments:     comments,
-		Entries:      migrationBoardEntries(issues),
+		Entries:      migrationBoardEntries("", issues),
 	}, nil
 }
 
@@ -342,11 +391,12 @@ func readMigrationJSONFile(ctx context.Context, path string, target any) error {
 	return nil
 }
 
-func migrationBoardEntries(issues []tracker.LocalBoardIssue) []migrateCloudBoardEntry {
+func migrationBoardEntries(teamName string, issues []tracker.LocalBoardIssue) []migrateCloudBoardEntry {
 	entries := make([]migrateCloudBoardEntry, 0, len(issues))
 	for _, issue := range issues {
 		entry := migrateCloudBoardEntry{
 			IssueRef:    issue.ID,
+			ExternalID:  migrationBoardExternalID(teamName, issue.ID),
 			Phase:       migrationBoardPhase(issue.State),
 			LastUpdated: issue.UpdatedAt.UTC().UnixMilli(),
 		}
@@ -364,6 +414,15 @@ func migrationBoardEntries(issues []tracker.LocalBoardIssue) []migrateCloudBoard
 		entries = append(entries, entry)
 	}
 	return entries
+}
+
+func migrationBoardExternalID(teamName, issueID string) string {
+	issueID = strings.TrimSpace(issueID)
+	teamName = strings.TrimSpace(teamName)
+	if teamName == "" {
+		return issueID
+	}
+	return "internal:" + teamName + ":" + issueID
 }
 
 func migrationBoardPhase(state tracker.LocalBoardState) string {
@@ -406,7 +465,217 @@ func printMigrateCloudSummary(w io.Writer, source *migrateCloudSource) {
 	_, _ = fmt.Fprintf(w, "workflow: %s (%d bytes, sha256 %s)\n", source.Workflow.Path, source.Workflow.Bytes, source.Workflow.ContentHash)
 	_, _ = fmt.Fprintf(w, "team state: %d json files\n", len(source.TeamState))
 	_, _ = fmt.Fprintf(w, "board: %d issues, %d comments, %d refresh entries\n", len(source.Board.Issues), commentCount, len(source.Board.Entries))
-	_, _ = fmt.Fprintln(w, "uploads are deferred to the idempotent upload task")
+}
+
+func uploadMigrateCloudSource(ctx context.Context, source *migrateCloudSource, opts migrateCloudOptions) (migrateCloudUploadResult, error) {
+	if source == nil {
+		return migrateCloudUploadResult{}, errors.New("migration source is required")
+	}
+	client := opts.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	baseURL, err := normalizeMigrateCloudAPIBaseURL(opts.APIBaseURL)
+	if err != nil {
+		return migrateCloudUploadResult{}, err
+	}
+
+	result := migrateCloudUploadResult{}
+	configExists, err := migrateCloudConfigExists(ctx, client, baseURL, opts.AuthToken, source.TeamName, source.Workflow.ContentHash)
+	if err != nil {
+		return result, err
+	}
+	if configExists {
+		result.Config = migrateCloudUploadItemResult{Skipped: true, Reason: "content hash already present"}
+	} else if err := migrateCloudUploadConfig(ctx, client, baseURL, opts.AuthToken, source); err != nil {
+		return result, err
+	}
+
+	existingExternalIDs, err := migrateCloudExistingBoardExternalIDs(ctx, client, baseURL, opts.AuthToken, source.TeamName)
+	if err != nil {
+		return result, err
+	}
+	for _, entry := range source.Board.Entries {
+		if _, ok := existingExternalIDs[entry.ExternalID]; ok {
+			result.Board.Skipped = append(result.Board.Skipped, entry)
+			continue
+		}
+		result.Board.Uploaded = append(result.Board.Uploaded, entry)
+	}
+	if len(result.Board.Uploaded) > 0 {
+		if err := migrateCloudUploadBoardEntries(ctx, client, baseURL, opts.AuthToken, source.TeamName, result.Board.Uploaded); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
+}
+
+func normalizeMigrateCloudAPIBaseURL(raw string) (*url.URL, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, errors.New("--api-base-url is required for uploads")
+	}
+	baseURL, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parsing api base url: %w", err)
+	}
+	if baseURL.Scheme == "" || baseURL.Host == "" {
+		return nil, fmt.Errorf("api base url must be absolute: %s", raw)
+	}
+	baseURL.Path = strings.TrimRight(baseURL.Path, "/")
+	baseURL.RawQuery = ""
+	baseURL.Fragment = ""
+	return baseURL, nil
+}
+
+func migrateCloudConfigExists(ctx context.Context, client *http.Client, baseURL *url.URL, token, teamName, hash string) (bool, error) {
+	requestURL := migrateCloudURL(baseURL, "/v1/teams/"+url.PathEscape(teamName)+"/config/"+url.PathEscape(hash))
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return false, err
+	}
+	setMigrateCloudHeaders(request, token)
+	response, err := client.Do(request)
+	if err != nil {
+		return false, fmt.Errorf("checking config hash %s: %w", hash, err)
+	}
+	defer response.Body.Close()
+	switch response.StatusCode {
+	case http.StatusOK:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
+	default:
+		return false, migrateCloudUnexpectedStatus("checking config hash", response)
+	}
+}
+
+func migrateCloudUploadConfig(ctx context.Context, client *http.Client, baseURL *url.URL, token string, source *migrateCloudSource) error {
+	body := map[string]string{
+		"content_yaml": source.Workflow.Content,
+		"created_by":   "migration",
+		"notes":        "imported from " + source.Workflow.Path,
+	}
+	request, err := migrateCloudJSONRequest(ctx, http.MethodPost, migrateCloudURL(baseURL, "/v1/teams/"+url.PathEscape(source.TeamName)+"/config"), token, body)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("uploading config hash %s: %w", source.Workflow.ContentHash, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return migrateCloudUnexpectedStatus("uploading config", response)
+	}
+	return nil
+}
+
+func migrateCloudExistingBoardExternalIDs(ctx context.Context, client *http.Client, baseURL *url.URL, token, teamName string) (map[string]struct{}, error) {
+	requestURL := migrateCloudURL(baseURL, "/v1/teams/"+url.PathEscape(teamName)+"/board")
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	setMigrateCloudHeaders(request, token)
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("checking board external ids: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		return map[string]struct{}{}, nil
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, migrateCloudUnexpectedStatus("checking board external ids", response)
+	}
+
+	var body struct {
+		Board map[string][]map[string]any `json:"board"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("decoding board response: %w", err)
+	}
+	existing := make(map[string]struct{})
+	for _, entries := range body.Board {
+		for _, entry := range entries {
+			if externalID := migrationBoardExternalIDFromMap(entry); externalID != "" {
+				existing[externalID] = struct{}{}
+			}
+		}
+	}
+	return existing, nil
+}
+
+func migrationBoardExternalIDFromMap(entry map[string]any) string {
+	for _, key := range []string{"external_id", "externalId"} {
+		if value, ok := entry[key].(string); ok {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func migrateCloudUploadBoardEntries(ctx context.Context, client *http.Client, baseURL *url.URL, token, teamName string, entries []migrateCloudBoardEntry) error {
+	body := map[string][]migrateCloudBoardEntry{"entries": entries}
+	request, err := migrateCloudJSONRequest(ctx, http.MethodPost, migrateCloudURL(baseURL, "/v1/teams/"+url.PathEscape(teamName)+"/board/refresh"), token, body)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("uploading board entries: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return migrateCloudUnexpectedStatus("uploading board entries", response)
+	}
+	return nil
+}
+
+func migrateCloudJSONRequest(ctx context.Context, method, requestURL, token string, payload any) (*http.Request, error) {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, method, requestURL, bytes.NewReader(encoded))
+	if err != nil {
+		return nil, err
+	}
+	setMigrateCloudHeaders(request, token)
+	request.Header.Set("Content-Type", "application/json")
+	return request, nil
+}
+
+func setMigrateCloudHeaders(request *http.Request, token string) {
+	request.Header.Set("Accept", "application/json")
+	if token = strings.TrimSpace(token); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+}
+
+func migrateCloudURL(baseURL *url.URL, path string) string {
+	resolved := *baseURL
+	resolved.Path = strings.TrimRight(baseURL.Path, "/") + path
+	return resolved.String()
+}
+
+func migrateCloudUnexpectedStatus(action string, response *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
+	message := strings.TrimSpace(string(body))
+	if message == "" {
+		message = response.Status
+	}
+	return fmt.Errorf("%s: %s", action, message)
+}
+
+func printMigrateCloudUploadResult(w io.Writer, result migrateCloudUploadResult) {
+	configAction := "uploaded"
+	if result.Config.Skipped {
+		configAction = "skipped (" + result.Config.Reason + ")"
+	}
+	_, _ = fmt.Fprintf(w, "config: %s\n", configAction)
+	_, _ = fmt.Fprintf(w, "board uploads: %d uploaded, %d skipped by external_id\n", len(result.Board.Uploaded), len(result.Board.Skipped))
 }
 
 func checkMigrationContext(ctx context.Context) error {

@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,6 +38,7 @@ func TestLoadMigrateCloudSourceReadsWorkflowTeamStateAndBoard(t *testing.T) {
 	require.Len(t, source.Board.Entries, 2)
 	assert.Equal(t, migrateCloudBoardEntry{
 		IssueRef:         "CB-1",
+		ExternalID:       "internal:alpha:CB-1",
 		RunID:            "alpha-run",
 		AssignedWorkerID: "alpha-run",
 		Phase:            "running",
@@ -59,7 +63,139 @@ func TestMigrateCloudCommandPrintsLoadedSourceSummary(t *testing.T) {
 	assert.Contains(t, output, "loaded cloud migration source for team alpha")
 	assert.Contains(t, output, "team state: 2 json files")
 	assert.Contains(t, output, "board: 2 issues, 1 comments, 2 refresh entries")
-	assert.Contains(t, output, "uploads are deferred")
+	assert.Contains(t, output, "uploads require --api-base-url")
+}
+
+func TestUploadMigrateCloudSourceSkipsExistingConfigHashAndBoardExternalID(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeMigrationFixture(t, root, "alpha")
+	source, err := loadMigrateCloudSource(context.Background(), migrateCloudOptions{
+		TeamName: "alpha",
+		RootDir:  root,
+	})
+	require.NoError(t, err)
+
+	var configPostCount int
+	var boardRefreshEntries []migrateCloudBoardEntry
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer migrate-token", r.Header.Get("Authorization"))
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/teams/alpha/config/"+source.Workflow.ContentHash:
+			_ = json.NewEncoder(w).Encode(map[string]any{"content_hash": source.Workflow.ContentHash})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/teams/alpha/config":
+			configPostCount++
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/teams/alpha/board":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"board": map[string]any{
+					"open": []map[string]any{{
+						"issueRef":    "CB-1",
+						"external_id": "internal:alpha:CB-1",
+						"phase":       "open",
+						"lastUpdated": float64(1),
+					}},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/teams/alpha/board/refresh":
+			var body struct {
+				Entries []migrateCloudBoardEntry `json:"entries"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			boardRefreshEntries = body.Entries
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	result, err := uploadMigrateCloudSource(context.Background(), source, migrateCloudOptions{
+		APIBaseURL: server.URL,
+		AuthToken:  "migrate-token",
+		HTTPClient: server.Client(),
+	})
+	require.NoError(t, err)
+
+	assert.Zero(t, configPostCount)
+	assert.True(t, result.Config.Skipped)
+	assert.Equal(t, "content hash already present", result.Config.Reason)
+	require.Len(t, result.Board.Skipped, 1)
+	assert.Equal(t, "internal:alpha:CB-1", result.Board.Skipped[0].ExternalID)
+	require.Len(t, result.Board.Uploaded, 1)
+	assert.Equal(t, "internal:alpha:CB-2", result.Board.Uploaded[0].ExternalID)
+	assert.Equal(t, result.Board.Uploaded, boardRefreshEntries)
+}
+
+func TestUploadMigrateCloudSourceSecondRunSkipsExistingBoardExternalIDs(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeMigrationFixture(t, root, "alpha")
+	source, err := loadMigrateCloudSource(context.Background(), migrateCloudOptions{
+		TeamName: "alpha",
+		RootDir:  root,
+	})
+	require.NoError(t, err)
+
+	var configUploaded bool
+	var boardEntries []migrateCloudBoardEntry
+	var boardRefreshPostCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer migrate-token", r.Header.Get("Authorization"))
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/teams/alpha/config/"+source.Workflow.ContentHash:
+			if !configUploaded {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"content_hash": source.Workflow.ContentHash})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/teams/alpha/config":
+			configUploaded = true
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/teams/alpha/board":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"board": map[string][]migrateCloudBoardEntry{
+					"open":    boardEntries,
+					"claimed": {},
+					"running": {},
+					"done":    {},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/teams/alpha/board/refresh":
+			var body struct {
+				Entries []migrateCloudBoardEntry `json:"entries"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			boardRefreshPostCount++
+			boardEntries = append(boardEntries, body.Entries...)
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	first, err := uploadMigrateCloudSource(context.Background(), source, migrateCloudOptions{
+		APIBaseURL: server.URL,
+		AuthToken:  "migrate-token",
+		HTTPClient: server.Client(),
+	})
+	require.NoError(t, err)
+	require.Len(t, first.Board.Uploaded, 2)
+	require.Empty(t, first.Board.Skipped)
+	assert.Equal(t, 1, boardRefreshPostCount)
+
+	second, err := uploadMigrateCloudSource(context.Background(), source, migrateCloudOptions{
+		APIBaseURL: server.URL,
+		AuthToken:  "migrate-token",
+		HTTPClient: server.Client(),
+	})
+	require.NoError(t, err)
+	require.Empty(t, second.Board.Uploaded)
+	require.Len(t, second.Board.Skipped, 2)
+	assert.Equal(t, 1, boardRefreshPostCount, "second run should not upload board entries that already exist by external_id")
 }
 
 func TestLoadMigrateCloudSourceRejectsMissingTeam(t *testing.T) {
