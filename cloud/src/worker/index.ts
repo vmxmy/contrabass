@@ -1195,7 +1195,6 @@ function workerTokenConfigErrorResponse(): Response {
   }, 500);
 }
 
-<<<<<<< HEAD
 function isContentHash(value: string): boolean {
   return /^[a-f0-9]{64}$/u.test(value);
 }
@@ -1466,7 +1465,7 @@ async function forwardTeamCoordinatorRequest(
 
   const principal = context.get("principal");
   if (isIssuedWorkerPrincipal(principal) && principal.teamId !== teamId) {
-    return jsonResponse({ error: "team_forbidden" }, 403);
+    return errorResponse("team_forbidden", 403);
   }
 
   const id = context.env.TEAM_COORDINATOR.idFromName(teamId);

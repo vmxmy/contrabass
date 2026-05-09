@@ -148,7 +148,7 @@
 
 ## 16. End-to-end validation
 
-- [ ] 16.1 Set up staging environment with synthetic team and run a smoke test: register mock worker → tracker poller injects a fake issue → dispatch → ack → events → complete → board updates
+- [x] 16.1 Set up staging environment with synthetic team and run a smoke test: register mock worker → tracker poller injects a fake issue → dispatch → ack → events → complete → board updates
 - [ ] 16.2 Run real-world soak: one developer runs `contrabass worker` against staging for 1 week with codex agent
 - [ ] 16.3 Validate lease-revocation path by killing the worker mid-run and observing requeue
 - [ ] 16.4 Validate WS reconnect with `last_event_id` replay (simulate network blip)

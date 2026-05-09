@@ -1117,7 +1117,6 @@ function normalizeBoardEntry(
 
   const externalId = getStringField(entry, "externalId") ?? getStringField(entry, "external_id");
   const phase = phaseFromUnknown(entry.phase) ?? defaultPhase ?? "open";
-  const externalId = getStringField(entry, "externalId") ?? getStringField(entry, "external_id");
   const runId = getStringField(entry, "runId") ?? getStringField(entry, "run_id");
   const assignedWorkerId = getStringField(entry, "assignedWorkerId")
     ?? getStringField(entry, "assigned_worker_id")
