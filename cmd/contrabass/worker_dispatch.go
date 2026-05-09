@@ -30,6 +30,7 @@ func consumeWorkerDispatches(
 	ctx context.Context,
 	registration workerRegistration,
 	handleDispatch workerDispatchHandler,
+	handleLeaseRevoked workerLeaseRevokedHandler,
 ) error {
 	if handleDispatch == nil {
 		return errors.New("dispatch handler is required")
@@ -54,7 +55,7 @@ func consumeWorkerDispatches(
 			continue
 		}
 
-		err := consumeWorkerDispatchWebSocket(ctx, registration, handleDispatch)
+		err := consumeWorkerDispatchWebSocket(ctx, registration, handleDispatch, handleLeaseRevoked)
 		if err == nil {
 			wsFailures = 0
 			inLongPollFallback = false
@@ -94,6 +95,7 @@ func consumeWorkerDispatchWebSocket(
 	ctx context.Context,
 	registration workerRegistration,
 	handleDispatch workerDispatchHandler,
+	handleLeaseRevoked workerLeaseRevokedHandler,
 ) error {
 	wsURL := string(registration.DispatchChannel.WsURL)
 	if wsURL == "" {
@@ -129,12 +131,32 @@ func consumeWorkerDispatchWebSocket(
 		if messageType != websocket.MessageText {
 			continue
 		}
-		frame, err := decodeWorkerDispatchFrame(data)
-		if err != nil {
-			return err
+		// Peek at the frame type to route before full decode.
+		var envelope struct {
+			Type string `json:"type"`
 		}
-		if err := handleDispatch(ctx, frame); err != nil {
-			return err
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			return fmt.Errorf("decoding frame type: %w", err)
+		}
+
+		switch envelope.Type {
+		case "dispatch":
+			frame, err := decodeWorkerDispatchFrame(data)
+			if err != nil {
+				return err
+			}
+			if err := handleDispatch(ctx, frame); err != nil {
+				return err
+			}
+		case "lease-revoked":
+			leaseFrame, err := decodeLeaseRevokedFrame(data)
+			if err != nil {
+				return err
+			}
+			if handleLeaseRevoked != nil {
+				handleLeaseRevoked(leaseFrame.RunID)
+			}
+		// Unknown frame types are silently ignored for forward compatibility.
 		}
 	}
 }

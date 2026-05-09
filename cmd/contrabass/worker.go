@@ -106,7 +106,7 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	ackHandler := newWorkerAckingDispatchHandler(registration, opts.MaxConcurrency, executor.Run)
-	return workerDispatchConsumer(cmd.Context(), registration, ackHandler.Handle)
+	return workerDispatchConsumer(cmd.Context(), registration, ackHandler.Handle, ackHandler.RevokeRun)
 }
 
 func workerOptionsFromFlags(cmd *cobra.Command) (workerOptions, error) {

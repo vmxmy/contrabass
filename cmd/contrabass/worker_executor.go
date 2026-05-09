@@ -25,6 +25,7 @@ type workerRunExecutor struct {
 	workspaceMgr *workspace.Manager
 	tmuxSession  *tmux.Session
 	registration workerRegistration
+	configCache  *workerConfigCache
 
 	provision  func(context.Context, *workspace.Manager, types.Issue) (string, error)
 	openPane   func(context.Context, *tmux.Session, string, string) (string, error)
@@ -40,6 +41,7 @@ type workerRunExecutorConfig struct {
 	Capabilities     []workerv1.Capability
 	WorkspaceBaseDir string
 	Registration     workerRegistration
+	ConfigCache      *workerConfigCache
 
 	Provision  func(context.Context, *workspace.Manager, types.Issue) (string, error)
 	OpenPane   func(context.Context, *tmux.Session, string, string) (string, error)
@@ -82,6 +84,10 @@ func newWorkerRunExecutor(cfg workerRunExecutorConfig) (*workerRunExecutor, erro
 	if heartbeat == nil && cfg.Registration.APIBaseURL != "" {
 		heartbeat = newWorkerHeartbeatScheduler(cfg.Registration, nil)
 	}
+	configCache := cfg.ConfigCache
+	if configCache == nil {
+		configCache = newWorkerConfigCache()
+	}
 
 	return &workerRunExecutor{
 		teamID:       strings.TrimSpace(cfg.TeamID),
@@ -91,6 +97,7 @@ func newWorkerRunExecutor(cfg workerRunExecutorConfig) (*workerRunExecutor, erro
 		workspaceMgr: workspace.NewManager(baseDir),
 		tmuxSession:  tmux.NewSession(firstNonEmpty(strings.TrimSpace(cfg.TeamID), "worker"), nil),
 		registration: cfg.Registration,
+		configCache:  configCache,
 		provision:    provision,
 		openPane:     openPane,
 		runAgent:     runAgent,
@@ -107,6 +114,10 @@ func (e *workerRunExecutor) Run(ctx context.Context, frame workerv1.WorkerDispat
 	issue := workerIssueFromDispatch(frame)
 	if issue.ID == "" {
 		return errors.New("dispatch frame missing runId")
+	}
+
+	if _, err := e.configCache.GetOrFetch(ctx, e.registration, e.teamID, frame.ConfigHash); err != nil {
+		return fmt.Errorf("fetching config for run %q (hash %q): %w", frame.RunID, frame.ConfigHash, err)
 	}
 
 	workspacePath, err := e.provision(ctx, e.workspaceMgr, issue)

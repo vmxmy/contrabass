@@ -139,7 +139,7 @@ func TestWorkerCommandRegistersWithDetectedCapabilities(t *testing.T) {
 
 	restoreDeps := stubWorkerLoginDependencies(t, server.Client(), store)
 	defer restoreDeps()
-	restoreConsumer := stubWorkerDispatchConsumer(func(context.Context, workerRegistration, workerDispatchHandler) error {
+	restoreConsumer := stubWorkerDispatchConsumer(func(context.Context, workerRegistration, workerDispatchHandler, workerLeaseRevokedHandler) error {
 		return nil
 	})
 	defer restoreConsumer()
@@ -224,7 +224,7 @@ func TestConsumeWorkerDispatchesReadsWebSocketDispatch(t *testing.T) {
 		got = frame
 		cancel()
 		return nil
-	})
+	}, nil)
 
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, workerv1.RunID("run-1"), got.RunID)
@@ -291,7 +291,7 @@ func TestConsumeWorkerDispatchesFallsBackToLongPollAfterThreeWSFailures(t *testi
 		got = frame
 		cancel()
 		return nil
-	})
+	}, nil)
 
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, 3, wsAttempts)
@@ -362,7 +362,7 @@ func TestConsumeWorkerDispatchesRetriesWebSocketWhileInLongPollFallback(t *testi
 		got = frame
 		cancel()
 		return nil
-	})
+	}, nil)
 
 	require.ErrorIs(t, err, context.Canceled)
 	assert.GreaterOrEqual(t, wsAttempts, 4)
@@ -449,7 +449,7 @@ func TestWorkerAckingDispatchHandlerRejectsAtCapacity(t *testing.T) {
 		t.Fatal("startRun should not be called for at-capacity dispatch")
 		return nil
 	})
-	handler.inFlight["run-1"] = struct{}{}
+	handler.inFlight["run-1"] = func(error) {}
 
 	err := handler.Handle(context.Background(), workerv1.WorkerDispatchFrame{RunID: "run-2"})
 	require.NoError(t, err)
@@ -777,7 +777,7 @@ func stubWorkerLookupPath(lookup func(string) (string, error)) func() {
 	}
 }
 
-func stubWorkerDispatchConsumer(consumer func(context.Context, workerRegistration, workerDispatchHandler) error) func() {
+func stubWorkerDispatchConsumer(consumer func(context.Context, workerRegistration, workerDispatchHandler, workerLeaseRevokedHandler) error) func() {
 	oldConsumer := workerDispatchConsumer
 	workerDispatchConsumer = consumer
 	return func() {
