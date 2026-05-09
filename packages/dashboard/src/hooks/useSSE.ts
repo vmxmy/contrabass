@@ -4,6 +4,7 @@ import type {
   BackoffEntry,
   BoardEvent,
   BoardIssue,
+  Issue,
   OrchestratorEvent,
   RunningEntry,
   StateSnapshot,
@@ -15,6 +16,7 @@ import type {
 } from '../types'
 import { zhCN } from '../i18n/messages'
 import { apiFetch, createApiEventSource } from '../lib/api'
+import type { DashboardSubscriptionFrame } from './useTeamSubscription'
 
 export interface SSEState {
   state: StateSnapshot | null
@@ -24,11 +26,13 @@ export interface SSEState {
   boardIssues: BoardIssue[]
   agentLogs: AgentLogEvent[]
   queueEvents: QueueEventPayload[]
+  dashboardWorkers: Record<string, DashboardWorkerLoad>
 }
 
 export type SSEAction =
   | { type: 'snapshot'; data: StateSnapshot }
   | { type: 'web_event'; data: WebEvent }
+  | { type: 'dashboard_frame'; data: DashboardSubscriptionFrame }
   | { type: 'connected' }
   | { type: 'disconnected' }
   | { type: 'error'; message: string }
@@ -67,6 +71,32 @@ export interface QueueEventPayload {
   blockers: string
 }
 
+interface TeamCoordinatorBoardEntry {
+  issueRef: string
+  runId?: string
+  assignedWorkerId?: string
+  phase: string
+  lastUpdated: number
+}
+
+interface WorkerStatusFrameWorker {
+  workerId: string
+  capabilities?: string[]
+  maxConcurrency?: number
+  currentLoad?: number
+  lastHeartbeatTs?: number
+  kind?: string
+  version?: string
+  status?: string
+}
+
+interface DashboardWorkerLoad {
+  currentLoad: number
+  maxConcurrency: number
+}
+
+const DASHBOARD_SUBSCRIPTION_SOURCE = 'dashboard-subscription'
+
 export const INITIAL_STATE: SSEState = {
   state: null,
   connected: false,
@@ -75,6 +105,7 @@ export const INITIAL_STATE: SSEState = {
   boardIssues: [],
   agentLogs: [],
   queueEvents: [],
+  dashboardWorkers: {},
 }
 
 const EMPTY_TEAM_SNAPSHOT: TeamSnapshot = {
@@ -103,6 +134,39 @@ function asRecord(value: unknown): Record<string, unknown> {
   }
 
   return value as Record<string, unknown>
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function asTimestamp(value: unknown): string {
+  const millis = asNumber(value)
+  if (millis !== undefined) {
+    return new Date(millis).toISOString()
+  }
+  return new Date().toISOString()
+}
+
+function emptySnapshot(timestamp: string): StateSnapshot {
+  return {
+    stats: {
+      Running: 0,
+      MaxAgents: 0,
+      TotalTokensIn: 0,
+      TotalTokensOut: 0,
+      StartTime: timestamp,
+      PollCount: 0,
+    },
+    running: [],
+    backoff: [],
+    issues: {},
+    generated_at: timestamp,
+  }
 }
 
 function isWebEvent(value: unknown): value is WebEvent {
@@ -139,6 +203,403 @@ function asTeamSnapshot(snapshot: TeamSnapshot | null): TeamSnapshot {
   }
 
   return snapshot
+}
+
+function issueStateForBoardPhase(phase: string): string {
+  switch (phase) {
+    case 'done':
+      return 'Done'
+    case 'claimed':
+    case 'running':
+    case 'open':
+    default:
+      return 'Todo'
+  }
+}
+
+function numericStateForBoardPhase(phase: string): number {
+  switch (phase) {
+    case 'claimed':
+      return 1
+    case 'running':
+      return 2
+    case 'done':
+      return 3
+    case 'open':
+    default:
+      return 0
+  }
+}
+
+function isDashboardSubscriptionIssue(issue: Issue | undefined): boolean {
+  return issue?.tracker_meta?.source === DASHBOARD_SUBSCRIPTION_SOURCE
+}
+
+function boardEntriesFromFrame(frame: DashboardSubscriptionFrame): TeamCoordinatorBoardEntry[] {
+  const board = asRecord(frame.board)
+  const phases = ['open', 'claimed', 'running', 'done']
+
+  return phases.flatMap((phase) => {
+    const entries = board[phase]
+    if (!Array.isArray(entries)) {
+      return []
+    }
+
+    return entries.flatMap((entry): TeamCoordinatorBoardEntry[] => {
+      const record = asRecord(entry)
+      const issueRef = asString(record.issueRef) ?? asString(record.issue_ref) ?? asString(record.id)
+      if (!issueRef) {
+        return []
+      }
+
+      return [
+        {
+          issueRef,
+          runId: asString(record.runId) ?? asString(record.run_id),
+          assignedWorkerId:
+            asString(record.assignedWorkerId) ??
+            asString(record.assigned_worker_id) ??
+            asString(record.workerId) ??
+            asString(record.worker_id),
+          phase: asString(record.phase) ?? phase,
+          lastUpdated: asNumber(record.lastUpdated) ?? asNumber(record.last_updated) ?? Date.now(),
+        },
+      ]
+    })
+  })
+}
+
+function issueFromBoardEntry(entry: TeamCoordinatorBoardEntry, existing?: Issue): Issue {
+  const timestamp = asTimestamp(entry.lastUpdated)
+  const linearState = issueStateForBoardPhase(entry.phase)
+
+  return {
+    id: existing?.id ?? entry.issueRef,
+    identifier: existing?.identifier ?? entry.issueRef,
+    title: existing?.title ?? entry.issueRef,
+    description: existing?.description ?? '',
+    state: numericStateForBoardPhase(entry.phase),
+    priority: existing?.priority,
+    labels: existing?.labels ?? [],
+    url: existing?.url ?? '',
+    branch_name: existing?.branch_name,
+    blocked_by: existing?.blocked_by,
+    created_at: existing?.created_at ?? timestamp,
+    updated_at: timestamp,
+    tracker_meta: {
+      ...(existing?.tracker_meta ?? {}),
+      source: DASHBOARD_SUBSCRIPTION_SOURCE,
+      linear_state: linearState,
+      board_phase: entry.phase,
+      run_id: entry.runId,
+      assigned_worker_id: entry.assignedWorkerId,
+    },
+  }
+}
+
+function runningFromBoardEntry(entry: TeamCoordinatorBoardEntry): RunningEntry {
+  const timestamp = asTimestamp(entry.lastUpdated)
+
+  return {
+    issue_id: entry.issueRef,
+    attempt: 0,
+    pid: 0,
+    session_id: entry.runId ?? entry.issueRef,
+    workspace: DASHBOARD_SUBSCRIPTION_SOURCE,
+    started_at: timestamp,
+    phase: numericStateForBoardPhase(entry.phase),
+    tokens_in: 0,
+    tokens_out: 0,
+    phase_label: entry.phase,
+    last_activity_at: timestamp,
+    last_activity_kind: entry.assignedWorkerId ? `assigned to ${entry.assignedWorkerId}` : entry.phase,
+    diff_status: 'ok',
+  }
+}
+
+function applyDashboardBoardUpdate(state: SSEState, frame: DashboardSubscriptionFrame): SSEState {
+  const timestamp = new Date().toISOString()
+  const snapshot = state.state ?? emptySnapshot(timestamp)
+  const entries = boardEntriesFromFrame(frame)
+  const incomingIssueRefs = new Set(entries.map((entry) => entry.issueRef))
+  const issues = Object.fromEntries(
+    Object.entries(snapshot.issues).filter(
+      ([issueID, issue]) => !isDashboardSubscriptionIssue(issue) || incomingIssueRefs.has(issueID),
+    ),
+  ) as Record<string, Issue>
+
+  for (const entry of entries) {
+    issues[entry.issueRef] = issueFromBoardEntry(entry, issues[entry.issueRef])
+  }
+
+  const boardRunning = entries
+    .filter((entry) => entry.phase === 'claimed' || entry.phase === 'running')
+    .map(runningFromBoardEntry)
+  const running = [
+    ...snapshot.running.filter((entry) => entry.workspace !== DASHBOARD_SUBSCRIPTION_SOURCE),
+    ...boardRunning,
+  ]
+
+  return {
+    ...state,
+    state: {
+      ...snapshot,
+      issues,
+      running,
+      stats: {
+        ...snapshot.stats,
+        Running: running.length,
+      },
+      generated_at: timestamp,
+    },
+  }
+}
+
+function eventPayloadFromRunFrame(frame: DashboardSubscriptionFrame): Record<string, unknown> {
+  const payload = asRecord(frame.payload)
+  return Object.keys(payload).length > 0 ? payload : asRecord(frame)
+}
+
+function logLineForWorkerEvent(event: Record<string, unknown>): string {
+  const payload = asRecord(event.payload)
+  switch (event.kind) {
+    case 'log':
+      return asString(payload.message) ?? 'log event'
+    case 'tool_call':
+      return asString(payload.tool) ?? 'tool call'
+    case 'diff':
+      return asString(payload.summary) ?? 'diff updated'
+    case 'error':
+      return asString(payload.message) ?? 'worker error'
+    case 'phase':
+      return asString(payload.label) ?? asString(payload.phase) ?? 'phase updated'
+    case 'start':
+      return asString(payload.agentRunner) ?? 'worker started'
+    default:
+      return asString(event.kind) ?? 'run event'
+  }
+}
+
+function updateRunningForWorkerEvent(
+  snapshot: StateSnapshot,
+  issueID: string,
+  runID: string,
+  workerID: string | undefined,
+  event: Record<string, unknown>,
+): RunningEntry[] {
+  const payload = asRecord(event.payload)
+  const timestamp = asTimestamp(event.ts)
+  const existing = snapshot.running.find(
+    (entry) => entry.issue_id === issueID || entry.session_id === runID,
+  )
+  const base: RunningEntry =
+    existing ?? {
+      issue_id: issueID,
+      attempt: 0,
+      pid: 0,
+      session_id: runID,
+      workspace: workerID ?? DASHBOARD_SUBSCRIPTION_SOURCE,
+      started_at: timestamp,
+      phase: 0,
+      tokens_in: 0,
+      tokens_out: 0,
+    }
+
+  let next: RunningEntry = {
+    ...base,
+    issue_id: issueID,
+    session_id: runID,
+    workspace: workerID ?? base.workspace,
+    last_activity_at: timestamp,
+    last_activity_kind: logLineForWorkerEvent(event),
+  }
+
+  if (event.kind === 'phase') {
+    const phaseLabel = asString(payload.label) ?? asString(payload.phase)
+    next = {
+      ...next,
+      phase_label: phaseLabel ?? next.phase_label,
+      agent_stage: asString(payload.phase) ?? next.agent_stage,
+    }
+  }
+
+  if (event.kind === 'diff') {
+    next = {
+      ...next,
+      diff_files: asNumber(payload.filesChanged) ?? next.diff_files,
+      diff_added: asNumber(payload.additions) ?? next.diff_added,
+      diff_removed: asNumber(payload.deletions) ?? next.diff_removed,
+      diff_status: 'ok',
+    }
+  }
+
+  if (event.kind === 'tool_call') {
+    next = {
+      ...next,
+      tokens_in: next.tokens_in + (asNumber(payload.tokensIn) ?? 0),
+      tokens_out: next.tokens_out + (asNumber(payload.tokensOut) ?? 0),
+    }
+  }
+
+  if (event.kind === 'error') {
+    next = {
+      ...next,
+      diff_status: 'error',
+      phase_label: 'error',
+    }
+  }
+
+  return [...snapshot.running.filter((entry) => entry !== existing), next]
+}
+
+function applyDashboardRunEvent(state: SSEState, frame: DashboardSubscriptionFrame): SSEState {
+  const payload = eventPayloadFromRunFrame(frame)
+  const event = asRecord(payload.event)
+  const runID = asString(payload.runId) ?? asString(payload.run_id)
+  const issueID = asString(payload.issueRef) ?? asString(payload.issue_ref) ?? runID
+  if (!runID || !issueID || Object.keys(event).length === 0) {
+    return state
+  }
+
+  const timestamp = asTimestamp(event.ts)
+  const snapshot = state.state ?? emptySnapshot(timestamp)
+  const issues = { ...snapshot.issues }
+  if (!issues[issueID]) {
+    issues[issueID] = issueFromBoardEntry({
+      issueRef: issueID,
+      runId: runID,
+      assignedWorkerId: asString(payload.workerId) ?? asString(payload.worker_id),
+      phase: 'running',
+      lastUpdated: Date.parse(timestamp),
+    })
+  }
+
+  const logs = [...state.agentLogs]
+  if (event.kind === 'log' || event.kind === 'error' || event.kind === 'tool_call') {
+    logs.push({
+      worker_id: asString(payload.workerId) ?? asString(payload.worker_id) ?? runID,
+      line: logLineForWorkerEvent(event),
+      stream: event.kind === 'error' ? 'stderr' : 'stdout',
+      timestamp,
+    })
+    if (logs.length > 1000) {
+      logs.splice(0, logs.length - 1000)
+    }
+  }
+
+  const running = updateRunningForWorkerEvent(
+    snapshot,
+    issueID,
+    runID,
+    asString(payload.workerId) ?? asString(payload.worker_id),
+    event,
+  )
+
+  return {
+    ...state,
+    agentLogs: logs,
+    state: {
+      ...snapshot,
+      issues,
+      running,
+      stats: {
+        ...snapshot.stats,
+        Running: running.length,
+      },
+      generated_at: timestamp,
+    },
+  }
+}
+
+function workerStateFromStatus(worker: WorkerStatusFrameWorker): WorkerState {
+  const heartbeat = asTimestamp(worker.lastHeartbeatTs)
+  return {
+    id: worker.workerId,
+    agent_type: worker.kind ?? 'worker',
+    status: worker.status ?? 'unknown',
+    work_dir: '',
+    started_at: heartbeat,
+    last_heartbeat: heartbeat,
+  }
+}
+
+function applyDashboardWorkerStatus(state: SSEState, frame: DashboardSubscriptionFrame): SSEState {
+  const worker = asRecord(frame.worker) as Partial<WorkerStatusFrameWorker>
+  const workerID = asString(worker.workerId)
+  if (!workerID) {
+    return state
+  }
+
+  const currentSnapshot = asTeamSnapshot(state.teamSnapshot)
+  const nextWorker = workerStateFromStatus(worker as WorkerStatusFrameWorker)
+  const workers = [
+    ...currentSnapshot.workers.filter((entry) => entry.id !== nextWorker.id),
+    nextWorker,
+  ]
+  const dashboardWorkers = {
+    ...state.dashboardWorkers,
+    [workerID]: {
+      currentLoad: asNumber(worker.currentLoad) ?? state.dashboardWorkers[workerID]?.currentLoad ?? 0,
+      maxConcurrency:
+        asNumber(worker.maxConcurrency) ?? state.dashboardWorkers[workerID]?.maxConcurrency ?? 1,
+    },
+  }
+  const runningLoad = Object.values(dashboardWorkers).reduce(
+    (sum, entry) => sum + entry.currentLoad,
+    0,
+  )
+  const totalCapacity = Object.values(dashboardWorkers).reduce(
+    (sum, entry) => sum + entry.maxConcurrency,
+    0,
+  )
+  const timestamp = new Date().toISOString()
+  const snapshot = state.state ?? emptySnapshot(timestamp)
+
+  return {
+    ...state,
+    dashboardWorkers,
+    teamSnapshot: {
+      ...currentSnapshot,
+      workers,
+    },
+    state: {
+      ...snapshot,
+      stats: {
+        ...snapshot.stats,
+        Running: runningLoad,
+        MaxAgents: Math.max(snapshot.stats.MaxAgents, totalCapacity),
+      },
+      generated_at: timestamp,
+    },
+  }
+}
+
+function applyDashboardConfigChanged(state: SSEState, frame: DashboardSubscriptionFrame): SSEState {
+  const payload = eventPayloadFromRunFrame(frame)
+  const usageCaps = asRecord(payload.usageCaps)
+  const maxWorkers = asNumber(usageCaps.max_active_workers) ?? asNumber(usageCaps.maxActiveWorkers)
+  const timestamp = new Date().toISOString()
+  const snapshot = state.state ?? emptySnapshot(timestamp)
+  const currentSnapshot = asTeamSnapshot(state.teamSnapshot)
+
+  return {
+    ...state,
+    teamSnapshot: {
+      ...currentSnapshot,
+      config: {
+        ...currentSnapshot.config,
+        max_workers: maxWorkers ?? currentSnapshot.config.max_workers,
+      },
+    },
+    state: {
+      ...snapshot,
+      stats: {
+        ...snapshot.stats,
+        MaxAgents: maxWorkers ?? snapshot.stats.MaxAgents,
+      },
+      generated_at: timestamp,
+    },
+  }
 }
 
 function resolveTeamEventPayload(webEvt: WebEvent): TeamEventPayload {
@@ -424,10 +885,30 @@ export function applyEvent(snapshot: StateSnapshot, event: OrchestratorEvent): S
   }
 }
 
+export function applyDashboardSubscriptionFrame(
+  state: SSEState,
+  frame: DashboardSubscriptionFrame,
+): SSEState {
+  switch (frame.type) {
+    case 'board-update':
+      return applyDashboardBoardUpdate(state, frame)
+    case 'run-event':
+      return applyDashboardRunEvent(state, frame)
+    case 'worker-status':
+      return applyDashboardWorkerStatus(state, frame)
+    case 'config-changed':
+      return applyDashboardConfigChanged(state, frame)
+    default:
+      return state
+  }
+}
+
 export function sseReducer(state: SSEState, action: SSEAction): SSEState {
   switch (action.type) {
     case 'snapshot':
       return { ...state, state: action.data, connected: true, error: null }
+    case 'dashboard_frame':
+      return applyDashboardSubscriptionFrame(state, action.data)
     case 'connected':
       return { ...state, connected: true, error: null }
     case 'disconnected':
@@ -581,6 +1062,10 @@ export function useSSE() {
     }
   }, [])
 
+  const applyDashboardFrame = useCallback((frame: DashboardSubscriptionFrame) => {
+    dispatch({ type: 'dashboard_frame', data: frame })
+  }, [])
+
   useEffect(() => {
     const timer = window.setInterval(() => {
       void refresh()
@@ -588,5 +1073,5 @@ export function useSSE() {
     return () => window.clearInterval(timer)
   }, [refresh])
 
-  return { ...sseState, refresh }
+  return { ...sseState, refresh, applyDashboardFrame }
 }

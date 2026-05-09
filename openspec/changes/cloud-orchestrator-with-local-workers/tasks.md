@@ -99,7 +99,7 @@
 - [x] 11.1 Create Cloudflare Pages project for `packages/dashboard`
 - [x] 11.2 Add `VITE_CONTRABASS_API_BASE` env wiring and update SPA API client
 - [x] 11.3 Implement OAuth login flow (GitHub) in API Worker; set `httpOnly` session cookie
-- [ ] 11.4 Implement WS subscription with reconnect + `last_event_id` replay in SPA
+- [x] 11.4 Implement WS subscription with reconnect + `last_event_id` replay in SPA
 - [ ] 11.5 Implement team picker, board view, run detail view, config history view, tracker health view
 - [ ] 11.6 Implement SPA / API version-skew banner
 - [ ] 11.7 Create Cloudflare Pages project for `packages/landing` and verify README rendering

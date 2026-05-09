@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AppLayout } from "./components/AppLayout";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { useSSE } from "./hooks/useSSE";
+import { useTeamSubscription } from "./hooks/useTeamSubscription";
 import { formatDuration } from "./i18n/format";
 import { zhCN } from "./i18n/messages";
 
@@ -19,10 +20,24 @@ function computeRuntimeSeconds(startTime: string | undefined): number {
   return Math.max(0, Math.floor((Date.now() - start) / 1000));
 }
 
+function activeTeamIdFromPath(pathname: string): string | null {
+  const match = /^\/t\/([^/]+)/u.exec(pathname);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
 function App() {
-  const { state, connected, error, queueEvents } = useSSE();
+  const { state, connected, error, queueEvents, applyDashboardFrame } =
+    useSSE();
+  const activeTeamId = activeTeamIdFromPath(window.location.pathname);
+  const teamSubscription = useTeamSubscription(activeTeamId);
   const [runtimeSeconds, setRuntimeSeconds] = useState(0);
   const startTime = state?.stats.StartTime;
+
+  useEffect(() => {
+    if (teamSubscription.latestFrame) {
+      applyDashboardFrame(teamSubscription.latestFrame);
+    }
+  }, [applyDashboardFrame, teamSubscription.latestFrame]);
 
   useEffect(() => {
     if (!startTime) {
@@ -60,12 +75,20 @@ function App() {
   return (
     <TooltipProvider>
       <div className="flex h-dvh w-full flex-col overflow-hidden bg-background text-foreground">
-        {error ? (
+        {teamSubscription.reconnecting ? (
+          <div
+            className="border-b border-amber-500/40 bg-amber-500/15 px-4 py-2 text-xs font-medium text-amber-700"
+            role="status"
+          >
+            Reconnecting to live team updates…
+          </div>
+        ) : null}
+        {error || teamSubscription.error ? (
           <div
             className="border-b border-destructive/40 bg-destructive/15 px-4 py-2 text-xs font-medium text-destructive"
             role="alert"
           >
-            {zhCN.app.connectionError}: {error}
+            {zhCN.app.connectionError}: {error ?? teamSubscription.error}
           </div>
         ) : null}
         <div className="flex-1 overflow-hidden">
