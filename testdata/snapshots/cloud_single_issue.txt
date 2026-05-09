@@ -1,0 +1,11 @@
+contrabass tui — acme  ● connected
+
+  BOARD
+                            ISSUE                    PHASE                   WORKER                 
+  ──────────────────────────────────────────────────────────────────────────────────────────────────
+   ▶                        ACME-1                   open                    -                      
+
+Workers
+  (none registered)
+                   
+↑/k up • ↓/j down • ⏎ view detail • q quit

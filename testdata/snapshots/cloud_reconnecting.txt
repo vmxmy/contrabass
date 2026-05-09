@@ -1,0 +1,11 @@
+contrabass tui — acme  ●  reconnecting…
+
+  BOARD
+                            ISSUE                    PHASE                   WORKER                 
+  ──────────────────────────────────────────────────────────────────────────────────────────────────
+   ▶                        ACME-1                   running                 worker-alice           
+
+Workers
+  (none registered)
+                   
+↑/k up • ↓/j down • ⏎ view detail • q quit
