@@ -33,13 +33,30 @@ export type PollerResult = {
   cron: string;
   teamsSeen: number;
   teamsEnabled: number;
+  teamsSkippedBackoff: number;
   adapterCalls: number;
+};
+
+type TeamBackoff = {
+  retryAtMs: number;
+  adapter: PollerAdapterName;
+  backoffCount: number;
+};
+
+type RateLimitLikeError = Error & {
+  retryAfterMs: number;
 };
 
 type TeamConfigRow = {
   teamId: string;
   contentHash: string;
   contentYaml: string;
+};
+
+type TeamBackoffRow = {
+  retryAtMs: number;
+  adapter: string;
+  backoffCount: number;
 };
 
 type TrackerBlockState = {
@@ -78,6 +95,7 @@ export async function runTrackerPoller(
 ): Promise<PollerResult> {
   const teams = await listActiveTeamConfigs(env);
   let teamsEnabled = 0;
+  let teamsSkippedBackoff = 0;
   let adapterCalls = 0;
 
   for (const team of teams) {
@@ -87,6 +105,23 @@ export async function runTrackerPoller(
     }
 
     teamsEnabled += 1;
+    const activeBackoff = await getTeamBackoff(env, team.teamId);
+    const nowMs = Date.now();
+    if (activeBackoff !== undefined && activeBackoff.retryAtMs > nowMs) {
+      teamsSkippedBackoff += 1;
+      console.warn(JSON.stringify({
+        event: "tracker_poller_team_backoff_skip",
+        teamId: team.teamId,
+        adapter: activeBackoff.adapter,
+        retryAtMs: activeBackoff.retryAtMs,
+        backoffCount: activeBackoff.backoffCount,
+      }));
+      continue;
+    }
+    if (activeBackoff !== undefined) {
+      await deleteTeamBackoff(env, team.teamId);
+    }
+
     for (const adapter of enabledTrackers) {
       const pollAdapter = adapters[adapter];
       if (pollAdapter === undefined) {
@@ -96,6 +131,22 @@ export async function runTrackerPoller(
       try {
         await pollAdapter({ team, adapter, scheduledTime: controller.scheduledTime, cron: controller.cron, env });
       } catch (error) {
+        if (isRateLimitError(error)) {
+          const retryAfterMs = Math.max(0, error.retryAfterMs);
+          const retryAtMs = Date.now() + retryAfterMs;
+          const backoffCount = (activeBackoff?.backoffCount ?? 0) + 1;
+          await setTeamBackoff(env, team.teamId, { retryAtMs, adapter, backoffCount });
+          console.warn(JSON.stringify({
+            event: "tracker_poller_team_backoff_set",
+            teamId: team.teamId,
+            adapter,
+            retryAfterMs,
+            retryAtMs,
+            backoffCount,
+            message: error.message,
+          }));
+          break;
+        }
         console.error(JSON.stringify({
           event: "tracker_poller_adapter_error",
           teamId: team.teamId,
@@ -111,6 +162,7 @@ export async function runTrackerPoller(
     cron: controller.cron,
     teamsSeen: teams.length,
     teamsEnabled,
+    teamsSkippedBackoff,
     adapterCalls,
   };
 }
@@ -198,6 +250,70 @@ async function listActiveTeamConfigs(env: PollerEnv): Promise<PollerTeamConfig[]
   }));
 }
 
+async function getTeamBackoff(env: PollerEnv, teamId: string): Promise<TeamBackoff | undefined> {
+  if (env.CONTROL_PLANE_DB === undefined) {
+    return undefined;
+  }
+
+  const row = await env.CONTROL_PLANE_DB.prepare(`
+    SELECT
+      retry_at_ms AS retryAtMs,
+      adapter,
+      backoff_count AS backoffCount
+    FROM tracker_poller_backoffs
+    WHERE team_id = ?
+    LIMIT 1
+  `).bind(teamId).first<TeamBackoffRow>();
+
+  if (row === null) {
+    return undefined;
+  }
+
+  const adapter = adapterNameFromValue(row.adapter);
+  if (adapter === undefined) {
+    return undefined;
+  }
+
+  return {
+    retryAtMs: row.retryAtMs,
+    adapter,
+    backoffCount: row.backoffCount,
+  };
+}
+
+async function setTeamBackoff(env: PollerEnv, teamId: string, backoff: TeamBackoff): Promise<void> {
+  if (env.CONTROL_PLANE_DB === undefined) {
+    return;
+  }
+
+  await env.CONTROL_PLANE_DB.prepare(`
+    INSERT INTO tracker_poller_backoffs (
+      team_id,
+      retry_at_ms,
+      adapter,
+      backoff_count,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ON CONFLICT(team_id) DO UPDATE SET
+      retry_at_ms = excluded.retry_at_ms,
+      adapter = excluded.adapter,
+      backoff_count = excluded.backoff_count,
+      updated_at = excluded.updated_at
+  `).bind(teamId, backoff.retryAtMs, backoff.adapter, backoff.backoffCount).run();
+}
+
+async function deleteTeamBackoff(env: PollerEnv, teamId: string): Promise<void> {
+  if (env.CONTROL_PLANE_DB === undefined) {
+    return;
+  }
+
+  await env.CONTROL_PLANE_DB.prepare(`
+    DELETE FROM tracker_poller_backoffs
+    WHERE team_id = ?
+  `).bind(teamId).run();
+}
+
 function stripYamlComment(line: string): string {
   const commentStart = line.indexOf("#");
   return commentStart === -1 ? line : line.slice(0, commentStart);
@@ -240,4 +356,9 @@ function adapterNameFromKey(key: string): PollerAdapterName | undefined {
     return normalized;
   }
   return undefined;
+}
+
+function isRateLimitError(error: unknown): error is RateLimitLikeError {
+  return error instanceof Error
+    && typeof (error as { retryAfterMs?: unknown }).retryAfterMs === "number";
 }

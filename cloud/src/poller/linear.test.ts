@@ -76,6 +76,27 @@ describe("LinearClient", () => {
       statusCode: 401,
     } satisfies Partial<LinearAuthError>);
   });
+
+  it("honors HTTP-date Retry-After values", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-09T01:00:00Z"));
+    try {
+      const rateLimited = new LinearClient({
+        token: "token",
+        fetcher: async () => new Response("slow down", {
+          status: 429,
+          headers: { "Retry-After": "Sat, 09 May 2026 01:02:00 GMT" },
+        }),
+      });
+
+      await expect(rateLimited.fetchIssues("query", {})).rejects.toMatchObject({
+        name: "LinearRateLimitError",
+        retryAfterMs: 120000,
+      } satisfies Partial<LinearRateLimitError>);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("pollLinear", () => {

@@ -79,6 +79,28 @@ describe("GitHubClient", () => {
       statusCode: 401,
     } satisfies Partial<GitHubAuthError>);
   });
+
+  it("honors HTTP-date Retry-After values", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-09T01:00:00Z"));
+    try {
+      const rateLimited = new GitHubClient({
+        token: "token",
+        repos: [{ owner: "octocat", repo: "hello-world" }],
+        fetcher: async () => new Response("slow down", {
+          status: 429,
+          headers: { "Retry-After": "Sat, 09 May 2026 01:02:00 GMT" },
+        }),
+      });
+
+      await expect(rateLimited.fetchIssues()).rejects.toMatchObject({
+        name: "GitHubRateLimitError",
+        retryAfterMs: 120000,
+      } satisfies Partial<GitHubRateLimitError>);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("pollGitHub", () => {

@@ -567,7 +567,12 @@ function parseRetryAfterMs(value: string | null): number {
     return 0;
   }
   const seconds = Number.parseInt(value, 10);
-  return Number.isNaN(seconds) ? 0 : seconds * 1000;
+  if (!Number.isNaN(seconds)) {
+    return seconds * 1000;
+  }
+
+  const retryAtMs = Date.parse(value);
+  return Number.isNaN(retryAtMs) ? 0 : Math.max(0, retryAtMs - Date.now());
 }
 
 function parseGitHubRateLimitResetMs(value: string | null): number {

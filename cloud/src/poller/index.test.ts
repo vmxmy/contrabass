@@ -50,6 +50,7 @@ describe("tracker poller entry point", () => {
       cron: "* * * * *",
       teamsSeen: 3,
       teamsEnabled: 2,
+      teamsSkippedBackoff: 0,
       adapterCalls: 3,
     });
     expect(calls).toEqual([
@@ -93,6 +94,90 @@ describe("tracker poller entry point", () => {
       consoleError.mockRestore();
     }
   });
+
+  it("isolates rate-limited teams and skips them until Retry-After expires", async () => {
+    const calls: Array<{ teamId: string; adapter: PollerAdapterName }> = [];
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const clockStart = 1710000300000;
+    const backoffs = new Map<string, TeamBackoffFixture>();
+    const rows = [
+      {
+        teamId: "limited-team",
+        contentHash: hashFor("limited"),
+        contentYaml: "tracker:\n  github:\n    repo: octocat/hello-world\n  linear:\n    project_slug: alpha\n",
+      },
+      { teamId: "healthy-team", contentHash: hashFor("healthy"), contentYaml: "tracker:\n  type: github\n" },
+    ];
+
+    try {
+      vi.useFakeTimers();
+      vi.setSystemTime(clockStart);
+
+      const env = createEnv(rows, backoffs);
+      const firstResult = await runTrackerPoller(env, { cron: "* * * * *", scheduledTime: 1710000000000 }, {
+        github(invocation) {
+          calls.push({ teamId: invocation.team.teamId, adapter: invocation.adapter });
+          if (invocation.team.teamId === "limited-team") {
+            throw Object.assign(new Error("github API rate limited"), { retryAfterMs: 120_000 });
+          }
+        },
+        linear(invocation) {
+          calls.push({ teamId: invocation.team.teamId, adapter: invocation.adapter });
+        },
+      });
+
+      expect(firstResult).toMatchObject({ teamsSeen: 2, teamsEnabled: 2, teamsSkippedBackoff: 0, adapterCalls: 2 });
+      expect(calls).toEqual([
+        { teamId: "limited-team", adapter: "github" },
+        { teamId: "healthy-team", adapter: "github" },
+      ]);
+      expect(consoleWarn).toHaveBeenCalledWith(JSON.stringify({
+        event: "tracker_poller_team_backoff_set",
+        teamId: "limited-team",
+        adapter: "github",
+        retryAfterMs: 120000,
+        retryAtMs: clockStart + 120000,
+        backoffCount: 1,
+        message: "github API rate limited",
+      }));
+
+      calls.length = 0;
+      vi.setSystemTime(clockStart + 60_000);
+      const evictedIsolateEnv = createEnv(rows, backoffs);
+      const skippedResult = await runTrackerPoller(evictedIsolateEnv, { cron: "* * * * *", scheduledTime: 1710000060000 }, {
+        github(invocation) {
+          calls.push({ teamId: invocation.team.teamId, adapter: invocation.adapter });
+        },
+        linear(invocation) {
+          calls.push({ teamId: invocation.team.teamId, adapter: invocation.adapter });
+        },
+      });
+
+      expect(skippedResult).toMatchObject({ teamsSkippedBackoff: 1, adapterCalls: 1 });
+      expect(calls).toEqual([{ teamId: "healthy-team", adapter: "github" }]);
+
+      calls.length = 0;
+      vi.setSystemTime(clockStart + 120_000);
+      const resumedResult = await runTrackerPoller(env, { cron: "* * * * *", scheduledTime: 1710000120000 }, {
+        github(invocation) {
+          calls.push({ teamId: invocation.team.teamId, adapter: invocation.adapter });
+        },
+        linear(invocation) {
+          calls.push({ teamId: invocation.team.teamId, adapter: invocation.adapter });
+        },
+      });
+
+      expect(resumedResult).toMatchObject({ teamsSkippedBackoff: 0, adapterCalls: 3 });
+      expect(calls).toEqual([
+        { teamId: "limited-team", adapter: "github" },
+        { teamId: "limited-team", adapter: "linear" },
+        { teamId: "healthy-team", adapter: "github" },
+      ]);
+    } finally {
+      vi.useRealTimers();
+      consoleWarn.mockRestore();
+    }
+  });
 });
 
 describe("enabledTrackersFromConfig", () => {
@@ -127,19 +212,68 @@ type TeamConfigFixture = {
   contentYaml: string;
 };
 
-function createEnv(rows: TeamConfigFixture[]): PollerEnv {
-  const statement = {
-    all<T>() {
-      return Promise.resolve({ results: rows as T[] });
-    },
-  };
+type TeamBackoffFixture = {
+  retryAtMs: number;
+  adapter: PollerAdapterName;
+  backoffCount: number;
+};
+
+function createEnv(rows: TeamConfigFixture[], backoffs = new Map<string, TeamBackoffFixture>()): PollerEnv {
   const db = {
-    prepare(_query: string) {
-      return statement;
+    prepare(query: string) {
+      return {
+        bind(...values: unknown[]) {
+          return d1Statement(query, values, rows, backoffs);
+        },
+        all<T>() {
+          return Promise.resolve({ results: rows as T[] });
+        },
+      };
     },
   };
 
   return { CONTROL_PLANE_DB: db as unknown as D1Database };
+}
+
+function d1Statement(
+  query: string,
+  values: unknown[],
+  rows: TeamConfigFixture[],
+  backoffs: Map<string, TeamBackoffFixture>,
+) {
+  return {
+    all<T>() {
+      return Promise.resolve({ results: rows as T[] });
+    },
+    first<T>() {
+      expect(query).toContain("FROM tracker_poller_backoffs");
+      const teamId = String(values[0]);
+      const backoff = backoffs.get(teamId);
+      if (backoff === undefined) {
+        return Promise.resolve(null);
+      }
+      return Promise.resolve({
+        retryAtMs: backoff.retryAtMs,
+        adapter: backoff.adapter,
+        backoffCount: backoff.backoffCount,
+      } as T);
+    },
+    run() {
+      const teamId = String(values[0]);
+      if (query.includes("DELETE FROM tracker_poller_backoffs")) {
+        backoffs.delete(teamId);
+        return Promise.resolve({ success: true });
+      }
+
+      expect(query).toContain("INSERT INTO tracker_poller_backoffs");
+      backoffs.set(teamId, {
+        retryAtMs: Number(values[1]),
+        adapter: values[2] as PollerAdapterName,
+        backoffCount: Number(values[3]),
+      });
+      return Promise.resolve({ success: true });
+    },
+  };
 }
 
 function createExecutionContext(): ExecutionContext {
