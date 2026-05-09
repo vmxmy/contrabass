@@ -1103,6 +1103,58 @@ describe("IssueRun Durable Object", () => {
     expect(queue.messages).toEqual([]);
     expect(teamCoordinator.coordinator.requests).toEqual([]);
   });
+
+  it("emits a lease_revocation metric when the alarm fires after lease expiry", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const { issueRun, analytics } = createIssueRunWithMetrics();
+
+    await post(issueRun, "/dispatch", {
+      runId: "run-1",
+      teamId: "team-1",
+      issueRef: "LIN-1",
+      workerId: "worker-1",
+      leaseSec: 2,
+    });
+    await post(issueRun, "/ack", { accept: true, workerId: "worker-1" });
+
+    now.mockReturnValue(3_001);
+    await issueRun.alarm();
+
+    expect(analytics.dataPoints).toHaveLength(1);
+    const point = analytics.dataPoints[0];
+    expect(point?.indexes).toEqual(["team-1"]);
+    expect(point?.blobs).toEqual(["lease_revocation", "team-1", "run-1", "worker-1", "heartbeat_timeout"]);
+    expect(point?.doubles?.[2]).toBe(2);
+  });
+
+  it("emits an event_ingest metric when events are accepted", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(10_000);
+    const { issueRun, analytics } = createIssueRunWithMetrics();
+
+    await post(issueRun, "/dispatch", {
+      runId: "run-2",
+      teamId: "team-2",
+      issueRef: "LIN-2",
+      workerId: "worker-2",
+      leaseSec: 30,
+    });
+    await post(issueRun, "/ack", { accept: true, workerId: "worker-2" });
+
+    const event = JSON.stringify({ protocol_version: "1.0.0", ts: 9_500, kind: "log", payload: { message: "hi" } });
+    const response = await postNdjson(issueRun, "/events", `${event}\n`, {
+      "x-contrabass-worker-id": "worker-2",
+    });
+
+    expect(response.status).toBe(200);
+    expect(analytics.dataPoints).toHaveLength(1);
+    const point = analytics.dataPoints[0];
+    expect(point?.indexes).toEqual(["team-2"]);
+    expect(point?.blobs?.[0]).toBe("event_ingest");
+    expect(point?.blobs?.[1]).toBe("team-2");
+    expect(point?.blobs?.[2]).toBe("run-2");
+    expect(point?.blobs?.[3]).toBe("worker-2");
+    expect(point?.doubles?.[1]).toBe(1);
+  });
 });
 
 function createIssueRun(): IssueRun {
@@ -1131,6 +1183,35 @@ function createIssueRunWithBindings(): {
     TEAM_COORDINATOR: teamCoordinator,
   };
   return { issueRun: new IssueRun({ storage }, env), storage, db, queue, teamCoordinator };
+}
+
+class MemoryAnalyticsEngine {
+  readonly dataPoints: Array<{
+    indexes?: string[];
+    doubles?: number[];
+    blobs?: string[];
+  }> = [];
+
+  writeDataPoint(point: { indexes?: string[]; doubles?: number[]; blobs?: string[] }): void {
+    this.dataPoints.push(point);
+  }
+}
+
+function createIssueRunWithMetrics(): {
+  issueRun: IssueRun;
+  storage: MemoryIssueRunStorage;
+  teamCoordinator: MemoryTeamCoordinatorNamespace;
+  analytics: MemoryAnalyticsEngine;
+} {
+  const storage = new MemoryIssueRunStorage();
+  const teamCoordinator = new MemoryTeamCoordinatorNamespace();
+  const analytics = new MemoryAnalyticsEngine();
+  const env: IssueRunEnv = {
+    EVENTS_ARCHIVE_QUEUE: new MemoryQueue(),
+    TEAM_COORDINATOR: teamCoordinator,
+    OBSERVABILITY_METRICS: analytics as unknown as AnalyticsEngineDataset,
+  };
+  return { issueRun: new IssueRun({ storage }, env), storage, teamCoordinator, analytics };
 }
 
 function completeBody(status: "succeeded" | "failed" | "cancelled"): Record<string, unknown> {

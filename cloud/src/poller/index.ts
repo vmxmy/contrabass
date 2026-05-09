@@ -5,6 +5,7 @@ import { linearAdapter } from "./linear";
 export type PollerEnv = {
   CONTROL_PLANE_DB?: D1Database;
   TRACKER_POLLER_METRICS?: AnalyticsEngineDataset;
+  OBSERVABILITY_METRICS?: AnalyticsEngineDataset;
   TEAM_COORDINATOR?: DurableObjectNamespace;
   [binding: string]: unknown;
 };
@@ -147,31 +148,35 @@ export async function runTrackerPoller(
           cron: controller.cron,
           env,
         });
+        const durationMs = Date.now() - startedAt;
         emitPollerMetric(env, {
           teamId: team.teamId,
           adapter,
           cron: controller.cron,
           scheduledTime: controller.scheduledTime,
-          durationMs: Date.now() - startedAt,
+          durationMs,
           issuesSeen: adapterResult?.issuesSeen ?? 0,
           issuesNew: adapterResult?.issuesNew ?? 0,
           issuesUpdated: adapterResult?.issuesUpdated ?? 0,
           errors: 0,
         });
+        emitPollDurationMetric(env, { teamId: team.teamId, adapter, cron: controller.cron, durationMs });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        const durationMs = Date.now() - startedAt;
         emitPollerMetric(env, {
           teamId: team.teamId,
           adapter,
           cron: controller.cron,
           scheduledTime: controller.scheduledTime,
-          durationMs: Date.now() - startedAt,
+          durationMs,
           issuesSeen: 0,
           issuesNew: 0,
           issuesUpdated: 0,
           errors: 1,
           errorMessage: message,
         });
+        emitPollDurationMetric(env, { teamId: team.teamId, adapter, cron: controller.cron, durationMs });
         if (isRateLimitError(error)) {
           const retryAfterMs = Math.max(0, error.retryAfterMs);
           const retryAtMs = Date.now() + retryAfterMs;
@@ -246,6 +251,26 @@ function emitPollerMetric(env: PollerEnv, metric: PollerMetric): void {
       event: "tracker_poller_metrics_error",
       teamId: metric.teamId,
       adapter: metric.adapter,
+      message: error instanceof Error ? error.message : String(error),
+    }));
+  }
+}
+
+function emitPollDurationMetric(
+  env: PollerEnv,
+  params: { teamId: string; adapter: PollerAdapterName; cron: string; durationMs: number },
+): void {
+  try {
+    env.OBSERVABILITY_METRICS?.writeDataPoint({
+      indexes: [params.teamId],
+      doubles: [params.durationMs, Date.now()],
+      blobs: ["poll_duration", params.teamId, params.adapter, params.cron, ""],
+    });
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "observability_metrics_error",
+      teamId: params.teamId,
+      adapter: params.adapter,
       message: error instanceof Error ? error.message : String(error),
     }));
   }

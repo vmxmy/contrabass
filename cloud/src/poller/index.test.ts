@@ -144,6 +144,53 @@ describe("tracker poller entry point", () => {
     }
   });
 
+  it("emits poll_duration metrics to OBSERVABILITY_METRICS binding per adapter invocation", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const observabilityPoints: AnalyticsEngineDataPoint[] = [];
+    const env = createEnv([
+      {
+        teamId: "obs-team",
+        contentHash: hashFor("obs"),
+        contentYaml: "tracker:\n  github:\n    repo: octocat/hello-world\n  linear:\n    project_slug: alpha\n",
+      },
+    ]);
+    env.OBSERVABILITY_METRICS = {
+      writeDataPoint(event?: AnalyticsEngineDataPoint) {
+        if (event !== undefined) {
+          observabilityPoints.push(event);
+        }
+      },
+    };
+
+    try {
+      await runTrackerPoller(env, { cron: "* * * * *", scheduledTime: 1710000000000 }, {
+        github() {
+          throw new Error("github failed");
+        },
+        linear(invocation) {
+          return { teamId: invocation.team.teamId, issuesSeen: 3, issuesNew: 1, issuesUpdated: 2 };
+        },
+      });
+
+      // #then — one poll_duration point per adapter call (error + success)
+      expect(observabilityPoints).toHaveLength(2);
+      expect(observabilityPoints[0]).toMatchObject({
+        indexes: ["obs-team"],
+        blobs: ["poll_duration", "obs-team", "github", "* * * * *", ""],
+      });
+      expect(observabilityPoints[0]?.doubles).toHaveLength(2);
+      expect(observabilityPoints[0]?.doubles?.[0]).toBeGreaterThanOrEqual(0);
+      expect(observabilityPoints[1]).toMatchObject({
+        indexes: ["obs-team"],
+        blobs: ["poll_duration", "obs-team", "linear", "* * * * *", ""],
+      });
+      expect(observabilityPoints[1]?.doubles).toHaveLength(2);
+      expect(observabilityPoints[1]?.doubles?.[0]).toBeGreaterThanOrEqual(0);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("uses default Linear and GitHub adapters with mocked tracker clients", async () => {
     const trackerRequests: Request[] = [];
     const coordinatorRequests: Request[] = [];
@@ -322,6 +369,7 @@ describe("tracker poller wrangler config", () => {
     expect(wranglerToml.default).toContain("[env.production.triggers]");
     expect(wranglerToml.default).toContain("[[analytics_engine_datasets]]");
     expect(wranglerToml.default).toContain('binding = "TRACKER_POLLER_METRICS"');
+    expect(wranglerToml.default).toContain('binding = "OBSERVABILITY_METRICS"');
   });
 });
 

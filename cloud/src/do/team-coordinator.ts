@@ -88,6 +88,7 @@ type TeamCoordinatorDurableState = {
 
 type TeamCoordinatorEnv = {
   ISSUE_RUN?: IssueRunNamespace;
+  OBSERVABILITY_METRICS?: AnalyticsEngineDataset;
 };
 
 type WebSocketPairConstructor = new () => {
@@ -372,13 +373,16 @@ export class TeamCoordinator {
     await this.persistWorkerRegistry(updatedRegistry);
     await this.persistUsageCounters(acceptedCounters);
 
-    const board = mergeBoard(await this.ensureBoard(), boardWithEntries([
+    const currentBoard = await this.ensureBoard();
+    const openEntry = currentBoard.open.find((e) => e.issueRef === issueRef);
+    const now = Date.now();
+    const board = mergeBoard(currentBoard, boardWithEntries([
       {
         issueRef,
         runId,
         assignedWorkerId: worker.workerId,
         phase: "claimed",
-        lastUpdated: Date.now(),
+        lastUpdated: now,
       },
     ]));
     await this.state.storage.put(BOARD_KEY, board);
@@ -391,6 +395,16 @@ export class TeamCoordinator {
       this.sendToWorker(worker.workerId, dispatch);
     } else {
       await this.deliverLongPollDispatch(worker.workerId, dispatch);
+    }
+
+    if (record.teamId !== undefined) {
+      emitDispatchMetric(this.env, {
+        teamId: record.teamId,
+        runId,
+        workerId: worker.workerId,
+        workerKind: worker.kind,
+        dispatchLatencyMs: openEntry !== undefined ? now - openEntry.lastUpdated : 0,
+      });
     }
 
     return jsonResponse({ dispatched: true, worker, dispatch, board });
@@ -1673,6 +1687,40 @@ function jsonResponse(body: Record<string, unknown>, status = 200): Response {
       "content-type": "application/json",
     },
   });
+}
+
+type DispatchMetric = {
+  teamId: string;
+  runId: string;
+  workerId: string;
+  workerKind: string;
+  dispatchLatencyMs: number;
+};
+
+function emitDispatchMetric(env: TeamCoordinatorEnv, metric: DispatchMetric): void {
+  try {
+    env.OBSERVABILITY_METRICS?.writeDataPoint({
+      indexes: [metric.teamId],
+      doubles: [
+        metric.dispatchLatencyMs,
+        Date.now(),
+      ],
+      blobs: [
+        "dispatch_latency",
+        metric.teamId,
+        metric.runId,
+        metric.workerId,
+        metric.workerKind,
+      ],
+    });
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "dispatch_metrics_error",
+      teamId: metric.teamId,
+      runId: metric.runId,
+      message: error instanceof Error ? error.message : String(error),
+    }));
+  }
 }
 
 function teamWorkerCapExceededResponse(maxActiveWorkers: number | undefined): Response {

@@ -69,6 +69,7 @@ export type IssueRunEnv = {
   CONTROL_PLANE_DB?: IssueRunD1Database;
   EVENTS_ARCHIVE_QUEUE?: IssueRunQueue<EventArchiveMessage>;
   TEAM_COORDINATOR?: TeamCoordinatorNamespace;
+  OBSERVABILITY_METRICS?: AnalyticsEngineDataset;
 };
 
 export class IssueRunTransitionError extends Error {
@@ -274,6 +275,14 @@ export class IssueRun {
     }
 
     await this.sendLeaseRevoked(record, "heartbeat_timeout");
+    emitIssueRunMetric(this.env, {
+      event: "lease_revocation",
+      teamId: record.teamId ?? "",
+      runId: record.runId ?? "",
+      workerId: record.leaseHolder,
+      reason: "heartbeat_timeout",
+      leaseSec: record.leaseSec,
+    });
     await this.transitionRecord(record, "queued", now, { clearLease: true });
     await this.state.storage.deleteAlarm();
   }
@@ -516,6 +525,14 @@ export class IssueRun {
     await this.state.storage.put(EVENT_LOG_KEY, [...(existing ?? []), ...messages]);
     await this.forwardEventsToTeamCoordinator(record, messages);
     await this.enqueueEvents(messages);
+    emitIssueRunMetric(this.env, {
+      event: "event_ingest",
+      teamId,
+      runId,
+      workerId: workerId ?? record.leaseHolder,
+      acceptedCount: messages.length,
+      durationMs: Date.now() - receivedAt,
+    });
 
     return jsonResponse({ protocol_version: "1.0.0", accepted: messages.length });
   }
@@ -1025,4 +1042,43 @@ function eventsTooLargeResponse(): Response {
     max_events: MAX_EVENTS_PER_REQUEST,
     max_bytes: MAX_EVENTS_BYTES,
   }, 413);
+}
+
+type IssueRunMetric = {
+  event: "lease_revocation" | "event_ingest";
+  teamId: string;
+  runId: string;
+  workerId?: string;
+  reason?: string;
+  acceptedCount?: number;
+  durationMs?: number;
+  leaseSec?: number;
+};
+
+function emitIssueRunMetric(env: IssueRunEnv, metric: IssueRunMetric): void {
+  try {
+    env.OBSERVABILITY_METRICS?.writeDataPoint({
+      indexes: [metric.teamId],
+      doubles: [
+        metric.durationMs ?? 0,
+        metric.acceptedCount ?? 0,
+        metric.leaseSec ?? 0,
+        Date.now(),
+      ],
+      blobs: [
+        metric.event,
+        metric.teamId,
+        metric.runId,
+        metric.workerId ?? "",
+        metric.reason ?? "",
+      ],
+    });
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "issue_run_metrics_error",
+      teamId: metric.teamId,
+      runId: metric.runId,
+      message: error instanceof Error ? error.message : String(error),
+    }));
+  }
 }

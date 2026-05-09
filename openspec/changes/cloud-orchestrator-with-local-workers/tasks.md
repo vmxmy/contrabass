@@ -154,7 +154,7 @@
 - [x] 16.4 Validate WS reconnect with `last_event_id` replay (simulate network blip)
 - [x] 16.5 Validate long-poll fallback path by blocking WS upgrades at the proxy
 - [x] 16.6 Validate config-changed propagation across multiple connected workers and dashboards
-- [ ] 16.7 Capture observability dashboards: poll latency, dispatch latency, lease-revocation rate, event ingest rate
+- [x] 16.7 Capture observability dashboards: poll latency, dispatch latency, lease-revocation rate, event ingest rate
 
 ## 17. Onboarding and rollout
 

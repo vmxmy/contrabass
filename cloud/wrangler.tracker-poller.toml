@@ -33,6 +33,10 @@ script_name = "contrabass-api"
 binding = "TRACKER_POLLER_METRICS"
 dataset = "contrabass_tracker_poller_metrics"
 
+[[analytics_engine_datasets]]
+binding = "OBSERVABILITY_METRICS"
+dataset = "contrabass_observability_metrics"
+
 [observability]
 enabled = true
 head_sampling_rate = 1.0
@@ -64,6 +68,10 @@ script_name = "contrabass-api"
 [[env.staging.analytics_engine_datasets]]
 binding = "TRACKER_POLLER_METRICS"
 dataset = "contrabass_tracker_poller_metrics_staging"
+
+[[env.staging.analytics_engine_datasets]]
+binding = "OBSERVABILITY_METRICS"
+dataset = "contrabass_observability_metrics_staging"
 
 [env.staging.triggers]
 crons = [ "* * * * *" ]
@@ -102,6 +110,10 @@ script_name = "contrabass-api"
 [[env.production.analytics_engine_datasets]]
 binding = "TRACKER_POLLER_METRICS"
 dataset = "contrabass_tracker_poller_metrics"
+
+[[env.production.analytics_engine_datasets]]
+binding = "OBSERVABILITY_METRICS"
+dataset = "contrabass_observability_metrics"
 
 [env.production.triggers]
 crons = [ "* * * * *" ]

@@ -1728,6 +1728,69 @@ describe("TeamCoordinator Durable Object", () => {
     });
   });
 
+  it("emits a dispatch_latency metric after a successful dispatch", async () => {
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const { coordinator, analytics } = createTeamCoordinatorWithMetrics();
+
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 1,
+      kind: "local",
+      version: "0.2.0",
+    }, { "x-contrabass-team-id": "team-1" });
+
+    await post(coordinator, "/board/refresh", {
+      issueRef: "LIN-1",
+      phase: "open",
+      lastUpdated: 1_000,
+    }, { "x-contrabass-team-id": "team-1" });
+
+    nowSpy.mockReturnValue(6_000);
+
+    const response = await post(coordinator, "/dispatch", {
+      runId: "run-1",
+      issueRef: "LIN-1",
+      requiredCapabilities: ["agent:codex"],
+    }, { "x-contrabass-team-id": "team-1" });
+
+    // #then
+    expect(response.status).toBe(200);
+    expect(analytics.dataPoints).toHaveLength(1);
+    const point = analytics.dataPoints[0];
+    expect(point?.indexes).toEqual(["team-1"]);
+    expect(point?.blobs).toEqual(["dispatch_latency", "team-1", "run-1", "worker-1", "local"]);
+    expect(point?.doubles?.[0]).toBe(5_000);
+  });
+
+  it("emits a dispatch_latency metric with zero latency when no open board entry exists", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(2_000);
+    const { coordinator, analytics } = createTeamCoordinatorWithMetrics();
+
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 1,
+      kind: "local",
+      version: "0.2.0",
+    }, { "x-contrabass-team-id": "team-1" });
+
+    const response = await post(coordinator, "/dispatch", {
+      runId: "run-2",
+      issueRef: "LIN-2",
+      requiredCapabilities: ["agent:codex"],
+    }, { "x-contrabass-team-id": "team-1" });
+
+    // #then
+    expect(response.status).toBe(200);
+    expect(analytics.dataPoints).toHaveLength(1);
+    const point = analytics.dataPoints[0];
+    expect(point?.blobs?.[0]).toBe("dispatch_latency");
+    expect(point?.blobs?.[1]).toBe("team-1");
+    expect(point?.blobs?.[2]).toBe("run-2");
+    expect(point?.doubles?.[0]).toBe(0);
+  });
+
   it("propagates config-changed to multiple connected dashboard and worker WS subscribers", async () => {
     vi.spyOn(Date, "now").mockReturnValue(6_000);
     Reflect.set(globalThis, "WebSocketPair", FakeWebSocketPair);
@@ -1824,4 +1887,25 @@ function post(
 
 async function readTeamCoordinatorResponse(response: Response): Promise<TeamCoordinatorResponseBody> {
   return await response.json() as TeamCoordinatorResponseBody;
+}
+
+class MemoryAnalyticsEngine {
+  readonly dataPoints: Array<{ indexes?: string[]; doubles?: number[]; blobs?: string[] }> = [];
+  writeDataPoint(point: { indexes?: string[]; doubles?: number[]; blobs?: string[] }): void {
+    this.dataPoints.push(point);
+  }
+}
+
+function createTeamCoordinatorWithMetrics(): {
+  coordinator: TeamCoordinator;
+  storage: MemoryTeamCoordinatorStorage;
+  analytics: MemoryAnalyticsEngine;
+} {
+  const storage = new MemoryTeamCoordinatorStorage();
+  const analytics = new MemoryAnalyticsEngine();
+  return {
+    coordinator: new TeamCoordinator({ storage }, { OBSERVABILITY_METRICS: analytics as unknown as AnalyticsEngineDataset }),
+    storage,
+    analytics,
+  };
 }
