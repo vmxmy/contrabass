@@ -59,7 +59,7 @@
 - [x] 7.6 Implement event ring buffer (last 100 per team) for reconnect replay via `last_event_id`
 - [x] 7.7 Implement operator actions: `reassign-run`, `cancel-run`, `pause-team`, `resume-team`
 - [x] 7.8 Implement per-team usage caps (`max_active_workers`, `max_runs_per_day`, `max_events_per_day`)
-- [ ] 7.9 Vitest coverage: registry transitions, dispatch policy, fan-out, replay, caps
+- [x] 7.9 Vitest coverage: registry transitions, dispatch policy, fan-out, replay, caps
 
 ## 8. API Worker (REST + WS proxy)
 

@@ -406,6 +406,46 @@ describe("TeamCoordinator Durable Object", () => {
     });
   });
 
+  it("transitions registry status from idle to busy, unhealthy, and back to idle", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(40_000);
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 2,
+      kind: "local",
+      version: "0.2.0",
+    });
+
+    now.mockReturnValue(41_000);
+    const busyResponse = await post(coordinator, "/workers/heartbeat", {
+      workerId: "worker-1",
+      currentLoad: 1,
+    });
+    await expect(readTeamCoordinatorResponse(busyResponse)).resolves.toMatchObject({
+      worker: { workerId: "worker-1", currentLoad: 1, status: "busy" },
+    });
+
+    now.mockReturnValue(132_000);
+    const unhealthyResponse = await coordinator.fetch(new Request("https://team-coordinator.test/workers"));
+    await expect(readTeamCoordinatorResponse(unhealthyResponse)).resolves.toMatchObject({
+      registry: { "worker-1": { currentLoad: 1, status: "unhealthy" } },
+    });
+
+    now.mockReturnValue(133_000);
+    const recoveredResponse = await post(coordinator, "/workers/heartbeat", {
+      workerId: "worker-1",
+      currentLoad: 0,
+    });
+    await expect(readTeamCoordinatorResponse(recoveredResponse)).resolves.toMatchObject({
+      worker: { workerId: "worker-1", currentLoad: 0, lastHeartbeatTs: 133_000, status: "idle" },
+    });
+    await expect(storage.get<TeamCoordinatorWorkerRegistry>("team-coordinator:worker-registry")).resolves.toMatchObject({
+      "worker-1": { currentLoad: 0, lastHeartbeatTs: 133_000, status: "idle" },
+    });
+  });
+
   it("dispatches to the only available local worker matching capabilities", async () => {
     vi.spyOn(Date, "now").mockReturnValue(50_000);
     const { coordinator, storage } = createTeamCoordinatorWithStorage();
@@ -697,6 +737,47 @@ describe("TeamCoordinator Durable Object", () => {
 
     expect(response.status).toBe(200);
     expect(body.worker?.workerId).toBe("local-less-loaded");
+  });
+
+  it("excludes unhealthy workers from dispatch candidates", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(50_000);
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/workers/register", {
+      workerId: "stale-local",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 1,
+      kind: "local",
+      version: "0.2.0",
+    });
+    now.mockReturnValue(51_000);
+    await post(coordinator, "/workers/register", {
+      workerId: "fresh-container",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 1,
+      kind: "container",
+      version: "0.2.0",
+    });
+
+    now.mockReturnValue(140_000);
+    const response = await post(coordinator, "/dispatch", {
+      runId: "run-1",
+      issueRef: "LIN-1",
+      requiredCapabilities: ["agent:codex"],
+    });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(200);
+    expect(body.worker).toMatchObject({
+      workerId: "fresh-container",
+      currentLoad: 1,
+      status: "busy",
+    });
+    expect(body.dispatch?.workerId).toBe("fresh-container");
+    await expect(storage.get<TeamCoordinatorWorkerRegistry>("team-coordinator:worker-registry")).resolves.toMatchObject({
+      "stale-local": { status: "unhealthy" },
+      "fresh-container": { status: "busy" },
+    });
   });
 
   it("leaves runs queued and emits no-worker-available when nothing matches", async () => {
