@@ -108,36 +108,36 @@
 
 ## 12. `contrabass worker` Go subcommand
 
-- [ ] 12.1 Add `cmd/contrabass/worker.go` Cobra subcommand
-- [ ] 12.2 Add `cmd/contrabass/worker_login.go` for one-time-code enrollment
-- [ ] 12.3 Add OS-credential-store integration: macOS Keychain, libsecret on Linux, Credential Manager on Windows (use `99designs/keyring` or equivalent)
-- [ ] 12.4 Implement registration flow with capability detection (codex/opencode/omx/omc/mock, tmux availability, OS, arch, version)
-- [ ] 12.5 Implement WebSocket dispatch consumer with auto-reconnect and long-poll fallback after 3 WS failures
-- [ ] 12.6 Implement ack handling within 5-second SLA
-- [ ] 12.7 Implement run executor that calls `internal/workspace.Provision`, `internal/tmux.OpenPane` (when capable), `internal/agent.Run`
-- [ ] 12.8 Implement event batching adapter: agent runner output → NDJSON POST batches (≤200 events, ≤512KB, ≤2s latency)
-- [ ] 12.9 Implement heartbeat scheduler at `leaseSec / 3` with jitter, with `progress` and `lastEventTs`
-- [ ] 12.10 Implement R2 presigned PUT uploader for logs/diff/screenshots
-- [ ] 12.11 Implement `lease-revoked` handler: SIGTERM → SIGKILL after 5s, attempt artifact upload, release worktree
-- [ ] 12.12 Implement config cache by hash and `GET /config/{hash}` fetch on miss
-- [ ] 12.13 Implement `--ephemeral` flag with shorter lease defaults for CI use
-- [ ] 12.14 Go test coverage with mock cloud server using shared `testdata/workerproto/v1/` fixtures
+- [x] 12.1 Add `cmd/contrabass/worker.go` Cobra subcommand
+- [x] 12.2 Add `cmd/contrabass/worker_login.go` for one-time-code enrollment
+- [x] 12.3 Add OS-credential-store integration: macOS Keychain, libsecret on Linux, Credential Manager on Windows (use `99designs/keyring` or equivalent)
+- [x] 12.4 Implement registration flow with capability detection (codex/opencode/omx/omc/mock, tmux availability, OS, arch, version)
+- [x] 12.5 Implement WebSocket dispatch consumer with auto-reconnect and long-poll fallback after 3 WS failures
+- [x] 12.6 Implement ack handling within 5-second SLA
+- [x] 12.7 Implement run executor that calls `internal/workspace.Provision`, `internal/tmux.OpenPane` (when capable), `internal/agent.Run`
+- [x] 12.8 Implement event batching adapter: agent runner output → NDJSON POST batches (≤200 events, ≤512KB, ≤2s latency)
+- [x] 12.9 Implement heartbeat scheduler at `leaseSec / 3` with jitter, with `progress` and `lastEventTs`
+- [x] 12.10 Implement R2 presigned PUT uploader for logs/diff/screenshots
+- [x] 12.11 Implement `lease-revoked` handler: SIGTERM → SIGKILL after 5s, attempt artifact upload, release worktree
+- [x] 12.12 Implement config cache by hash and `GET /config/{hash}` fetch on miss
+- [x] 12.13 Implement `--ephemeral` flag with shorter lease defaults for CI use
+- [x] 12.14 Go test coverage with mock cloud server using shared `testdata/workerproto/v1/` fixtures
 
 ## 13. Build-tag split for legacy single-host code
 
-- [ ] 13.1 Add `//go:build localonly` to `internal/team`, `internal/orchestrator`, `internal/hub`, `internal/web`, `internal/ipc` package files
-- [ ] 13.2 Move `cmd/contrabass server` and team subcommand wiring behind the `localonly` tag
-- [ ] 13.3 Update `Makefile`: default `make build` excludes `localonly`; add `make build-local-only` (or `LOCAL_ONLY=1`) target
-- [ ] 13.4 Update `embed_dashboard.go` to be empty unless `localonly` is set
-- [ ] 13.5 Verify `make build` produces a binary with `worker` subcommand only (and that `server` reports build-tag missing)
-- [ ] 13.6 Verify `make build LOCAL_ONLY=1` produces both subcommands and passes existing tests
+- [x] 13.1 Add `//go:build localonly` to `internal/team`, `internal/orchestrator`, `internal/hub`, `internal/web`, `internal/ipc` package files
+- [x] 13.2 Move `cmd/contrabass server` and team subcommand wiring behind the `localonly` tag
+- [x] 13.3 Update `Makefile`: default `make build` excludes `localonly`; add `make build-local-only` (or `LOCAL_ONLY=1`) target
+- [x] 13.4 Update `embed_dashboard.go` to be empty unless `localonly` is set
+- [x] 13.5 Verify `make build` produces a binary with `worker` subcommand only (and that `server` reports build-tag missing)
+- [x] 13.6 Verify `make build LOCAL_ONLY=1` produces both subcommands and passes existing tests
 
 ## 14. TUI reduction to thin client
 
-- [ ] 14.1 Add `contrabass tui` subcommand that connects to cloud API as a read-only client
-- [ ] 14.2 Reuse Bubble Tea views from `internal/tui` for board / run-detail rendering, replacing local event source with WS subscription
-- [ ] 14.3 Update TUI snapshot tests against cloud-event fixtures
-- [ ] 14.4 Document the local-only TUI mode (build tag) for solo offline users
+- [x] 14.1 Add `contrabass tui` subcommand that connects to cloud API as a read-only client
+- [x] 14.2 Reuse Bubble Tea views from `internal/tui` for board / run-detail rendering, replacing local event source with WS subscription
+- [x] 14.3 Update TUI snapshot tests against cloud-event fixtures
+- [x] 14.4 Document the local-only TUI mode (build tag) for solo offline users
 
 ## 15. Migration tool
 
