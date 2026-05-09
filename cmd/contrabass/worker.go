@@ -24,6 +24,7 @@ enrolled yet, run "contrabass worker login" first.`,
 func init() {
 	workerCmd.Flags().String("team", "", "cloud team ID to register this worker with (required)")
 	_ = workerCmd.MarkFlagRequired("team")
+	workerCmd.AddCommand(workerLoginCmd)
 }
 
 func runWorker(cmd *cobra.Command, _ []string) error {
