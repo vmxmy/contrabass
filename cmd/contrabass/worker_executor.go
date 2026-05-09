@@ -44,12 +44,12 @@ type workerRunExecutorConfig struct {
 	Registration     workerRegistration
 	ConfigCache      *workerConfigCache
 
-	Provision        func(context.Context, *workspace.Manager, types.Issue) (string, error)
-	OpenPane         func(context.Context, *tmux.Session, string, string) (string, error)
-	RunAgent         func(context.Context, agent.AgentRunner, types.Issue, string, string) error
-	NewRunner        func(string) (agent.AgentRunner, error)
-	PostEvents       workerEventPostFunc
-	Heartbeat        *workerHeartbeatScheduler
+	Provision  func(context.Context, *workspace.Manager, types.Issue) (string, error)
+	OpenPane   func(context.Context, *tmux.Session, string, string) (string, error)
+	RunAgent   func(context.Context, agent.AgentRunner, types.Issue, string, string) error
+	NewRunner  func(string) (agent.AgentRunner, error)
+	PostEvents workerEventPostFunc
+	Heartbeat  *workerHeartbeatScheduler
 	// CleanupWorkspace overrides workspace.Manager.Cleanup for tests. When nil the
 	// executor calls workspaceMgr.Cleanup directly.
 	CleanupWorkspace func(context.Context, string) error
