@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,7 +56,7 @@ func TestMigrateCloudCommandPrintsLoadedSourceSummary(t *testing.T) {
 	buf := new(bytes.Buffer)
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
-	cmd.SetArgs([]string{"migrate", "cloud", "--team", "alpha", "--root", root})
+	cmd.SetArgs([]string{"migrate", "cloud", "--team", "alpha", "--root", root, "--dry-run=false"})
 
 	require.NoError(t, cmd.Execute())
 
@@ -64,6 +65,105 @@ func TestMigrateCloudCommandPrintsLoadedSourceSummary(t *testing.T) {
 	assert.Contains(t, output, "team state: 2 json files")
 	assert.Contains(t, output, "board: 2 issues, 1 comments, 2 refresh entries")
 	assert.Contains(t, output, "uploads require --api-base-url")
+}
+
+func TestMigrateCloudCommandDryRunPrintsPlanAndSkipsUpload(t *testing.T) {
+	root := t.TempDir()
+	writeMigrationFixture(t, root, "alpha")
+
+	var requestCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		t.Fatalf("dry-run should not call cloud API: %s %s", r.Method, r.URL.Path)
+	}))
+	t.Cleanup(server.Close)
+
+	cmd := newRootCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"migrate", "cloud", "--team", "alpha", "--root", root, "--api-base-url", server.URL, "--dry-run"})
+
+	require.NoError(t, cmd.Execute())
+
+	output := buf.String()
+	assert.Contains(t, output, "dry-run migration plan:")
+	assert.Contains(t, output, "upload workflow config hash")
+	assert.Contains(t, output, "read 2 team state json files")
+	assert.Contains(t, output, "refresh 2 board entries")
+	assert.Contains(t, output, "no uploads performed")
+	assert.Zero(t, requestCount)
+}
+
+func TestMigrateCloudCommandRequiresConfirmationBeforeUpload(t *testing.T) {
+	root := t.TempDir()
+	writeMigrationFixture(t, root, "alpha")
+
+	var requestCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		t.Fatalf("unconfirmed migration should not call cloud API: %s %s", r.Method, r.URL.Path)
+	}))
+	t.Cleanup(server.Close)
+
+	cmd := newRootCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetIn(strings.NewReader("no\n"))
+	cmd.SetArgs([]string{"migrate", "cloud", "--team", "alpha", "--root", root, "--api-base-url", server.URL, "--dry-run=false"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "migration upload cancelled")
+	assert.Contains(t, buf.String(), `Type "migrate alpha" to continue`)
+	assert.Zero(t, requestCount)
+}
+
+func TestMigrateCloudCommandUploadsAfterExplicitConfirmation(t *testing.T) {
+	root := t.TempDir()
+	writeMigrationFixture(t, root, "alpha")
+
+	var configPostCount int
+	var boardRefreshPostCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/teams/alpha/config/"):
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/teams/alpha/config":
+			configPostCount++
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/teams/alpha/board":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"board": map[string][]migrateCloudBoardEntry{
+					"open":    {},
+					"claimed": {},
+					"running": {},
+					"done":    {},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/teams/alpha/board/refresh":
+			boardRefreshPostCount++
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	cmd := newRootCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetIn(strings.NewReader("migrate alpha\n"))
+	cmd.SetArgs([]string{"migrate", "cloud", "--team", "alpha", "--root", root, "--api-base-url", server.URL, "--dry-run=false"})
+
+	require.NoError(t, cmd.Execute())
+
+	assert.Equal(t, 1, configPostCount)
+	assert.Equal(t, 1, boardRefreshPostCount)
+	assert.Contains(t, buf.String(), "config: uploaded")
+	assert.Contains(t, buf.String(), "board uploads: 2 uploaded, 0 skipped by external_id")
 }
 
 func TestUploadMigrateCloudSourceSkipsExistingConfigHashAndBoardExternalID(t *testing.T) {

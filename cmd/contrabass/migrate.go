@@ -40,6 +40,7 @@ type migrateCloudOptions struct {
 	RootDir    string
 	APIBaseURL string
 	AuthToken  string
+	DryRun     bool
 	HTTPClient *http.Client
 }
 
@@ -101,6 +102,7 @@ func init() {
 	migrateCloudCmd.Flags().String("root", ".", "project root containing WORKFLOW.md and .contrabass")
 	migrateCloudCmd.Flags().String("api-base-url", "", "cloud API base URL used to upload migration rows")
 	migrateCloudCmd.Flags().String("token", "", "bearer token for cloud migration uploads")
+	migrateCloudCmd.Flags().Bool("dry-run", false, "print the migration plan without uploading")
 	_ = migrateCloudCmd.MarkFlagRequired("team")
 
 	migrateCmd.AddCommand(migrateCloudCmd)
@@ -123,6 +125,10 @@ func runMigrateCloud(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("getting token flag: %w", err)
 	}
+	dryRun, err := cmd.Flags().GetBool("dry-run")
+	if err != nil {
+		return fmt.Errorf("getting dry-run flag: %w", err)
+	}
 
 	source, err := loadMigrateCloudSource(cmd.Context(), migrateCloudOptions{
 		TeamName: teamName,
@@ -133,9 +139,16 @@ func runMigrateCloud(cmd *cobra.Command, _ []string) error {
 	}
 
 	printMigrateCloudSummary(cmd.OutOrStdout(), source)
+	if dryRun {
+		printMigrateCloudDryRunPlan(cmd.OutOrStdout(), source)
+		return nil
+	}
 	if strings.TrimSpace(apiBaseURL) == "" {
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "uploads require --api-base-url")
 		return nil
+	}
+	if err := confirmMigrateCloudUpload(cmd.InOrStdin(), cmd.OutOrStdout(), source); err != nil {
+		return err
 	}
 
 	result, err := uploadMigrateCloudSource(cmd.Context(), source, migrateCloudOptions{
@@ -465,6 +478,39 @@ func printMigrateCloudSummary(w io.Writer, source *migrateCloudSource) {
 	_, _ = fmt.Fprintf(w, "workflow: %s (%d bytes, sha256 %s)\n", source.Workflow.Path, source.Workflow.Bytes, source.Workflow.ContentHash)
 	_, _ = fmt.Fprintf(w, "team state: %d json files\n", len(source.TeamState))
 	_, _ = fmt.Fprintf(w, "board: %d issues, %d comments, %d refresh entries\n", len(source.Board.Issues), commentCount, len(source.Board.Entries))
+}
+
+func printMigrateCloudDryRunPlan(w io.Writer, source *migrateCloudSource) {
+	if source == nil {
+		return
+	}
+
+	_, _ = fmt.Fprintln(w, "dry-run migration plan:")
+	_, _ = fmt.Fprintf(w, "- upload workflow config hash %s from %s\n", source.Workflow.ContentHash, source.Workflow.Path)
+	_, _ = fmt.Fprintf(w, "- read %d team state json files from .contrabass/state/team/%s\n", len(source.TeamState), source.TeamName)
+	_, _ = fmt.Fprintf(w, "- refresh %d board entries from %s\n", len(source.Board.Entries), source.Board.Dir)
+	_, _ = fmt.Fprintln(w, "no uploads performed")
+}
+
+func confirmMigrateCloudUpload(r io.Reader, w io.Writer, source *migrateCloudSource) error {
+	if source == nil {
+		return errors.New("migration source is required")
+	}
+
+	confirmation := "migrate " + source.TeamName
+	_, _ = fmt.Fprintf(w, "This will upload local migration data for team %s. Type %q to continue: ", source.TeamName, confirmation)
+
+	scanner := bufio.NewScanner(r)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("reading migration confirmation: %w", err)
+		}
+		return errors.New("migration upload cancelled: confirmation required")
+	}
+	if strings.TrimSpace(scanner.Text()) != confirmation {
+		return errors.New("migration upload cancelled")
+	}
+	return nil
 }
 
 func uploadMigrateCloudSource(ctx context.Context, source *migrateCloudSource, opts migrateCloudOptions) (migrateCloudUploadResult, error) {
