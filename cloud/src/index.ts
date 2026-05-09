@@ -1,4 +1,5 @@
 export { IssueRun } from "./do/issue-run";
+export { TeamCoordinator } from "./do/team-coordinator";
 import { archiveEventsBatch, type EventArchiveMessage } from "./queues/events-archive";
 
 export interface Env {

@@ -28,6 +28,14 @@ max_batch_timeout = 30
 max_retries = 3
 dead_letter_queue = "events-archive-dlq"
 
+[[durable_objects.bindings]]
+name = "TEAM_COORDINATOR"
+class_name = "TeamCoordinator"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TeamCoordinator"]
+
 [observability]
 enabled = true
 head_sampling_rate = 1.0
@@ -59,6 +67,10 @@ max_batch_size = 100
 max_batch_timeout = 30
 max_retries = 3
 dead_letter_queue = "events-archive-dlq"
+
+[[env.staging.durable_objects.bindings]]
+name = "TEAM_COORDINATOR"
+class_name = "TeamCoordinator"
 
 [env.staging.vars]
 CONTRABASS_ENV = "staging"
@@ -94,6 +106,10 @@ max_batch_size = 100
 max_batch_timeout = 30
 max_retries = 3
 dead_letter_queue = "events-archive-dlq"
+
+[[env.production.durable_objects.bindings]]
+name = "TEAM_COORDINATOR"
+class_name = "TeamCoordinator"
 
 [env.production.vars]
 CONTRABASS_ENV = "production"
