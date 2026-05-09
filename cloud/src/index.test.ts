@@ -21,7 +21,9 @@ describe("cloud worker scaffold", () => {
       return Response.json({ board: { open: [], claimed: [], running: [], done: [] } });
     }, seen);
 
-    const response = await handleRequest(new Request("https://api.test/v1/teams/team-1/board"), env);
+    const response = await handleRequest(new Request("https://api.test/v1/teams/team-1/board", {
+      headers: { authorization: "Bearer test-session" },
+    }), envWithAuth(env, "test-session"));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ board: { open: [], claimed: [], running: [], done: [] } });
@@ -44,9 +46,9 @@ describe("cloud worker scaffold", () => {
 
     const response = await handleRequest(new Request("https://api.test/v1/teams/team-1/board/refresh", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { authorization: "Bearer test-session", "content-type": "application/json" },
       body: JSON.stringify({ issueRef: "LIN-1" }),
-    }), env);
+    }), envWithAuth(env, "test-session"));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
@@ -78,7 +80,15 @@ function createEnv(
 
   return {
     TEAM_COORDINATOR: namespace,
+    ISSUE_RUN: namespace,
     EVENTS_ARCHIVE_BUCKET: {},
     EVENTS_ARCHIVE_QUEUE: {},
   } as unknown as Env;
+}
+
+function envWithAuth(env: Env, workerTokens: string): Env {
+  return {
+    ...env,
+    CONTRABASS_WORKER_SESSION_TOKENS: workerTokens,
+  };
 }
