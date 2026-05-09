@@ -24,6 +24,8 @@
     "wrangler": "^4.90.0"
   },
   "dependencies": {
-    "hono": "^4.12.18"
+    "hono": "^4.12.18",
+    "liquidjs": "^10.25.7",
+    "yaml": "^2.7.1"
   }
 }

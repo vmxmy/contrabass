@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 
+import { isConfigParseError, parseWorkflowConfig } from "../config/parser";
+import type { ConfigValidationDetail } from "../config/parser";
 import type { EventArchiveMessage } from "../queues/events-archive";
 import { PROTOCOL_VERSION_CURRENT } from "../workerproto/v1";
 import type {
@@ -20,6 +22,7 @@ export type Env = {
   CONTRABASS_WORKER_SESSION_TOKENS?: string;
   CONTRABASS_DASHBOARD_SESSION_TOKENS?: string;
   CONTRABASS_WORKER_TOKEN_SECRET?: string;
+  CONTRABASS_CONFIG_BOUND_SECRETS?: string;
 };
 
 type AuthPrincipalKind = "bearer" | "dashboard-session";
@@ -60,6 +63,7 @@ workerRouter.get("/v1/teams/:teamId/board", (context) => {
 });
 
 workerRouter.post("/v1/teams/:teamId/board/*", forwardTeamCoordinatorBoardPostRequest);
+workerRouter.post("/v1/teams/:teamId/config", createTeamConfig);
 
 workerRouter.post("/v1/workers/register", registerWorker);
 workerRouter.post("/v1/workers/refresh", refreshWorkerSession);
@@ -272,6 +276,73 @@ async function enrollWorker(context: Context<WorkerRouterEnv>): Promise<Response
   }, 200);
 }
 
+async function createTeamConfig(context: Context<WorkerRouterEnv>): Promise<Response> {
+  const teamId = (context.req.param("teamId") ?? "").trim();
+  if (teamId === "") {
+    return errorResponse("invalid_team_id", 400);
+  }
+
+  const principal = context.get("principal");
+  if ("issued" in principal && principal.teamId !== teamId) {
+    return errorResponse("team_forbidden", 403);
+  }
+  if (context.env.CONTROL_PLANE_DB === undefined) {
+    return errorResponse("config_store_unavailable", 500);
+  }
+
+  const body = await readObjectBody(context.req.raw);
+  const request = parseCreateConfigRequest(body);
+  if (request === undefined) {
+    return errorResponse("invalid_request", 400);
+  }
+
+  try {
+    parseWorkflowConfig(request.contentYaml, { boundSecrets: parseConfiguredTokens(context.env.CONTRABASS_CONFIG_BOUND_SECRETS) });
+  } catch (error) {
+    if (isConfigParseError(error)) {
+      return configInvalidResponse(error.details);
+    }
+    return configInvalidResponse([{ path: "$", message: "invalid workflow config" }]);
+  }
+
+  const contentHash = await sha256Hex(request.contentYaml);
+  const existing = await context.env.CONTROL_PLANE_DB.prepare(`
+    SELECT version, content_hash
+    FROM team_configs
+    WHERE team_id = ? AND content_hash = ?
+    LIMIT 1
+  `).bind(teamId, contentHash).first<{ version: number; content_hash: string }>();
+  if (existing !== null) {
+    return jsonResponse({
+      teamId,
+      version: existing.version,
+      contentHash: existing.content_hash,
+      unchanged: true,
+      protocol_version: PROTOCOL_VERSION_CURRENT,
+    }, 200);
+  }
+
+  const next = await context.env.CONTROL_PLANE_DB.prepare(
+    "SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM team_configs WHERE team_id = ?",
+  ).bind(teamId).first<{ next_version: number }>();
+  const version = next?.next_version ?? 1;
+  const createdBy = request.createdBy ?? defaultConfigActor(principal);
+  const createdAt = new Date().toISOString();
+
+  await context.env.CONTROL_PLANE_DB.prepare(`
+    INSERT INTO team_configs (team_id, version, content_hash, content_yaml, created_by, created_at, notes)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).bind(teamId, version, contentHash, request.contentYaml, createdBy, createdAt, request.notes ?? "").run();
+
+  return jsonResponse({
+    teamId,
+    version,
+    contentHash,
+    unchanged: false,
+    protocol_version: PROTOCOL_VERSION_CURRENT,
+  }, 201);
+}
+
 function extractBearerToken(authorization: string | null): string | undefined {
   if (authorization === null) {
     return undefined;
@@ -471,6 +542,29 @@ function parseRefreshRequest(body: Record<string, unknown> | undefined): WorkerR
   };
 }
 
+type CreateConfigRequest = {
+  contentYaml: string;
+  createdBy?: string;
+  notes?: string;
+};
+
+function parseCreateConfigRequest(body: Record<string, unknown> | undefined): CreateConfigRequest | undefined {
+  if (body === undefined) {
+    return undefined;
+  }
+
+  const contentYaml = getStringField(body, "content_yaml") ?? getStringField(body, "contentYaml");
+  if (contentYaml === undefined) {
+    return undefined;
+  }
+
+  return {
+    contentYaml,
+    createdBy: getStringField(body, "created_by") ?? getStringField(body, "createdBy"),
+    notes: getStringField(body, "notes"),
+  };
+}
+
 type EnrollmentRow = {
   enrollment_id: string;
   team_id: string;
@@ -587,6 +681,17 @@ function workerTokenConfigErrorResponse(): Response {
     error: "worker_token_secret_missing",
     protocol_version: PROTOCOL_VERSION_CURRENT,
   }, 500);
+}
+
+function configInvalidResponse(details: ConfigValidationDetail[]): Response {
+  return errorResponse("config_invalid", 400, { details });
+}
+
+function defaultConfigActor(principal: AuthPrincipal): string {
+  if ("issued" in principal) {
+    return `worker:${principal.workerId}`;
+  }
+  return principal.kind === "dashboard-session" ? "dashboard" : "api";
 }
 
 function parseSessionPayload(payload: string): IssuedSessionPayload | undefined {

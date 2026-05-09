@@ -953,6 +953,128 @@ describe("API Worker router auth middleware", () => {
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toEqual({ error: "refresh_revoked", protocol_version: "1.0.0" });
   });
+
+  it("parses and stores a new team config version", async () => {
+    const configs: FakeConfigRow[] = [];
+    const env = envWithAuth({
+      ...createEnv(),
+      CONTROL_PLANE_DB: fakeD1({ configs }),
+    }, { dashboardTokens: "dashboard-session" });
+    const contentYaml = [
+      "---",
+      "model: openai/gpt-5-codex",
+      "project_url: https://linear.app/example/project/cloud",
+      "tracker:",
+      "  type: internal",
+      "---",
+      "Fix {{ issue.title }}.",
+      "",
+    ].join("\n");
+
+    const response = await handleWorkerRequest(new Request("https://api.test/v1/teams/team-1/config", {
+      method: "POST",
+      headers: { cookie: "contrabass_session=dashboard-session", "content-type": "application/json" },
+      body: JSON.stringify({ content_yaml: contentYaml, created_by: "operator-1", notes: "initial import" }),
+    }), env);
+
+    expect(response.status).toBe(201);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body).toMatchObject({
+      teamId: "team-1",
+      version: 1,
+      unchanged: false,
+      protocol_version: "1.0.0",
+    });
+    expect(body.contentHash).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/u));
+    expect(configs).toEqual([{
+      team_id: "team-1",
+      version: 1,
+      content_hash: body.contentHash,
+      content_yaml: contentYaml,
+      created_by: "operator-1",
+      created_at: expect.any(String),
+      notes: "initial import",
+    }]);
+  });
+
+  it("returns the existing version when pushed config content is unchanged", async () => {
+    const contentYaml = "---\ntracker:\n  type: internal\n---\nPrompt.\n";
+    const configs: FakeConfigRow[] = [{
+      team_id: "team-1",
+      version: 4,
+      content_hash: await testSha256Hex(contentYaml),
+      content_yaml: contentYaml,
+      created_by: "operator-1",
+      created_at: "2026-05-09T00:00:00.000Z",
+      notes: "already stored",
+    }];
+    const env = envWithAuth({
+      ...createEnv(),
+      CONTROL_PLANE_DB: fakeD1({ configs }),
+    }, { dashboardTokens: "dashboard-session" });
+
+    const response = await handleWorkerRequest(new Request("https://api.test/v1/teams/team-1/config", {
+      method: "POST",
+      headers: { cookie: "contrabass_session=dashboard-session", "content-type": "application/json" },
+      body: JSON.stringify({ contentYaml }),
+    }), env);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      teamId: "team-1",
+      version: 4,
+      contentHash: configs[0].content_hash,
+      unchanged: true,
+      protocol_version: "1.0.0",
+    });
+    expect(configs).toHaveLength(1);
+  });
+
+  it("rejects invalid config and does not write to D1", async () => {
+    const configs: FakeConfigRow[] = [];
+    const env = envWithAuth({
+      ...createEnv(),
+      CONTROL_PLANE_DB: fakeD1({ configs }),
+    }, { dashboardTokens: "dashboard-session" });
+    const cases: Array<{ name: string; contentYaml: string; expectedDetails: Array<Record<string, unknown>> }> = [
+      {
+        name: "invalid yaml",
+        contentYaml: "---\nmodel: [\n---\nprompt\n",
+        expectedDetails: [{ path: "$", message: expect.stringContaining("invalid workflow yaml") }],
+      },
+      {
+        name: "unknown tracker",
+        contentYaml: "---\ntracker:\n  type: jira\n---\nprompt\n",
+        expectedDetails: [{ path: "tracker.type", message: "unknown tracker type: jira" }],
+      },
+      {
+        name: "missing secret binding",
+        contentYaml: "---\ntracker:\n  type: linear\n  token: $LINEAR_API_KEY\n---\nprompt\n",
+        expectedDetails: [{ path: "tracker.linear.token", message: "secret not bound: LINEAR_API_KEY" }],
+      },
+      {
+        name: "invalid liquid prompt",
+        contentYaml: "---\ntracker:\n  type: internal\n---\nFix {{ issue.title\n",
+        expectedDetails: [{ path: "prompt", message: expect.stringContaining("invalid liquid template") }],
+      },
+    ];
+
+    for (const testCase of cases) {
+      const response = await handleWorkerRequest(new Request("https://api.test/v1/teams/team-1/config", {
+        method: "POST",
+        headers: { cookie: "contrabass_session=dashboard-session", "content-type": "application/json" },
+        body: JSON.stringify({ content_yaml: testCase.contentYaml }),
+      }), env);
+
+      expect(response.status, testCase.name).toBe(400);
+      await expect(response.json(), testCase.name).resolves.toEqual({
+        error: "config_invalid",
+        details: testCase.expectedDetails,
+        protocol_version: "1.0.0",
+      });
+    }
+    expect(configs).toEqual([]);
+  });
 });
 
 function registerBody(): Record<string, unknown> {
@@ -977,9 +1099,25 @@ type FakeEnrollment = {
   revoked_at: string | null;
 };
 
-function fakeD1(state: { teamExists?: boolean; enrollment?: FakeEnrollment; staleEnrollmentRead?: boolean }): D1Database {
+type FakeConfigRow = {
+  team_id: string;
+  version: number;
+  content_hash: string;
+  content_yaml: string;
+  created_by: string;
+  created_at: string;
+  notes: string;
+};
+
+function fakeD1(state: {
+  teamExists?: boolean;
+  enrollment?: FakeEnrollment;
+  staleEnrollmentRead?: boolean;
+  configs?: FakeConfigRow[];
+}): D1Database {
   let enrollment = state.enrollment;
   const firstEnrollment = enrollment === undefined ? undefined : { ...enrollment };
+  const configs = state.configs ?? [];
 
   return {
     prepare(sql: string) {
@@ -987,6 +1125,14 @@ function fakeD1(state: { teamExists?: boolean; enrollment?: FakeEnrollment; stal
         bind(...values: unknown[]) {
           return {
             async first() {
+              if (sql.includes("FROM team_configs") && sql.includes("content_hash")) {
+                return configs.find((row) => row.team_id === values[0] && row.content_hash === values[1]) ?? null;
+              }
+              if (sql.includes("MAX(version)") && sql.includes("team_configs")) {
+                const teamId = String(values[0]);
+                const versions = configs.filter((row) => row.team_id === teamId).map((row) => row.version);
+                return { next_version: versions.length === 0 ? 1 : Math.max(...versions) + 1 };
+              }
               if (sql.includes("team_configs_active")) {
                 return state.teamExists === false ? null : { team_id: "team-1" };
               }
@@ -996,6 +1142,17 @@ function fakeD1(state: { teamExists?: boolean; enrollment?: FakeEnrollment; stal
               return null;
             },
             async run() {
+              if (sql.includes("INSERT INTO team_configs")) {
+                configs.push({
+                  team_id: String(values[0]),
+                  version: Number(values[1]),
+                  content_hash: String(values[2]),
+                  content_yaml: String(values[3]),
+                  created_by: String(values[4]),
+                  created_at: String(values[5]),
+                  notes: String(values[6]),
+                });
+              }
               if (sql.includes("UPDATE worker_enrollments") && enrollment !== undefined) {
                 const isEnrollmentRedemption = sql.includes("redeemed_at IS NULL");
                 if (
@@ -1022,6 +1179,11 @@ function fakeD1(state: { teamExists?: boolean; enrollment?: FakeEnrollment; stal
       };
     },
   } as unknown as D1Database;
+}
+
+async function testSha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function d1RunResult(changes: number): D1Result {
