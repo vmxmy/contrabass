@@ -86,7 +86,7 @@ workerRouter.get("/v1/teams/:teamId/subscribe", (context) => {
 });
 
 workerRouter.notFound(() => {
-  return jsonResponse({ error: "not_found" }, 404);
+  return errorResponse("not_found", 404);
 });
 
 export async function handleWorkerRequest(request: Request, env: Env): Promise<Response> {
@@ -109,7 +109,7 @@ function authMiddleware(): MiddlewareHandler<WorkerRouterEnv> {
 
     const principal = await validateAuthPrincipal(context.req.raw, context.env);
     if (principal === undefined) {
-      return jsonResponse({ error: "unauthorized" }, 401);
+      return errorResponse("unauthorized", 401);
     }
 
     context.set("principal", principal);
@@ -145,13 +145,13 @@ async function registerWorker(context: Context<WorkerRouterEnv>): Promise<Respon
   const body = await readObjectBody(context.req.raw);
   const request = parseRegisterRequest(body);
   if (request === undefined) {
-    return jsonResponse({ error: "invalid_request", protocol_version: PROTOCOL_VERSION_CURRENT }, 400);
+    return errorResponse("invalid_request", 400);
   }
   if (!request.supported_protocol_versions.includes(PROTOCOL_VERSION_CURRENT)) {
     return protocolVersionUnsupportedResponse();
   }
   if (!await teamExists(context.env, request.teamId)) {
-    return jsonResponse({ error: "team_forbidden", protocol_version: PROTOCOL_VERSION_CURRENT }, 403);
+    return errorResponse("team_forbidden", 403);
   }
   if (workerTokenSigningSecret(context.env) === undefined) {
     return workerTokenConfigErrorResponse();
@@ -159,7 +159,7 @@ async function registerWorker(context: Context<WorkerRouterEnv>): Promise<Respon
 
   const coordinatorResponse = await forwardWorkerRegistration(context, request);
   if (!coordinatorResponse.ok) {
-    return forwardJsonResponse(coordinatorResponse);
+    return normalizeForwardedErrorResponse(coordinatorResponse);
   }
 
   const now = Date.now();
@@ -185,21 +185,21 @@ async function refreshWorkerSession(context: Context<WorkerRouterEnv>): Promise<
   const body = await readObjectBody(context.req.raw);
   const request = parseRefreshRequest(body);
   if (request === undefined) {
-    return jsonResponse({ error: "refresh_invalid", protocol_version: PROTOCOL_VERSION_CURRENT }, 401);
+    return errorResponse("refresh_invalid", 401);
   }
 
   const enrollment = await findEnrollmentByRefreshToken(context.env, request.refreshToken);
   if (enrollment === undefined) {
-    return jsonResponse({ error: "refresh_invalid", protocol_version: PROTOCOL_VERSION_CURRENT }, 401);
+    return errorResponse("refresh_invalid", 401);
   }
   if (enrollment.revoked_at !== null) {
-    return jsonResponse({ error: "refresh_revoked", protocol_version: PROTOCOL_VERSION_CURRENT }, 401);
+    return errorResponse("refresh_revoked", 401);
   }
   if (enrollment.refresh_token_expires_at === null || isPastIsoTime(enrollment.refresh_token_expires_at)) {
-    return jsonResponse({ error: "refresh_expired", protocol_version: PROTOCOL_VERSION_CURRENT }, 401);
+    return errorResponse("refresh_expired", 401);
   }
   if (enrollment.worker_id === null) {
-    return jsonResponse({ error: "refresh_invalid", protocol_version: PROTOCOL_VERSION_CURRENT }, 401);
+    return errorResponse("refresh_invalid", 401);
   }
 
   if (workerTokenSigningSecret(context.env) === undefined) {
@@ -222,11 +222,11 @@ async function refreshWorkerSession(context: Context<WorkerRouterEnv>): Promise<
 async function enrollWorker(context: Context<WorkerRouterEnv>): Promise<Response> {
   const body = await readObjectBody(context.req.raw);
   if (body === undefined) {
-    return jsonResponse({ error: "enrollment_invalid", protocol_version: PROTOCOL_VERSION_CURRENT }, 401);
+    return errorResponse("enrollment_invalid", 401);
   }
   const code = getStringField(body, "code");
   if (code === undefined) {
-    return jsonResponse({ error: "enrollment_invalid", protocol_version: PROTOCOL_VERSION_CURRENT }, 401);
+    return errorResponse("enrollment_invalid", 401);
   }
 
   const enrollment = await findEnrollmentByCode(context.env, code);
@@ -236,7 +236,7 @@ async function enrollWorker(context: Context<WorkerRouterEnv>): Promise<Response
     || enrollment.redeemed_at !== null
     || isPastIsoTime(enrollment.expires_at)
   ) {
-    return jsonResponse({ error: "enrollment_invalid", protocol_version: PROTOCOL_VERSION_CURRENT }, 401);
+    return errorResponse("enrollment_invalid", 401);
   }
 
   const workerId = getStringField(body, "workerId")
@@ -261,7 +261,7 @@ async function enrollWorker(context: Context<WorkerRouterEnv>): Promise<Response
     redeemedAt,
   ).run();
   if (updateResult?.meta.changes !== 1) {
-    return jsonResponse({ error: "enrollment_invalid", protocol_version: PROTOCOL_VERSION_CURRENT }, 401);
+    return errorResponse("enrollment_invalid", 401);
   }
 
   return jsonResponse({
@@ -702,12 +702,12 @@ async function forwardTeamCoordinatorRequest(
 ): Promise<Response> {
   const teamId = (context.req.param("teamId") ?? "").trim();
   if (teamId === "") {
-    return jsonResponse({ error: "invalid_team_id" }, 400);
+    return errorResponse("invalid_team_id", 400);
   }
 
   const principal = context.get("principal");
   if ("issued" in principal && principal.teamId !== teamId) {
-    return jsonResponse({ error: "team_forbidden" }, 403);
+    return errorResponse("team_forbidden", 403);
   }
 
   const id = context.env.TEAM_COORDINATOR.idFromName(teamId);
@@ -721,17 +721,17 @@ async function forwardTeamCoordinatorRequest(
   const targetUrl = new URL(`https://team-coordinator.internal${coordinatorPath}`);
   targetUrl.search = new URL(request.url).search;
 
-  return stub.fetch(new Request(targetUrl, {
+  return normalizeForwardedErrorResponse(await stub.fetch(new Request(targetUrl, {
     method: request.method,
     headers,
     body,
-  }));
+  })));
 }
 
 function forwardTeamCoordinatorBoardPostRequest(context: Context<WorkerRouterEnv>): Promise<Response> | Response {
   const coordinatorPath = teamCoordinatorBoardPostPath(context.req.raw);
   if (coordinatorPath === undefined) {
-    return jsonResponse({ error: "not_found" }, 404);
+    return errorResponse("not_found", 404);
   }
   return forwardTeamCoordinatorRequest(context, coordinatorPath);
 }
@@ -752,15 +752,15 @@ async function forwardIssueRunRequest(
 ): Promise<Response> {
   const runId = (context.req.param("runId") ?? "").trim();
   if (runId === "") {
-    return jsonResponse({ error: "invalid_run_id" }, 400);
+    return errorResponse("invalid_run_id", 400);
   }
 
   const teamId = resolveRunForwardTeamId(context);
   if (teamId === undefined) {
-    return jsonResponse({ error: "invalid_team_id" }, 400);
+    return errorResponse("invalid_team_id", 400);
   }
   if (teamId === false) {
-    return jsonResponse({ error: "team_forbidden" }, 403);
+    return errorResponse("team_forbidden", 403);
   }
 
   const principal = context.get("principal");
@@ -775,7 +775,7 @@ async function forwardIssueRunRequest(
 
   const issueRef = await lookupIssueRefForRun(context, teamId, runId);
   if (issueRef === undefined) {
-    return jsonResponse({ error: "run_not_found" }, 404);
+    return errorResponse("run_not_found", 404);
   }
 
   const body = issueRunPath === "/ack" && "issued" in principal
@@ -784,25 +784,25 @@ async function forwardIssueRunRequest(
 
   const id = context.env.ISSUE_RUN.idFromName(`${teamId}:${issueRef}`);
   const stub = context.env.ISSUE_RUN.get(id);
-  return stub.fetch(new Request(`https://issue-run.internal${issueRunPath}`, {
+  return normalizeForwardedErrorResponse(await stub.fetch(new Request(`https://issue-run.internal${issueRunPath}`, {
     method: request.method,
     headers,
     body,
-  }));
+  })));
 }
 
 async function longPollWorkerDispatch(context: Context<WorkerRouterEnv>): Promise<Response> {
   const workerId = (context.req.param("workerId") ?? "").trim();
   if (workerId === "") {
-    return jsonResponse({ error: "invalid_worker_id" }, 400);
+    return errorResponse("invalid_worker_id", 400);
   }
 
   const teamId = resolveWorkerScopedTeamId(context, workerId);
   if (teamId === undefined) {
-    return jsonResponse({ error: "invalid_team_id" }, 400);
+    return errorResponse("invalid_team_id", 400);
   }
   if (teamId === false) {
-    return jsonResponse({ error: "team_forbidden" }, 403);
+    return errorResponse("team_forbidden", 403);
   }
 
   const id = context.env.TEAM_COORDINATOR.idFromName(teamId);
@@ -816,24 +816,24 @@ async function longPollWorkerDispatch(context: Context<WorkerRouterEnv>): Promis
   const targetUrl = new URL(`https://team-coordinator.internal/workers/${encodeURIComponent(workerId)}/dispatch`);
   targetUrl.search = sourceUrl.search;
 
-  return stub.fetch(new Request(targetUrl, {
+  return normalizeForwardedErrorResponse(await stub.fetch(new Request(targetUrl, {
     method: "GET",
     headers,
-  }));
+  })));
 }
 
 async function websocketWorkerDispatch(context: Context<WorkerRouterEnv>): Promise<Response> {
   const workerId = (context.req.param("workerId") ?? "").trim();
   if (workerId === "") {
-    return jsonResponse({ error: "invalid_worker_id" }, 400);
+    return errorResponse("invalid_worker_id", 400);
   }
 
   const teamId = resolveWorkerScopedTeamId(context, workerId);
   if (teamId === undefined) {
-    return jsonResponse({ error: "invalid_team_id" }, 400);
+    return errorResponse("invalid_team_id", 400);
   }
   if (teamId === false) {
-    return jsonResponse({ error: "team_forbidden" }, 403);
+    return errorResponse("team_forbidden", 403);
   }
 
   const id = context.env.TEAM_COORDINATOR.idFromName(teamId);
@@ -848,10 +848,10 @@ async function websocketWorkerDispatch(context: Context<WorkerRouterEnv>): Promi
   targetUrl.search = sourceUrl.search;
   targetUrl.searchParams.set("workerId", workerId);
 
-  return stub.fetch(new Request(targetUrl, {
+  return normalizeForwardedErrorResponse(await stub.fetch(new Request(targetUrl, {
     method: "GET",
     headers,
-  }));
+  })));
 }
 
 async function lookupIssueRefForRun(
@@ -947,33 +947,48 @@ async function ackBodyWithWorkerId(request: Request, workerId: string): Promise<
 }
 
 function notImplemented(): Response {
-  return jsonResponse({ error: "not_implemented" }, 501);
+  return errorResponse("not_implemented", 501);
 }
 
 function jsonResponse(body: Record<string, unknown>, status: number): Response {
   return Response.json(body, { status });
 }
 
-function protocolVersionUnsupportedResponse(): Response {
+function errorResponse(error: string, status: number, fields: Record<string, unknown> = {}): Response {
   return jsonResponse({
-    error: "protocol_version_unsupported",
-    supported: [...SUPPORTED_PROTOCOL_VERSIONS],
+    error,
+    ...fields,
     protocol_version: PROTOCOL_VERSION_CURRENT,
-  }, 409);
+  }, status);
 }
 
-async function forwardJsonResponse(response: Response): Promise<Response> {
+function protocolVersionUnsupportedResponse(): Response {
+  return errorResponse("protocol_version_unsupported", 409, { supported: [...SUPPORTED_PROTOCOL_VERSIONS] });
+}
+
+async function normalizeForwardedErrorResponse(response: Response): Promise<Response> {
+  if (response.status < 400) {
+    return response;
+  }
+
   let body: unknown;
   try {
     body = await response.json();
   } catch {
-    body = { error: "upstream_error", protocol_version: PROTOCOL_VERSION_CURRENT };
+    return errorResponse("upstream_error", response.status);
   }
 
-  return Response.json(
-    body === null || typeof body !== "object" || Array.isArray(body)
-      ? { error: "upstream_error", protocol_version: PROTOCOL_VERSION_CURRENT }
-      : body,
-    { status: response.status },
-  );
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return errorResponse("upstream_error", response.status);
+  }
+
+  const record = body as Record<string, unknown>;
+  if (typeof record.error !== "string" || record.error.trim() === "") {
+    return errorResponse("upstream_error", response.status);
+  }
+
+  return jsonResponse({
+    ...record,
+    protocol_version: PROTOCOL_VERSION_CURRENT,
+  }, response.status);
 }

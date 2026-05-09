@@ -19,7 +19,10 @@ describe("API Worker router auth middleware", () => {
       }), envWithAuth(createEnv(), { dashboardTokens: "dashboard-session" }));
 
       expect(response.status, testCase.name).toBe(401);
-      await expect(response.json(), testCase.name).resolves.toEqual({ error: "unauthorized" });
+      await expect(response.json(), testCase.name).resolves.toEqual({
+        error: "unauthorized",
+        protocol_version: "1.0.0",
+      });
     }
   });
 
@@ -229,6 +232,42 @@ describe("API Worker router auth middleware", () => {
     })));
   });
 
+  it("normalizes forwarded protocol errors with protocol_version", async () => {
+    const env = createSplitEnv(
+      async () => Response.json({
+        board: {
+          open: [],
+          claimed: [],
+          running: [{ issueRef: "LIN-1", runId: "run-1", phase: "running", lastUpdated: 1 }],
+          done: [],
+        },
+      }),
+      async () => Response.json({
+        error: "events_too_large",
+        max_events: 200,
+        max_bytes: 524288,
+      }, { status: 413 }),
+    );
+
+    const response = await handleWorkerRequest(new Request("https://api.test/v1/runs/run-1/events", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer worker-session",
+        "content-type": "application/x-ndjson",
+        "x-contrabass-team-id": "team-1",
+      },
+      body: "{\"ts\":1771000000000,\"kind\":\"log\",\"payload\":{\"message\":\"too large\"},\"protocol_version\":\"1.0.0\"}\n",
+    }), envWithAuth(env, { workerTokens: "worker-session" }));
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toEqual({
+      error: "events_too_large",
+      max_events: 200,
+      max_bytes: 524288,
+      protocol_version: "1.0.0",
+    });
+  });
+
   it("forwards worker long-poll dispatch requests to TeamCoordinator", async () => {
     const seen: { name?: string; url?: string; method?: string; teamId?: string; workerId?: string } = {};
     const env = createEnv(async (request) => {
@@ -386,7 +425,7 @@ describe("API Worker router auth middleware", () => {
     }), envWithAuth(env, { workerTokens: "worker-session" }));
 
     expect(response.status).toBe(404);
-    await expect(response.json()).resolves.toEqual({ error: "run_not_found" });
+    await expect(response.json()).resolves.toEqual({ error: "run_not_found", protocol_version: "1.0.0" });
   });
 
   it("scopes issued worker session run forwards to the token team and worker", async () => {
@@ -451,7 +490,7 @@ describe("API Worker router auth middleware", () => {
     }), env);
 
     expect(crossTeamResponse.status).toBe(403);
-    await expect(crossTeamResponse.json()).resolves.toEqual({ error: "team_forbidden" });
+    await expect(crossTeamResponse.json()).resolves.toEqual({ error: "team_forbidden", protocol_version: "1.0.0" });
   });
 
   it("accepts dashboard session-cookie auth", async () => {
@@ -563,7 +602,7 @@ describe("API Worker router auth middleware", () => {
       headers: { authorization: `Bearer ${sessionToken}` },
     }), env);
     expect(crossTeamResponse.status).toBe(403);
-    await expect(crossTeamResponse.json()).resolves.toEqual({ error: "team_forbidden" });
+    await expect(crossTeamResponse.json()).resolves.toEqual({ error: "team_forbidden", protocol_version: "1.0.0" });
     expect(seen.name).toBe("team-1");
   });
 
