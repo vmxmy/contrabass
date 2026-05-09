@@ -121,7 +121,7 @@
 - [x] 12.11 Implement `lease-revoked` handler: SIGTERM → SIGKILL after 5s, attempt artifact upload, release worktree
 - [x] 12.12 Implement config cache by hash and `GET /config/{hash}` fetch on miss
 - [x] 12.13 Implement `--ephemeral` flag with shorter lease defaults for CI use
-- [ ] 12.14 Go test coverage with mock cloud server using shared `testdata/workerproto/v1/` fixtures
+- [x] 12.14 Go test coverage with mock cloud server using shared `testdata/workerproto/v1/` fixtures
 
 ## 13. Build-tag split for legacy single-host code
 
