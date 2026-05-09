@@ -1,11 +1,16 @@
 # Contrabass — Build Tooling
 # Build order: dashboard SPA must build before Go binary (embed.FS requires dist/)
 
-.PHONY: build-dashboard build-landing build cloud-build cloud-deploy cloud-deploy-dry cloud-migrate cloud-secret-set cloud-test dev-dashboard dev-dashboard-stack dev-landing dev test test-race test-cover test-dashboard test-landing test-quick test-all ci clean lint release-dry
+.PHONY: build-dashboard build-landing build build-local-only cloud-build cloud-deploy cloud-deploy-dry cloud-migrate cloud-secret-set cloud-test dev-dashboard dev-dashboard-stack dev-landing dev test test-race test-cover test-dashboard test-landing test-quick test-all ci clean lint release-dry
 
 CLOUD_MIGRATE_FLAGS ?= --remote
 CLOUD_SECRET_STORE_ID ?= a6568877039e4cd6a86448cb73b20066
 CLOUD_SECRET_SCOPES ?= workers
+
+# Set LOCAL_ONLY=1 to include the single-host runtime (server, team, hub, web, ipc).
+# Example: make build LOCAL_ONLY=1  OR  make build-local-only
+LOCAL_ONLY ?=
+_BUILD_TAG_FLAG := $(if $(LOCAL_ONLY),-tags localonly,)
 
 # Build the React dashboard SPA to packages/dashboard/dist/
 build-dashboard:
@@ -15,9 +20,14 @@ build-dashboard:
 build-landing:
 	cd packages/landing && bun run build
 
-# Build the Go binary with embedded dashboard
+# Build the Go binary with embedded dashboard (excludes localonly packages by default).
+# Use LOCAL_ONLY=1 to include the single-host runtime: make build LOCAL_ONLY=1
 build: build-dashboard
-	go build -ldflags "-X main.version=dev -X main.commit=$$(git rev-parse --short HEAD 2>/dev/null || echo none) -X main.date=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o contrabass ./cmd/contrabass
+	go build $(_BUILD_TAG_FLAG) -ldflags "-X main.version=dev -X main.commit=$$(git rev-parse --short HEAD 2>/dev/null || echo none) -X main.date=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o contrabass ./cmd/contrabass
+
+# Build the Go binary with all single-host packages included (server + worker subcommands).
+build-local-only: build-dashboard
+	go build -tags localonly -ldflags "-X main.version=dev -X main.commit=$$(git rev-parse --short HEAD 2>/dev/null || echo none) -X main.date=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o contrabass ./cmd/contrabass
 
 # Build the Cloudflare Worker bundle without publishing it
 cloud-build:
@@ -74,9 +84,9 @@ test:
 test-race:
 	go test -race ./... -count=1
 
-# Run Go tests with coverage for critical packages
+# Run Go tests with coverage for critical packages (localonly tag required for team/orchestrator)
 test-cover:
-	go test -coverprofile=coverage.out -covermode=atomic ./internal/team/... ./internal/orchestrator/... ./internal/agent/...
+	go test -tags localonly -coverprofile=coverage.out -covermode=atomic ./internal/team/... ./internal/orchestrator/... ./internal/agent/...
 	go tool cover -func=coverage.out | tail -1
 
 # Run React dashboard tests
