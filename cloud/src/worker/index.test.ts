@@ -1058,6 +1058,94 @@ describe("API Worker router auth middleware", () => {
     await expect(response.text()).resolves.toBe(contentYaml);
   });
 
+  it("activates a stored team config version and broadcasts config-changed", async () => {
+    const contentYaml = "---\ntracker:\n  type: internal\n---\nPrompt.\n";
+    const contentHash = await testSha256Hex(contentYaml);
+    const configs: FakeConfigRow[] = [{
+      team_id: "team-1",
+      version: 2,
+      content_hash: contentHash,
+      content_yaml: contentYaml,
+      created_by: "operator-1",
+      created_at: "2026-05-09T00:00:00.000Z",
+      notes: "stored",
+    }];
+    const activeConfigs: FakeActiveConfigRow[] = [];
+    let notification: { pathname: string; body: Record<string, unknown>; teamId: string } | undefined;
+    const env = envWithAuth({
+      ...createEnv(async (request) => {
+        notification = {
+          pathname: new URL(request.url).pathname,
+          body: await request.json() as Record<string, unknown>,
+          teamId: request.headers.get("x-contrabass-team-id") ?? "",
+        };
+        return Response.json({ accepted: true, type: "config-changed" });
+      }),
+      CONTROL_PLANE_DB: fakeD1({ configs, activeConfigs }),
+    }, { dashboardTokens: "dashboard-session" });
+
+    const response = await handleWorkerRequest(new Request("https://api.test/v1/teams/team-1/config/2/activate", {
+      method: "POST",
+      headers: { cookie: "contrabass_session=dashboard-session", "content-type": "application/json" },
+      body: JSON.stringify({ activated_by: "operator-2" }),
+    }), env);
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body).toMatchObject({
+      teamId: "team-1",
+      activeVersion: 2,
+      activeContentHash: contentHash,
+      activatedBy: "operator-2",
+      protocol_version: "1.0.0",
+    });
+    expect(body.activatedAt).toEqual(expect.any(String));
+    expect(activeConfigs).toEqual([{
+      team_id: "team-1",
+      active_version: 2,
+      active_content_hash: contentHash,
+      activated_at: body.activatedAt,
+      activated_by: "operator-2",
+    }]);
+    expect(notification).toMatchObject({
+      pathname: "/config-changed",
+      teamId: "team-1",
+      body: {
+        type: "config-changed",
+        teamId: "team-1",
+        activeVersion: 2,
+        activeContentHash: contentHash,
+        activatedAt: body.activatedAt,
+        activatedBy: "operator-2",
+        protocol_version: "1.0.0",
+      },
+    });
+  });
+
+  it("returns structured errors when activating missing or invalid config versions", async () => {
+    const env = envWithAuth({
+      ...createEnv(),
+      CONTROL_PLANE_DB: fakeD1({ configs: [] }),
+    }, { dashboardTokens: "dashboard-session" });
+    const cases: Array<{ name: string; version: string; expectedStatus: number; expectedError: string }> = [
+      { name: "malformed", version: "v2", expectedStatus: 400, expectedError: "invalid_config_version" },
+      { name: "not found", version: "2", expectedStatus: 404, expectedError: "config_not_found" },
+    ];
+
+    for (const testCase of cases) {
+      const response = await handleWorkerRequest(new Request(`https://api.test/v1/teams/team-1/config/${testCase.version}/activate`, {
+        method: "POST",
+        headers: { cookie: "contrabass_session=dashboard-session" },
+      }), env);
+
+      expect(response.status, testCase.name).toBe(testCase.expectedStatus);
+      await expect(response.json(), testCase.name).resolves.toEqual({
+        error: testCase.expectedError,
+        protocol_version: "1.0.0",
+      });
+    }
+  });
+
   it("returns structured errors for missing or malformed config hashes", async () => {
     const validMissingHash = "a".repeat(64);
     const env = envWithAuth({
@@ -1161,15 +1249,25 @@ type FakeConfigRow = {
   notes: string;
 };
 
+type FakeActiveConfigRow = {
+  team_id: string;
+  active_version: number;
+  active_content_hash: string;
+  activated_at: string;
+  activated_by: string;
+};
+
 function fakeD1(state: {
   teamExists?: boolean;
   enrollment?: FakeEnrollment;
   staleEnrollmentRead?: boolean;
   configs?: FakeConfigRow[];
+  activeConfigs?: FakeActiveConfigRow[];
 }): D1Database {
   let enrollment = state.enrollment;
   const firstEnrollment = enrollment === undefined ? undefined : { ...enrollment };
   const configs = state.configs ?? [];
+  const activeConfigs = state.activeConfigs ?? [];
 
   return {
     prepare(sql: string) {
@@ -1177,6 +1275,9 @@ function fakeD1(state: {
         bind(...values: unknown[]) {
           return {
             async first() {
+              if (sql.includes("FROM team_configs") && sql.includes("WHERE team_id = ? AND version = ?")) {
+                return configs.find((row) => row.team_id === values[0] && row.version === values[1]) ?? null;
+              }
               if (sql.includes("FROM team_configs") && sql.includes("content_hash")) {
                 return configs.find((row) => row.team_id === values[0] && row.content_hash === values[1]) ?? null;
               }
@@ -1204,6 +1305,21 @@ function fakeD1(state: {
                   created_at: String(values[5]),
                   notes: String(values[6]),
                 });
+              }
+              if (sql.includes("INSERT INTO team_configs_active")) {
+                const row = {
+                  team_id: String(values[0]),
+                  active_version: Number(values[1]),
+                  active_content_hash: String(values[2]),
+                  activated_at: String(values[3]),
+                  activated_by: String(values[4]),
+                };
+                const index = activeConfigs.findIndex((activeConfig) => activeConfig.team_id === row.team_id);
+                if (index === -1) {
+                  activeConfigs.push(row);
+                } else {
+                  activeConfigs[index] = row;
+                }
               }
               if (sql.includes("UPDATE worker_enrollments") && enrollment !== undefined) {
                 const isEnrollmentRedemption = sql.includes("redeemed_at IS NULL");

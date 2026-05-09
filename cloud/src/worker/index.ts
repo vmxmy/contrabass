@@ -64,6 +64,7 @@ workerRouter.get("/v1/teams/:teamId/board", (context) => {
 
 workerRouter.post("/v1/teams/:teamId/board/*", forwardTeamCoordinatorBoardPostRequest);
 workerRouter.post("/v1/teams/:teamId/config", createTeamConfig);
+workerRouter.post("/v1/teams/:teamId/config/:version/activate", activateTeamConfigVersion);
 workerRouter.get("/v1/teams/:teamId/config/:hash", getTeamConfigByHash);
 
 workerRouter.post("/v1/workers/register", registerWorker);
@@ -379,6 +380,69 @@ async function getTeamConfigByHash(context: Context<WorkerRouterEnv>): Promise<R
       "Content-Type": "text/yaml; charset=utf-8",
     },
   });
+}
+
+async function activateTeamConfigVersion(context: Context<WorkerRouterEnv>): Promise<Response> {
+  const teamId = (context.req.param("teamId") ?? "").trim();
+  const version = parsePositiveInteger(context.req.param("version") ?? "");
+  if (teamId === "") {
+    return errorResponse("invalid_team_id", 400);
+  }
+  if (version === undefined) {
+    return errorResponse("invalid_config_version", 400);
+  }
+
+  const principal = context.get("principal");
+  if ("issued" in principal && principal.teamId !== teamId) {
+    return errorResponse("team_forbidden", 403);
+  }
+  if (context.env.CONTROL_PLANE_DB === undefined) {
+    return errorResponse("config_store_unavailable", 500);
+  }
+
+  const body = await readOptionalObjectBody(context.req.raw);
+  if (body === false) {
+    return errorResponse("invalid_request", 400);
+  }
+
+  const config = await context.env.CONTROL_PLANE_DB.prepare(`
+    SELECT version, content_hash
+    FROM team_configs
+    WHERE team_id = ? AND version = ?
+    LIMIT 1
+  `).bind(teamId, version).first<{ version: number; content_hash: string }>();
+  if (config === null) {
+    return errorResponse("config_not_found", 404);
+  }
+
+  const activatedAt = new Date().toISOString();
+  const activatedBy = (body === undefined ? undefined : getStringField(body, "activated_by") ?? getStringField(body, "activatedBy"))
+    ?? defaultConfigActor(principal);
+
+  await context.env.CONTROL_PLANE_DB.prepare(`
+    INSERT INTO team_configs_active (team_id, active_version, active_content_hash, activated_at, activated_by)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(team_id) DO UPDATE SET
+      active_version = excluded.active_version,
+      active_content_hash = excluded.active_content_hash,
+      activated_at = excluded.activated_at,
+      activated_by = excluded.activated_by
+  `).bind(teamId, config.version, config.content_hash, activatedAt, activatedBy).run();
+
+  const responseBody = {
+    teamId,
+    activeVersion: config.version,
+    activeContentHash: config.content_hash,
+    activatedAt,
+    activatedBy,
+    protocol_version: PROTOCOL_VERSION_CURRENT,
+  };
+  const notificationResponse = await notifyTeamConfigChanged(context, responseBody);
+  if (!notificationResponse.ok) {
+    return normalizeForwardedErrorResponse(notificationResponse);
+  }
+
+  return jsonResponse(responseBody, 200);
 }
 
 function extractBearerToken(authorization: string | null): string | undefined {
@@ -820,6 +884,26 @@ async function readObjectBody(request: Request): Promise<Record<string, unknown>
   return body as Record<string, unknown>;
 }
 
+async function readOptionalObjectBody(request: Request): Promise<Record<string, unknown> | undefined | false> {
+  const text = await request.text();
+  if (text.trim() === "") {
+    return undefined;
+  }
+
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return false;
+  }
+
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return false;
+  }
+
+  return body as Record<string, unknown>;
+}
+
 function getStringField(body: Record<string, unknown>, key: string): string | undefined {
   const value = body[key];
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
@@ -836,6 +920,15 @@ function getStringArrayField(body: Record<string, unknown>, key: string): string
 function getPositiveIntegerField(body: Record<string, unknown>, key: string): number | undefined {
   const value = body[key];
   return typeof value === "number" && Number.isInteger(value) && value >= 1 ? value : undefined;
+}
+
+function parsePositiveInteger(value: string): number | undefined {
+  if (!/^[1-9][0-9]*$/u.test(value)) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 function getWorkerKindField(body: Record<string, unknown>): WorkerRegisterRequest["kind"] | undefined {
@@ -891,6 +984,26 @@ function teamCoordinatorBoardPostPath(request: Request): string | undefined {
     return undefined;
   }
   return `/board/${actionPath}`;
+}
+
+async function notifyTeamConfigChanged(
+  context: Context<WorkerRouterEnv>,
+  payload: Record<string, unknown>,
+): Promise<Response> {
+  const id = context.env.TEAM_COORDINATOR.idFromName(String(payload.teamId));
+  const stub = context.env.TEAM_COORDINATOR.get(id);
+  const headers = new Headers(context.req.raw.headers);
+  headers.set("content-type", "application/json");
+  headers.set("x-contrabass-team-id", String(payload.teamId));
+
+  return stub.fetch(new Request("https://team-coordinator.internal/config-changed", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      type: "config-changed",
+      ...payload,
+    }),
+  }));
 }
 
 async function forwardIssueRunRequest(
