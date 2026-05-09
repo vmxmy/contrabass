@@ -133,8 +133,23 @@ func (e *workerRunExecutor) Run(ctx context.Context, frame workerv1.WorkerDispat
 		}
 		return nil
 	}
-	if err := e.runAgentWithEventUpload(ctx, runner, issue, workspacePath, frame.Prompt, frame.LeaseSec); err != nil {
-		return fmt.Errorf("run agent for run %q: %w", frame.RunID, err)
+
+	runErr := e.runAgentWithEventUpload(ctx, runner, issue, workspacePath, frame.Prompt, frame.LeaseSec)
+
+	// On lease revocation: upload partial artifacts to still-valid presigned
+	// URLs, then release the git worktree. For normal completions the worktree
+	// is kept so the developer can inspect the agent's work.
+	if errors.Is(runErr, errWorkerLeaseRevoked) {
+		uploadCtx, cancelUpload := context.WithTimeout(context.Background(), 30*time.Second)
+		_, _ = newWorkerArtifactUploader(nil).UploadFiles(uploadCtx, frame.ArtifactUploadURLs, collectPartialArtifacts(workspacePath))
+		cancelUpload()
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
+		_ = e.workspaceMgr.Cleanup(cleanupCtx, issue.ID)
+		cancelCleanup()
+	}
+
+	if runErr != nil {
+		return fmt.Errorf("run agent for run %q: %w", frame.RunID, runErr)
 	}
 	return nil
 }
@@ -154,8 +169,8 @@ func (e *workerRunExecutor) runAgentWithEventUpload(
 		return agent.Run(ctx, runner, issue, workspacePath, prompt)
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	ctx, cancelWithCause := context.WithCancelCause(ctx)
+	defer cancelWithCause(nil)
 
 	proc, err := runner.Start(ctx, issue, workspacePath, prompt)
 	if err != nil {
@@ -205,7 +220,7 @@ func (e *workerRunExecutor) runAgentWithEventUpload(
 				return nil
 			}
 			if errors.Is(err, errWorkerLeaseRevoked) {
-				cancel()
+				cancelWithCause(errLeaseRevoked)
 			}
 			return err
 		})
@@ -221,10 +236,29 @@ func (e *workerRunExecutor) runAgentWithEventUpload(
 			}
 			stopHeartbeat()
 			if err != nil {
-				cancel()
+				cancelWithCause(nil)
 			}
 			return err
 		}
+	})
+	// Graceful shutdown on lease revocation: SIGTERM via runner.Stop, then
+	// SIGKILL after the grace period. Uses heartbeatCtx (stopped by stopHeartbeat
+	// when proc exits normally) so this goroutine does not hold g.Wait() open
+	// on normal process completion.
+	g.Go(func() error {
+		<-heartbeatCtx.Done()
+		if !errors.Is(context.Cause(ctx), errLeaseRevoked) {
+			return nil
+		}
+		_ = runner.Stop(proc)
+		timer := time.NewTimer(workerLeaseRevokedGracePeriod)
+		defer timer.Stop()
+		select {
+		case <-proc.Done:
+		case <-timer.C:
+			_ = signalProcess(proc.PID, os.Kill)
+		}
+		return nil
 	})
 
 	return g.Wait()

@@ -118,7 +118,7 @@
 - [x] 12.8 Implement event batching adapter: agent runner output → NDJSON POST batches (≤200 events, ≤512KB, ≤2s latency)
 - [x] 12.9 Implement heartbeat scheduler at `leaseSec / 3` with jitter, with `progress` and `lastEventTs`
 - [x] 12.10 Implement R2 presigned PUT uploader for logs/diff/screenshots
-- [ ] 12.11 Implement `lease-revoked` handler: SIGTERM → SIGKILL after 5s, attempt artifact upload, release worktree
+- [x] 12.11 Implement `lease-revoked` handler: SIGTERM → SIGKILL after 5s, attempt artifact upload, release worktree
 - [ ] 12.12 Implement config cache by hash and `GET /config/{hash}` fetch on miss
 - [ ] 12.13 Implement `--ephemeral` flag with shorter lease defaults for CI use
 - [ ] 12.14 Go test coverage with mock cloud server using shared `testdata/workerproto/v1/` fixtures
