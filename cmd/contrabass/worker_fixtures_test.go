@@ -241,6 +241,53 @@ func TestMockCloudServerLeaseRevokedFixtureFrame(t *testing.T) {
 	}
 }
 
+// TestLongPollDispatchDeliversFixtureFrame verifies that the dispatch.json
+// fixture parses correctly when served over the long-poll endpoint, confirming
+// payload shape parity with the WebSocket delivery path. This is the
+// validation required by task 16.5: the same WorkerDispatchFrame type must be
+// decodable regardless of the transport (WS or long-poll).
+func TestLongPollDispatchDeliversFixtureFrame(t *testing.T) {
+	dispatchFixture := loadWorkerFixture(t, "dispatch.json")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Equal(t, "Bearer test-session-token", r.Header.Get("Authorization"))
+		assert.Equal(t, "25s", r.URL.Query().Get("wait"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(dispatchFixture)
+	}))
+	defer server.Close()
+
+	restore := stubWorkerLoginDependencies(t, server.Client(), &fakeWorkerEnrollmentStore{})
+	defer restore()
+
+	var got workerv1.WorkerDispatchFrame
+	err := longPollWorkerDispatch(context.Background(), workerRegistration{
+		SessionToken: "test-session-token",
+		DispatchChannel: workerv1.WorkerRegisterResponseDispatchChannel{
+			LongPollURL: workerv1.URL(server.URL + "/dispatch?wait=25s"),
+		},
+	}, func(_ context.Context, frame workerv1.WorkerDispatchFrame) error {
+		got = frame
+		return nil
+	})
+
+	require.NoError(t, err)
+	// Validate all fields match the fixture — same assertions as the WS fixture
+	// test (TestMockCloudServerDispatchesFixtureFrame) to prove shape parity.
+	assert.Equal(t, workerv1.RunID("run-20260509-0001"), got.RunID)
+	assert.Equal(t, workerv1.IssueRef("LIN-123"), got.IssueRef)
+	assert.Equal(t, workerv1.GitBranch("feature/lin-123"), got.Branch)
+	assert.Equal(t, workerv1.LeaseSec(60), got.LeaseSec)
+	assert.Equal(t, 5, got.AckDeadlineSec)
+	assert.Equal(t, workerv1.ProtocolVersionCurrent, got.ProtocolVersion)
+	assert.Equal(t, "dispatch", got.Type)
+	assert.NotEmpty(t, got.ArtifactUploadURLs.Logs)
+	assert.NotEmpty(t, got.ArtifactUploadURLs.Diff)
+	assert.NotEmpty(t, got.ArtifactUploadURLs.Summary)
+	assert.Len(t, got.ArtifactUploadURLs.Screenshots, 1)
+}
+
 // TestMockCloudServerRegistrationSuccessWithFixtures verifies the full
 // refresh → register sequence against a mock server that serves the actual
 // register-response.success.json fixture (with URLs replaced for the test

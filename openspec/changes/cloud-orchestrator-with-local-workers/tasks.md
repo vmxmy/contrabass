@@ -152,7 +152,7 @@
 - [x] 16.2 Run real-world soak: one developer runs `contrabass worker` against staging for 1 week with codex agent
 - [x] 16.3 Validate lease-revocation path by killing the worker mid-run and observing requeue
 - [x] 16.4 Validate WS reconnect with `last_event_id` replay (simulate network blip)
-- [ ] 16.5 Validate long-poll fallback path by blocking WS upgrades at the proxy
+- [x] 16.5 Validate long-poll fallback path by blocking WS upgrades at the proxy
 - [ ] 16.6 Validate config-changed propagation across multiple connected workers and dashboards
 - [ ] 16.7 Capture observability dashboards: poll latency, dispatch latency, lease-revocation rate, event ingest rate
 

@@ -901,6 +901,161 @@ func TestWorkerCommandNonEphemeralDoesNotSendHint(t *testing.T) {
 	assert.False(t, hasEphemeral, "ephemeral field must be absent when --ephemeral is not set (omitempty)")
 }
 
+// TestConsumeWorkerDispatchesLongPollReissuesAfter204 validates the spec
+// scenario "Long-poll times out with no work": when the cloud returns 204, the
+// worker re-issues the long-poll until a dispatch arrives. This simulates WS
+// blocked at the proxy (3 failures → fallback) followed by two 204 timeouts
+// before the third long-poll delivers the dispatch frame.
+func TestConsumeWorkerDispatchesLongPollReissuesAfter204(t *testing.T) {
+	oldReconnectDelay := workerWSReconnectDelay
+	oldFallbackRetryDelay := workerWSFallbackRetryDelay
+	workerWSReconnectDelay = 0
+	workerWSFallbackRetryDelay = time.Hour
+	defer func() {
+		workerWSReconnectDelay = oldReconnectDelay
+		workerWSFallbackRetryDelay = oldFallbackRetryDelay
+	}()
+
+	dispatchJSON := `{
+		"type": "dispatch",
+		"runId": "run-204-reissue",
+		"issueRef": "LIN-204",
+		"branch": "contrabass/run-204-reissue",
+		"prompt": "fix after 204 retries",
+		"configHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"leaseSec": 60,
+		"artifactUploadURLs": {
+			"logs": "https://r2.test/logs",
+			"diff": "https://r2.test/diff",
+			"summary": "https://r2.test/summary"
+		},
+		"protocol_version": "1.0.0"
+	}`
+
+	longPollAttempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/dispatch-ws":
+			http.Error(w, "websocket blocked by proxy", http.StatusBadGateway)
+		case "/dispatch":
+			longPollAttempts++
+			assert.Equal(t, "25s", r.URL.Query().Get("wait"))
+			assert.Equal(t, "Bearer session-token", r.Header.Get("Authorization"))
+			if longPollAttempts < 3 {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(dispatchJSON))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	restoreDeps := stubWorkerLoginDependencies(t, server.Client(), &fakeWorkerEnrollmentStore{})
+	defer restoreDeps()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var got workerv1.WorkerDispatchFrame
+	err := consumeWorkerDispatches(ctx, workerRegistration{
+		SessionToken: "session-token",
+		DispatchChannel: workerv1.WorkerRegisterResponseDispatchChannel{
+			WsURL:       workerv1.WsURL(strings.Replace(server.URL, "http://", "ws://", 1) + "/dispatch-ws"),
+			LongPollURL: workerv1.URL(server.URL + "/dispatch?wait=25s"),
+		},
+	}, func(_ context.Context, frame workerv1.WorkerDispatchFrame) error {
+		got = frame
+		cancel()
+		return nil
+	}, nil)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 3, longPollAttempts, "worker must re-issue long-poll after each 204 until dispatch arrives")
+	assert.Equal(t, workerv1.RunID("run-204-reissue"), got.RunID)
+}
+
+// TestConsumeWorkerDispatchesFallsBackForVariousProxyBlockCodes validates that
+// any HTTP error response to the WS upgrade (400, 403, 502 — common proxy
+// block codes) counts as a WS failure, so the worker reaches the threshold and
+// switches to long-poll regardless of which non-101 status the proxy returns.
+func TestConsumeWorkerDispatchesFallsBackForVariousProxyBlockCodes(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+	}{
+		{name: "400 bad request", statusCode: http.StatusBadRequest},
+		{name: "403 forbidden", statusCode: http.StatusForbidden},
+		{name: "502 bad gateway", statusCode: http.StatusBadGateway},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldReconnectDelay := workerWSReconnectDelay
+			oldFallbackRetryDelay := workerWSFallbackRetryDelay
+			workerWSReconnectDelay = 0
+			workerWSFallbackRetryDelay = time.Hour
+			defer func() {
+				workerWSReconnectDelay = oldReconnectDelay
+				workerWSFallbackRetryDelay = oldFallbackRetryDelay
+			}()
+
+			dispatchJSON := `{
+				"type": "dispatch",
+				"runId": "run-proxy-block",
+				"issueRef": "LIN-999",
+				"branch": "contrabass/run-proxy-block",
+				"prompt": "fix after proxy block",
+				"configHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				"leaseSec": 60,
+				"artifactUploadURLs": {
+					"logs": "https://r2.test/logs",
+					"diff": "https://r2.test/diff",
+					"summary": "https://r2.test/summary"
+				},
+				"protocol_version": "1.0.0"
+			}`
+
+			wsAttempts := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/dispatch-ws":
+					wsAttempts++
+					http.Error(w, "proxy blocked", tt.statusCode)
+				case "/dispatch":
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(dispatchJSON))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			restoreDeps := stubWorkerLoginDependencies(t, server.Client(), &fakeWorkerEnrollmentStore{})
+			defer restoreDeps()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var got workerv1.WorkerDispatchFrame
+			err := consumeWorkerDispatches(ctx, workerRegistration{
+				SessionToken: "session-token",
+				DispatchChannel: workerv1.WorkerRegisterResponseDispatchChannel{
+					WsURL:       workerv1.WsURL(strings.Replace(server.URL, "http://", "ws://", 1) + "/dispatch-ws"),
+					LongPollURL: workerv1.URL(server.URL + "/dispatch?wait=25s"),
+				},
+			}, func(_ context.Context, frame workerv1.WorkerDispatchFrame) error {
+				got = frame
+				cancel()
+				return nil
+			}, nil)
+
+			require.ErrorIs(t, err, context.Canceled)
+			assert.Equal(t, workerWSFailureThreshold, wsAttempts,
+				"exactly %d WS attempts expected before fallback for HTTP %d", workerWSFailureThreshold, tt.statusCode)
+			assert.Equal(t, workerv1.RunID("run-proxy-block"), got.RunID)
+		})
+	}
+}
+
 type fakeWorkerEnrollmentStore struct {
 	enrollments []workerEnrollment
 	byTeam      map[string]workerEnrollment
