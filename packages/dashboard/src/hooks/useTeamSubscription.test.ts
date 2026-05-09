@@ -321,6 +321,63 @@ describe("team dashboard WebSocket subscription", () => {
       "ws://localhost/v1/teams/team-2/subscribe",
     );
   });
+
+  it("delivers a gapless event sequence across a network blip via server-side replay", () => {
+    const timers = new TimerHarness();
+    const frames: DashboardSubscriptionFrame[] = [];
+    const statuses: TeamSubscriptionStatus[] = [];
+    const client = makeClient(timers, frames, statuses);
+
+    client.start("team-1");
+    MockSocket.instances[0]?.open();
+
+    // Two events arrive before the blip.
+    MockSocket.instances[0]?.message({
+      type: "run-event",
+      event_id: "evt-100",
+      payload: { runId: "run-1", event: { kind: "phase" } },
+    });
+    MockSocket.instances[0]?.message({
+      type: "board-update",
+      event_id: "evt-101",
+      board: { open: [], claimed: [{ issueRef: "LIN-1", runId: "run-1", phase: "claimed" }], running: [], done: [] },
+    });
+
+    // Network blip: WS drops.
+    MockSocket.instances[0]?.closeFromServer();
+
+    // Reconnect fires; URL must include the last seen event_id.
+    timers.runNext();
+    expect(MockSocket.instances[1]?.url).toBe(
+      "ws://localhost/v1/teams/team-1/subscribe?last_event_id=evt-101",
+    );
+    MockSocket.instances[1]?.open();
+
+    // Server replays the two events that arrived during the blip.
+    MockSocket.instances[1]?.message({
+      type: "run-event",
+      event_id: "evt-102",
+      payload: { runId: "run-1", event: { kind: "log", message: "Still working..." } },
+    });
+    MockSocket.instances[1]?.message({
+      type: "board-update",
+      event_id: "evt-103",
+      board: { open: [], claimed: [], running: [], done: [{ issueRef: "LIN-1", runId: "run-1", phase: "done" }] },
+    });
+
+    // All four events present in arrival order — no gaps, no duplicates.
+    expect(frames.map((frame) => frame.event_id)).toEqual([
+      "evt-100",
+      "evt-101",
+      "evt-102",
+      "evt-103",
+    ]);
+    expect(statuses[statuses.length - 1]).toMatchObject({
+      connected: true,
+      reconnecting: false,
+      lastEventId: "evt-103",
+    });
+  });
 });
 
 afterEach(() => {

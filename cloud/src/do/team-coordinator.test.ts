@@ -1163,6 +1163,84 @@ describe("TeamCoordinator Durable Object", () => {
     ]);
   });
 
+  it("replays only missed events on reconnect after a network blip (last_event_id cursor)", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(5_000);
+    Reflect.set(globalThis, "WebSocketPair", FakeWebSocketPair);
+    const coordinator = createTeamCoordinator();
+
+    // First client subscribes and receives the initial board snapshot.
+    await coordinator.fetch(new Request("https://team-coordinator.test/subscribe", {
+      headers: { upgrade: "websocket" },
+    }));
+    const firstServer = fakeWebSocketPairs[0]?.[1];
+
+    // Two events arrive in real-time; first client receives both.
+    await post(coordinator, "/run-event", {
+      protocol_version: "1.0.0",
+      runId: "run-1",
+      event: { kind: "phase", phase: "planning" },
+    });
+    await post(coordinator, "/run-event", {
+      protocol_version: "1.0.0",
+      runId: "run-1",
+      event: { kind: "log", message: "Working..." },
+    });
+
+    expect(firstServer?.sent.slice(1).map((message) => JSON.parse(message))).toEqual([
+      expect.objectContaining({ type: "run-event", event_id: "1" }),
+      expect.objectContaining({ type: "run-event", event_id: "2" }),
+    ]);
+
+    // --- Network blip: first client drops ---
+    // Two more events arrive while the client is away.
+    await post(coordinator, "/run-event", {
+      protocol_version: "1.0.0",
+      runId: "run-1",
+      event: { kind: "log", message: "Still working..." },
+    });
+    await post(coordinator, "/run-complete", {
+      type: "run-complete",
+      protocol_version: "1.0.0",
+      runId: "run-1",
+      issueRef: "LIN-1",
+      status: "succeeded",
+    });
+
+    // Client reconnects, presenting the last event_id it received before the blip.
+    const reconnectResponse = await coordinator.fetch(new Request(
+      "https://team-coordinator.test/subscribe?last_event_id=2",
+      { headers: { upgrade: "websocket" } },
+    ));
+
+    expect([101, 200]).toContain(reconnectResponse.status);
+    const reconnectedServer = fakeWebSocketPairs[1]?.[1];
+
+    // Reconnected client should get the current board (first message) then
+    // exactly the two events that arrived during the blip — no more, no less.
+    expect(reconnectedServer?.sent.slice(1).map((message) => JSON.parse(message))).toEqual([
+      {
+        type: "run-event",
+        protocol_version: "1.0.0",
+        event_id: "3",
+        receivedAt: 5_000,
+        payload: {
+          protocol_version: "1.0.0",
+          runId: "run-1",
+          event: { kind: "log", message: "Still working..." },
+        },
+      },
+      {
+        type: "run-complete",
+        protocol_version: "1.0.0",
+        event_id: "4",
+        runId: "run-1",
+        issueRef: "LIN-1",
+        status: "succeeded",
+        receivedAt: 5_000,
+      },
+    ]);
+  });
+
   it("uses WebSocket Hibernation for dashboard subscribers", async () => {
     vi.spyOn(Date, "now").mockReturnValue(3_000);
     Reflect.set(globalThis, "WebSocketPair", FakeWebSocketPair);
