@@ -1,5 +1,19 @@
-import { describe, expect, it } from 'bun:test'
-import { apiFetch, apiUrl, createApiEventSource, resolveApiBase } from './api'
+import { afterEach, describe, expect, it } from 'bun:test'
+import {
+  VersionSkewError,
+  apiFetch,
+  apiUrl,
+  createApiEventSource,
+  getVersionSkewState,
+  isIncompatibleApiVersion,
+  resetVersionSkewForTests,
+  resolveApiBase,
+  resolveDashboardApiVersion,
+} from './api'
+
+afterEach(() => {
+  resetVersionSkewForTests()
+})
 
 describe('dashboard API client', () => {
   it('uses the production API by default for production builds', () => {
@@ -10,6 +24,18 @@ describe('dashboard API client', () => {
     expect(resolveApiBase({ PROD: true, VITE_CONTRABASS_API_BASE: 'https://api.staging.contrabass.dev/' })).toBe(
       'https://api.staging.contrabass.dev',
     )
+  })
+
+
+  it('resolves the dashboard API compatibility version from build env', () => {
+    expect(resolveDashboardApiVersion({ VITE_CONTRABASS_API_VERSION: '2.3.4' })).toBe('2.3.4')
+    expect(resolveDashboardApiVersion({})).toBe('1.0.0')
+  })
+
+  it('treats higher API majors as incompatible', () => {
+    expect(isIncompatibleApiVersion('2.0.0', '1.7.0')).toBe(true)
+    expect(isIncompatibleApiVersion('1.8.0', '1.7.0')).toBe(false)
+    expect(isIncompatibleApiVersion('0.9.0', '1.7.0')).toBe(false)
   })
 
   it('keeps local development requests relative when no base is configured', () => {
@@ -32,6 +58,36 @@ describe('dashboard API client', () => {
     try {
       await apiFetch('/api/v1/state')
       expect(calls).toEqual([{ input: '/api/v1/state', init: { credentials: 'include' } }])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+
+  it('detects API major skew from response headers and blocks later mutations', async () => {
+    const originalFetch = globalThis.fetch
+    const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
+    const fetchMock: typeof fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ input, init })
+        return Response.json(
+          { ok: true },
+          { headers: { 'X-Contrabass-Api-Version': '2.0.0' } },
+        )
+      },
+      { preconnect: originalFetch.preconnect },
+    )
+    globalThis.fetch = fetchMock
+
+    try {
+      await apiFetch('/v1/teams')
+      expect(getVersionSkewState()).toEqual({
+        detected: true,
+        apiVersion: '2.0.0',
+        dashboardApiVersion: '1.0.0',
+      })
+      await expect(apiFetch('/v1/teams/team-a/board/refresh', { method: 'POST' })).rejects.toBeInstanceOf(VersionSkewError)
+      expect(calls).toHaveLength(1)
     } finally {
       globalThis.fetch = originalFetch
     }

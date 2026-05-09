@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AppLayout } from "./components/AppLayout";
+import { VersionSkewBanner } from "./components/VersionSkewBanner";
 import type { CloudDashboardView } from "./components/CloudDashboardViews";
 import type { CloudBoardSnapshot } from "./cloudModels";
 import { TooltipProvider } from "./components/ui/tooltip";
@@ -128,6 +129,7 @@ function App() {
   return (
     <TooltipProvider>
       <div className="flex h-dvh w-full flex-col overflow-hidden bg-background text-foreground">
+        <VersionSkewBanner />
         {teamSubscription.reconnecting ? (
           <div
             className="border-b border-amber-500/40 bg-amber-500/15 px-4 py-2 text-xs font-medium text-amber-700"
