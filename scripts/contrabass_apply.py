@@ -30,7 +30,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-REPO = Path("/Users/xumingyang/github/contrabass")
+REPO = Path(os.environ.get("CONTRABASS_REPO", "/Users/xumingyang/github/contrabass"))
 CHANGE_DIR = REPO / "openspec/changes/cloud-orchestrator-with-local-workers"
 TASKS_FILE = CHANGE_DIR / "tasks.md"
 SPECS_DIR = CHANGE_DIR / "specs"
