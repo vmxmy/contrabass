@@ -104,7 +104,7 @@
 - [x] 11.6 Implement SPA / API version-skew banner
 - [x] 11.7 Create Cloudflare Pages project for `packages/landing` and verify README rendering
 - [x] 11.8 Add Pages preview environment for staging API
-- [ ] 11.9 Bun-test coverage for SPA components and reconnect logic
+- [x] 11.9 Bun-test coverage for SPA components and reconnect logic
 
 ## 12. `contrabass worker` Go subcommand
 

@@ -75,6 +75,19 @@ class TimerHarness {
     timer.handler();
   }
 
+  runTimeout(timeout: number): void {
+    const next = [...this.timers.entries()].find(
+      ([, timer]) => timer.timeout === timeout,
+    );
+    if (!next) {
+      throw new Error(`expected a pending ${timeout}ms timer`);
+    }
+
+    const [id, timer] = next;
+    this.timers.delete(id);
+    timer.handler();
+  }
+
   get pendingCount(): number {
     return this.timers.size;
   }
@@ -160,6 +173,42 @@ describe("team dashboard WebSocket subscription", () => {
     ]);
   });
 
+  it("keeps replay cursor through a missed-event replay after reconnect", () => {
+    const timers = new TimerHarness();
+    const frames: DashboardSubscriptionFrame[] = [];
+    const statuses: TeamSubscriptionStatus[] = [];
+    const client = makeClient(timers, frames, statuses);
+
+    client.start("team-1");
+    MockSocket.instances[0]?.open();
+    MockSocket.instances[0]?.message({
+      type: "board-update",
+      event_id: "evt-010",
+      board: { open: [], claimed: [], running: [], done: [] },
+    });
+    MockSocket.instances[0]?.closeFromServer();
+    timers.runNext();
+    MockSocket.instances[1]?.open();
+    MockSocket.instances[1]?.message({
+      type: "worker-status",
+      event_id: "evt-011",
+      worker: { workerId: "local-1", status: "idle" },
+    });
+
+    expect(MockSocket.instances[1]?.url).toBe(
+      "ws://localhost/v1/teams/team-1/subscribe?last_event_id=evt-010",
+    );
+    expect(statuses[statuses.length - 1]).toMatchObject({
+      connected: true,
+      reconnecting: false,
+      lastEventId: "evt-011",
+    });
+    expect(frames.map((frame) => frame.event_id)).toEqual([
+      "evt-010",
+      "evt-011",
+    ]);
+  });
+
   it("uses exponential reconnect backoff while preserving the 5 second indicator timer", () => {
     const timers = new TimerHarness();
     const frames: DashboardSubscriptionFrame[] = [];
@@ -175,6 +224,61 @@ describe("team dashboard WebSocket subscription", () => {
     MockSocket.instances[1]?.closeFromServer();
 
     expect(timers.pendingTimeouts).toEqual([2_000, 5_000]);
+  });
+
+  it("caps reconnect backoff at 30 seconds", () => {
+    const timers = new TimerHarness();
+    const frames: DashboardSubscriptionFrame[] = [];
+    const statuses: TeamSubscriptionStatus[] = [];
+    const client = makeClient(timers, frames, statuses);
+
+    client.start("team-1");
+    MockSocket.instances[0]?.open();
+    MockSocket.instances[0]?.closeFromServer();
+
+    for (const delayMs of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]) {
+      const attempt = MockSocket.instances.length;
+      timers.runTimeout(delayMs);
+      MockSocket.instances[attempt]?.closeFromServer();
+    }
+
+    expect(timers.pendingTimeouts).toEqual([5_000, 30_000]);
+  });
+
+  it("surfaces parse and unknown-frame errors without advancing the cursor", () => {
+    const timers = new TimerHarness();
+    const frames: DashboardSubscriptionFrame[] = [];
+    const statuses: TeamSubscriptionStatus[] = [];
+    const client = makeClient(timers, frames, statuses);
+
+    client.start("team-1");
+    MockSocket.instances[0]?.open();
+    MockSocket.instances[0]?.message({
+      type: "run-event",
+      event_id: "evt-020",
+      payload: { runId: "run-20" },
+    });
+    MockSocket.instances[0]?.onmessage?.({ data: "not json" } as MessageEvent);
+    MockSocket.instances[0]?.message({
+      type: "unknown",
+      event_id: "evt-021",
+    });
+
+    expect(frames).toHaveLength(1);
+    expect(statuses.slice(-2)).toEqual([
+      {
+        connected: true,
+        reconnecting: false,
+        error: "Could not parse dashboard update frame",
+        lastEventId: "evt-020",
+      },
+      {
+        connected: true,
+        reconnecting: false,
+        error: "Received an unknown dashboard update frame",
+        lastEventId: "evt-020",
+      },
+    ]);
   });
 
   it("reports reconnecting only after the 5 second down indicator timer fires", () => {

@@ -43,6 +43,100 @@ afterEach(() => {
 })
 
 describe('CloudDashboardViews', () => {
+  it('renders the team picker and routes selection to the board view', async () => {
+    const changes: Array<{ teamId: string; view: string | undefined }> = []
+
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL) => {
+        if (String(input) === '/v1/teams') {
+          return Response.json({ teams: [{ id: 'team-a', name: 'Team A' }, { id: 'team-b', name: 'Team B' }] })
+        }
+        return new Response('not found', { status: 404 })
+      },
+      { preconnect: originalFetch.preconnect },
+    )
+
+    render(
+      <CloudDashboardViews
+        teamId={null}
+        view="board"
+        state={emptyState()}
+        teamSnapshot={teamSnapshot()}
+        agentLogs={[]}
+        onTeamChange={(teamId, view) => changes.push({ teamId, view })}
+        onViewChange={() => undefined}
+        onApplyBoardFrame={() => undefined}
+      />,
+    )
+
+    await waitFor(() => expectInDocument(screen.getByRole('option', { name: 'Team B' })))
+    fireEvent.change(screen.getByLabelText('Team'), { target: { value: 'team-b' } })
+
+    expect(changes).toEqual([{ teamId: 'team-b', view: 'board' }])
+  })
+
+  it('loads the active team board and forwards the snapshot into the SPA state', async () => {
+    const requests: string[] = []
+    const boardFrames: unknown[] = []
+
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL) => {
+        const path = String(input)
+        requests.push(path)
+        if (path === '/v1/teams') {
+          return Response.json({ teams: [{ id: 'team-a', name: 'Team A' }] })
+        }
+        if (path === '/v1/teams/team-a/board') {
+          return Response.json({
+            board: {
+              open: [
+                {
+                  issue_ref: 'CLOUD-7',
+                  title: 'Reconnect dashboard',
+                  last_updated: '2026-05-09T00:00:00.000Z',
+                },
+              ],
+              claimed: [],
+              running: [
+                {
+                  issueRef: 'CLOUD-8',
+                  runId: 'run-8',
+                  assignedWorkerId: 'local-1',
+                  lastUpdated: 1_777_766_400_000,
+                },
+              ],
+              done: [],
+            },
+          })
+        }
+        return new Response('not found', { status: 404 })
+      },
+      { preconnect: originalFetch.preconnect },
+    )
+
+    render(
+      <CloudDashboardViews
+        teamId="team-a"
+        view="board"
+        state={emptyState()}
+        teamSnapshot={teamSnapshot()}
+        agentLogs={[]}
+        onTeamChange={() => undefined}
+        onViewChange={() => undefined}
+        onApplyBoardFrame={(board) => boardFrames.push(board)}
+      />,
+    )
+
+    await waitFor(() => expectInDocument(screen.getByText('CLOUD-7')))
+    expectInDocument(screen.getByText('Reconnect dashboard'))
+    expectInDocument(screen.getByText('run run-8'))
+    expect(requests).toContain('/v1/teams/team-a/board')
+    expect(boardFrames).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole('button', { name: /Refresh/u }))
+    await waitFor(() => expect(requests.filter((path) => path === '/v1/teams/team-a/board')).toHaveLength(2))
+  })
+
   it('fetches selected config versions and renders changed diff lines', async () => {
     const bodies: Record<string, string> = {
       hash1: 'agent_type: codex\nmax_workers: 2\n',
