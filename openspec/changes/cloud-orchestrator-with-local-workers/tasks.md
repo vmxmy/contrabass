@@ -71,7 +71,7 @@
 - [x] 8.6 Implement WS upgrade for `/v1/teams/{teamId}/subscribe` (dashboard) and `/v1/workers/{workerId}/dispatch-ws` (worker)
 - [x] 8.7 Add `X-Contrabass-Api-Version` response header on every response
 - [x] 8.8 Add structured error responses with `error` codes matching the protocol spec
-- [ ] 8.9 Vitest coverage: auth, routing, error mapping, version header
+- [x] 8.9 Vitest coverage: auth, routing, error mapping, version header
 
 ## 9. Cloud config store
 

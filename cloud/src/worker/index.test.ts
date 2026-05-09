@@ -268,6 +268,39 @@ describe("API Worker router auth middleware", () => {
     });
   });
 
+  it("maps malformed forwarded errors to upstream_error with protocol_version", async () => {
+    const cases: Array<{
+      name: string;
+      upstream: Response;
+      expectedStatus: number;
+    }> = [
+      {
+        name: "non-json upstream error",
+        upstream: new Response("service unavailable", { status: 503 }),
+        expectedStatus: 503,
+      },
+      {
+        name: "json upstream error without protocol error code",
+        upstream: Response.json({ message: "bad gateway" }, { status: 502 }),
+        expectedStatus: 502,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const env = createEnv(async () => testCase.upstream.clone());
+      const response = await handleWorkerRequest(new Request("https://api.test/v1/teams/team-1/board", {
+        headers: { authorization: "Bearer worker-session" },
+      }), envWithAuth(env, { workerTokens: "worker-session" }));
+
+      expect(response.status, testCase.name).toBe(testCase.expectedStatus);
+      await expect(response.json(), testCase.name).resolves.toEqual({
+        error: "upstream_error",
+        protocol_version: "1.0.0",
+      });
+      expect(response.headers.get("x-contrabass-api-version"), testCase.name).toBe("1.0.0");
+    }
+  });
+
   it("forwards worker long-poll dispatch requests to TeamCoordinator", async () => {
     const seen: { name?: string; url?: string; method?: string; teamId?: string; workerId?: string } = {};
     const env = createEnv(async (request) => {
@@ -428,6 +461,48 @@ describe("API Worker router auth middleware", () => {
     await expect(response.json()).resolves.toEqual({ error: "run_not_found", protocol_version: "1.0.0" });
   });
 
+  it("maps routing validation failures to structured protocol errors", async () => {
+    const cases: Array<{
+      name: string;
+      request: Request;
+      expectedStatus: number;
+      expectedBody: Record<string, unknown>;
+    }> = [
+      {
+        name: "run forward missing team scope",
+        request: new Request("https://api.test/v1/runs/run-1/heartbeat", {
+          method: "POST",
+          headers: {
+            authorization: "Bearer worker-session",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ lastEventTs: 1_771_000_000_000, protocol_version: "1.0.0" }),
+        }),
+        expectedStatus: 400,
+        expectedBody: { error: "invalid_team_id", protocol_version: "1.0.0" },
+      },
+      {
+        name: "worker dispatch missing team scope",
+        request: new Request("https://api.test/v1/workers/worker-1/dispatch", {
+          headers: { authorization: "Bearer worker-session" },
+        }),
+        expectedStatus: 400,
+        expectedBody: { error: "invalid_team_id", protocol_version: "1.0.0" },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const response = await handleWorkerRequest(
+        testCase.request,
+        envWithAuth(createEnv(), { workerTokens: "worker-session" }),
+      );
+
+      expect(response.status, testCase.name).toBe(testCase.expectedStatus);
+      await expect(response.json(), testCase.name).resolves.toEqual(testCase.expectedBody);
+      expect(response.headers.get("x-contrabass-api-version"), testCase.name).toBe("1.0.0");
+    }
+  });
+
   it("scopes issued worker session run forwards to the token team and worker", async () => {
     const seen: Array<{ name?: string; url: string; workerId?: string; body: unknown }> = [];
     const env = {
@@ -491,6 +566,89 @@ describe("API Worker router auth middleware", () => {
 
     expect(crossTeamResponse.status).toBe(403);
     await expect(crossTeamResponse.json()).resolves.toEqual({ error: "team_forbidden", protocol_version: "1.0.0" });
+  });
+
+  it("scopes issued worker session dispatch routes to the token worker", async () => {
+    const seen: Array<{ url: string; workerId?: string }> = [];
+    const env = {
+      ...createEnv(async (request) => {
+        seen.push({
+          url: request.url,
+          workerId: request.headers.get("x-contrabass-worker-id") ?? undefined,
+        });
+        return request.url.endsWith("/workers/register")
+          ? Response.json({ worker: { workerId: "worker-1" } })
+          : Response.json({ dispatch: null });
+      }),
+      CONTRABASS_WORKER_TOKEN_SECRET: "test-secret",
+    };
+
+    const registerResponse = await handleWorkerRequest(new Request("https://api.test/v1/workers/register", {
+      method: "POST",
+      headers: { authorization: "Bearer enrollment-session", "content-type": "application/json" },
+      body: JSON.stringify(registerBody()),
+    }), envWithAuth(env, { workerTokens: "enrollment-session" }));
+    const registerJson = await registerResponse.json() as Record<string, unknown>;
+    const sessionToken = registerJson.sessionToken;
+    if (typeof sessionToken !== "string") {
+      throw new Error("sessionToken must be a string");
+    }
+
+    const response = await handleWorkerRequest(new Request("https://api.test/v1/workers/worker-1/dispatch?wait=25s", {
+      headers: { authorization: `Bearer ${sessionToken}` },
+    }), env);
+
+    expect(response.status).toBe(200);
+    expect(seen.at(-1)).toEqual({
+      url: "https://team-coordinator.internal/workers/worker-1/dispatch?wait=25s",
+      workerId: "worker-1",
+    });
+
+    const forbiddenResponse = await handleWorkerRequest(new Request(
+      "https://api.test/v1/workers/worker-2/dispatch?wait=25s",
+      { headers: { authorization: `Bearer ${sessionToken}` } },
+    ), env);
+
+    expect(forbiddenResponse.status).toBe(403);
+    await expect(forbiddenResponse.json()).resolves.toEqual({ error: "team_forbidden", protocol_version: "1.0.0" });
+  });
+
+  it("keeps public worker auth routes unauthenticated but versioned", async () => {
+    const cases: Array<{
+      name: string;
+      request: Request;
+      expectedStatus: number;
+      expectedBody: Record<string, unknown>;
+    }> = [
+      {
+        name: "refresh",
+        request: new Request("https://api.test/v1/workers/refresh", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ refreshToken: "", protocol_version: "1.0.0" }),
+        }),
+        expectedStatus: 401,
+        expectedBody: { error: "refresh_invalid", protocol_version: "1.0.0" },
+      },
+      {
+        name: "enroll",
+        request: new Request("https://api.test/v1/workers/enroll", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ code: "" }),
+        }),
+        expectedStatus: 401,
+        expectedBody: { error: "enrollment_invalid", protocol_version: "1.0.0" },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const response = await handleWorkerRequest(testCase.request, createEnv());
+
+      expect(response.status, testCase.name).toBe(testCase.expectedStatus);
+      await expect(response.json(), testCase.name).resolves.toEqual(testCase.expectedBody);
+      expect(response.headers.get("x-contrabass-api-version"), testCase.name).toBe("1.0.0");
+    }
   });
 
   it("accepts dashboard session-cookie auth", async () => {
