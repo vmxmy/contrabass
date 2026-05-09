@@ -65,10 +65,18 @@ workerRouter.post("/v1/workers/register", registerWorker);
 workerRouter.post("/v1/workers/refresh", refreshWorkerSession);
 workerRouter.post("/v1/workers/enroll", enrollWorker);
 
-workerRouter.post("/v1/runs/:runId/ack", notImplemented);
-workerRouter.post("/v1/runs/:runId/heartbeat", notImplemented);
-workerRouter.post("/v1/runs/:runId/events", notImplemented);
-workerRouter.post("/v1/runs/:runId/complete", notImplemented);
+workerRouter.post("/v1/runs/:runId/ack", (context) => {
+  return forwardIssueRunRequest(context, "/ack");
+});
+workerRouter.post("/v1/runs/:runId/heartbeat", (context) => {
+  return forwardIssueRunRequest(context, "/heartbeat");
+});
+workerRouter.post("/v1/runs/:runId/events", (context) => {
+  return forwardIssueRunRequest(context, "/events");
+});
+workerRouter.post("/v1/runs/:runId/complete", (context) => {
+  return forwardIssueRunRequest(context, "/complete");
+});
 
 workerRouter.get("/v1/workers/:workerId/dispatch", notImplemented);
 workerRouter.get("/v1/workers/:workerId/dispatch-ws", notImplemented);
@@ -710,6 +718,124 @@ async function forwardTeamCoordinatorRequest(
     headers,
     body,
   }));
+}
+
+async function forwardIssueRunRequest(
+  context: Context<WorkerRouterEnv>,
+  issueRunPath: "/ack" | "/heartbeat" | "/events" | "/complete",
+): Promise<Response> {
+  const runId = (context.req.param("runId") ?? "").trim();
+  if (runId === "") {
+    return jsonResponse({ error: "invalid_run_id" }, 400);
+  }
+
+  const teamId = resolveRunForwardTeamId(context);
+  if (teamId === undefined) {
+    return jsonResponse({ error: "invalid_team_id" }, 400);
+  }
+  if (teamId === false) {
+    return jsonResponse({ error: "team_forbidden" }, 403);
+  }
+
+  const principal = context.get("principal");
+  const request = context.req.raw;
+  const headers = new Headers(request.headers);
+  headers.delete("content-length");
+  headers.set("x-contrabass-team-id", teamId);
+  headers.set("x-contrabass-run-id", runId);
+  if ("issued" in principal) {
+    headers.set("x-contrabass-worker-id", principal.workerId);
+  }
+
+  const issueRef = await lookupIssueRefForRun(context, teamId, runId);
+  if (issueRef === undefined) {
+    return jsonResponse({ error: "run_not_found" }, 404);
+  }
+
+  const body = issueRunPath === "/ack" && "issued" in principal
+    ? await ackBodyWithWorkerId(request, principal.workerId)
+    : await request.arrayBuffer();
+
+  const id = context.env.ISSUE_RUN.idFromName(`${teamId}:${issueRef}`);
+  const stub = context.env.ISSUE_RUN.get(id);
+  return stub.fetch(new Request(`https://issue-run.internal${issueRunPath}`, {
+    method: request.method,
+    headers,
+    body,
+  }));
+}
+
+async function lookupIssueRefForRun(
+  context: Context<WorkerRouterEnv>,
+  teamId: string,
+  runId: string,
+): Promise<string | undefined> {
+  const id = context.env.TEAM_COORDINATOR.idFromName(teamId);
+  const stub = context.env.TEAM_COORDINATOR.get(id);
+  const headers = new Headers(context.req.raw.headers);
+  headers.set("x-contrabass-team-id", teamId);
+
+  const response = await stub.fetch(new Request("https://team-coordinator.internal/board", {
+    method: "GET",
+    headers,
+  }));
+  if (!response.ok) {
+    return undefined;
+  }
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return undefined;
+  }
+
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return undefined;
+  }
+
+  const board = (body as Record<string, unknown>).board;
+  if (board === null || typeof board !== "object" || Array.isArray(board)) {
+    return undefined;
+  }
+
+  for (const entries of Object.values(board as Record<string, unknown>)) {
+    if (!Array.isArray(entries)) {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+        continue;
+      }
+      const record = entry as Record<string, unknown>;
+      if (record.runId === runId && typeof record.issueRef === "string" && record.issueRef.trim() !== "") {
+        return record.issueRef;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function resolveRunForwardTeamId(context: Context<WorkerRouterEnv>): string | false | undefined {
+  const principal = context.get("principal");
+  const headerTeamId = context.req.raw.headers.get("x-contrabass-team-id")?.trim();
+  if ("issued" in principal) {
+    if (headerTeamId !== undefined && headerTeamId.length > 0 && headerTeamId !== principal.teamId) {
+      return false;
+    }
+    return principal.teamId;
+  }
+
+  return headerTeamId === undefined || headerTeamId.length === 0 ? undefined : headerTeamId;
+}
+
+async function ackBodyWithWorkerId(request: Request, workerId: string): Promise<string> {
+  const body = await readObjectBody(request);
+  return JSON.stringify({
+    ...(body ?? {}),
+    workerId,
+  });
 }
 
 function notImplemented(): Response {

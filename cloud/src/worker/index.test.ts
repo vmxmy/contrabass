@@ -46,6 +46,215 @@ describe("API Worker router auth middleware", () => {
     });
   });
 
+  it("forwards run ack, heartbeat, events, and complete posts to IssueRun", async () => {
+    const seen: Array<{
+      name?: string;
+      url: string;
+      method: string;
+      body: string;
+      teamId?: string;
+      runId?: string;
+      contentType?: string;
+    }> = [];
+    const env = createEnv(async (request) => {
+      if (request.url === "https://team-coordinator.internal/board") {
+        return Response.json({
+          board: {
+            open: [],
+            claimed: [],
+            running: [{ issueRef: "run-1", runId: "run-1", phase: "running", lastUpdated: 1 }],
+            done: [],
+          },
+        });
+      }
+
+      seen.push({
+        url: request.url,
+        method: request.method,
+        body: await request.text(),
+        teamId: request.headers.get("x-contrabass-team-id") ?? undefined,
+        runId: request.headers.get("x-contrabass-run-id") ?? undefined,
+        contentType: request.headers.get("content-type") ?? undefined,
+      });
+      return Response.json({ forwarded: true }, { status: 202 });
+    }, {});
+
+    const cases = [
+      {
+        name: "ack",
+        path: "ack",
+        contentType: "application/json",
+        body: JSON.stringify({ accept: true, protocol_version: "1.0.0" }),
+      },
+      {
+        name: "heartbeat",
+        path: "heartbeat",
+        contentType: "application/json",
+        body: JSON.stringify({ lastEventTs: 1_771_000_000_000, protocol_version: "1.0.0" }),
+      },
+      {
+        name: "events",
+        path: "events",
+        contentType: "application/x-ndjson",
+        body: "{\"ts\":1771000000000,\"kind\":\"log\",\"payload\":{\"message\":\"ok\"},\"protocol_version\":\"1.0.0\"}\n",
+      },
+      {
+        name: "complete",
+        path: "complete",
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: "failed",
+          summary: "tests failed",
+          errorClass: "tests_failed",
+          artifactKeys: {},
+          finalConfigHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          protocol_version: "1.0.0",
+        }),
+      },
+    ];
+
+    for (const testCase of cases) {
+      const response = await handleWorkerRequest(new Request(`https://api.test/v1/runs/run-1/${testCase.path}`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer worker-session",
+          "content-type": testCase.contentType,
+          "x-contrabass-team-id": "team-1",
+        },
+        body: testCase.body,
+      }), envWithAuth(env, { workerTokens: "worker-session" }));
+
+      expect(response.status, testCase.name).toBe(202);
+      await expect(response.json(), testCase.name).resolves.toEqual({ forwarded: true });
+    }
+
+    expect(seen).toEqual(cases.map((testCase) => ({
+      url: `https://issue-run.internal/${testCase.path}`,
+      method: "POST",
+      body: testCase.body,
+      teamId: "team-1",
+      runId: "run-1",
+      contentType: testCase.contentType,
+    })));
+  });
+
+  it("routes run forwards through IssueRun named by team and issueRef", async () => {
+    const seen: { teamName?: string; issueRunName?: string } = {};
+    const env = createSplitEnv(
+      async () => Response.json({
+        board: {
+          open: [],
+          claimed: [{ issueRef: "LIN-1", runId: "run-1", phase: "claimed", lastUpdated: 1 }],
+          running: [],
+          done: [],
+        },
+      }),
+      async () => Response.json({ forwarded: true }, { status: 202 }),
+      seen,
+    );
+
+    const response = await handleWorkerRequest(new Request("https://api.test/v1/runs/run-1/heartbeat", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer worker-session",
+        "content-type": "application/json",
+        "x-contrabass-team-id": "team-1",
+      },
+      body: JSON.stringify({ lastEventTs: 1_771_000_000_000, protocol_version: "1.0.0" }),
+    }), envWithAuth(env, { workerTokens: "worker-session" }));
+
+    expect(response.status).toBe(202);
+    expect(seen).toEqual({
+      teamName: "team-1",
+      issueRunName: "team-1:LIN-1",
+    });
+  });
+
+  it("returns run_not_found when the TeamCoordinator board lacks the run", async () => {
+    const env = createSplitEnv(
+      async () => Response.json({ board: { open: [], claimed: [], running: [], done: [] } }),
+      async () => Response.json({ forwarded: true }, { status: 202 }),
+    );
+
+    const response = await handleWorkerRequest(new Request("https://api.test/v1/runs/run-missing/heartbeat", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer worker-session",
+        "content-type": "application/json",
+        "x-contrabass-team-id": "team-1",
+      },
+      body: JSON.stringify({ lastEventTs: 1_771_000_000_000, protocol_version: "1.0.0" }),
+    }), envWithAuth(env, { workerTokens: "worker-session" }));
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "run_not_found" });
+  });
+
+  it("scopes issued worker session run forwards to the token team and worker", async () => {
+    const seen: Array<{ name?: string; url: string; workerId?: string; body: unknown }> = [];
+    const env = {
+      ...createEnv(async (request) => {
+        if (request.url === "https://team-coordinator.internal/board") {
+          return Response.json({
+            board: {
+              open: [],
+              claimed: [],
+              running: [{ issueRef: "run-1", runId: "run-1", phase: "running", lastUpdated: 1 }],
+              done: [],
+            },
+          });
+        }
+
+        seen.push({
+          url: request.url,
+          workerId: request.headers.get("x-contrabass-worker-id") ?? undefined,
+          body: await request.json(),
+        });
+        return request.url.endsWith("/workers/register")
+          ? Response.json({ worker: { workerId: "worker-1" } })
+          : Response.json({ forwarded: true });
+      }, {}),
+      CONTRABASS_WORKER_TOKEN_SECRET: "test-secret",
+    };
+
+    const registerResponse = await handleWorkerRequest(new Request("https://api.test/v1/workers/register", {
+      method: "POST",
+      headers: { authorization: "Bearer enrollment-session", "content-type": "application/json" },
+      body: JSON.stringify(registerBody()),
+    }), envWithAuth(env, { workerTokens: "enrollment-session" }));
+    const registerJson = await registerResponse.json() as Record<string, unknown>;
+    const sessionToken = registerJson.sessionToken;
+    if (typeof sessionToken !== "string") {
+      throw new Error("sessionToken must be a string");
+    }
+
+    const response = await handleWorkerRequest(new Request("https://api.test/v1/runs/run-1/ack", {
+      method: "POST",
+      headers: { authorization: `Bearer ${sessionToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ accept: true, protocol_version: "1.0.0" }),
+    }), env);
+
+    expect(response.status).toBe(200);
+    expect(seen.at(-1)).toEqual({
+      url: "https://issue-run.internal/ack",
+      workerId: "worker-1",
+      body: { accept: true, protocol_version: "1.0.0", workerId: "worker-1" },
+    });
+
+    const crossTeamResponse = await handleWorkerRequest(new Request("https://api.test/v1/runs/run-1/heartbeat", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${sessionToken}`,
+        "content-type": "application/json",
+        "x-contrabass-team-id": "team-2",
+      },
+      body: JSON.stringify({ lastEventTs: 1_771_000_000_000, protocol_version: "1.0.0" }),
+    }), env);
+
+    expect(crossTeamResponse.status).toBe(403);
+    await expect(crossTeamResponse.json()).resolves.toEqual({ error: "team_forbidden" });
+  });
+
   it("accepts dashboard session-cookie auth", async () => {
     const response = await handleWorkerRequest(new Request("https://api.test/v1/workers/register", {
       method: "POST",
@@ -452,6 +661,35 @@ function createEnv(
   return {
     TEAM_COORDINATOR: namespace,
     ISSUE_RUN: namespace,
+    EVENTS_ARCHIVE_BUCKET: {},
+    EVENTS_ARCHIVE_QUEUE: {},
+  } as unknown as Env;
+}
+
+function createSplitEnv(
+  teamFetch: (request: Request) => Promise<Response>,
+  issueRunFetch: (request: Request) => Promise<Response>,
+  seen: { teamName?: string; issueRunName?: string } = {},
+): Env {
+  return {
+    TEAM_COORDINATOR: {
+      idFromName(name: string) {
+        seen.teamName = name;
+        return { name };
+      },
+      get() {
+        return { fetch: teamFetch };
+      },
+    },
+    ISSUE_RUN: {
+      idFromName(name: string) {
+        seen.issueRunName = name;
+        return { name };
+      },
+      get() {
+        return { fetch: issueRunFetch };
+      },
+    },
     EVENTS_ARCHIVE_BUCKET: {},
     EVENTS_ARCHIVE_QUEUE: {},
   } as unknown as Env;
