@@ -96,7 +96,7 @@
 
 ## 11. Dashboard hosting
 
-- [ ] 11.1 Create Cloudflare Pages project for `packages/dashboard`
+- [x] 11.1 Create Cloudflare Pages project for `packages/dashboard`
 - [ ] 11.2 Add `VITE_CONTRABASS_API_BASE` env wiring and update SPA API client
 - [ ] 11.3 Implement OAuth login flow (GitHub) in API Worker; set `httpOnly` session cookie
 - [ ] 11.4 Implement WS subscription with reconnect + `last_event_id` replay in SPA
