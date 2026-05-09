@@ -11,7 +11,7 @@
 
 </div>
 
-Contrabass is a terminal-first orchestrator for issue-driven agent runs. The default mode connects your machine to the Cloudflare-hosted control plane: tracker polling and team coordination run in the cloud while agent execution stays on your laptop. A `--local-only` single-host build is also supported for offline or solo use.
+Contrabass is a terminal-first orchestrator for issue-driven agent runs. The default mode connects your machine to the Cloudflare-hosted control plane: tracker polling and team coordination run in the cloud while agent execution stays on your laptop. A `--local-only` single-host build is also available as a secondary path for offline or solo use.
 
 ## Current scope
 
@@ -145,9 +145,9 @@ See [`docs/cloud-migration.md`](docs/cloud-migration.md) for full migration inst
 
 ---
 
-## Quick start (local-only mode)
+## Quick start (local-only mode — supported but secondary)
 
-> **Note:** Build with `make build LOCAL_ONLY=1` for the local-only binary. See [Build from source](#build-from-source).
+> **Note:** Local-only mode is a secondary path for offline and solo use. For team workflows, use [cloud mode](#quick-start-cloud-mode) above. Build with `make build LOCAL_ONLY=1` for the local-only binary — see [Build from source](#build-from-source).
 
 ### Run with the demo workflow
 

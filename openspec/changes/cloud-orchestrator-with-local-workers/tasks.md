@@ -162,4 +162,4 @@
 - [x] 17.2 Collect feedback, file follow-up issues for ergonomics, do not change protocol v1
 - [x] 17.3 Update `README.md` and `CLAUDE.md` with the new default workflow (`contrabass worker`, dashboard URL, migration tool)
 - [x] 17.4 Flip default `contrabass init` template from local-only to cloud
-- [ ] 17.5 Mark `--local-only` as supported-but-secondary in CLI help and docs
+- [x] 17.5 Mark `--local-only` as supported-but-secondary in CLI help and docs

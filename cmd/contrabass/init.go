@@ -80,7 +80,7 @@ instead (requires a --local-only build of the binary; supported but secondary).`
 		RunE: runInitWorkflow,
 	}
 	cmd.Flags().String("output", "WORKFLOW.md", "path to write the template file")
-	cmd.Flags().Bool("local-only", false, "generate a local-only template (legacy single-host mode)")
+	cmd.Flags().Bool("local-only", false, "generate a local-only template (supported but secondary; requires LOCAL_ONLY build)")
 	cmd.Flags().Bool("force", false, "overwrite an existing file")
 	return cmd
 }
