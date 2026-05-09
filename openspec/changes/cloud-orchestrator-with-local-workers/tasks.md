@@ -108,7 +108,7 @@
 
 ## 12. `contrabass worker` Go subcommand
 
-- [ ] 12.1 Add `cmd/contrabass/worker.go` Cobra subcommand
+- [x] 12.1 Add `cmd/contrabass/worker.go` Cobra subcommand
 - [ ] 12.2 Add `cmd/contrabass/worker_login.go` for one-time-code enrollment
 - [ ] 12.3 Add OS-credential-store integration: macOS Keychain, libsecret on Linux, Credential Manager on Windows (use `99designs/keyring` or equivalent)
 - [ ] 12.4 Implement registration flow with capability detection (codex/opencode/omx/omc/mock, tmux availability, OS, arch, version)
