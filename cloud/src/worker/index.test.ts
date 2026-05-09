@@ -52,8 +52,8 @@ describe("API Worker router auth middleware", () => {
       headers: { cookie: "contrabass_session=dashboard-session" },
     }), envWithAuth(createEnv(), { dashboardTokens: "dashboard-session" }));
 
-    expect(response.status).toBe(501);
-    await expect(response.json()).resolves.toEqual({ error: "not_implemented" });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid_request", protocol_version: "1.0.0" });
   });
 
   it("validates bearer and dashboard cookie principals against configured token stores", async () => {
@@ -99,7 +99,341 @@ describe("API Worker router auth middleware", () => {
       ).resolves.toEqual(testCase.expected);
     }
   });
+
+  it("registers workers through TeamCoordinator and returns session bootstrap data", async () => {
+    const seen: { name?: string; url?: string; method?: string; body?: unknown; teamId?: string } = {};
+    const env = {
+      ...createEnv(async (request) => {
+        seen.url = request.url;
+        seen.method = request.method;
+        seen.body = request.method === "GET" ? undefined : await request.json();
+        seen.teamId = request.headers.get("x-contrabass-team-id") ?? undefined;
+        return Response.json({ worker: { workerId: "worker-1" } });
+      }, seen),
+      CONTRABASS_WORKER_TOKEN_SECRET: "test-secret",
+    };
+
+    const response = await handleWorkerRequest(new Request("https://api.test/v1/workers/register", {
+      method: "POST",
+      headers: { authorization: "Bearer enrollment-session", "content-type": "application/json" },
+      body: JSON.stringify(registerBody()),
+    }), envWithAuth(env, { workerTokens: "enrollment-session" }));
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body).toMatchObject({
+      dispatchChannel: {
+        wsUrl: "wss://api.test/v1/workers/worker-1/dispatch-ws",
+        longPollUrl: "https://api.test/v1/workers/worker-1/dispatch?wait=25s",
+      },
+      heartbeatIntervalSec: 20,
+      leaseSec: 60,
+      protocol_version: "1.0.0",
+    });
+    expect(body.sessionToken).toEqual(expect.any(String));
+    expect(body.sessionTokenExpiresAt).toEqual(expect.any(Number));
+    expect(body.refreshToken).toEqual(expect.any(String));
+    expect(seen).toMatchObject({
+      name: "team-1",
+      url: "https://team-coordinator.internal/workers/register",
+      method: "POST",
+      teamId: "team-1",
+      body: { ...registerBody(), kind: "local" },
+    });
+
+    const sessionToken = body.sessionToken;
+    if (typeof sessionToken !== "string") {
+      throw new Error("sessionToken must be a string");
+    }
+    const authenticatedResponse = await handleWorkerRequest(new Request("https://api.test/v1/teams/team-1/board", {
+      headers: { authorization: `Bearer ${sessionToken}` },
+    }), env);
+    expect(authenticatedResponse.status).toBe(200);
+    expect(seen.url).toBe("https://team-coordinator.internal/board");
+
+    const crossTeamResponse = await handleWorkerRequest(new Request("https://api.test/v1/teams/team-2/board", {
+      headers: { authorization: `Bearer ${sessionToken}` },
+    }), env);
+    expect(crossTeamResponse.status).toBe(403);
+    await expect(crossTeamResponse.json()).resolves.toEqual({ error: "team_forbidden" });
+    expect(seen.name).toBe("team-1");
+  });
+
+  it("rejects incompatible worker protocol versions before mutating registry", async () => {
+    let calls = 0;
+    const env = createEnv(async () => {
+      calls += 1;
+      return Response.json({ ok: true });
+    });
+
+    const response = await handleWorkerRequest(new Request("https://api.test/v1/workers/register", {
+      method: "POST",
+      headers: { authorization: "Bearer enrollment-session", "content-type": "application/json" },
+      body: JSON.stringify({
+        ...registerBody(),
+        supported_protocol_versions: ["2.0.0"],
+      }),
+    }), envWithAuth(env, { workerTokens: "enrollment-session" }));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "protocol_version_unsupported",
+      supported: ["1.0.0"],
+      protocol_version: "1.0.0",
+    });
+    expect(calls).toBe(0);
+  });
+
+  it("rejects registration for teams absent from the control-plane store", async () => {
+    const env = {
+      ...envWithAuth(createEnv(), { workerTokens: "enrollment-session" }),
+      CONTROL_PLANE_DB: fakeD1({ teamExists: false }),
+    };
+
+    const response = await handleWorkerRequest(new Request("https://api.test/v1/workers/register", {
+      method: "POST",
+      headers: { authorization: "Bearer enrollment-session", "content-type": "application/json" },
+      body: JSON.stringify(registerBody()),
+    }), env);
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "team_forbidden", protocol_version: "1.0.0" });
+  });
+
+  it("enrolls a worker with a one-time code and refreshes its session token", async () => {
+    const enrollment = {
+      enrollment_id: "enroll-1",
+      team_id: "team-1",
+      worker_id: null,
+      expires_at: "2999-01-01T00:00:00.000Z",
+      redeemed_at: null,
+      refresh_token_expires_at: null,
+      revoked_at: null,
+    };
+    const env = {
+      ...createEnv(),
+      CONTROL_PLANE_DB: fakeD1({ enrollment }),
+      CONTRABASS_WORKER_TOKEN_SECRET: "test-secret",
+    };
+
+    const enrollResponse = await handleWorkerRequest(new Request("https://api.test/v1/workers/enroll", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: "ABC-123", workerId: "worker-1" }),
+    }), env);
+
+    expect(enrollResponse.status).toBe(200);
+    const enrollBody = await enrollResponse.json() as Record<string, unknown>;
+    expect(enrollBody).toMatchObject({
+      teamId: "team-1",
+      workerId: "worker-1",
+      protocol_version: "1.0.0",
+    });
+    expect(enrollBody.refreshToken).toEqual(expect.any(String));
+
+    const refreshResponse = await handleWorkerRequest(new Request("https://api.test/v1/workers/refresh", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refreshToken: enrollBody.refreshToken, protocol_version: "1.0.0" }),
+    }), env);
+
+    expect(refreshResponse.status).toBe(200);
+    const refreshBody = await refreshResponse.json() as Record<string, unknown>;
+    expect(refreshBody).toMatchObject({
+      expiresAt: expect.any(Number),
+      protocol_version: "1.0.0",
+    });
+    expect(refreshBody.sessionToken).toEqual(expect.stringMatching(/^cbs\./u));
+  });
+
+  it("rejects a stale concurrent enrollment redemption when the atomic update changes no rows", async () => {
+    const enrollment = {
+      enrollment_id: "enroll-1",
+      team_id: "team-1",
+      worker_id: null,
+      expires_at: "2999-01-01T00:00:00.000Z",
+      redeemed_at: null,
+      refresh_token_expires_at: null,
+      revoked_at: null,
+    };
+    const env = {
+      ...createEnv(),
+      CONTROL_PLANE_DB: fakeD1({ enrollment, staleEnrollmentRead: true }),
+    };
+
+    const firstResponse = await handleWorkerRequest(new Request("https://api.test/v1/workers/enroll", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: "ABC-123", workerId: "worker-1" }),
+    }), env);
+    const secondResponse = await handleWorkerRequest(new Request("https://api.test/v1/workers/enroll", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: "ABC-123", workerId: "worker-2" }),
+    }), env);
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(401);
+    await expect(secondResponse.json()).resolves.toEqual({ error: "enrollment_invalid", protocol_version: "1.0.0" });
+  });
+
+  it("fails register and refresh when no worker token signing secret is configured", async () => {
+    let calls = 0;
+    const env = createEnv(async () => {
+      calls += 1;
+      return Response.json({ worker: { workerId: "worker-1" } });
+    });
+
+    const registerResponse = await handleWorkerRequest(new Request("https://api.test/v1/workers/register", {
+      method: "POST",
+      headers: { cookie: "contrabass_session=dashboard-session", "content-type": "application/json" },
+      body: JSON.stringify(registerBody()),
+    }), envWithAuth(env, { dashboardTokens: "dashboard-session" }));
+
+    expect(registerResponse.status).toBe(500);
+    await expect(registerResponse.json()).resolves.toEqual({
+      error: "worker_token_secret_missing",
+      protocol_version: "1.0.0",
+    });
+    expect(calls).toBe(0);
+
+    const refreshResponse = await handleWorkerRequest(new Request("https://api.test/v1/workers/refresh", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refreshToken: "valid-refresh", protocol_version: "1.0.0" }),
+    }), {
+      ...createEnv(),
+      CONTROL_PLANE_DB: fakeD1({
+        enrollment: {
+          enrollment_id: "enroll-1",
+          team_id: "team-1",
+          worker_id: "worker-1",
+          expires_at: "2999-01-01T00:00:00.000Z",
+          redeemed_at: "2026-01-01T00:00:00.000Z",
+          refresh_token_expires_at: "2999-01-01T00:00:00.000Z",
+          revoked_at: null,
+        },
+      }),
+    });
+
+    expect(refreshResponse.status).toBe(500);
+    await expect(refreshResponse.json()).resolves.toEqual({
+      error: "worker_token_secret_missing",
+      protocol_version: "1.0.0",
+    });
+  });
+
+  it("maps revoked refresh tokens to refresh_revoked", async () => {
+    const env = {
+      ...createEnv(),
+      CONTROL_PLANE_DB: fakeD1({
+        enrollment: {
+          enrollment_id: "enroll-1",
+          team_id: "team-1",
+          worker_id: "worker-1",
+          expires_at: "2999-01-01T00:00:00.000Z",
+          redeemed_at: "2026-01-01T00:00:00.000Z",
+          refresh_token_expires_at: "2999-01-01T00:00:00.000Z",
+          revoked_at: "2026-01-02T00:00:00.000Z",
+        },
+      }),
+    };
+
+    const response = await handleWorkerRequest(new Request("https://api.test/v1/workers/refresh", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refreshToken: "revoked-refresh", protocol_version: "1.0.0" }),
+    }), env);
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({ error: "refresh_revoked", protocol_version: "1.0.0" });
+  });
 });
+
+function registerBody(): Record<string, unknown> {
+  return {
+    teamId: "team-1",
+    workerId: "worker-1",
+    capabilities: ["agent:mock", "git"],
+    maxConcurrency: 2,
+    version: "0.1.0",
+    supported_protocol_versions: ["1.0.0"],
+    protocol_version: "1.0.0",
+  };
+}
+
+type FakeEnrollment = {
+  enrollment_id: string;
+  team_id: string;
+  worker_id: string | null;
+  expires_at: string;
+  redeemed_at: string | null;
+  refresh_token_expires_at: string | null;
+  revoked_at: string | null;
+};
+
+function fakeD1(state: { teamExists?: boolean; enrollment?: FakeEnrollment; staleEnrollmentRead?: boolean }): D1Database {
+  let enrollment = state.enrollment;
+  const firstEnrollment = enrollment === undefined ? undefined : { ...enrollment };
+
+  return {
+    prepare(sql: string) {
+      return {
+        bind(...values: unknown[]) {
+          return {
+            async first() {
+              if (sql.includes("team_configs_active")) {
+                return state.teamExists === false ? null : { team_id: "team-1" };
+              }
+              if (sql.includes("worker_enrollments")) {
+                return (state.staleEnrollmentRead ? firstEnrollment : enrollment) ?? null;
+              }
+              return null;
+            },
+            async run() {
+              if (sql.includes("UPDATE worker_enrollments") && enrollment !== undefined) {
+                const isEnrollmentRedemption = sql.includes("redeemed_at IS NULL");
+                if (
+                  isEnrollmentRedemption
+                  && (enrollment.redeemed_at !== null
+                    || enrollment.revoked_at !== null
+                    || enrollment.expires_at <= String(values[6]))
+                ) {
+                  return d1RunResult(0);
+                }
+                enrollment = {
+                  ...enrollment,
+                  worker_id: typeof values[0] === "string" ? values[0] : enrollment.worker_id,
+                  redeemed_at: typeof values[2] === "string" ? values[2] : enrollment.redeemed_at,
+                  refresh_token_expires_at: typeof values[3] === "string"
+                    ? values[3]
+                    : enrollment.refresh_token_expires_at,
+                };
+              }
+              return d1RunResult(1);
+            },
+          };
+        },
+      };
+    },
+  } as unknown as D1Database;
+}
+
+function d1RunResult(changes: number): D1Result {
+  return {
+    success: true,
+    results: [],
+    meta: {
+      duration: 0,
+      size_after: 0,
+      rows_read: 0,
+      rows_written: changes,
+      last_row_id: 0,
+      changed_db: changes > 0,
+      changes,
+    },
+  };
+}
 
 function createEnv(
   fetch: (request: Request) => Promise<Response> = async () => Response.json({ ok: true }),
