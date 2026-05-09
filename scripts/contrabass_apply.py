@@ -41,7 +41,7 @@ LOG_FILE = Path.home() / ".contrabass-apply.log"
 
 MAX_IMPL_ATTEMPTS = 2
 MAX_FIX_ATTEMPTS_DEFAULT = 3
-CODEX_TIMEOUT_SEC = 1800  # 30 min per call
+CODEX_TIMEOUT_SEC = 3600  # 60 min per call (review of large diffs can take 30+ min)
 
 
 # ---------- helpers ----------
