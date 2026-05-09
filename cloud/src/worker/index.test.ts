@@ -1030,6 +1030,41 @@ describe("API Worker router auth middleware", () => {
     expect(configs).toHaveLength(1);
   });
 
+  it("derives deterministic content hashes independent of request metadata", async () => {
+    const contentYaml = "---\ntracker:\n  type: internal\n---\nPrompt.\n";
+    const configs: FakeConfigRow[] = [];
+    const env = envWithAuth({
+      ...createEnv(),
+      CONTROL_PLANE_DB: fakeD1({ configs }),
+    }, { dashboardTokens: "dashboard-session" });
+    const expectedHash = await testSha256Hex(contentYaml);
+
+    const first = await handleWorkerRequest(new Request("https://api.test/v1/teams/team-1/config", {
+      method: "POST",
+      headers: { cookie: "contrabass_session=dashboard-session", "content-type": "application/json" },
+      body: JSON.stringify({ content_yaml: contentYaml, created_by: "operator-1", notes: "first import" }),
+    }), env);
+    const second = await handleWorkerRequest(new Request("https://api.test/v1/teams/team-1/config", {
+      method: "POST",
+      headers: { cookie: "contrabass_session=dashboard-session", "content-type": "application/json" },
+      body: JSON.stringify({ content_yaml: contentYaml, created_by: "operator-2", notes: "same bytes" }),
+    }), env);
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(200);
+    await expect(first.json()).resolves.toMatchObject({
+      version: 1,
+      contentHash: expectedHash,
+      unchanged: false,
+    });
+    await expect(second.json()).resolves.toMatchObject({
+      version: 1,
+      contentHash: expectedHash,
+      unchanged: true,
+    });
+    expect(configs).toHaveLength(1);
+  });
+
   it("renders cloud Liquid prompt bindings before storing config", async () => {
     const configs: FakeConfigRow[] = [];
     const env = envWithAuth({

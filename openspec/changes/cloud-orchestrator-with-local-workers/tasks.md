@@ -81,7 +81,7 @@
 - [x] 9.4 Implement Liquid prompt rendering with secret-reference rejection
 - [x] 9.5 Implement diff endpoint `GET /v1/teams/{teamId}/config/diff?from=v1&to=v2`
 - [x] 9.6 Add `contrabass config push` and `contrabass config import-md` CLI subcommands in Go
-- [ ] 9.7 Vitest coverage: parser parity vs Go (shared fixtures), hash determinism, secret rejection
+- [x] 9.7 Vitest coverage: parser parity vs Go (shared fixtures), hash determinism, secret rejection
 
 ## 10. Cloud tracker poller
 
