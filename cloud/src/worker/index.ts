@@ -78,7 +78,7 @@ workerRouter.post("/v1/runs/:runId/complete", (context) => {
   return forwardIssueRunRequest(context, "/complete");
 });
 
-workerRouter.get("/v1/workers/:workerId/dispatch", notImplemented);
+workerRouter.get("/v1/workers/:workerId/dispatch", longPollWorkerDispatch);
 workerRouter.get("/v1/workers/:workerId/dispatch-ws", notImplemented);
 
 workerRouter.get("/v1/teams/:teamId/subscribe", notImplemented);
@@ -765,6 +765,37 @@ async function forwardIssueRunRequest(
   }));
 }
 
+async function longPollWorkerDispatch(context: Context<WorkerRouterEnv>): Promise<Response> {
+  const workerId = (context.req.param("workerId") ?? "").trim();
+  if (workerId === "") {
+    return jsonResponse({ error: "invalid_worker_id" }, 400);
+  }
+
+  const teamId = resolveWorkerScopedTeamId(context, workerId);
+  if (teamId === undefined) {
+    return jsonResponse({ error: "invalid_team_id" }, 400);
+  }
+  if (teamId === false) {
+    return jsonResponse({ error: "team_forbidden" }, 403);
+  }
+
+  const id = context.env.TEAM_COORDINATOR.idFromName(teamId);
+  const stub = context.env.TEAM_COORDINATOR.get(id);
+  const request = context.req.raw;
+  const headers = new Headers(request.headers);
+  headers.set("x-contrabass-team-id", teamId);
+  headers.set("x-contrabass-worker-id", workerId);
+
+  const sourceUrl = new URL(request.url);
+  const targetUrl = new URL(`https://team-coordinator.internal/workers/${encodeURIComponent(workerId)}/dispatch`);
+  targetUrl.search = sourceUrl.search;
+
+  return stub.fetch(new Request(targetUrl, {
+    method: "GET",
+    headers,
+  }));
+}
+
 async function lookupIssueRefForRun(
   context: Context<WorkerRouterEnv>,
   teamId: string,
@@ -821,6 +852,25 @@ function resolveRunForwardTeamId(context: Context<WorkerRouterEnv>): string | fa
   const principal = context.get("principal");
   const headerTeamId = context.req.raw.headers.get("x-contrabass-team-id")?.trim();
   if ("issued" in principal) {
+    if (headerTeamId !== undefined && headerTeamId.length > 0 && headerTeamId !== principal.teamId) {
+      return false;
+    }
+    return principal.teamId;
+  }
+
+  return headerTeamId === undefined || headerTeamId.length === 0 ? undefined : headerTeamId;
+}
+
+function resolveWorkerScopedTeamId(
+  context: Context<WorkerRouterEnv>,
+  workerId: string,
+): string | false | undefined {
+  const principal = context.get("principal");
+  const headerTeamId = context.req.raw.headers.get("x-contrabass-team-id")?.trim();
+  if ("issued" in principal) {
+    if (workerId !== principal.workerId) {
+      return false;
+    }
     if (headerTeamId !== undefined && headerTeamId.length > 0 && headerTeamId !== principal.teamId) {
       return false;
     }

@@ -92,6 +92,7 @@ type WebSocketPairConstructor = new () => {
 const TEAM_RECORD_KEY = "team-coordinator:record";
 const BOARD_KEY = "team-coordinator:board";
 const NOTIFICATIONS_KEY = "team-coordinator:notifications";
+const WORKER_PENDING_DISPATCHES_KEY = "team-coordinator:worker-pending-dispatches";
 const WORKER_REGISTRY_KEY = "team-coordinator:worker-registry";
 const USAGE_CAPS_KEY = "team-coordinator:usage-caps";
 const USAGE_COUNTERS_KEY = "team-coordinator:usage-counters";
@@ -111,6 +112,7 @@ type TeamCoordinatorUsageCounters = {
 export class TeamCoordinator {
   private readonly subscribers = new Set<WebSocket>();
   private readonly workerDispatchSubscribers = new Map<string, Set<WebSocket>>();
+  private readonly workerLongPollWaiters = new Map<string, Set<(dispatch: TeamCoordinatorDispatchFrame | undefined) => void>>();
   private workerRegistry: TeamCoordinatorWorkerRegistry | undefined;
 
   constructor(
@@ -132,6 +134,11 @@ export class TeamCoordinator {
 
     if (request.method === "GET" && url.pathname === "/workers") {
       return jsonResponse({ registry: await this.ensureWorkerRegistry() });
+    }
+
+    const workerDispatchMatch = /^\/workers\/([^/]+)\/dispatch$/u.exec(url.pathname);
+    if (request.method === "GET" && workerDispatchMatch?.[1] !== undefined) {
+      return this.longPollWorkerDispatch(workerDispatchMatch[1], url);
     }
 
     if (request.method === "POST" && url.pathname === "/workers/register") {
@@ -374,9 +381,33 @@ export class TeamCoordinator {
     const dispatch = dispatchFrameFromBody(body, worker.workerId, runId, issueRef);
     this.broadcast(workerStatusFrame(worker));
     this.broadcast(boardUpdateFrame(board));
-    this.sendToWorker(worker.workerId, dispatch);
+    if (this.hasWorkerDispatchSubscriber(worker.workerId)) {
+      this.sendToWorker(worker.workerId, dispatch);
+    } else {
+      await this.deliverLongPollDispatch(worker.workerId, dispatch);
+    }
 
     return jsonResponse({ dispatched: true, worker, dispatch, board });
+  }
+
+  private async longPollWorkerDispatch(workerId: string, url: URL): Promise<Response> {
+    const normalizedWorkerId = decodeURIComponent(workerId).trim();
+    if (normalizedWorkerId === "") {
+      return jsonResponse({ error: "invalid_worker_id" }, 400);
+    }
+
+    const queued = await this.takePendingDispatch(normalizedWorkerId);
+    if (queued !== undefined) {
+      return jsonResponse({ ...queued });
+    }
+
+    const waitMs = parseWaitMs(url.searchParams.get("wait"));
+    if (waitMs <= 0) {
+      return new Response(null, { status: 204 });
+    }
+
+    const dispatch = await this.waitForWorkerDispatch(normalizedWorkerId, waitMs);
+    return dispatch === undefined ? new Response(null, { status: 204 }) : jsonResponse({ ...dispatch });
   }
 
   private async refreshBoard(request: Request): Promise<Response> {
@@ -475,7 +506,11 @@ export class TeamCoordinator {
     }
     this.broadcast(workerStatusFrame(updatedRegistry[targetWorkerId]));
     this.broadcast(boardUpdateFrame(updatedBoard));
-    this.sendToWorker(targetWorkerId, dispatch);
+    if (this.hasWorkerDispatchSubscriber(targetWorkerId)) {
+      this.sendToWorker(targetWorkerId, dispatch);
+    } else {
+      await this.deliverLongPollDispatch(targetWorkerId, dispatch);
+    }
 
     return jsonResponse({ reassigned: true, dispatch, board: updatedBoard, registry: updatedRegistry });
   }
@@ -764,6 +799,10 @@ export class TeamCoordinator {
     socket.addEventListener("error", removeSubscriber);
   }
 
+  private hasWorkerDispatchSubscriber(workerId: string): boolean {
+    return (this.workerDispatchSubscribers.get(workerId)?.size ?? 0) > 0;
+  }
+
   private sendToWorker(workerId: string, frame: Record<string, unknown>): void {
     const sockets = this.workerDispatchSubscribers.get(workerId);
     if (sockets === undefined) {
@@ -781,6 +820,71 @@ export class TeamCoordinator {
     if (sockets.size === 0) {
       this.workerDispatchSubscribers.delete(workerId);
     }
+  }
+
+  private async deliverLongPollDispatch(workerId: string, dispatch: TeamCoordinatorDispatchFrame): Promise<void> {
+    const waiters = this.workerLongPollWaiters.get(workerId);
+    const waiter = waiters?.values().next().value;
+    if (waiter !== undefined) {
+      waiters?.delete(waiter);
+      if (waiters?.size === 0) {
+        this.workerLongPollWaiters.delete(workerId);
+      }
+      waiter(dispatch);
+      return;
+    }
+
+    const pending = await this.state.storage.get<Record<string, TeamCoordinatorDispatchFrame[]>>(
+      WORKER_PENDING_DISPATCHES_KEY,
+    ) ?? {};
+    const workerQueue = pending[workerId] ?? [];
+    await this.state.storage.put(WORKER_PENDING_DISPATCHES_KEY, {
+      ...pending,
+      [workerId]: [...workerQueue, dispatch],
+    });
+  }
+
+  private async takePendingDispatch(workerId: string): Promise<TeamCoordinatorDispatchFrame | undefined> {
+    const pending = await this.state.storage.get<Record<string, TeamCoordinatorDispatchFrame[]>>(
+      WORKER_PENDING_DISPATCHES_KEY,
+    );
+    const workerQueue = pending?.[workerId];
+    if (pending === undefined || workerQueue === undefined || workerQueue.length === 0) {
+      return undefined;
+    }
+
+    const [dispatch, ...remaining] = workerQueue;
+    const updated = { ...pending };
+    if (remaining.length === 0) {
+      delete updated[workerId];
+    } else {
+      updated[workerId] = remaining;
+    }
+    await this.state.storage.put(WORKER_PENDING_DISPATCHES_KEY, updated);
+    return dispatch;
+  }
+
+  private waitForWorkerDispatch(
+    workerId: string,
+    waitMs: number,
+  ): Promise<TeamCoordinatorDispatchFrame | undefined> {
+    return new Promise((resolve) => {
+      const waiters = this.workerLongPollWaiters.get(workerId) ?? new Set();
+      const timeout = setTimeout(() => {
+        waiters.delete(resolveOnce);
+        if (waiters.size === 0) {
+          this.workerLongPollWaiters.delete(workerId);
+        }
+        resolve(undefined);
+      }, waitMs);
+      const resolveOnce = (dispatch: TeamCoordinatorDispatchFrame | undefined) => {
+        clearTimeout(timeout);
+        resolve(dispatch);
+      };
+
+      waiters.add(resolveOnce);
+      this.workerLongPollWaiters.set(workerId, waiters);
+    });
   }
 
   private async issueRunStub(
@@ -1174,6 +1278,26 @@ function getDispatchRequiredCapabilities(body: Record<string, unknown>): string[
   }
 
   return getStringArrayField(requirements, "capabilities");
+}
+
+function parseWaitMs(value: string | null): number {
+  if (value === null || value.trim() === "") {
+    return 0;
+  }
+
+  const trimmed = value.trim().toLowerCase();
+  const match = /^(\d+)(ms|s)?$/u.exec(trimmed);
+  if (match?.[1] === undefined) {
+    return 0;
+  }
+
+  const amount = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(amount) || amount < 0) {
+    return 0;
+  }
+
+  const waitMs = match[2] === "ms" ? amount : amount * 1000;
+  return Math.min(waitMs, 25_000);
 }
 
 function hasOwnField(body: Record<string, unknown>, key: string): boolean {

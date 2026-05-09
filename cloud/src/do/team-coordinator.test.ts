@@ -103,7 +103,12 @@ type TeamCoordinatorResponseBody = {
   paused?: boolean;
   event?: TeamCoordinatorNotification;
   accepted?: boolean;
-  type?: TeamCoordinatorNotification["type"];
+  type?: TeamCoordinatorNotification["type"] | TeamCoordinatorDispatchFrame["type"];
+  runId?: string;
+  issueRef?: string;
+  workerId?: string;
+  prompt?: string;
+  leaseSec?: number;
   error?: string;
   max_active_workers?: number;
   max_runs_per_day?: number;
@@ -1195,6 +1200,94 @@ describe("TeamCoordinator Durable Object", () => {
     expect(otherWorkerServer?.sent).toEqual([]);
   });
 
+  it("returns queued dispatches through the long-poll fallback", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(51_000);
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 1,
+      kind: "local",
+      version: "0.2.0",
+    });
+    await post(coordinator, "/dispatch", {
+      runId: "run-1",
+      issueRef: "LIN-1",
+      requiredCapabilities: ["agent:codex"],
+      prompt: "Fix LIN-1",
+      leaseSec: 60,
+    });
+
+    const response = await coordinator.fetch(new Request(
+      "https://team-coordinator.test/workers/worker-1/dispatch?wait=25s",
+    ));
+
+    expect(response.status).toBe(200);
+    await expect(readTeamCoordinatorResponse(response)).resolves.toMatchObject({
+      type: "dispatch",
+      protocol_version: "1.0.0",
+      runId: "run-1",
+      issueRef: "LIN-1",
+      workerId: "worker-1",
+      prompt: "Fix LIN-1",
+      leaseSec: 60,
+    });
+    await expect(storage.get<Record<string, TeamCoordinatorDispatchFrame[]>>(
+      "team-coordinator:worker-pending-dispatches",
+    )).resolves.toEqual({});
+
+    const emptyResponse = await coordinator.fetch(new Request(
+      "https://team-coordinator.test/workers/worker-1/dispatch?wait=0s",
+    ));
+    expect(emptyResponse.status).toBe(204);
+  });
+
+  it("holds a long-poll request until a dispatch is available", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(52_000);
+    const coordinator = createTeamCoordinator();
+
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 1,
+      kind: "local",
+      version: "0.2.0",
+    });
+
+    const longPollResponse = coordinator.fetch(new Request(
+      "https://team-coordinator.test/workers/worker-1/dispatch?wait=25ms",
+    ));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await post(coordinator, "/dispatch", {
+      runId: "run-1",
+      issueRef: "LIN-1",
+      requiredCapabilities: ["agent:codex"],
+      prompt: "Fix LIN-1",
+    });
+
+    const response = await longPollResponse;
+    expect(response.status).toBe(200);
+    await expect(readTeamCoordinatorResponse(response)).resolves.toMatchObject({
+      type: "dispatch",
+      runId: "run-1",
+      issueRef: "LIN-1",
+      workerId: "worker-1",
+      prompt: "Fix LIN-1",
+    });
+  });
+
+  it("returns 204 when long-poll wait expires with no dispatch", async () => {
+    const coordinator = createTeamCoordinator();
+
+    const response = await coordinator.fetch(new Request(
+      "https://team-coordinator.test/workers/worker-1/dispatch?wait=1ms",
+    ));
+
+    expect(response.status).toBe(204);
+  });
+
   it("pauses and resumes dispatch without dropping queued arrivals", async () => {
     vi.spyOn(Date, "now").mockReturnValue(70_000);
     const { coordinator, storage } = createTeamCoordinatorWithStorage();
@@ -1305,6 +1398,57 @@ describe("TeamCoordinator Durable Object", () => {
     expect(fakeWebSocketPairs[1]?.[1].sent.map((message) => JSON.parse(message))).toEqual([
       expect.objectContaining({ type: "dispatch", runId: "run-1", workerId: "worker-new" }),
     ]);
+  });
+
+  it("queues reassignment dispatches for registered workers without a WebSocket", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(81_000);
+    const { coordinator, issueRun } = createTeamCoordinatorWithIssueRun();
+
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-old",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 2,
+      kind: "local",
+      version: "0.2.0",
+    });
+    await post(coordinator, "/workers/heartbeat", { workerId: "worker-old", currentLoad: 1 });
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-new",
+      capabilities: ["agent:codex"],
+      maxConcurrency: 2,
+      kind: "local",
+      version: "0.2.0",
+    });
+    await post(coordinator, "/board/refresh", {
+      issueRef: "LIN-1",
+      runId: "run-1",
+      assignedWorkerId: "worker-old",
+      phase: "running",
+    });
+
+    const reassignResponse = await post(coordinator, "/board/reassign-run", {
+      runId: "run-1",
+      targetWorkerId: "worker-new",
+      prompt: "Continue LIN-1",
+      configHash: "cfg-1",
+    }, { "x-contrabass-team-id": "team-1" });
+    expect(reassignResponse.status).toBe(200);
+
+    const dispatchResponse = await coordinator.fetch(new Request(
+      "https://team-coordinator.test/workers/worker-new/dispatch?wait=0s",
+    ));
+
+    expect(issueRun.names).toEqual(["team-1:LIN-1"]);
+    expect(dispatchResponse.status).toBe(200);
+    await expect(readTeamCoordinatorResponse(dispatchResponse)).resolves.toMatchObject({
+      type: "dispatch",
+      protocol_version: "1.0.0",
+      runId: "run-1",
+      issueRef: "LIN-1",
+      workerId: "worker-new",
+      prompt: "Continue LIN-1",
+      configHash: "cfg-1",
+    });
   });
 
   it("cancels a run through IssueRun and marks the board entry done", async () => {

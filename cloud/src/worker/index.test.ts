@@ -138,6 +138,49 @@ describe("API Worker router auth middleware", () => {
     })));
   });
 
+  it("forwards worker long-poll dispatch requests to TeamCoordinator", async () => {
+    const seen: { name?: string; url?: string; method?: string; teamId?: string; workerId?: string } = {};
+    const env = createEnv(async (request) => {
+      seen.url = request.url;
+      seen.method = request.method;
+      seen.teamId = request.headers.get("x-contrabass-team-id") ?? undefined;
+      seen.workerId = request.headers.get("x-contrabass-worker-id") ?? undefined;
+      return Response.json({
+        type: "dispatch",
+        protocol_version: "1.0.0",
+        runId: "run-1",
+        issueRef: "LIN-1",
+        workerId: "worker-1",
+      });
+    }, seen);
+
+    const response = await handleWorkerRequest(new Request(
+      "https://api.test/v1/workers/worker-1/dispatch?wait=25s",
+      {
+        headers: {
+          authorization: "Bearer worker-session",
+          "x-contrabass-team-id": "team-1",
+        },
+      },
+    ), envWithAuth(env, { workerTokens: "worker-session" }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      type: "dispatch",
+      protocol_version: "1.0.0",
+      runId: "run-1",
+      issueRef: "LIN-1",
+      workerId: "worker-1",
+    });
+    expect(seen).toEqual({
+      name: "team-1",
+      url: "https://team-coordinator.internal/workers/worker-1/dispatch?wait=25s",
+      method: "GET",
+      teamId: "team-1",
+      workerId: "worker-1",
+    });
+  });
+
   it("routes run forwards through IssueRun named by team and issueRef", async () => {
     const seen: { teamName?: string; issueRunName?: string } = {};
     const env = createSplitEnv(
