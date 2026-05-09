@@ -77,9 +77,11 @@ workerRouter.post("/v1/runs/:runId/complete", (context) => {
 });
 
 workerRouter.get("/v1/workers/:workerId/dispatch", longPollWorkerDispatch);
-workerRouter.get("/v1/workers/:workerId/dispatch-ws", notImplemented);
+workerRouter.get("/v1/workers/:workerId/dispatch-ws", websocketWorkerDispatch);
 
-workerRouter.get("/v1/teams/:teamId/subscribe", notImplemented);
+workerRouter.get("/v1/teams/:teamId/subscribe", (context) => {
+  return forwardTeamCoordinatorRequest(context, "/subscribe");
+});
 
 workerRouter.notFound(() => {
   return jsonResponse({ error: "not_found" }, 404);
@@ -804,6 +806,38 @@ async function longPollWorkerDispatch(context: Context<WorkerRouterEnv>): Promis
   const sourceUrl = new URL(request.url);
   const targetUrl = new URL(`https://team-coordinator.internal/workers/${encodeURIComponent(workerId)}/dispatch`);
   targetUrl.search = sourceUrl.search;
+
+  return stub.fetch(new Request(targetUrl, {
+    method: "GET",
+    headers,
+  }));
+}
+
+async function websocketWorkerDispatch(context: Context<WorkerRouterEnv>): Promise<Response> {
+  const workerId = (context.req.param("workerId") ?? "").trim();
+  if (workerId === "") {
+    return jsonResponse({ error: "invalid_worker_id" }, 400);
+  }
+
+  const teamId = resolveWorkerScopedTeamId(context, workerId);
+  if (teamId === undefined) {
+    return jsonResponse({ error: "invalid_team_id" }, 400);
+  }
+  if (teamId === false) {
+    return jsonResponse({ error: "team_forbidden" }, 403);
+  }
+
+  const id = context.env.TEAM_COORDINATOR.idFromName(teamId);
+  const stub = context.env.TEAM_COORDINATOR.get(id);
+  const request = context.req.raw;
+  const headers = new Headers(request.headers);
+  headers.set("x-contrabass-team-id", teamId);
+  headers.set("x-contrabass-worker-id", workerId);
+
+  const sourceUrl = new URL(request.url);
+  const targetUrl = new URL("https://team-coordinator.internal/subscribe");
+  targetUrl.search = sourceUrl.search;
+  targetUrl.searchParams.set("workerId", workerId);
 
   return stub.fetch(new Request(targetUrl, {
     method: "GET",

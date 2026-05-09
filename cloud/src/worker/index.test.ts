@@ -231,6 +231,71 @@ describe("API Worker router auth middleware", () => {
     });
   });
 
+  it("forwards dashboard websocket subscribe upgrades to TeamCoordinator", async () => {
+    const seen: { name?: string; url?: string; method?: string; teamId?: string; upgrade?: string } = {};
+    const env = createEnv(async (request) => {
+      seen.url = request.url;
+      seen.method = request.method;
+      seen.teamId = request.headers.get("x-contrabass-team-id") ?? undefined;
+      seen.upgrade = request.headers.get("upgrade") ?? undefined;
+      return new Response(null, { status: 200, headers: { "x-upstream-websocket": "accepted" } });
+    }, seen);
+
+    const response = await handleWorkerRequest(new Request(
+      "https://api.test/v1/teams/team-1/subscribe?last_event_id=42",
+      {
+        headers: {
+          cookie: "contrabass_session=dashboard-session",
+          upgrade: "websocket",
+        },
+      },
+    ), envWithAuth(env, { dashboardTokens: "dashboard-session" }));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-upstream-websocket")).toBe("accepted");
+    expect(seen).toEqual({
+      name: "team-1",
+      url: "https://team-coordinator.internal/subscribe?last_event_id=42",
+      method: "GET",
+      teamId: "team-1",
+      upgrade: "websocket",
+    });
+  });
+
+  it("forwards worker dispatch websocket upgrades to TeamCoordinator subscriptions", async () => {
+    const seen: { name?: string; url?: string; method?: string; teamId?: string; workerId?: string; upgrade?: string } = {};
+    const env = createEnv(async (request) => {
+      seen.url = request.url;
+      seen.method = request.method;
+      seen.teamId = request.headers.get("x-contrabass-team-id") ?? undefined;
+      seen.workerId = request.headers.get("x-contrabass-worker-id") ?? undefined;
+      seen.upgrade = request.headers.get("upgrade") ?? undefined;
+      return new Response(null, { status: 200, headers: { "x-upstream-websocket": "accepted" } });
+    }, seen);
+
+    const response = await handleWorkerRequest(new Request(
+      "https://api.test/v1/workers/worker-1/dispatch-ws",
+      {
+        headers: {
+          authorization: "Bearer worker-session",
+          "x-contrabass-team-id": "team-1",
+          upgrade: "websocket",
+        },
+      },
+    ), envWithAuth(env, { workerTokens: "worker-session" }));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-upstream-websocket")).toBe("accepted");
+    expect(seen).toEqual({
+      name: "team-1",
+      url: "https://team-coordinator.internal/subscribe?workerId=worker-1",
+      method: "GET",
+      teamId: "team-1",
+      workerId: "worker-1",
+      upgrade: "websocket",
+    });
+  });
+
   it("routes run forwards through IssueRun named by team and issueRef", async () => {
     const seen: { teamName?: string; issueRunName?: string } = {};
     const env = createSplitEnv(
