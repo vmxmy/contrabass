@@ -669,6 +669,9 @@ export class TeamCoordinator {
       }
     }
     this.broadcast(frame);
+    if (notification.type === "config-changed") {
+      this.broadcastToAllWorkerSubscribers(frame);
+    }
 
     return jsonResponse({ accepted: true, type: notification.type });
   }
@@ -827,6 +830,22 @@ export class TeamCoordinator {
     }
     if (sockets.size === 0) {
       this.workerDispatchSubscribers.delete(workerId);
+    }
+  }
+
+  private broadcastToAllWorkerSubscribers(frame: Record<string, unknown>): void {
+    const message = JSON.stringify(frame);
+    for (const [workerId, sockets] of this.workerDispatchSubscribers) {
+      for (const socket of sockets) {
+        try {
+          socket.send(message);
+        } catch {
+          sockets.delete(socket);
+        }
+      }
+      if (sockets.size === 0) {
+        this.workerDispatchSubscribers.delete(workerId);
+      }
     }
   }
 

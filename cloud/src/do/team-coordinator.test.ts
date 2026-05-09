@@ -1727,6 +1727,54 @@ describe("TeamCoordinator Durable Object", () => {
       error: "websocket_required",
     });
   });
+
+  it("propagates config-changed to multiple connected dashboard and worker WS subscribers", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(6_000);
+    Reflect.set(globalThis, "WebSocketPair", FakeWebSocketPair);
+    const coordinator = createTeamCoordinator();
+
+    // Two dashboard subscribers (each gets an initial board-update frame on connect)
+    await coordinator.fetch(new Request("https://team-coordinator.test/subscribe", {
+      headers: { upgrade: "websocket" },
+    }));
+    await coordinator.fetch(new Request("https://team-coordinator.test/subscribe", {
+      headers: { upgrade: "websocket" },
+    }));
+
+    // Two worker WS dispatch subscribers (no initial frame on connect)
+    await coordinator.fetch(new Request("https://team-coordinator.test/subscribe?workerId=worker-1", {
+      headers: { upgrade: "websocket" },
+    }));
+    await coordinator.fetch(new Request("https://team-coordinator.test/subscribe?workerId=worker-2", {
+      headers: { upgrade: "websocket" },
+    }));
+
+    await post(coordinator, "/config-changed", {
+      type: "config-changed",
+      protocol_version: "1.0.0",
+      teamId: "team-1",
+      activeContentHash: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      activeVersion: 5,
+    });
+
+    const expectedFrame = {
+      type: "config-changed",
+      protocol_version: "1.0.0",
+      event_id: "1",
+      teamId: "team-1",
+      activeContentHash: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      activeVersion: 5,
+      receivedAt: 6_000,
+    };
+
+    // Both dashboard subscribers receive config-changed (slice(1) skips the initial board-update)
+    expect(fakeWebSocketPairs[0]?.[1].sent.slice(1).map((m) => JSON.parse(m))).toEqual([expectedFrame]);
+    expect(fakeWebSocketPairs[1]?.[1].sent.slice(1).map((m) => JSON.parse(m))).toEqual([expectedFrame]);
+
+    // Both worker WS dispatch subscribers also receive config-changed
+    expect(fakeWebSocketPairs[2]?.[1].sent.map((m) => JSON.parse(m))).toEqual([expectedFrame]);
+    expect(fakeWebSocketPairs[3]?.[1].sent.map((m) => JSON.parse(m))).toEqual([expectedFrame]);
+  });
 });
 
 function createTeamCoordinator(): TeamCoordinator {
