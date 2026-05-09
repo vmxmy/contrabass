@@ -136,7 +136,7 @@ func postWorkerDispatchAck(
 	if err != nil {
 		return fmt.Errorf("creating ack request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+registration.SessionToken)
+	req.Header.Set("Authorization", "Bearer "+registration.currentToken())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 

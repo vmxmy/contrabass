@@ -247,7 +247,7 @@ func postWorkerEventsOnce(
 	if err != nil {
 		return fmt.Errorf("creating events request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+registration.SessionToken)
+	req.Header.Set("Authorization", "Bearer "+registration.currentToken())
 	req.Header.Set("Content-Type", "application/x-ndjson")
 	req.Header.Set("Accept", "application/json")
 

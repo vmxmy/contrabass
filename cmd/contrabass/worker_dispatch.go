@@ -103,7 +103,7 @@ func consumeWorkerDispatchWebSocket(
 	}
 
 	headers := http.Header{}
-	headers.Set("Authorization", "Bearer "+registration.SessionToken)
+	headers.Set("Authorization", "Bearer "+registration.currentToken())
 	headers.Set("Accept", "application/json")
 	conn, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader: headers,
@@ -174,7 +174,7 @@ func longPollWorkerDispatch(
 	if err != nil {
 		return fmt.Errorf("creating long-poll dispatch request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+registration.SessionToken)
+	req.Header.Set("Authorization", "Bearer "+registration.currentToken())
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := workerLoginHTTPClient.Do(req)

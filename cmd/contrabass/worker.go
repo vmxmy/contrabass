@@ -39,6 +39,20 @@ type workerRegistration struct {
 	LeaseSec             workerv1.LeaseSec
 	ProtocolVersion      workerv1.ProtocolVersion
 	Ephemeral            bool
+	// Session is a shared, refreshable token manager. All HTTP callers must use
+	// currentToken() rather than reading SessionToken directly so that proactive
+	// refresh (every ~45 min) is transparent to every call site.
+	Session *workerSessionManager
+}
+
+// currentToken returns the most recently refreshed bearer token. Falls back to
+// the static SessionToken field when no session manager is set (e.g., in tests
+// that stub the dispatch consumer directly).
+func (r workerRegistration) currentToken() string {
+	if r.Session != nil {
+		return r.Session.CurrentToken()
+	}
+	return r.SessionToken
 }
 
 var workerLookupPath = exec.LookPath
@@ -98,6 +112,15 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	// Start a proactive session-token refresh so the short-lived bearer token
+	// (≤1 hour) is rotated transparently for all in-flight API calls throughout
+	// a long soak run. The goroutine exits when ctx is cancelled via defer below.
+	ctx, cancel := context.WithCancel(cmd.Context())
+	defer cancel()
+	session := newWorkerSessionManager(registration)
+	registration.Session = session
+	go session.RunProactiveRefresh(ctx, workerSessionRefreshInterval)
+
 	fmt.Fprintf(
 		cmd.OutOrStdout(),
 		"Registered worker %q for team %q. Dispatch WebSocket: %s\n",
@@ -115,7 +138,7 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	ackHandler := newWorkerAckingDispatchHandler(registration, opts.MaxConcurrency, executor.Run)
-	return workerDispatchConsumer(cmd.Context(), registration, ackHandler.Handle, ackHandler.RevokeRun)
+	return workerDispatchConsumer(ctx, registration, ackHandler.Handle, ackHandler.RevokeRun)
 }
 
 func workerOptionsFromFlags(cmd *cobra.Command) (workerOptions, error) {
