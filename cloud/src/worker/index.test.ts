@@ -23,6 +23,47 @@ describe("API Worker router auth middleware", () => {
     }
   });
 
+  it("adds the API version header to generated, forwarded, and not-found responses", async () => {
+    const cases: Array<{
+      name: string;
+      request: Request;
+      env: Env;
+      expectedStatus: number;
+    }> = [
+      {
+        name: "generated auth error",
+        request: new Request("https://api.test/v1/teams/team-1/board"),
+        env: createEnv(),
+        expectedStatus: 401,
+      },
+      {
+        name: "forwarded upstream response",
+        request: new Request("https://api.test/v1/teams/team-1/board", {
+          headers: { authorization: "Bearer worker-session" },
+        }),
+        env: envWithAuth(createEnv(async () => Response.json({ forwarded: true })), {
+          workerTokens: "worker-session",
+        }),
+        expectedStatus: 200,
+      },
+      {
+        name: "not found",
+        request: new Request("https://api.test/v1/unknown", {
+          headers: { authorization: "Bearer worker-session" },
+        }),
+        env: envWithAuth(createEnv(), { workerTokens: "worker-session" }),
+        expectedStatus: 404,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const response = await handleWorkerRequest(testCase.request, testCase.env);
+
+      expect(response.status, testCase.name).toBe(testCase.expectedStatus);
+      expect(response.headers.get("x-contrabass-api-version"), testCase.name).toBe("1.0.0");
+    }
+  });
+
   it("accepts bearer auth and routes board snapshots to TeamCoordinator", async () => {
     const seen: { name?: string; url?: string; teamId?: string; auth?: string } = {};
     const env = createEnv(async (request) => {

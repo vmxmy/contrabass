@@ -48,9 +48,11 @@ const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const HEARTBEAT_INTERVAL_SEC = 20;
 const LEASE_SEC = 60;
 const SUPPORTED_PROTOCOL_VERSIONS = [PROTOCOL_VERSION_CURRENT] as const;
+const API_VERSION_HEADER = "X-Contrabass-Api-Version";
 
 export const workerRouter = new Hono<WorkerRouterEnv>();
 
+workerRouter.use("*", apiVersionHeaderMiddleware());
 workerRouter.use("/v1/*", authMiddleware());
 
 workerRouter.get("/v1/teams/:teamId/board", (context) => {
@@ -89,6 +91,13 @@ workerRouter.notFound(() => {
 
 export async function handleWorkerRequest(request: Request, env: Env): Promise<Response> {
   return workerRouter.fetch(request, env);
+}
+
+function apiVersionHeaderMiddleware(): MiddlewareHandler<WorkerRouterEnv> {
+  return async (context, next) => {
+    await next();
+    context.header(API_VERSION_HEADER, PROTOCOL_VERSION_CURRENT);
+  };
 }
 
 function authMiddleware(): MiddlewareHandler<WorkerRouterEnv> {
