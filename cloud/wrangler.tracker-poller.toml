@@ -1,8 +1,11 @@
 name = "contrabass-tracker-poller"
-main = "src/index.ts"
+main = "src/poller/index.ts"
 compatibility_date = "2026-05-08"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = false
+
+[triggers]
+crons = [ "* * * * *" ]
 
 # Secrets Store bindings are intentionally scoped to this tracker poller Worker.
 # Do not add tracker token bindings to cloud/wrangler.toml (API Worker) or DO configs.
@@ -44,6 +47,9 @@ binding = "CONTROL_PLANE_DB"
 database_name = "contrabass-control-plane"
 database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
 
+[env.staging.triggers]
+crons = [ "* * * * *" ]
+
 [env.staging.vars]
 CONTRABASS_ENV = "staging"
 
@@ -69,6 +75,9 @@ secret_name = "tracker/synthetic-smoke/github"
 binding = "CONTROL_PLANE_DB"
 database_name = "contrabass-control-plane"
 database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
+
+[env.production.triggers]
+crons = [ "* * * * *" ]
 
 [env.production.vars]
 CONTRABASS_ENV = "production"

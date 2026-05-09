@@ -298,7 +298,7 @@ This project is indexed by GitNexus as **contrabass** (8621 symbols, 18851 relat
 <claude-mem-context>
 # Memory Context
 
-# [contrabass] recent context, 2026-05-09 12:25pm GMT+8
+# [contrabass/track-poller] recent context, 2026-05-09 12:36pm GMT+8
 
 No previous sessions found.
 </claude-mem-context>
