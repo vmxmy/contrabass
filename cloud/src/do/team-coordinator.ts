@@ -15,6 +15,7 @@ export type TeamCoordinatorBoardPhase = "open" | "claimed" | "running" | "done";
 
 export type TeamCoordinatorBoardEntry = {
   issueRef: string;
+  externalId?: string;
   runId?: string;
   assignedWorkerId?: string;
   phase: TeamCoordinatorBoardPhase;
@@ -964,15 +965,27 @@ function isFullBoardRefreshBody(body: Record<string, unknown>): boolean {
 }
 
 function mergeBoard(existing: TeamCoordinatorBoard, updates: TeamCoordinatorBoard): TeamCoordinatorBoard {
-  const updatedRefs = new Set(BOARD_PHASES.flatMap((phase) => updates[phase].map((entry) => entry.issueRef)));
+  const updatedEntries = BOARD_PHASES.flatMap((phase) => updates[phase]);
   const merged = emptyBoard();
   for (const phase of BOARD_PHASES) {
-    merged[phase] = existing[phase].filter((entry) => !updatedRefs.has(entry.issueRef));
+    merged[phase] = existing[phase].filter((entry) => {
+      return !updatedEntries.some((update) => boardEntriesReferToSameIssue(entry, update));
+    });
   }
   for (const phase of BOARD_PHASES) {
     merged[phase].push(...updates[phase]);
   }
   return merged;
+}
+
+function boardEntriesReferToSameIssue(
+  existing: TeamCoordinatorBoardEntry,
+  update: TeamCoordinatorBoardEntry,
+): boolean {
+  if (existing.externalId !== undefined && update.externalId !== undefined) {
+    return existing.externalId === update.externalId;
+  }
+  return existing.issueRef === update.issueRef;
 }
 
 function boardFromRefreshBody(body: Record<string, unknown>, now: number): TeamCoordinatorBoard | undefined {
@@ -1067,6 +1080,7 @@ function normalizeBoardEntry(
     return undefined;
   }
 
+  const externalId = getStringField(entry, "externalId") ?? getStringField(entry, "external_id");
   const phase = phaseFromUnknown(entry.phase) ?? defaultPhase ?? "open";
   const runId = getStringField(entry, "runId") ?? getStringField(entry, "run_id");
   const assignedWorkerId = getStringField(entry, "assignedWorkerId")
@@ -1076,6 +1090,7 @@ function normalizeBoardEntry(
 
   return {
     issueRef,
+    ...(externalId === undefined ? {} : { externalId }),
     ...(runId === undefined ? {} : { runId }),
     ...(assignedWorkerId === undefined ? {} : { assignedWorkerId }),
     phase,

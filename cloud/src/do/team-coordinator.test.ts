@@ -208,6 +208,76 @@ describe("TeamCoordinator Durable Object", () => {
     });
   });
 
+  it("upserts tracker refresh entries by external_id instead of duplicating issue refs", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(13_000);
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/board/refresh", {
+      issues: [
+        {
+          issueRef: "LIN-1",
+          external_id: "linear-issue-uuid-1",
+          phase: "open",
+          lastUpdated: 1_000,
+        },
+      ],
+    });
+
+    const noChangeResponse = await post(coordinator, "/board/refresh", {
+      issues: [
+        {
+          issueRef: "LIN-1",
+          external_id: "linear-issue-uuid-1",
+          phase: "open",
+          lastUpdated: 1_000,
+        },
+      ],
+    });
+    const noChangeBody = await readTeamCoordinatorResponse(noChangeResponse);
+
+    expect(noChangeResponse.status).toBe(200);
+    expect(noChangeBody.board?.open).toEqual([
+      {
+        issueRef: "LIN-1",
+        externalId: "linear-issue-uuid-1",
+        phase: "open",
+        lastUpdated: 1_000,
+      },
+    ]);
+
+    const changedResponse = await post(coordinator, "/board/refresh", {
+      issues: [
+        {
+          issueRef: "LIN-1-renamed",
+          external_id: "linear-issue-uuid-1",
+          phase: "running",
+          runId: "run-1",
+          assignedWorkerId: "worker-1",
+          lastUpdated: 2_000,
+        },
+      ],
+    });
+    const changedBody = await readTeamCoordinatorResponse(changedResponse);
+
+    expect(changedResponse.status).toBe(200);
+    expect(changedBody.board).toEqual({
+      open: [],
+      claimed: [],
+      running: [
+        {
+          issueRef: "LIN-1-renamed",
+          externalId: "linear-issue-uuid-1",
+          runId: "run-1",
+          assignedWorkerId: "worker-1",
+          phase: "running",
+          lastUpdated: 2_000,
+        },
+      ],
+      done: [],
+    });
+    await expect(storage.get<TeamCoordinatorBoard>("team-coordinator:board")).resolves.toEqual(changedBody.board);
+  });
+
   it("registers workers as idle with zero load in memory and storage", async () => {
     vi.spyOn(Date, "now").mockReturnValue(20_000);
     const { coordinator, storage } = createTeamCoordinatorWithStorage();
