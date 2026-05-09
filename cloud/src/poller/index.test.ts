@@ -144,6 +144,74 @@ describe("tracker poller entry point", () => {
     }
   });
 
+  it("uses default Linear and GitHub adapters with mocked tracker clients", async () => {
+    const trackerRequests: Request[] = [];
+    const coordinatorRequests: Request[] = [];
+    const env = createEnv([
+      {
+        teamId: "github-team",
+        contentHash: hashFor("github"),
+        contentYaml: "tracker:\n  github:\n    repo: octocat/hello-world\n",
+      },
+      {
+        teamId: "linear-team",
+        contentHash: hashFor("linear"),
+        contentYaml: "tracker:\n  linear:\n    project_slug: alpha\n",
+      },
+    ]);
+    env.TRACKER_GITHUB_TOKEN = "github-secret";
+    env.TRACKER_LINEAR_TOKEN = "linear-secret";
+    env.TEAM_COORDINATOR = durableObjectNamespace(async (request) => {
+      coordinatorRequests.push(request.clone());
+      const body = await request.json();
+      const issues = isRecord(body) && Array.isArray(body.issues) ? body.issues : [];
+      return Response.json({ issueStats: { issuesNew: issues.length, issuesUpdated: 0 } });
+    });
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      trackerRequests.push(request);
+      const url = new URL(request.url);
+
+      if (url.hostname === "api.github.com") {
+        return Response.json([githubIssuePayload({ number: 42, title: "Fix GitHub bug" })]);
+      }
+      if (url.hostname === "api.linear.app") {
+        return Response.json({
+          data: {
+            issues: {
+              nodes: [linearIssueNode({ id: "linear-1", identifier: "LIN-1", title: "Fix Linear bug", stateType: "unstarted" })],
+              pageInfo: { hasNextPage: false },
+            },
+          },
+        });
+      }
+      throw new Error(`unexpected tracker URL: ${request.url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const result = await runTrackerPoller(env, { cron: "* * * * *", scheduledTime: 1710000000000 });
+
+      expect(result).toMatchObject({ teamsSeen: 2, teamsEnabled: 2, adapterCalls: 2 });
+      expect(trackerRequests.map((request) => new URL(request.url).hostname)).toEqual([
+        "api.github.com",
+        "api.linear.app",
+      ]);
+      expect(trackerRequests[0]?.headers.get("authorization")).toBe("Bearer github-secret");
+      expect(trackerRequests[1]?.headers.get("authorization")).toBe("linear-secret");
+      expect(coordinatorRequests).toHaveLength(2);
+      await expect(coordinatorRequests[0]?.json()).resolves.toMatchObject({
+        issues: [{ external_id: "octocat/hello-world#42", tracker: "github" }],
+      });
+      await expect(coordinatorRequests[1]?.json()).resolves.toMatchObject({
+        issues: [{ external_id: "linear-1", tracker: "linear" }],
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("isolates rate-limited teams and skips them until Retry-After expires", async () => {
     const calls: Array<{ teamId: string; adapter: PollerAdapterName }> = [];
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -297,6 +365,9 @@ function d1Statement(
       return Promise.resolve({ results: rows as T[] });
     },
     first<T>() {
+      if (query.includes("FROM audit_log")) {
+        return Promise.resolve(null);
+      }
       expect(query).toContain("FROM tracker_poller_backoffs");
       const teamId = String(values[0]);
       const backoff = backoffs.get(teamId);
@@ -337,4 +408,55 @@ function createExecutionContext(): ExecutionContext {
 
 function hashFor(seed: string): string {
   return seed.padEnd(64, "0").slice(0, 64);
+}
+
+function durableObjectNamespace(handler: (request: Request) => Promise<Response>): DurableObjectNamespace {
+  return {
+    idFromName(name: string) {
+      return { name };
+    },
+    idFromString(id: string) {
+      return { id };
+    },
+    get() {
+      return { fetch: handler };
+    },
+    jurisdiction() {
+      return this;
+    },
+  } as unknown as DurableObjectNamespace;
+}
+
+function linearIssueNode(input: { id: string; identifier: string; title: string; stateType: string }): Record<string, unknown> {
+  return {
+    id: input.id,
+    identifier: input.identifier,
+    title: input.title,
+    description: "",
+    priority: 2,
+    state: { name: "Todo", type: input.stateType },
+    url: `https://linear.app/acme/${input.identifier}`,
+    labels: { nodes: [{ name: "Bug" }] },
+    createdAt: "2026-05-09T01:00:00Z",
+    updatedAt: "2026-05-09T02:00:00Z",
+    inverseRelations: { nodes: [] },
+  };
+}
+
+function githubIssuePayload(input: { number: number; title: string }): Record<string, unknown> {
+  return {
+    number: input.number,
+    node_id: `I_kwDOAAABc84AbCd${input.number}`,
+    title: input.title,
+    body: "",
+    state: "open",
+    labels: [{ name: "Bug" }],
+    html_url: `https://github.com/octocat/hello-world/issues/${input.number}`,
+    created_at: "2026-05-09T01:00:00Z",
+    updated_at: "2026-05-09T02:00:00Z",
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

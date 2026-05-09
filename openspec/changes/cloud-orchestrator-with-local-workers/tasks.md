@@ -92,7 +92,7 @@
 - [x] 10.5 Implement per-team error isolation and `Retry-After` handling
 - [x] 10.6 Implement idempotent upsert by `external_id` into `TeamCoordinator`
 - [x] 10.7 Wire metrics emission to Workers Analytics Engine
-- [ ] 10.8 Vitest coverage with mocked Linear/GitHub clients
+- [x] 10.8 Vitest coverage with mocked Linear/GitHub clients
 
 ## 11. Dashboard hosting
 
