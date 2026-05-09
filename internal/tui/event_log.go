@@ -1,11 +1,12 @@
-//go:build localonly
-
 package tui
 
 import "time"
 
-// defaultEventLogSize is the maximum number of events stored per agent.
-const defaultEventLogSize = 200
+// DefaultEventLogSize is the maximum number of events stored per issue.
+const DefaultEventLogSize = 200
+
+// defaultEventLogSize is kept for localonly callers that use the unexported name.
+const defaultEventLogSize = DefaultEventLogSize
 
 // EventLogEntry stores one event for the per-agent event timeline.
 type EventLogEntry struct {

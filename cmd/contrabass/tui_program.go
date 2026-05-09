@@ -1,3 +1,5 @@
+//go:build !localonly
+
 package main
 
 import (
@@ -6,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
@@ -13,6 +16,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/junhoyeo/contrabass/internal/tui"
 )
 
 // tuiProgramConfig holds the configuration for the read-only cloud TUI.
@@ -43,37 +48,39 @@ type tuiModel struct {
 	connState tuiConnState
 	spinner   spinner.Model
 	help      help.Model
-	keys      tuiKeyMap
+	keys      tui.CloudKeyMap
 
-	boardEntries map[string]tuiBoardEntry  // keyed by issueRef
-	boardKeys    []string                  // sorted issueRef list
+	boardEntries map[string]tuiBoardEntry   // keyed by issueRef
+	boardKeys    []string                   // sorted issueRef list
 	workers      map[string]tuiWorkerStatus // keyed by workerId
 	recentEvents []tuiRunEvent
+	runEventLogs map[string]*tui.EventLog // per-issueRef event log for detail view
 	configHash   string
+
+	boardView  tui.CloudBoardView
+	detailView tui.CloudRunDetailView
+	viewMode   tui.CloudViewMode
 
 	width  int
 	height int
 }
 
-type tuiKeyMap struct {
-	Quit key.Binding
-}
-
-func (k tuiKeyMap) ShortHelp() []key.Binding { return []key.Binding{k.Quit} }
-func (k tuiKeyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.Quit}}
-}
-
 func newTUIModel(teamID string) tuiModel {
+	bv := tui.NewCloudBoardView().SetFocused(true)
+	keys := tui.NewCloudKeyMap()
 	return tuiModel{
 		teamID:       teamID,
 		connState:    tuiConnConnecting,
 		spinner:      spinner.New(spinner.WithSpinner(spinner.Dot)),
 		help:         help.New(),
-		keys:         tuiKeyMap{Quit: key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit"))},
+		keys:         keys,
 		boardEntries: make(map[string]tuiBoardEntry),
 		workers:      make(map[string]tuiWorkerStatus),
 		recentEvents: make([]tuiRunEvent, 0),
+		runEventLogs: make(map[string]*tui.EventLog),
+		boardView:    bv,
+		detailView:   tui.NewCloudRunDetailView(),
+		viewMode:     tui.CloudViewOverview,
 	}
 }
 
@@ -85,13 +92,34 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
-		if key.Matches(msg, m.keys.Quit) {
+		switch {
+		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
+		case key.Matches(msg, m.keys.Up):
+			if m.viewMode == tui.CloudViewOverview {
+				m = m.moveCursor(-1)
+			}
+		case key.Matches(msg, m.keys.Down):
+			if m.viewMode == tui.CloudViewOverview {
+				m = m.moveCursor(1)
+			}
+		case key.Matches(msg, m.keys.Enter):
+			if m.viewMode == tui.CloudViewOverview && m.boardView.RowCount() > 0 {
+				m.viewMode = tui.CloudViewDetail
+				m.keys = m.keys.SetViewMode(tui.CloudViewDetail)
+			}
+		case key.Matches(msg, m.keys.Back):
+			if m.viewMode == tui.CloudViewDetail {
+				m.viewMode = tui.CloudViewOverview
+				m.keys = m.keys.SetViewMode(tui.CloudViewOverview)
+			}
 		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.help.SetWidth(msg.Width)
+		m.boardView = m.boardView.SetWidth(msg.Width)
+		m.detailView = m.detailView.SetWidth(msg.Width)
 	case spinner.TickMsg:
 		m.spinner, cmd = m.spinner.Update(msg)
 	case tuiConnStateMsg:
@@ -100,6 +128,47 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.applyFrame(msg.frame)
 	}
 	return m, cmd
+}
+
+func (m tuiModel) moveCursor(delta int) tuiModel {
+	count := m.boardView.RowCount()
+	if count == 0 {
+		return m
+	}
+	sel := m.boardView.Selected() + delta
+	if sel < 0 {
+		sel = 0
+	}
+	if sel >= count {
+		sel = count - 1
+	}
+	m.boardView = m.boardView.SetSelected(sel)
+	return m
+}
+
+// syncBoardView rebuilds the CloudBoardView rows from boardEntries/boardKeys.
+// Call this after any mutation to boardEntries or boardKeys.
+func (m tuiModel) syncBoardView() tuiModel {
+	entries := make([]tui.CloudBoardEntry, 0, len(m.boardKeys))
+	for _, ref := range m.boardKeys {
+		e := m.boardEntries[ref]
+		entries = append(entries, tui.CloudBoardEntry{
+			IssueRef:         e.IssueRef,
+			Phase:            e.Phase,
+			AssignedWorkerID: e.AssignedWorkerID,
+			RunID:            e.RunID,
+			LastUpdated:      e.LastUpdated,
+		})
+	}
+	// Clamp selected index after board snapshot replacement.
+	sel := m.boardView.Selected()
+	if n := len(entries); n == 0 {
+		sel = 0
+	} else if sel >= n {
+		sel = n - 1
+	}
+	m.boardView = m.boardView.SetRows(entries).SetSelected(sel)
+	return m
 }
 
 const tuiMaxRecentEvents = 20
@@ -119,6 +188,7 @@ func (m tuiModel) applyFrame(frame tuiSubscribeFrame) tuiModel {
 			m.boardKeys = append(m.boardKeys, k)
 		}
 		sort.Strings(m.boardKeys)
+		m = m.syncBoardView()
 
 	case tuiFrameTypeRunEvent:
 		if frame.RunEvent == nil {
@@ -127,6 +197,25 @@ func (m tuiModel) applyFrame(frame tuiSubscribeFrame) tuiModel {
 		m.recentEvents = append(m.recentEvents, *frame.RunEvent)
 		if len(m.recentEvents) > tuiMaxRecentEvents {
 			m.recentEvents = m.recentEvents[len(m.recentEvents)-tuiMaxRecentEvents:]
+		}
+		// Accumulate per-issue event log for the run-detail view.
+		if ref := frame.RunEvent.IssueRef; ref != "" {
+			evLog := m.runEventLogs[ref]
+			if evLog == nil {
+				evLog = tui.NewEventLog(tui.DefaultEventLogSize)
+				m.runEventLogs[ref] = evLog
+			}
+			ts := time.Now()
+			if frame.RunEvent.Timestamp != "" {
+				if parsed, parseErr := time.Parse(time.RFC3339, frame.RunEvent.Timestamp); parseErr == nil {
+					ts = parsed
+				}
+			}
+			evLog.Push(tui.EventLogEntry{
+				Timestamp: ts,
+				Type:      frame.RunEvent.EventType,
+				Detail:    frame.RunEvent.RunID,
+			})
 		}
 
 	case tuiFrameTypeWorkerStatus:
@@ -148,27 +237,12 @@ var (
 	tuiStyleTitle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
 	tuiStyleHeader = lipgloss.NewStyle().Bold(true).Underline(true)
 	tuiStyleFaint  = lipgloss.NewStyle().Faint(true)
-	tuiPhaseStyles = map[string]lipgloss.Style{
-		"open":      lipgloss.NewStyle().Foreground(lipgloss.Color("33")),
-		"claimed":   lipgloss.NewStyle().Foreground(lipgloss.Color("214")),
-		"running":   lipgloss.NewStyle().Foreground(lipgloss.Color("82")),
-		"succeeded": lipgloss.NewStyle().Foreground(lipgloss.Color("10")),
-		"failed":    lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
-		"cancelled": lipgloss.NewStyle().Faint(true),
-	}
 )
-
-func tuiPhaseStyle(phase string) lipgloss.Style {
-	if s, ok := tuiPhaseStyles[phase]; ok {
-		return s
-	}
-	return lipgloss.NewStyle()
-}
 
 func (m tuiModel) View() tea.View {
 	var b strings.Builder
 
-	// Header row: team name + connection state + config hash.
+	// Header: team name + connection state + config hash.
 	connLabel := ""
 	switch m.connState {
 	case tuiConnConnecting:
@@ -190,61 +264,38 @@ func (m tuiModel) View() tea.View {
 	}
 	b.WriteString("\n\n")
 
-	// Board section.
-	b.WriteString(tuiStyleHeader.Render("Board"))
-	b.WriteString("\n")
-	if len(m.boardKeys) == 0 {
-		b.WriteString(tuiStyleFaint.Render("  (no issues)\n"))
-	} else {
-		for _, ref := range m.boardKeys {
-			e := m.boardEntries[ref]
-			line := fmt.Sprintf("  %-24s  %s", ref, tuiPhaseStyle(e.Phase).Render(e.Phase))
-			if e.AssignedWorkerID != "" {
-				line += tuiStyleFaint.Render("  → " + e.AssignedWorkerID)
+	if m.viewMode == tui.CloudViewDetail {
+		if entry, ok := m.boardView.SelectedEntry(); ok {
+			var events []tui.EventLogEntry
+			if evLog := m.runEventLogs[entry.IssueRef]; evLog != nil {
+				events = evLog.Entries()
 			}
-			b.WriteString(line + "\n")
+			b.WriteString(m.detailView.Render(entry, events))
+		} else {
+			b.WriteString(tuiStyleFaint.Render("  (no selection)\n"))
 		}
-	}
-	b.WriteString("\n")
-
-	// Workers section.
-	b.WriteString(tuiStyleHeader.Render("Workers"))
-	b.WriteString("\n")
-	if len(m.workers) == 0 {
-		b.WriteString(tuiStyleFaint.Render("  (none registered)\n"))
 	} else {
-		workerIDs := make([]string, 0, len(m.workers))
-		for id := range m.workers {
-			workerIDs = append(workerIDs, id)
-		}
-		sort.Strings(workerIDs)
-		for _, id := range workerIDs {
-			w := m.workers[id]
-			b.WriteString(fmt.Sprintf("  %-24s  %-12s  %s\n", id, w.Status, tuiStyleFaint.Render(w.Kind)))
-		}
-	}
-	b.WriteString("\n")
+		b.WriteString(m.boardView.View())
+		b.WriteString("\n\n")
 
-	// Recent events section (last 5 displayed).
-	b.WriteString(tuiStyleHeader.Render("Recent Events"))
-	b.WriteString("\n")
-	show := m.recentEvents
-	if len(show) > 5 {
-		show = show[len(show)-5:]
-	}
-	if len(show) == 0 {
-		b.WriteString(tuiStyleFaint.Render("  (none)\n"))
-	} else {
-		for _, ev := range show {
-			b.WriteString(fmt.Sprintf("  %-20s  %-20s  %s\n",
-				tuiStyleFaint.Render(ev.IssueRef),
-				ev.EventType,
-				tuiStyleFaint.Render(ev.RunID),
-			))
+		// Workers summary.
+		b.WriteString(tuiStyleHeader.Render("Workers"))
+		b.WriteString("\n")
+		if len(m.workers) == 0 {
+			b.WriteString(tuiStyleFaint.Render("  (none registered)\n"))
+		} else {
+			workerIDs := make([]string, 0, len(m.workers))
+			for id := range m.workers {
+				workerIDs = append(workerIDs, id)
+			}
+			sort.Strings(workerIDs)
+			for _, id := range workerIDs {
+				w := m.workers[id]
+				b.WriteString(fmt.Sprintf("  %-24s  %-12s  %s\n", id, w.Status, tuiStyleFaint.Render(w.Kind)))
+			}
 		}
 	}
 	b.WriteString("\n")
-
 	b.WriteString(m.help.View(m.keys))
 
 	v := tea.NewView(b.String())

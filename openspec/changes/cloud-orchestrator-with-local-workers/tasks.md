@@ -135,7 +135,7 @@
 ## 14. TUI reduction to thin client
 
 - [x] 14.1 Add `contrabass tui` subcommand that connects to cloud API as a read-only client
-- [ ] 14.2 Reuse Bubble Tea views from `internal/tui` for board / run-detail rendering, replacing local event source with WS subscription
+- [x] 14.2 Reuse Bubble Tea views from `internal/tui` for board / run-detail rendering, replacing local event source with WS subscription
 - [ ] 14.3 Update TUI snapshot tests against cloud-event fixtures
 - [ ] 14.4 Document the local-only TUI mode (build tag) for solo offline users
 
