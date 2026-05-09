@@ -17,10 +17,17 @@ import (
 	workerv1 "github.com/junhoyeo/contrabass/internal/workerproto/v1"
 )
 
+// workerEphemeralDefaultLeaseSec is the client-side fallback lease duration for
+// --ephemeral workers when the cloud registration response omits leaseSec. CI
+// runners vanish without warning, so a short lease lets the cloud detect and
+// requeue orphaned runs quickly.
+const workerEphemeralDefaultLeaseSec workerv1.LeaseSec = 30
+
 type workerOptions struct {
 	TeamID         string
 	APIBaseURL     string
 	MaxConcurrency int
+	Ephemeral      bool
 }
 
 type workerRegistration struct {
@@ -31,6 +38,7 @@ type workerRegistration struct {
 	HeartbeatIntervalSec int
 	LeaseSec             workerv1.LeaseSec
 	ProtocolVersion      workerv1.ProtocolVersion
+	Ephemeral            bool
 }
 
 var workerLookupPath = exec.LookPath
@@ -51,6 +59,7 @@ func init() {
 	workerCmd.Flags().String("team", "", "cloud team ID to register this worker with (required)")
 	workerCmd.Flags().String("api-url", defaultWorkerAPIBaseURL, "Contrabass cloud API base URL")
 	workerCmd.Flags().Int("max-concurrency", 1, "maximum concurrently-acked runs this worker accepts")
+	workerCmd.Flags().Bool("ephemeral", false, "CI/ephemeral mode: hints the cloud to grant a shorter lease and applies shorter client-side lease defaults")
 	_ = workerCmd.MarkFlagRequired("team")
 	workerCmd.AddCommand(workerLoginCmd)
 }
@@ -125,11 +134,16 @@ func workerOptionsFromFlags(cmd *cobra.Command) (workerOptions, error) {
 	if maxConcurrency < 1 {
 		return workerOptions{}, errors.New("max-concurrency must be at least 1")
 	}
+	ephemeral, err := cmd.Flags().GetBool("ephemeral")
+	if err != nil {
+		return workerOptions{}, fmt.Errorf("getting ephemeral flag: %w", err)
+	}
 
 	return workerOptions{
 		TeamID:         strings.TrimSpace(teamID),
 		APIBaseURL:     strings.TrimSpace(apiBaseURL),
 		MaxConcurrency: maxConcurrency,
+		Ephemeral:      ephemeral,
 	}, nil
 }
 
@@ -183,15 +197,23 @@ func registerWorker(
 		return workerRegistration{}, err
 	}
 
-	request := workerv1.WorkerRegisterRequest{
-		TeamID:                    workerv1.TeamID(enrollment.TeamID),
-		WorkerID:                  workerv1.WorkerID(enrollment.WorkerID),
-		Capabilities:              capabilities,
-		MaxConcurrency:            opts.MaxConcurrency,
-		Version:                   version,
-		SupportedProtocolVersions: []string{string(workerv1.ProtocolVersionCurrent)},
-		ProtocolVersion:           workerv1.ProtocolVersionCurrent,
-		Kind:                      workerv1.WorkerRegisterRequestKindLocal,
+	// Embed the generated type and extend with the ephemeral hint. The cloud
+	// uses this to grant a shorter lease; unknown fields are safe to send.
+	request := struct {
+		workerv1.WorkerRegisterRequest
+		Ephemeral bool `json:"ephemeral,omitempty"`
+	}{
+		WorkerRegisterRequest: workerv1.WorkerRegisterRequest{
+			TeamID:                    workerv1.TeamID(enrollment.TeamID),
+			WorkerID:                  workerv1.WorkerID(enrollment.WorkerID),
+			Capabilities:              capabilities,
+			MaxConcurrency:            opts.MaxConcurrency,
+			Version:                   version,
+			SupportedProtocolVersions: []string{string(workerv1.ProtocolVersionCurrent)},
+			ProtocolVersion:           workerv1.ProtocolVersionCurrent,
+			Kind:                      workerv1.WorkerRegisterRequestKindLocal,
+		},
+		Ephemeral: opts.Ephemeral,
 	}
 
 	endpoint, err := workerAPIEndpoint(opts.APIBaseURL, "/v1/workers/register")
@@ -238,14 +260,20 @@ func registerWorker(
 		return workerRegistration{}, errors.New("registration response missing sessionToken, dispatchChannel.wsUrl, or dispatchChannel.longPollUrl")
 	}
 
+	leaseSec := response.LeaseSec
+	if leaseSec == 0 && opts.Ephemeral {
+		leaseSec = workerEphemeralDefaultLeaseSec
+	}
+
 	return workerRegistration{
 		APIBaseURL:           opts.APIBaseURL,
 		SessionToken:         response.SessionToken,
 		RefreshToken:         response.RefreshToken,
 		DispatchChannel:      response.DispatchChannel,
 		HeartbeatIntervalSec: response.HeartbeatIntervalSec,
-		LeaseSec:             response.LeaseSec,
+		LeaseSec:             leaseSec,
 		ProtocolVersion:      response.ProtocolVersion,
+		Ephemeral:            opts.Ephemeral,
 	}, nil
 }
 

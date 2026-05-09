@@ -731,6 +731,172 @@ func TestWorkerLoginCommandRequiresCode(t *testing.T) {
 	assert.Contains(t, err.Error(), `required flag(s) "code" not set`)
 }
 
+func TestWorkerCommandEphemeralFlagSendsHintInRegistration(t *testing.T) {
+	defer resetWorkerFlagState()
+
+	store := &fakeWorkerEnrollmentStore{byTeam: map[string]workerEnrollment{
+		"ci-team": {TeamID: "ci-team", WorkerID: "worker-ci", RefreshToken: "refresh-ci"},
+	}}
+	var registerBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/workers/refresh":
+			_, _ = w.Write([]byte(`{"sessionToken":"session-ci","protocol_version":"1.0.0"}`))
+		case "/v1/workers/register":
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&registerBody))
+			_, _ = w.Write([]byte(`{
+				"sessionToken": "registered-session",
+				"dispatchChannel": {
+					"wsUrl": "wss://api.test/v1/workers/worker-ci/dispatch-ws",
+					"longPollUrl": "https://api.test/v1/workers/worker-ci/dispatch?wait=25s"
+				},
+				"heartbeatIntervalSec": 10,
+				"leaseSec": 30,
+				"protocol_version": "1.0.0"
+			}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	restoreDeps := stubWorkerLoginDependencies(t, server.Client(), store)
+	defer restoreDeps()
+	restoreConsumer := stubWorkerDispatchConsumer(func(context.Context, workerRegistration, workerDispatchHandler, workerLeaseRevokedHandler) error {
+		return nil
+	})
+	defer restoreConsumer()
+	restoreLookup := stubWorkerLookupPath(func(name string) (string, error) {
+		if name == "codex" {
+			return "/usr/bin/codex", nil
+		}
+		return "", errors.New("not found")
+	})
+	defer restoreLookup()
+
+	cmd := newRootCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"worker", "--team", "ci-team", "--api-url", server.URL, "--ephemeral"})
+
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, true, registerBody["ephemeral"], "ephemeral=true must be forwarded to registration request")
+}
+
+func TestWorkerCommandEphemeralFlagAppliesClientSideDefaultLeaseSec(t *testing.T) {
+	defer resetWorkerFlagState()
+
+	store := &fakeWorkerEnrollmentStore{byTeam: map[string]workerEnrollment{
+		"ci-team": {TeamID: "ci-team", WorkerID: "worker-ci", RefreshToken: "refresh-ci"},
+	}}
+	var capturedRegistration workerRegistration
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/workers/refresh":
+			_, _ = w.Write([]byte(`{"sessionToken":"session-ci","protocol_version":"1.0.0"}`))
+		case "/v1/workers/register":
+			// Cloud omits leaseSec (returns 0); client must apply ephemeral default.
+			_, _ = w.Write([]byte(`{
+				"sessionToken": "registered-session",
+				"dispatchChannel": {
+					"wsUrl": "wss://api.test/v1/workers/worker-ci/dispatch-ws",
+					"longPollUrl": "https://api.test/v1/workers/worker-ci/dispatch?wait=25s"
+				},
+				"heartbeatIntervalSec": 0,
+				"leaseSec": 0,
+				"protocol_version": "1.0.0"
+			}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	restoreDeps := stubWorkerLoginDependencies(t, server.Client(), store)
+	defer restoreDeps()
+	restoreConsumer := stubWorkerDispatchConsumer(func(_ context.Context, reg workerRegistration, _ workerDispatchHandler, _ workerLeaseRevokedHandler) error {
+		capturedRegistration = reg
+		return nil
+	})
+	defer restoreConsumer()
+	restoreLookup := stubWorkerLookupPath(func(name string) (string, error) {
+		if name == "codex" {
+			return "/usr/bin/codex", nil
+		}
+		return "", errors.New("not found")
+	})
+	defer restoreLookup()
+
+	cmd := newRootCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"worker", "--team", "ci-team", "--api-url", server.URL, "--ephemeral"})
+
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, workerEphemeralDefaultLeaseSec, capturedRegistration.LeaseSec,
+		"client must apply ephemeral default leaseSec when cloud returns 0")
+	assert.True(t, capturedRegistration.Ephemeral, "registration must carry Ephemeral=true")
+}
+
+func TestWorkerCommandNonEphemeralDoesNotSendHint(t *testing.T) {
+	defer resetWorkerFlagState()
+
+	store := &fakeWorkerEnrollmentStore{byTeam: map[string]workerEnrollment{
+		"team-x": {TeamID: "team-x", WorkerID: "worker-x", RefreshToken: "refresh-x"},
+	}}
+	var registerBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/workers/refresh":
+			_, _ = w.Write([]byte(`{"sessionToken":"session-x","protocol_version":"1.0.0"}`))
+		case "/v1/workers/register":
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&registerBody))
+			_, _ = w.Write([]byte(`{
+				"sessionToken": "registered-session",
+				"dispatchChannel": {
+					"wsUrl": "wss://api.test/v1/workers/worker-x/dispatch-ws",
+					"longPollUrl": "https://api.test/v1/workers/worker-x/dispatch?wait=25s"
+				},
+				"heartbeatIntervalSec": 20,
+				"leaseSec": 60,
+				"protocol_version": "1.0.0"
+			}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	restoreDeps := stubWorkerLoginDependencies(t, server.Client(), store)
+	defer restoreDeps()
+	restoreConsumer := stubWorkerDispatchConsumer(func(context.Context, workerRegistration, workerDispatchHandler, workerLeaseRevokedHandler) error {
+		return nil
+	})
+	defer restoreConsumer()
+	restoreLookup := stubWorkerLookupPath(func(name string) (string, error) {
+		if name == "codex" {
+			return "/usr/bin/codex", nil
+		}
+		return "", errors.New("not found")
+	})
+	defer restoreLookup()
+
+	cmd := newRootCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"worker", "--team", "team-x", "--api-url", server.URL})
+
+	require.NoError(t, cmd.Execute())
+	_, hasEphemeral := registerBody["ephemeral"]
+	assert.False(t, hasEphemeral, "ephemeral field must be absent when --ephemeral is not set (omitempty)")
+}
+
 type fakeWorkerEnrollmentStore struct {
 	enrollments []workerEnrollment
 	byTeam      map[string]workerEnrollment
@@ -815,7 +981,7 @@ func filterWorkerCapabilitiesForTest(raw any, excludedPrefixes ...string) []any 
 }
 
 func resetWorkerFlagState() {
-	for _, name := range []string{"team", "api-url", "max-concurrency"} {
+	for _, name := range []string{"team", "api-url", "max-concurrency", "ephemeral"} {
 		flag := workerCmd.Flags().Lookup(name)
 		if flag == nil {
 			continue

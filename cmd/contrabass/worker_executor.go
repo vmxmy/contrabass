@@ -150,7 +150,8 @@ func (e *workerRunExecutor) Run(ctx context.Context, frame workerv1.WorkerDispat
 	// On lease revocation: upload partial artifacts to still-valid presigned
 	// URLs, then release the git worktree. For normal completions the worktree
 	// is kept so the developer can inspect the agent's work.
-	if errors.Is(runErr, errWorkerLeaseRevoked) {
+	if errors.Is(runErr, errWorkerLeaseRevoked) ||
+		errors.Is(context.Cause(ctx), errLeaseRevoked) {
 		uploadCtx, cancelUpload := context.WithTimeout(context.Background(), 30*time.Second)
 		_, _ = newWorkerArtifactUploader(nil).UploadFiles(uploadCtx, frame.ArtifactUploadURLs, collectPartialArtifacts(workspacePath))
 		cancelUpload()
