@@ -6,6 +6,8 @@ import {
   type TeamCoordinatorNotification,
   type TeamCoordinatorRecord,
   type TeamCoordinatorStorage,
+  type TeamCoordinatorWorkerRecord,
+  type TeamCoordinatorWorkerRegistry,
 } from "./team-coordinator";
 
 class MemoryTeamCoordinatorStorage implements TeamCoordinatorStorage {
@@ -53,6 +55,8 @@ const fakeWebSocketPairs: FakeWebSocketPair[] = [];
 type TeamCoordinatorResponseBody = {
   team?: TeamCoordinatorRecord;
   board?: TeamCoordinatorBoard;
+  registry?: TeamCoordinatorWorkerRegistry;
+  worker?: TeamCoordinatorWorkerRecord;
   accepted?: boolean;
   type?: TeamCoordinatorNotification["type"];
   error?: string;
@@ -147,6 +151,99 @@ describe("TeamCoordinator Durable Object", () => {
       claimed: [],
       running: [{ issueRef: "LIN-2", runId: "run-2", assignedWorkerId: "worker-2", phase: "running", lastUpdated: 12_000 }],
       done: [],
+    });
+  });
+
+  it("registers workers as idle with zero load in memory and storage", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(20_000);
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    const response = await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["codex", "tmux"],
+      maxConcurrency: 2,
+      kind: "local",
+      version: "0.2.0",
+    }, { "x-contrabass-team-id": "team-1" });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(200);
+    expect(body.worker).toEqual({
+      workerId: "worker-1",
+      capabilities: ["codex", "tmux"],
+      maxConcurrency: 2,
+      currentLoad: 0,
+      lastHeartbeatTs: 20_000,
+      kind: "local",
+      version: "0.2.0",
+      status: "idle",
+    });
+    expect(body.registry).toEqual({ "worker-1": body.worker });
+    await expect(storage.get<TeamCoordinatorWorkerRegistry>("team-coordinator:worker-registry")).resolves.toEqual(body.registry);
+
+    const registryResponse = await coordinator.fetch(new Request("https://team-coordinator.test/workers"));
+    await expect(readTeamCoordinatorResponse(registryResponse)).resolves.toMatchObject({
+      registry: { "worker-1": body.worker },
+    });
+  });
+
+  it("updates registry keepalive load and derives busy status", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(30_000);
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["codex"],
+      maxConcurrency: 2,
+      kind: "container",
+      version: "0.2.0",
+    });
+
+    now.mockReturnValue(31_000);
+    const response = await post(coordinator, "/workers/heartbeat", {
+      workerId: "worker-1",
+      currentLoad: 1,
+    });
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(200);
+    expect(body.worker).toMatchObject({
+      workerId: "worker-1",
+      currentLoad: 1,
+      lastHeartbeatTs: 31_000,
+      kind: "container",
+      status: "busy",
+    });
+    await expect(storage.get<TeamCoordinatorWorkerRegistry>("team-coordinator:worker-registry")).resolves.toMatchObject({
+      "worker-1": { currentLoad: 1, status: "busy" },
+    });
+  });
+
+  it("marks workers unhealthy after three missed registry heartbeats", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(40_000);
+    const { coordinator, storage } = createTeamCoordinatorWithStorage();
+
+    await post(coordinator, "/workers/register", {
+      workerId: "worker-1",
+      capabilities: ["codex"],
+      maxConcurrency: 1,
+      kind: "local",
+      version: "0.2.0",
+    });
+
+    now.mockReturnValue(130_000);
+    const response = await coordinator.fetch(new Request("https://team-coordinator.test/workers"));
+    const body = await readTeamCoordinatorResponse(response);
+
+    expect(response.status).toBe(200);
+    expect(body.registry?.["worker-1"]).toMatchObject({
+      workerId: "worker-1",
+      status: "unhealthy",
+      currentLoad: 0,
+      lastHeartbeatTs: 40_000,
+    });
+    await expect(storage.get<TeamCoordinatorWorkerRegistry>("team-coordinator:worker-registry")).resolves.toMatchObject({
+      "worker-1": { status: "unhealthy" },
     });
   });
 

@@ -17,6 +17,23 @@ export type TeamCoordinatorBoardEntry = {
 
 export type TeamCoordinatorBoard = Record<TeamCoordinatorBoardPhase, TeamCoordinatorBoardEntry[]>;
 
+export type TeamCoordinatorWorkerStatus = "idle" | "busy" | "unhealthy";
+
+export type TeamCoordinatorWorkerKind = "local" | "container";
+
+export type TeamCoordinatorWorkerRecord = {
+  workerId: string;
+  capabilities: string[];
+  maxConcurrency: number;
+  currentLoad: number;
+  lastHeartbeatTs: number;
+  kind: TeamCoordinatorWorkerKind;
+  version: string;
+  status: TeamCoordinatorWorkerStatus;
+};
+
+export type TeamCoordinatorWorkerRegistry = Record<string, TeamCoordinatorWorkerRecord>;
+
 export type TeamCoordinatorNotification = {
   type: "run-event" | "run-complete" | "lease-revoked";
   receivedAt: number;
@@ -40,12 +57,16 @@ type WebSocketPairConstructor = new () => {
 const TEAM_RECORD_KEY = "team-coordinator:record";
 const BOARD_KEY = "team-coordinator:board";
 const NOTIFICATIONS_KEY = "team-coordinator:notifications";
+const WORKER_REGISTRY_KEY = "team-coordinator:worker-registry";
 const INTERNAL_NOTIFICATION_PATHS = new Set(["/run-event", "/run-complete", "/lease-revoked"]);
 const BOARD_PHASES: TeamCoordinatorBoardPhase[] = ["open", "claimed", "running", "done"];
 const PROTOCOL_VERSION = "1.0.0";
+const DEFAULT_WORKER_MAX_CONCURRENCY = 1;
+const DEFAULT_REGISTRY_HEARTBEAT_INTERVAL_SEC = 30;
 
 export class TeamCoordinator {
   private readonly subscribers = new Set<WebSocket>();
+  private workerRegistry: TeamCoordinatorWorkerRegistry | undefined;
 
   constructor(private readonly state: TeamCoordinatorDurableState) {}
 
@@ -59,6 +80,18 @@ export class TeamCoordinator {
 
     if (request.method === "GET" && url.pathname === "/board") {
       return jsonResponse({ board: await this.ensureBoard() });
+    }
+
+    if (request.method === "GET" && url.pathname === "/workers") {
+      return jsonResponse({ registry: await this.ensureWorkerRegistry() });
+    }
+
+    if (request.method === "POST" && url.pathname === "/workers/register") {
+      return this.registerWorker(request);
+    }
+
+    if (request.method === "POST" && url.pathname === "/workers/heartbeat") {
+      return this.recordWorkerHeartbeat(request);
     }
 
     if (request.method === "POST" && url.pathname === "/board/refresh") {
@@ -104,6 +137,91 @@ export class TeamCoordinator {
     const board = emptyBoard();
     await this.state.storage.put(BOARD_KEY, board);
     return board;
+  }
+
+  private async ensureWorkerRegistry(): Promise<TeamCoordinatorWorkerRegistry> {
+    if (this.workerRegistry !== undefined) {
+      const evaluated = evaluateWorkerHealth(this.workerRegistry, Date.now());
+      if (evaluated.changed) {
+        await this.persistWorkerRegistry(evaluated.registry);
+      }
+      return evaluated.registry;
+    }
+
+    const existing = await this.state.storage.get<TeamCoordinatorWorkerRegistry>(WORKER_REGISTRY_KEY);
+    const normalized = normalizeWorkerRegistry(existing ?? {}, Date.now());
+    this.workerRegistry = normalized;
+    await this.state.storage.put(WORKER_REGISTRY_KEY, normalized);
+    return normalized;
+  }
+
+  private async persistWorkerRegistry(registry: TeamCoordinatorWorkerRegistry): Promise<void> {
+    this.workerRegistry = registry;
+    await this.state.storage.put(WORKER_REGISTRY_KEY, registry);
+  }
+
+  private async registerWorker(request: Request): Promise<Response> {
+    const body = await readObjectBody(request);
+    if (body === undefined) {
+      return jsonResponse({ error: "invalid_request", message: "body must be a JSON object" }, 400);
+    }
+
+    const now = Date.now();
+    const worker = workerRecordFromRegistrationBody(body, now);
+    if (worker === undefined) {
+      return jsonResponse({
+        error: "invalid_request",
+        message: "workerId, capabilities, maxConcurrency, kind, and version are required",
+      }, 400);
+    }
+
+    const registry = {
+      ...await this.ensureWorkerRegistry(),
+      [worker.workerId]: worker,
+    };
+    await this.persistWorkerRegistry(registry);
+    await this.touchRecord(request);
+    this.broadcast(workerStatusFrame(worker));
+
+    return jsonResponse({ worker, registry });
+  }
+
+  private async recordWorkerHeartbeat(request: Request): Promise<Response> {
+    const body = await readObjectBody(request);
+    if (body === undefined) {
+      return jsonResponse({ error: "invalid_request", message: "body must be a JSON object" }, 400);
+    }
+
+    const workerId = getStringField(body, "workerId") ?? getStringField(body, "worker_id");
+    if (workerId === undefined) {
+      return jsonResponse({ error: "invalid_request", message: "workerId is required" }, 400);
+    }
+
+    const registry = await this.ensureWorkerRegistry();
+    const existing = registry[workerId];
+    if (existing === undefined) {
+      return jsonResponse({ error: "worker_not_registered" }, 404);
+    }
+
+    const currentLoad = clampWorkerLoad(
+      getNumberField(body, "currentLoad") ?? getNumberField(body, "current_load") ?? existing.currentLoad,
+      existing.maxConcurrency,
+    );
+    const worker = {
+      ...existing,
+      currentLoad,
+      lastHeartbeatTs: Date.now(),
+      status: statusForWorkerLoad(currentLoad),
+    };
+    const updatedRegistry = {
+      ...registry,
+      [workerId]: worker,
+    };
+    await this.persistWorkerRegistry(updatedRegistry);
+    await this.touchRecord(request);
+    this.broadcast(workerStatusFrame(worker));
+
+    return jsonResponse({ worker, registry: updatedRegistry });
   }
 
   private async refreshBoard(request: Request): Promise<Response> {
@@ -361,6 +479,14 @@ function boardUpdateFrame(board: TeamCoordinatorBoard): Record<string, unknown> 
   };
 }
 
+function workerStatusFrame(worker: TeamCoordinatorWorkerRecord): Record<string, unknown> {
+  return {
+    type: "worker-status",
+    protocol_version: PROTOCOL_VERSION,
+    worker,
+  };
+}
+
 function notificationFrame(notification: TeamCoordinatorNotification): Record<string, unknown> {
   if (notification.payload.type === notification.type) {
     return {
@@ -425,6 +551,146 @@ function getStringField(body: Record<string, unknown>, key: string): string | un
 function getNumberField(body: Record<string, unknown>, key: string): number | undefined {
   const value = body[key];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function workerRecordFromRegistrationBody(
+  body: Record<string, unknown>,
+  now: number,
+): TeamCoordinatorWorkerRecord | undefined {
+  const workerId = getStringField(body, "workerId") ?? getStringField(body, "worker_id");
+  const capabilities = getStringArrayField(body, "capabilities");
+  const maxConcurrency = getPositiveIntegerField(body, "maxConcurrency")
+    ?? getPositiveIntegerField(body, "max_concurrency");
+  const kind = getWorkerKindField(body);
+  const version = getStringField(body, "version");
+  if (
+    workerId === undefined
+    || capabilities === undefined
+    || maxConcurrency === undefined
+    || kind === undefined
+    || version === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    workerId,
+    capabilities,
+    maxConcurrency,
+    currentLoad: 0,
+    lastHeartbeatTs: now,
+    kind,
+    version,
+    status: "idle",
+  };
+}
+
+function normalizeWorkerRegistry(
+  raw: Partial<TeamCoordinatorWorkerRegistry>,
+  now: number,
+): TeamCoordinatorWorkerRegistry {
+  const registry: TeamCoordinatorWorkerRegistry = {};
+  for (const [workerId, worker] of Object.entries(raw)) {
+    const normalized = normalizeWorkerRecord(workerId, worker, now);
+    if (normalized !== undefined) {
+      registry[normalized.workerId] = normalized;
+    }
+  }
+  return evaluateWorkerHealth(registry, now).registry;
+}
+
+function normalizeWorkerRecord(
+  fallbackWorkerId: string,
+  value: unknown,
+  now: number,
+): TeamCoordinatorWorkerRecord | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const workerId = getStringField(record, "workerId") ?? getStringField(record, "worker_id") ?? fallbackWorkerId;
+  const capabilities = getStringArrayField(record, "capabilities") ?? [];
+  const maxConcurrency = getPositiveIntegerField(record, "maxConcurrency")
+    ?? getPositiveIntegerField(record, "max_concurrency")
+    ?? DEFAULT_WORKER_MAX_CONCURRENCY;
+  const currentLoad = clampWorkerLoad(
+    getNumberField(record, "currentLoad") ?? getNumberField(record, "current_load") ?? 0,
+    maxConcurrency,
+  );
+  const kind = getWorkerKindField(record) ?? "local";
+  const version = getStringField(record, "version") ?? "unknown";
+  const lastHeartbeatTs = getNumberField(record, "lastHeartbeatTs")
+    ?? getNumberField(record, "last_heartbeat_ts")
+    ?? now;
+
+  return {
+    workerId,
+    capabilities,
+    maxConcurrency,
+    currentLoad,
+    lastHeartbeatTs,
+    kind,
+    version,
+    status: isWorkerUnhealthy(lastHeartbeatTs, now) ? "unhealthy" : statusForWorkerLoad(currentLoad),
+  };
+}
+
+function evaluateWorkerHealth(
+  registry: TeamCoordinatorWorkerRegistry,
+  now: number,
+): { registry: TeamCoordinatorWorkerRegistry; changed: boolean } {
+  let changed = false;
+  const evaluated: TeamCoordinatorWorkerRegistry = {};
+  for (const [workerId, worker] of Object.entries(registry)) {
+    const status = isWorkerUnhealthy(worker.lastHeartbeatTs, now)
+      ? "unhealthy"
+      : statusForWorkerLoad(worker.currentLoad);
+    if (status !== worker.status) {
+      changed = true;
+    }
+    evaluated[workerId] = {
+      ...worker,
+      status,
+    };
+  }
+  return { registry: evaluated, changed };
+}
+
+function isWorkerUnhealthy(lastHeartbeatTs: number, now: number): boolean {
+  return now - lastHeartbeatTs >= DEFAULT_REGISTRY_HEARTBEAT_INTERVAL_SEC * 3 * 1000;
+}
+
+function statusForWorkerLoad(currentLoad: number): TeamCoordinatorWorkerStatus {
+  return currentLoad > 0 ? "busy" : "idle";
+}
+
+function clampWorkerLoad(value: number, maxConcurrency: number): number {
+  return Math.max(0, Math.min(Math.trunc(value), maxConcurrency));
+}
+
+function getStringArrayField(body: Record<string, unknown>, key: string): string[] | undefined {
+  const value = body[key];
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || entry.trim() === "")) {
+    return undefined;
+  }
+  return value;
+}
+
+function getPositiveIntegerField(body: Record<string, unknown>, key: string): number | undefined {
+  const value = getNumberField(body, key);
+  if (value === undefined || !Number.isInteger(value) || value < 1) {
+    return undefined;
+  }
+  return value;
+}
+
+function getWorkerKindField(body: Record<string, unknown>): TeamCoordinatorWorkerKind | undefined {
+  const kind = getStringField(body, "kind");
+  if (kind === "local" || kind === "container") {
+    return kind;
+  }
+  return undefined;
 }
 
 function webSocketResponse(client: WebSocket): Response {

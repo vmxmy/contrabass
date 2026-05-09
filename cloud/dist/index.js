@@ -717,9 +717,12 @@ __name(eventsTooLargeResponse, "eventsTooLargeResponse");
 var TEAM_RECORD_KEY = "team-coordinator:record";
 var BOARD_KEY = "team-coordinator:board";
 var NOTIFICATIONS_KEY = "team-coordinator:notifications";
+var WORKER_REGISTRY_KEY = "team-coordinator:worker-registry";
 var INTERNAL_NOTIFICATION_PATHS = /* @__PURE__ */ new Set(["/run-event", "/run-complete", "/lease-revoked"]);
 var BOARD_PHASES = ["open", "claimed", "running", "done"];
 var PROTOCOL_VERSION = "1.0.0";
+var DEFAULT_WORKER_MAX_CONCURRENCY = 1;
+var DEFAULT_REGISTRY_HEARTBEAT_INTERVAL_SEC = 30;
 var TeamCoordinator = class {
   constructor(state) {
     this.state = state;
@@ -728,6 +731,7 @@ var TeamCoordinator = class {
     __name(this, "TeamCoordinator");
   }
   subscribers = /* @__PURE__ */ new Set();
+  workerRegistry;
   async fetch(request) {
     const url = new URL(request.url);
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/state")) {
@@ -736,6 +740,15 @@ var TeamCoordinator = class {
     }
     if (request.method === "GET" && url.pathname === "/board") {
       return jsonResponse2({ board: await this.ensureBoard() });
+    }
+    if (request.method === "GET" && url.pathname === "/workers") {
+      return jsonResponse2({ registry: await this.ensureWorkerRegistry() });
+    }
+    if (request.method === "POST" && url.pathname === "/workers/register") {
+      return this.registerWorker(request);
+    }
+    if (request.method === "POST" && url.pathname === "/workers/heartbeat") {
+      return this.recordWorkerHeartbeat(request);
     }
     if (request.method === "POST" && url.pathname === "/board/refresh") {
       return this.refreshBoard(request);
@@ -772,6 +785,79 @@ var TeamCoordinator = class {
     const board = emptyBoard();
     await this.state.storage.put(BOARD_KEY, board);
     return board;
+  }
+  async ensureWorkerRegistry() {
+    if (this.workerRegistry !== void 0) {
+      const evaluated = evaluateWorkerHealth(this.workerRegistry, Date.now());
+      if (evaluated.changed) {
+        await this.persistWorkerRegistry(evaluated.registry);
+      }
+      return evaluated.registry;
+    }
+    const existing = await this.state.storage.get(WORKER_REGISTRY_KEY);
+    const normalized = normalizeWorkerRegistry(existing ?? {}, Date.now());
+    this.workerRegistry = normalized;
+    await this.state.storage.put(WORKER_REGISTRY_KEY, normalized);
+    return normalized;
+  }
+  async persistWorkerRegistry(registry) {
+    this.workerRegistry = registry;
+    await this.state.storage.put(WORKER_REGISTRY_KEY, registry);
+  }
+  async registerWorker(request) {
+    const body = await readObjectBody2(request);
+    if (body === void 0) {
+      return jsonResponse2({ error: "invalid_request", message: "body must be a JSON object" }, 400);
+    }
+    const now = Date.now();
+    const worker2 = workerRecordFromRegistrationBody(body, now);
+    if (worker2 === void 0) {
+      return jsonResponse2({
+        error: "invalid_request",
+        message: "workerId, capabilities, maxConcurrency, kind, and version are required"
+      }, 400);
+    }
+    const registry = {
+      ...await this.ensureWorkerRegistry(),
+      [worker2.workerId]: worker2
+    };
+    await this.persistWorkerRegistry(registry);
+    await this.touchRecord(request);
+    this.broadcast(workerStatusFrame(worker2));
+    return jsonResponse2({ worker: worker2, registry });
+  }
+  async recordWorkerHeartbeat(request) {
+    const body = await readObjectBody2(request);
+    if (body === void 0) {
+      return jsonResponse2({ error: "invalid_request", message: "body must be a JSON object" }, 400);
+    }
+    const workerId = getStringField2(body, "workerId") ?? getStringField2(body, "worker_id");
+    if (workerId === void 0) {
+      return jsonResponse2({ error: "invalid_request", message: "workerId is required" }, 400);
+    }
+    const registry = await this.ensureWorkerRegistry();
+    const existing = registry[workerId];
+    if (existing === void 0) {
+      return jsonResponse2({ error: "worker_not_registered" }, 404);
+    }
+    const currentLoad = clampWorkerLoad(
+      getNumberField(body, "currentLoad") ?? getNumberField(body, "current_load") ?? existing.currentLoad,
+      existing.maxConcurrency
+    );
+    const worker2 = {
+      ...existing,
+      currentLoad,
+      lastHeartbeatTs: Date.now(),
+      status: statusForWorkerLoad(currentLoad)
+    };
+    const updatedRegistry = {
+      ...registry,
+      [workerId]: worker2
+    };
+    await this.persistWorkerRegistry(updatedRegistry);
+    await this.touchRecord(request);
+    this.broadcast(workerStatusFrame(worker2));
+    return jsonResponse2({ worker: worker2, registry: updatedRegistry });
   }
   async refreshBoard(request) {
     const body = await readObjectBody2(request);
@@ -997,6 +1083,14 @@ function boardUpdateFrame(board) {
   };
 }
 __name(boardUpdateFrame, "boardUpdateFrame");
+function workerStatusFrame(worker2) {
+  return {
+    type: "worker-status",
+    protocol_version: PROTOCOL_VERSION,
+    worker: worker2
+  };
+}
+__name(workerStatusFrame, "workerStatusFrame");
 function notificationFrame(notification) {
   if (notification.payload.type === notification.type) {
     return {
@@ -1058,6 +1152,117 @@ function getNumberField(body, key) {
   return typeof value === "number" && Number.isFinite(value) ? value : void 0;
 }
 __name(getNumberField, "getNumberField");
+function workerRecordFromRegistrationBody(body, now) {
+  const workerId = getStringField2(body, "workerId") ?? getStringField2(body, "worker_id");
+  const capabilities = getStringArrayField(body, "capabilities");
+  const maxConcurrency = getPositiveIntegerField(body, "maxConcurrency") ?? getPositiveIntegerField(body, "max_concurrency");
+  const kind = getWorkerKindField2(body);
+  const version = getStringField2(body, "version");
+  if (workerId === void 0 || capabilities === void 0 || maxConcurrency === void 0 || kind === void 0 || version === void 0) {
+    return void 0;
+  }
+  return {
+    workerId,
+    capabilities,
+    maxConcurrency,
+    currentLoad: 0,
+    lastHeartbeatTs: now,
+    kind,
+    version,
+    status: "idle"
+  };
+}
+__name(workerRecordFromRegistrationBody, "workerRecordFromRegistrationBody");
+function normalizeWorkerRegistry(raw, now) {
+  const registry = {};
+  for (const [workerId, worker2] of Object.entries(raw)) {
+    const normalized = normalizeWorkerRecord(workerId, worker2, now);
+    if (normalized !== void 0) {
+      registry[normalized.workerId] = normalized;
+    }
+  }
+  return evaluateWorkerHealth(registry, now).registry;
+}
+__name(normalizeWorkerRegistry, "normalizeWorkerRegistry");
+function normalizeWorkerRecord(fallbackWorkerId, value, now) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return void 0;
+  }
+  const record = value;
+  const workerId = getStringField2(record, "workerId") ?? getStringField2(record, "worker_id") ?? fallbackWorkerId;
+  const capabilities = getStringArrayField(record, "capabilities") ?? [];
+  const maxConcurrency = getPositiveIntegerField(record, "maxConcurrency") ?? getPositiveIntegerField(record, "max_concurrency") ?? DEFAULT_WORKER_MAX_CONCURRENCY;
+  const currentLoad = clampWorkerLoad(
+    getNumberField(record, "currentLoad") ?? getNumberField(record, "current_load") ?? 0,
+    maxConcurrency
+  );
+  const kind = getWorkerKindField2(record) ?? "local";
+  const version = getStringField2(record, "version") ?? "unknown";
+  const lastHeartbeatTs = getNumberField(record, "lastHeartbeatTs") ?? getNumberField(record, "last_heartbeat_ts") ?? now;
+  return {
+    workerId,
+    capabilities,
+    maxConcurrency,
+    currentLoad,
+    lastHeartbeatTs,
+    kind,
+    version,
+    status: isWorkerUnhealthy(lastHeartbeatTs, now) ? "unhealthy" : statusForWorkerLoad(currentLoad)
+  };
+}
+__name(normalizeWorkerRecord, "normalizeWorkerRecord");
+function evaluateWorkerHealth(registry, now) {
+  let changed = false;
+  const evaluated = {};
+  for (const [workerId, worker2] of Object.entries(registry)) {
+    const status = isWorkerUnhealthy(worker2.lastHeartbeatTs, now) ? "unhealthy" : statusForWorkerLoad(worker2.currentLoad);
+    if (status !== worker2.status) {
+      changed = true;
+    }
+    evaluated[workerId] = {
+      ...worker2,
+      status
+    };
+  }
+  return { registry: evaluated, changed };
+}
+__name(evaluateWorkerHealth, "evaluateWorkerHealth");
+function isWorkerUnhealthy(lastHeartbeatTs, now) {
+  return now - lastHeartbeatTs >= DEFAULT_REGISTRY_HEARTBEAT_INTERVAL_SEC * 3 * 1e3;
+}
+__name(isWorkerUnhealthy, "isWorkerUnhealthy");
+function statusForWorkerLoad(currentLoad) {
+  return currentLoad > 0 ? "busy" : "idle";
+}
+__name(statusForWorkerLoad, "statusForWorkerLoad");
+function clampWorkerLoad(value, maxConcurrency) {
+  return Math.max(0, Math.min(Math.trunc(value), maxConcurrency));
+}
+__name(clampWorkerLoad, "clampWorkerLoad");
+function getStringArrayField(body, key) {
+  const value = body[key];
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || entry.trim() === "")) {
+    return void 0;
+  }
+  return value;
+}
+__name(getStringArrayField, "getStringArrayField");
+function getPositiveIntegerField(body, key) {
+  const value = getNumberField(body, key);
+  if (value === void 0 || !Number.isInteger(value) || value < 1) {
+    return void 0;
+  }
+  return value;
+}
+__name(getPositiveIntegerField, "getPositiveIntegerField");
+function getWorkerKindField2(body) {
+  const kind = getStringField2(body, "kind");
+  if (kind === "local" || kind === "container") {
+    return kind;
+  }
+  return void 0;
+}
+__name(getWorkerKindField2, "getWorkerKindField");
 function webSocketResponse(client) {
   try {
     return new Response(null, { status: 101, webSocket: client });

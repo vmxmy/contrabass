@@ -51,7 +51,7 @@
 
 ## 7. `TeamCoordinator` Durable Object
 
-- [ ] 7.1 Implement `TeamCoordinator` DO class under `cloud/src/do/team-coordinator.ts`
+- [x] 7.1 Implement `TeamCoordinator` DO class under `cloud/src/do/team-coordinator.ts`
 - [ ] 7.2 Implement worker registry (in-memory + DO storage) with `idle | busy | unhealthy` status
 - [ ] 7.3 Implement task board persistence and `GET /board`, `POST /board/refresh` operations
 - [ ] 7.4 Implement dispatch routing: capability filter + selection policy (default: prefer local over container, then least-loaded)
