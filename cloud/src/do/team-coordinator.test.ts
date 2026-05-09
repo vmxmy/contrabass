@@ -27,6 +27,7 @@ class FakeWebSocket extends EventTarget {
   readonly sent: string[] = [];
   peer?: FakeWebSocket;
   accepted = false;
+  hibernationTags: string[] = [];
 
   accept(): void {
     this.accepted = true;
@@ -425,6 +426,7 @@ describe("TeamCoordinator Durable Object", () => {
     ["/run-event", "run-event"],
     ["/run-complete", "run-complete"],
     ["/lease-revoked", "lease-revoked"],
+    ["/config-changed", "config-changed"],
   ] satisfies Array<[string, TeamCoordinatorNotification["type"]]>)(
     "accepts IssueRun forwarded %s notifications",
     async (path, type) => {
@@ -461,7 +463,7 @@ describe("TeamCoordinator Durable Object", () => {
       headers: { upgrade: "websocket" },
     }));
 
-    expect(response.status).toBe(200);
+    expect([101, 200]).toContain(response.status);
     const server = fakeWebSocketPairs[0]?.[1];
     expect(server?.accepted).toBe(true);
     expect(server?.sent.map((message) => JSON.parse(message))).toEqual([
@@ -493,6 +495,12 @@ describe("TeamCoordinator Durable Object", () => {
       workerId: "worker-1",
       reason: "heartbeat_timeout",
     });
+    await post(coordinator, "/config-changed", {
+      type: "config-changed",
+      protocol_version: "1.0.0",
+      teamId: "team-1",
+      activeContentHash: "cfg-2",
+    });
 
     expect(server?.sent.slice(1).map((message) => JSON.parse(message))).toEqual([
       {
@@ -522,6 +530,68 @@ describe("TeamCoordinator Durable Object", () => {
         workerId: "worker-1",
         reason: "heartbeat_timeout",
         receivedAt: 2_000,
+      },
+      {
+        type: "config-changed",
+        protocol_version: "1.0.0",
+        teamId: "team-1",
+        activeContentHash: "cfg-2",
+        receivedAt: 2_000,
+      },
+    ]);
+  });
+
+  it("uses WebSocket Hibernation for dashboard subscribers", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(3_000);
+    Reflect.set(globalThis, "WebSocketPair", FakeWebSocketPair);
+    const storage = new MemoryTeamCoordinatorStorage();
+    const hibernationSockets: FakeWebSocket[] = [];
+    const hibernationState = {
+      storage,
+      acceptWebSocket(socket: WebSocket, tags?: string[]): void {
+        const fakeSocket = socket as unknown as FakeWebSocket;
+        fakeSocket.hibernationTags = tags ?? [];
+        hibernationSockets.push(fakeSocket);
+      },
+      getWebSockets(tag?: string): WebSocket[] {
+        return hibernationSockets
+          .filter((socket) => tag === undefined || socket.hibernationTags.includes(tag))
+          .map((socket) => socket as unknown as WebSocket);
+      },
+    };
+    const coordinator = new TeamCoordinator(hibernationState);
+
+    const response = await coordinator.fetch(new Request("https://team-coordinator.test/subscribe", {
+      headers: { upgrade: "websocket" },
+    }));
+
+    expect([101, 200]).toContain(response.status);
+    const server = fakeWebSocketPairs[0]?.[1];
+    expect(server?.accepted).toBe(false);
+    expect(server?.hibernationTags).toEqual(["dashboard"]);
+    expect(server?.sent.map((message) => JSON.parse(message))).toEqual([
+      {
+        type: "board-update",
+        protocol_version: "1.0.0",
+        board: { open: [], claimed: [], running: [], done: [] },
+      },
+    ]);
+
+    const resumedCoordinator = new TeamCoordinator(hibernationState);
+    await post(resumedCoordinator, "/config-changed", {
+      type: "config-changed",
+      protocol_version: "1.0.0",
+      teamId: "team-1",
+      activeContentHash: "cfg-3",
+    });
+
+    expect(server?.sent.slice(1).map((message) => JSON.parse(message))).toEqual([
+      {
+        type: "config-changed",
+        protocol_version: "1.0.0",
+        teamId: "team-1",
+        activeContentHash: "cfg-3",
+        receivedAt: 3_000,
       },
     ]);
   });

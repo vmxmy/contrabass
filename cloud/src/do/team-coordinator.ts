@@ -48,7 +48,7 @@ export type TeamCoordinatorDispatchFrame = {
 };
 
 export type TeamCoordinatorNotification = {
-  type: "run-event" | "run-complete" | "lease-revoked" | "no-worker-available";
+  type: "run-event" | "run-complete" | "lease-revoked" | "no-worker-available" | "config-changed";
   receivedAt: number;
   payload: Record<string, unknown>;
 };
@@ -60,6 +60,8 @@ export type TeamCoordinatorStorage = {
 
 type TeamCoordinatorDurableState = {
   storage: TeamCoordinatorStorage;
+  acceptWebSocket?: (socket: WebSocket, tags?: string[]) => void;
+  getWebSockets?: (tag?: string) => WebSocket[];
 };
 
 type WebSocketPairConstructor = new () => {
@@ -71,7 +73,7 @@ const TEAM_RECORD_KEY = "team-coordinator:record";
 const BOARD_KEY = "team-coordinator:board";
 const NOTIFICATIONS_KEY = "team-coordinator:notifications";
 const WORKER_REGISTRY_KEY = "team-coordinator:worker-registry";
-const INTERNAL_NOTIFICATION_PATHS = new Set(["/run-event", "/run-complete", "/lease-revoked"]);
+const INTERNAL_NOTIFICATION_PATHS = new Set(["/run-event", "/run-complete", "/lease-revoked", "/config-changed"]);
 const BOARD_PHASES: TeamCoordinatorBoardPhase[] = ["open", "claimed", "running", "done"];
 const PROTOCOL_VERSION = "1.0.0";
 const DEFAULT_WORKER_MAX_CONCURRENCY = 1;
@@ -324,17 +326,12 @@ export class TeamCoordinator {
     }
 
     const [client, server] = pair;
-    server.accept();
     const workerId = getSubscriptionWorkerId(request);
     if (workerId !== undefined) {
+      server.accept();
       this.addWorkerDispatchSubscriber(workerId, server);
     } else {
-      this.subscribers.add(server);
-      const removeSubscriber = () => {
-        this.subscribers.delete(server);
-      };
-      server.addEventListener("close", removeSubscriber);
-      server.addEventListener("error", removeSubscriber);
+      this.acceptDashboardSubscriber(server);
 
       server.send(JSON.stringify(boardUpdateFrame(await this.ensureBoard())));
       const notifications = await this.state.storage.get<TeamCoordinatorNotification[]>(NOTIFICATIONS_KEY);
@@ -406,15 +403,52 @@ export class TeamCoordinator {
     });
   }
 
+  webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
+    if (message === "ping") {
+      socket.send(JSON.stringify({ type: "pong", protocol_version: PROTOCOL_VERSION }));
+    }
+  }
+
+  webSocketClose(socket: WebSocket): void {
+    this.subscribers.delete(socket);
+  }
+
+  webSocketError(socket: WebSocket): void {
+    this.subscribers.delete(socket);
+  }
+
+  private acceptDashboardSubscriber(socket: WebSocket): void {
+    if (this.state.acceptWebSocket !== undefined) {
+      this.state.acceptWebSocket(socket, ["dashboard"]);
+      return;
+    }
+
+    socket.accept();
+    this.subscribers.add(socket);
+    const removeSubscriber = () => {
+      this.subscribers.delete(socket);
+    };
+    socket.addEventListener("close", removeSubscriber);
+    socket.addEventListener("error", removeSubscriber);
+  }
+
   private broadcast(frame: Record<string, unknown>): void {
     const message = JSON.stringify(frame);
-    for (const subscriber of this.subscribers) {
+    for (const subscriber of this.dashboardSubscribers()) {
       try {
         subscriber.send(message);
       } catch {
         this.subscribers.delete(subscriber);
       }
     }
+  }
+
+  private dashboardSubscribers(): WebSocket[] {
+    const sockets = new Set(this.subscribers);
+    for (const socket of this.state.getWebSockets?.("dashboard") ?? []) {
+      sockets.add(socket);
+    }
+    return [...sockets];
   }
 
   private addWorkerDispatchSubscriber(workerId: string, socket: WebSocket): void {
@@ -458,6 +492,9 @@ function notificationTypeForPath(pathname: string): TeamCoordinatorNotification[
   }
   if (pathname === "/lease-revoked") {
     return "lease-revoked";
+  }
+  if (pathname === "/config-changed") {
+    return "config-changed";
   }
   return "run-event";
 }
