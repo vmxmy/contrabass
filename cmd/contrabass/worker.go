@@ -100,6 +100,7 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		TeamID:       enrollment.TeamID,
 		WorkerID:     enrollment.WorkerID,
 		Capabilities: capabilities,
+		Registration: registration,
 	})
 	if err != nil {
 		return err

@@ -14,6 +14,7 @@ import (
 	"github.com/junhoyeo/contrabass/internal/types"
 	workerv1 "github.com/junhoyeo/contrabass/internal/workerproto/v1"
 	"github.com/junhoyeo/contrabass/internal/workspace"
+	"golang.org/x/sync/errgroup"
 )
 
 type workerRunExecutor struct {
@@ -23,11 +24,13 @@ type workerRunExecutor struct {
 	tmuxCapable  bool
 	workspaceMgr *workspace.Manager
 	tmuxSession  *tmux.Session
+	registration workerRegistration
 
-	provision func(context.Context, *workspace.Manager, types.Issue) (string, error)
-	openPane  func(context.Context, *tmux.Session, string, string) (string, error)
-	runAgent  func(context.Context, agent.AgentRunner, types.Issue, string, string) error
-	newRunner func(string) (agent.AgentRunner, error)
+	provision  func(context.Context, *workspace.Manager, types.Issue) (string, error)
+	openPane   func(context.Context, *tmux.Session, string, string) (string, error)
+	runAgent   func(context.Context, agent.AgentRunner, types.Issue, string, string) error
+	newRunner  func(string) (agent.AgentRunner, error)
+	postEvents workerEventPostFunc
 }
 
 type workerRunExecutorConfig struct {
@@ -35,11 +38,13 @@ type workerRunExecutorConfig struct {
 	WorkerID         string
 	Capabilities     []workerv1.Capability
 	WorkspaceBaseDir string
+	Registration     workerRegistration
 
-	Provision func(context.Context, *workspace.Manager, types.Issue) (string, error)
-	OpenPane  func(context.Context, *tmux.Session, string, string) (string, error)
-	RunAgent  func(context.Context, agent.AgentRunner, types.Issue, string, string) error
-	NewRunner func(string) (agent.AgentRunner, error)
+	Provision  func(context.Context, *workspace.Manager, types.Issue) (string, error)
+	OpenPane   func(context.Context, *tmux.Session, string, string) (string, error)
+	RunAgent   func(context.Context, agent.AgentRunner, types.Issue, string, string) error
+	NewRunner  func(string) (agent.AgentRunner, error)
+	PostEvents workerEventPostFunc
 }
 
 func newWorkerRunExecutor(cfg workerRunExecutorConfig) (*workerRunExecutor, error) {
@@ -60,12 +65,16 @@ func newWorkerRunExecutor(cfg workerRunExecutorConfig) (*workerRunExecutor, erro
 		openPane = tmux.OpenPane
 	}
 	runAgent := cfg.RunAgent
-	if runAgent == nil {
-		runAgent = agent.Run
-	}
 	newRunner := cfg.NewRunner
 	if newRunner == nil {
 		newRunner = newWorkerAgentRunner
+	}
+	postEvents := cfg.PostEvents
+	if postEvents == nil && cfg.Registration.APIBaseURL != "" {
+		registration := cfg.Registration
+		postEvents = func(ctx context.Context, runID workerv1.RunID, events []workerv1.WorkerEventLine) error {
+			return postWorkerEvents(ctx, registration, runID, events)
+		}
 	}
 
 	return &workerRunExecutor{
@@ -75,10 +84,12 @@ func newWorkerRunExecutor(cfg workerRunExecutorConfig) (*workerRunExecutor, erro
 		tmuxCapable:  workerHasCapability(cfg.Capabilities, "tmux"),
 		workspaceMgr: workspace.NewManager(baseDir),
 		tmuxSession:  tmux.NewSession(firstNonEmpty(strings.TrimSpace(cfg.TeamID), "worker"), nil),
+		registration: cfg.Registration,
 		provision:    provision,
 		openPane:     openPane,
 		runAgent:     runAgent,
 		newRunner:    newRunner,
+		postEvents:   postEvents,
 	}, nil
 }
 
@@ -108,10 +119,66 @@ func (e *workerRunExecutor) Run(ctx context.Context, frame workerv1.WorkerDispat
 	}
 	defer runner.Close()
 
-	if err := e.runAgent(ctx, runner, issue, workspacePath, frame.Prompt); err != nil {
+	runAgent := e.runAgent
+	if runAgent == nil {
+		runAgent = e.runAgentWithEventUpload
+	}
+	if err := runAgent(ctx, runner, issue, workspacePath, frame.Prompt); err != nil {
 		return fmt.Errorf("run agent for run %q: %w", frame.RunID, err)
 	}
 	return nil
+}
+
+func (e *workerRunExecutor) runAgentWithEventUpload(
+	ctx context.Context,
+	runner agent.AgentRunner,
+	issue types.Issue,
+	workspacePath string,
+	prompt string,
+) error {
+	if runner == nil {
+		return errors.New("agent runner is nil")
+	}
+	if e.postEvents == nil {
+		return agent.Run(ctx, runner, issue, workspacePath, prompt)
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	proc, err := runner.Start(ctx, issue, workspacePath, prompt)
+	if err != nil {
+		return fmt.Errorf("start agent process: %w", err)
+	}
+	if proc == nil {
+		return errors.New("agent runner returned nil process")
+	}
+
+	batcher := newWorkerEventBatcher(e.postEvents)
+	g, gCtx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		err := batcher.Consume(gCtx, workerv1.RunID(issue.ID), proc.Events)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil
+		}
+		return err
+	})
+	g.Go(func() error {
+		select {
+		case <-gCtx.Done():
+			return gCtx.Err()
+		case err, ok := <-proc.Done:
+			if !ok {
+				return nil
+			}
+			if err != nil {
+				cancel()
+			}
+			return err
+		}
+	})
+
+	return g.Wait()
 }
 
 func workerIssueFromDispatch(frame workerv1.WorkerDispatchFrame) types.Issue {
