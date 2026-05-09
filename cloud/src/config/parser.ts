@@ -8,6 +8,7 @@ export type ConfigValidationDetail = {
 
 export type ParseConfigOptions = {
   boundSecrets?: readonly string[];
+  liquidContext?: Record<string, unknown>;
 };
 
 export type ParsedWorkflowConfig = {
@@ -20,6 +21,12 @@ const ALLOWED_TRACKER_TYPES = new Set(["", "internal", "local", "linear", "githu
 const ALLOWED_LINEAR_SYNC_MODES = new Set(["", "reply_thread", "top_level"]);
 const ALLOWED_WORKER_MODES = new Set(["", "tmux", "goroutine"]);
 const liquidEngine = new Liquid();
+const strictLiquidEngine = new Liquid({ strictVariables: true });
+const ISSUE_PLACEHOLDERS = {
+  title: "{{ issue.title }}",
+  description: "{{ issue.description }}",
+  url: "{{ issue.url }}",
+};
 
 export function parseWorkflowConfig(content: string, options: ParseConfigOptions = {}): ParsedWorkflowConfig {
   const split = splitFrontMatter(content);
@@ -71,6 +78,22 @@ export function parseWorkflowConfig(content: string, options: ParseConfigOptions
   }
 
   return { promptTemplate, frontMatter };
+}
+
+export function renderWorkflowConfig(content: string, options: ParseConfigOptions = {}): string {
+  const split = splitFrontMatter(content);
+  const parsed = parseWorkflowConfig(content, options);
+  const renderedPrompt = renderPromptTemplate(parsed.promptTemplate, options);
+  if (renderedPrompt === parsed.promptTemplate) {
+    return content;
+  }
+
+  const promptSuffix = split.prompt.endsWith("\n") || split.prompt.endsWith("\r\n") ? "\n" : "";
+  if (!split.hasFrontMatter) {
+    return `${renderedPrompt}${promptSuffix}`;
+  }
+
+  return `${content.slice(0, content.length - split.prompt.length)}${renderedPrompt}${promptSuffix}`;
 }
 
 export function configParseError(details: ConfigValidationDetail[]): Error & { details: ConfigValidationDetail[] } {
@@ -163,10 +186,27 @@ function validateWorkflowConfig(frontMatter: Record<string, unknown>, options: P
 
 function validateLiquidTemplates(promptTemplate: string): ConfigValidationDetail[] {
   try {
-    liquidEngine.parse(promptTemplate);
+    const template = liquidEngine.parse(promptTemplate);
+    const hasSecretReference = liquidEngine.fullVariablesSync(template).some((variable) => {
+      return variable === "secrets" || variable.startsWith("secrets.");
+    });
+    if (hasSecretReference) {
+      return [{ path: "prompt", message: "secrets are not allowed in prompts" }];
+    }
     return [];
   } catch (error) {
     return [{ path: "prompt", message: `invalid liquid template: ${getErrorMessage(error)}` }];
+  }
+}
+
+function renderPromptTemplate(promptTemplate: string, options: ParseConfigOptions): string {
+  try {
+    return String(strictLiquidEngine.parseAndRenderSync(promptTemplate, {
+      ...options.liquidContext,
+      issue: ISSUE_PLACEHOLDERS,
+    }));
+  } catch (error) {
+    throw configParseError([{ path: "prompt", message: `invalid liquid template: ${getErrorMessage(error)}` }]);
   }
 }
 

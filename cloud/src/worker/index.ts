@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 
-import { isConfigParseError, parseWorkflowConfig } from "../config/parser";
+import { configParseError, isConfigParseError, renderWorkflowConfig } from "../config/parser";
 import type { ConfigValidationDetail } from "../config/parser";
 import type { EventArchiveMessage } from "../queues/events-archive";
 import { PROTOCOL_VERSION_CURRENT } from "../workerproto/v1";
@@ -23,6 +23,7 @@ export type Env = {
   CONTRABASS_DASHBOARD_SESSION_TOKENS?: string;
   CONTRABASS_WORKER_TOKEN_SECRET?: string;
   CONTRABASS_CONFIG_BOUND_SECRETS?: string;
+  CONTRABASS_CONFIG_LIQUID_CONTEXT?: string;
 };
 
 type AuthPrincipalKind = "bearer" | "dashboard-session";
@@ -298,8 +299,12 @@ async function createTeamConfig(context: Context<WorkerRouterEnv>): Promise<Resp
     return errorResponse("invalid_request", 400);
   }
 
+  let renderedContentYaml: string;
   try {
-    parseWorkflowConfig(request.contentYaml, { boundSecrets: parseConfiguredTokens(context.env.CONTRABASS_CONFIG_BOUND_SECRETS) });
+    renderedContentYaml = renderWorkflowConfig(request.contentYaml, {
+      boundSecrets: parseConfiguredTokens(context.env.CONTRABASS_CONFIG_BOUND_SECRETS),
+      liquidContext: configLiquidContext(teamId, context.env.CONTRABASS_CONFIG_LIQUID_CONTEXT),
+    });
   } catch (error) {
     if (isConfigParseError(error)) {
       return configInvalidResponse(error.details);
@@ -307,7 +312,7 @@ async function createTeamConfig(context: Context<WorkerRouterEnv>): Promise<Resp
     return configInvalidResponse([{ path: "$", message: "invalid workflow config" }]);
   }
 
-  const contentHash = await sha256Hex(request.contentYaml);
+  const contentHash = await sha256Hex(renderedContentYaml);
   const existing = await context.env.CONTROL_PLANE_DB.prepare(`
     SELECT version, content_hash
     FROM team_configs
@@ -334,7 +339,7 @@ async function createTeamConfig(context: Context<WorkerRouterEnv>): Promise<Resp
   await context.env.CONTROL_PLANE_DB.prepare(`
     INSERT INTO team_configs (team_id, version, content_hash, content_yaml, created_by, created_at, notes)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).bind(teamId, version, contentHash, request.contentYaml, createdBy, createdAt, request.notes ?? "").run();
+  `).bind(teamId, version, contentHash, renderedContentYaml, createdBy, createdAt, request.notes ?? "").run();
 
   return jsonResponse({
     teamId,
@@ -667,6 +672,28 @@ function parseCreateConfigRequest(body: Record<string, unknown> | undefined): Cr
   };
 }
 
+function configLiquidContext(teamId: string, rawContext: string | undefined): Record<string, unknown> {
+  const defaultTeam = { id: teamId, name: teamId };
+  if (rawContext === undefined || rawContext.trim() === "") {
+    return { team: defaultTeam };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawContext);
+  } catch {
+    throw configParseError([{ path: "prompt", message: "invalid liquid context" }]);
+  }
+  if (!isPlainRecord(parsed) || "secrets" in parsed) {
+    throw configParseError([{ path: "prompt", message: "invalid liquid context" }]);
+  }
+
+  const team = isPlainRecord(parsed.team)
+    ? { ...defaultTeam, ...parsed.team }
+    : defaultTeam;
+  return { ...parsed, team };
+}
+
 type EnrollmentRow = {
   enrollment_id: string;
   team_id: string;
@@ -902,6 +929,10 @@ async function readOptionalObjectBody(request: Request): Promise<Record<string, 
   }
 
   return body as Record<string, unknown>;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function getStringField(body: Record<string, unknown>, key: string): string | undefined {

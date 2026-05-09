@@ -1030,6 +1030,36 @@ describe("API Worker router auth middleware", () => {
     expect(configs).toHaveLength(1);
   });
 
+  it("renders cloud Liquid prompt bindings before storing config", async () => {
+    const configs: FakeConfigRow[] = [];
+    const env = envWithAuth({
+      ...createEnv(),
+      CONTROL_PLANE_DB: fakeD1({ configs }),
+      CONTRABASS_CONFIG_LIQUID_CONTEXT: JSON.stringify({ team: { name: "acme" } }),
+    }, { dashboardTokens: "dashboard-session" });
+    const contentYaml = "---\ntracker:\n  type: internal\n---\nFix {{ issue.title }} for {{ team.name }}.\n";
+    const renderedYaml = "---\ntracker:\n  type: internal\n---\nFix {{ issue.title }} for acme.\n";
+
+    const response = await handleWorkerRequest(new Request("https://api.test/v1/teams/team-1/config", {
+      method: "POST",
+      headers: { cookie: "contrabass_session=dashboard-session", "content-type": "application/json" },
+      body: JSON.stringify({ content_yaml: contentYaml }),
+    }), env);
+
+    expect(response.status).toBe(201);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body.contentHash).toBe(await testSha256Hex(renderedYaml));
+    expect(configs).toEqual([{
+      team_id: "team-1",
+      version: 1,
+      content_hash: body.contentHash,
+      content_yaml: renderedYaml,
+      created_by: "dashboard",
+      created_at: expect.any(String),
+      notes: "",
+    }]);
+  });
+
   it("returns immutable cacheable YAML config by content hash", async () => {
     const contentYaml = "---\ntracker:\n  type: internal\n---\nPrompt.\n";
     const contentHash = await testSha256Hex(contentYaml);
@@ -1196,6 +1226,11 @@ describe("API Worker router auth middleware", () => {
         name: "invalid liquid prompt",
         contentYaml: "---\ntracker:\n  type: internal\n---\nFix {{ issue.title\n",
         expectedDetails: [{ path: "prompt", message: expect.stringContaining("invalid liquid template") }],
+      },
+      {
+        name: "secret liquid prompt",
+        contentYaml: "---\ntracker:\n  type: internal\n---\n{{ secrets.LINEAR_API_KEY }}\n",
+        expectedDetails: [{ path: "prompt", message: "secrets are not allowed in prompts" }],
       },
     ];
 
