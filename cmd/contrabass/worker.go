@@ -96,9 +96,15 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		enrollment.TeamID,
 		registration.DispatchChannel.WsURL,
 	)
-	ackHandler := newWorkerAckingDispatchHandler(registration, opts.MaxConcurrency, func(context.Context, workerv1.WorkerDispatchFrame) error {
-		return nil
+	executor, err := newWorkerRunExecutor(workerRunExecutorConfig{
+		TeamID:       enrollment.TeamID,
+		WorkerID:     enrollment.WorkerID,
+		Capabilities: capabilities,
 	})
+	if err != nil {
+		return err
+	}
+	ackHandler := newWorkerAckingDispatchHandler(registration, opts.MaxConcurrency, executor.Run)
 	return workerDispatchConsumer(cmd.Context(), registration, ackHandler.Handle)
 }
 
