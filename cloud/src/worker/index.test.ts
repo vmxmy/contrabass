@@ -1152,6 +1152,96 @@ describe("API Worker router auth middleware", () => {
     });
   });
 
+  it("returns a line diff with audit metadata between config versions", async () => {
+    const fromYaml = "---\ntracker:\n  type: internal\n---\nFix old issue.\n";
+    const toYaml = "---\ntracker:\n  type: internal\n---\nFix new issue.\n";
+    const configs: FakeConfigRow[] = [
+      {
+        team_id: "team-1",
+        version: 1,
+        content_hash: await testSha256Hex(fromYaml),
+        content_yaml: fromYaml,
+        created_by: "operator-1",
+        created_at: "2026-05-09T00:00:00.000Z",
+        notes: "initial",
+      },
+      {
+        team_id: "team-1",
+        version: 2,
+        content_hash: await testSha256Hex(toYaml),
+        content_yaml: toYaml,
+        created_by: "operator-2",
+        created_at: "2026-05-09T01:00:00.000Z",
+        notes: "prompt update",
+      },
+    ];
+    const env = envWithAuth({
+      ...createEnv(),
+      CONTROL_PLANE_DB: fakeD1({ configs }),
+    }, { dashboardTokens: "dashboard-session" });
+
+    const response = await handleWorkerRequest(new Request("https://api.test/v1/teams/team-1/config/diff?from=v1&to=v2", {
+      headers: { cookie: "contrabass_session=dashboard-session" },
+    }), env);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      teamId: "team-1",
+      from: {
+        version: 1,
+        contentHash: configs[0].content_hash,
+        createdBy: "operator-1",
+        createdAt: "2026-05-09T00:00:00.000Z",
+        notes: "initial",
+      },
+      to: {
+        version: 2,
+        contentHash: configs[1].content_hash,
+        createdBy: "operator-2",
+        createdAt: "2026-05-09T01:00:00.000Z",
+        notes: "prompt update",
+      },
+      changed: true,
+      diff: "--- v1\n+++ v2\n-Fix old issue.\n+Fix new issue.",
+      protocol_version: "1.0.0",
+    });
+  });
+
+  it("returns structured errors for invalid or missing config diff versions", async () => {
+    const contentYaml = "---\ntracker:\n  type: internal\n---\nPrompt.\n";
+    const env = envWithAuth({
+      ...createEnv(),
+      CONTROL_PLANE_DB: fakeD1({
+        configs: [{
+          team_id: "team-1",
+          version: 1,
+          content_hash: await testSha256Hex(contentYaml),
+          content_yaml: contentYaml,
+          created_by: "operator-1",
+          created_at: "2026-05-09T00:00:00.000Z",
+          notes: "stored",
+        }],
+      }),
+    }, { dashboardTokens: "dashboard-session" });
+    const cases: Array<{ name: string; query: string; expectedStatus: number; expectedError: string }> = [
+      { name: "missing from", query: "to=v1", expectedStatus: 400, expectedError: "invalid_config_version" },
+      { name: "malformed from", query: "from=latest&to=v1", expectedStatus: 400, expectedError: "invalid_config_version" },
+      { name: "missing stored version", query: "from=v1&to=v2", expectedStatus: 404, expectedError: "config_not_found" },
+    ];
+
+    for (const testCase of cases) {
+      const response = await handleWorkerRequest(new Request(`https://api.test/v1/teams/team-1/config/diff?${testCase.query}`, {
+        headers: { cookie: "contrabass_session=dashboard-session" },
+      }), env);
+
+      expect(response.status, testCase.name).toBe(testCase.expectedStatus);
+      await expect(response.json(), testCase.name).resolves.toEqual({
+        error: testCase.expectedError,
+        protocol_version: "1.0.0",
+      });
+    }
+  });
+
   it("returns structured errors when activating missing or invalid config versions", async () => {
     const env = envWithAuth({
       ...createEnv(),

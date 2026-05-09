@@ -66,6 +66,7 @@ workerRouter.get("/v1/teams/:teamId/board", (context) => {
 workerRouter.post("/v1/teams/:teamId/board/*", forwardTeamCoordinatorBoardPostRequest);
 workerRouter.post("/v1/teams/:teamId/config", createTeamConfig);
 workerRouter.post("/v1/teams/:teamId/config/:version/activate", activateTeamConfigVersion);
+workerRouter.get("/v1/teams/:teamId/config/diff", getTeamConfigDiff);
 workerRouter.get("/v1/teams/:teamId/config/:hash", getTeamConfigByHash);
 
 workerRouter.post("/v1/workers/register", registerWorker);
@@ -450,6 +451,52 @@ async function activateTeamConfigVersion(context: Context<WorkerRouterEnv>): Pro
   return jsonResponse(responseBody, 200);
 }
 
+async function getTeamConfigDiff(context: Context<WorkerRouterEnv>): Promise<Response> {
+  const teamId = (context.req.param("teamId") ?? "").trim();
+  if (teamId === "") {
+    return errorResponse("invalid_team_id", 400);
+  }
+
+  const principal = context.get("principal");
+  if ("issued" in principal && principal.teamId !== teamId) {
+    return errorResponse("team_forbidden", 403);
+  }
+  if (context.env.CONTROL_PLANE_DB === undefined) {
+    return errorResponse("config_store_unavailable", 500);
+  }
+
+  const url = new URL(context.req.raw.url);
+  const fromVersion = parseConfigVersionRef(url.searchParams.get("from"));
+  const toVersion = parseConfigVersionRef(url.searchParams.get("to"));
+  if (fromVersion === undefined || toVersion === undefined) {
+    return errorResponse("invalid_config_version", 400);
+  }
+
+  const [fromConfig, toConfig] = await Promise.all([
+    readConfigVersion(context.env.CONTROL_PLANE_DB, teamId, fromVersion),
+    readConfigVersion(context.env.CONTROL_PLANE_DB, teamId, toVersion),
+  ]);
+  if (fromConfig === undefined || toConfig === undefined) {
+    return errorResponse("config_not_found", 404);
+  }
+
+  const diff = buildUnifiedDiff({
+    fromLabel: `v${fromConfig.version}`,
+    fromContent: fromConfig.content_yaml,
+    toLabel: `v${toConfig.version}`,
+    toContent: toConfig.content_yaml,
+  });
+
+  return jsonResponse({
+    teamId,
+    from: configDiffMetadata(fromConfig),
+    to: configDiffMetadata(toConfig),
+    changed: fromConfig.content_hash !== toConfig.content_hash,
+    diff,
+    protocol_version: PROTOCOL_VERSION_CURRENT,
+  }, 200);
+}
+
 function extractBearerToken(authorization: string | null): string | undefined {
   if (authorization === null) {
     return undefined;
@@ -655,6 +702,15 @@ type CreateConfigRequest = {
   notes?: string;
 };
 
+type ConfigVersionRow = {
+  version: number;
+  content_hash: string;
+  content_yaml: string;
+  created_by: string;
+  created_at: string;
+  notes: string | null;
+};
+
 function parseCreateConfigRequest(body: Record<string, unknown> | undefined): CreateConfigRequest | undefined {
   if (body === undefined) {
     return undefined;
@@ -814,6 +870,104 @@ function workerTokenConfigErrorResponse(): Response {
 
 function isContentHash(value: string): boolean {
   return /^[a-f0-9]{64}$/u.test(value);
+}
+
+function parseConfigVersionRef(value: string | null): number | undefined {
+  if (value === null) {
+    return undefined;
+  }
+
+  const normalized = value.trim().replace(/^v/iu, "");
+  return parsePositiveInteger(normalized);
+}
+
+async function readConfigVersion(
+  db: D1Database,
+  teamId: string,
+  version: number,
+): Promise<ConfigVersionRow | undefined> {
+  const row = await db.prepare(`
+    SELECT version, content_hash, content_yaml, created_by, created_at, notes
+    FROM team_configs
+    WHERE team_id = ? AND version = ?
+    LIMIT 1
+  `).bind(teamId, version).first<ConfigVersionRow>();
+  return row ?? undefined;
+}
+
+function configDiffMetadata(row: ConfigVersionRow): Record<string, unknown> {
+  return {
+    version: row.version,
+    contentHash: row.content_hash,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    notes: row.notes ?? "",
+  };
+}
+
+function buildUnifiedDiff(options: {
+  fromLabel: string;
+  fromContent: string;
+  toLabel: string;
+  toContent: string;
+}): string {
+  const fromLines = splitDiffLines(options.fromContent);
+  const toLines = splitDiffLines(options.toContent);
+  const operations = diffLineOperations(fromLines, toLines);
+  const body = operations
+    .filter((operation) => operation.kind !== "equal")
+    .map((operation) => `${operation.kind === "delete" ? "-" : "+"}${operation.line}`);
+
+  return [
+    `--- ${options.fromLabel}`,
+    `+++ ${options.toLabel}`,
+    ...body,
+  ].join("\n");
+}
+
+function splitDiffLines(content: string): string[] {
+  const lines = content.split("\n");
+  return lines.at(-1) === "" ? lines.slice(0, -1) : lines;
+}
+
+type DiffLineOperation = {
+  kind: "equal" | "delete" | "insert";
+  line: string;
+};
+
+function diffLineOperations(fromLines: string[], toLines: string[]): DiffLineOperation[] {
+  const lcsLengths = Array.from({ length: fromLines.length + 1 }, () => Array<number>(toLines.length + 1).fill(0));
+  for (let fromIndex = fromLines.length - 1; fromIndex >= 0; fromIndex -= 1) {
+    for (let toIndex = toLines.length - 1; toIndex >= 0; toIndex -= 1) {
+      lcsLengths[fromIndex][toIndex] = fromLines[fromIndex] === toLines[toIndex]
+        ? lcsLengths[fromIndex + 1][toIndex + 1] + 1
+        : Math.max(lcsLengths[fromIndex + 1][toIndex], lcsLengths[fromIndex][toIndex + 1]);
+    }
+  }
+
+  const operations: DiffLineOperation[] = [];
+  let fromIndex = 0;
+  let toIndex = 0;
+  while (fromIndex < fromLines.length && toIndex < toLines.length) {
+    if (fromLines[fromIndex] === toLines[toIndex]) {
+      operations.push({ kind: "equal", line: fromLines[fromIndex] });
+      fromIndex += 1;
+      toIndex += 1;
+    } else if (lcsLengths[fromIndex + 1][toIndex] >= lcsLengths[fromIndex][toIndex + 1]) {
+      operations.push({ kind: "delete", line: fromLines[fromIndex] });
+      fromIndex += 1;
+    } else {
+      operations.push({ kind: "insert", line: toLines[toIndex] });
+      toIndex += 1;
+    }
+  }
+  for (; fromIndex < fromLines.length; fromIndex += 1) {
+    operations.push({ kind: "delete", line: fromLines[fromIndex] });
+  }
+  for (; toIndex < toLines.length; toIndex += 1) {
+    operations.push({ kind: "insert", line: toLines[toIndex] });
+  }
+  return operations;
 }
 
 function configInvalidResponse(details: ConfigValidationDetail[]): Response {
