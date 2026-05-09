@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -33,7 +34,19 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	return fmt.Errorf("worker enrollment not found for team %q; run \"contrabass worker login\" first", opts.TeamID)
+	store, err := newWorkerLoginStore()
+	if err != nil {
+		return fmt.Errorf("opening OS credential store: %w", err)
+	}
+	enrollment, err := store.LoadWorkerEnrollment(cmd.Context(), opts.TeamID)
+	if err != nil {
+		if errors.Is(err, errWorkerEnrollmentNotFound) {
+			return fmt.Errorf("worker enrollment not found for team %q; run \"contrabass worker login\" first", opts.TeamID)
+		}
+		return fmt.Errorf("loading worker enrollment from OS credential store: %w", err)
+	}
+
+	return fmt.Errorf("worker %q is enrolled for team %q; registration flow is not implemented yet", enrollment.WorkerID, enrollment.TeamID)
 }
 
 func workerOptionsFromFlags(cmd *cobra.Command) (workerOptions, error) {

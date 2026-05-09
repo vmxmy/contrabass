@@ -25,6 +25,7 @@ func TestWorkerCommandValidation(t *testing.T) {
 	tests := []struct {
 		name        string
 		args        []string
+		store       *fakeWorkerEnrollmentStore
 		wantErr     string
 		wantNoError bool
 	}{
@@ -36,12 +37,30 @@ func TestWorkerCommandValidation(t *testing.T) {
 		{
 			name:    "without enrollment instructs login",
 			args:    []string{"worker", "--team", "my-team"},
+			store:   &fakeWorkerEnrollmentStore{},
 			wantErr: `run "contrabass worker login" first`,
+		},
+		{
+			name: "with enrollment loads credential before registration",
+			args: []string{"worker", "--team", "my-team"},
+			store: &fakeWorkerEnrollmentStore{byTeam: map[string]workerEnrollment{
+				"my-team": {
+					TeamID:       "my-team",
+					WorkerID:     "worker-1",
+					RefreshToken: "refresh-token-123",
+				},
+			}},
+			wantErr: `registration flow is not implemented yet`,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.store != nil {
+				restore := stubWorkerLoginDependencies(t, http.DefaultClient, tt.store)
+				defer restore()
+			}
+
 			cmd := newRootCmd()
 			buf := new(bytes.Buffer)
 			cmd.SetOut(buf)
@@ -167,11 +186,24 @@ func TestWorkerLoginCommandRequiresCode(t *testing.T) {
 
 type fakeWorkerEnrollmentStore struct {
 	enrollments []workerEnrollment
+	byTeam      map[string]workerEnrollment
 }
 
 func (s *fakeWorkerEnrollmentStore) StoreWorkerEnrollment(_ context.Context, enrollment workerEnrollment) error {
 	s.enrollments = append(s.enrollments, enrollment)
+	if s.byTeam == nil {
+		s.byTeam = make(map[string]workerEnrollment)
+	}
+	s.byTeam[enrollment.TeamID] = enrollment
 	return nil
+}
+
+func (s *fakeWorkerEnrollmentStore) LoadWorkerEnrollment(_ context.Context, teamID string) (workerEnrollment, error) {
+	enrollment, ok := s.byTeam[teamID]
+	if !ok {
+		return workerEnrollment{}, errWorkerEnrollmentNotFound
+	}
+	return enrollment, nil
 }
 
 func stubWorkerLoginDependencies(t *testing.T, client *http.Client, store workerEnrollmentStore) func() {

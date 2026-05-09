@@ -37,6 +37,7 @@ type workerEnrollment struct {
 
 type workerEnrollmentStore interface {
 	StoreWorkerEnrollment(ctx context.Context, enrollment workerEnrollment) error
+	LoadWorkerEnrollment(ctx context.Context, teamID string) (workerEnrollment, error)
 }
 
 var (
@@ -44,6 +45,7 @@ var (
 	newWorkerLoginStore   = func() (workerEnrollmentStore, error) {
 		return newWorkerCredentialKeyringStore()
 	}
+	errWorkerEnrollmentNotFound = errors.New("worker enrollment not found")
 )
 
 var workerLoginCmd = &cobra.Command{
@@ -233,6 +235,28 @@ func (s workerCredentialKeyringStore) StoreWorkerEnrollment(_ context.Context, e
 		Label:       fmt.Sprintf("Contrabass worker refresh token for %s", enrollment.TeamID),
 		Description: "Contrabass cloud worker enrollment",
 	})
+}
+
+func (s workerCredentialKeyringStore) LoadWorkerEnrollment(_ context.Context, teamID string) (workerEnrollment, error) {
+	item, err := s.ring.Get(workerCredentialKey(teamID))
+	if err != nil {
+		if errors.Is(err, keyring.ErrKeyNotFound) {
+			return workerEnrollment{}, errWorkerEnrollmentNotFound
+		}
+		return workerEnrollment{}, err
+	}
+
+	var enrollment workerEnrollment
+	if err := json.Unmarshal(item.Data, &enrollment); err != nil {
+		return workerEnrollment{}, fmt.Errorf("decoding credential payload: %w", err)
+	}
+	if enrollment.TeamID == "" || enrollment.WorkerID == "" || enrollment.RefreshToken == "" {
+		return workerEnrollment{}, errors.New("stored worker enrollment is incomplete")
+	}
+	if enrollment.TeamID != teamID {
+		return workerEnrollment{}, fmt.Errorf("stored worker enrollment is for team %q, not %q", enrollment.TeamID, teamID)
+	}
+	return enrollment, nil
 }
 
 func workerCredentialKey(teamID string) string {
