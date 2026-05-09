@@ -19,11 +19,18 @@ export type Env = {
   EVENTS_ARCHIVE_QUEUE: Queue<EventArchiveMessage>;
   ISSUE_RUN: DurableObjectNamespace;
   TEAM_COORDINATOR: DurableObjectNamespace;
+  CONTRABASS_DASHBOARD_ORIGIN?: string;
   CONTRABASS_WORKER_SESSION_TOKENS?: string;
   CONTRABASS_DASHBOARD_SESSION_TOKENS?: string;
   CONTRABASS_WORKER_TOKEN_SECRET?: string;
   CONTRABASS_CONFIG_BOUND_SECRETS?: string;
   CONTRABASS_CONFIG_LIQUID_CONTEXT?: string;
+  CONTRABASS_DASHBOARD_SESSION_SECRET?: string;
+  CONTRABASS_GITHUB_CLIENT_ID?: string;
+  CONTRABASS_GITHUB_CLIENT_SECRET?: string;
+  CONTRABASS_GITHUB_AUTHORIZE_URL?: string;
+  CONTRABASS_GITHUB_TOKEN_URL?: string;
+  CONTRABASS_GITHUB_USER_URL?: string;
 };
 
 type AuthPrincipalKind = "bearer" | "dashboard-session";
@@ -37,6 +44,12 @@ export type AuthPrincipal = {
   teamId: string;
   workerId: string;
   issued: true;
+} | {
+  kind: "dashboard-session";
+  token: string;
+  githubId: number;
+  githubLogin: string;
+  issued: true;
 };
 
 type WorkerRouterEnv = {
@@ -47,8 +60,11 @@ type WorkerRouterEnv = {
 };
 
 const DASHBOARD_SESSION_COOKIE_NAME = "contrabass_session";
+const DASHBOARD_OAUTH_STATE_COOKIE_NAME = "contrabass_oauth_state";
 const SESSION_TOKEN_TTL_MS = 60 * 60 * 1000;
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const DASHBOARD_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const HEARTBEAT_INTERVAL_SEC = 20;
 const LEASE_SEC = 60;
 const SUPPORTED_PROTOCOL_VERSIONS = [PROTOCOL_VERSION_CURRENT] as const;
@@ -58,6 +74,9 @@ export const workerRouter = new Hono<WorkerRouterEnv>();
 
 workerRouter.use("*", apiVersionHeaderMiddleware());
 workerRouter.use("/v1/*", authMiddleware());
+
+workerRouter.get("/v1/auth/github/login", startGitHubOAuth);
+workerRouter.get("/v1/auth/github/callback", completeGitHubOAuth);
 
 workerRouter.get("/v1/teams/:teamId/board", (context) => {
   return forwardTeamCoordinatorRequest(context, "/board");
@@ -142,11 +161,92 @@ export async function validateAuthPrincipal(request: Request, env: Env): Promise
   }
 
   const sessionToken = extractDashboardSessionCookie(request.headers.get("cookie"));
-  if (sessionToken !== undefined && isConfiguredToken(sessionToken, env.CONTRABASS_DASHBOARD_SESSION_TOKENS)) {
-    return { kind: "dashboard-session", token: sessionToken };
+  if (sessionToken !== undefined) {
+    const issuedDashboardSession = await validateDashboardSessionToken(sessionToken, env);
+    if (issuedDashboardSession !== undefined) {
+      return {
+        kind: "dashboard-session",
+        token: sessionToken,
+        githubId: issuedDashboardSession.githubId,
+        githubLogin: issuedDashboardSession.githubLogin,
+        issued: true,
+      };
+    }
+    if (isConfiguredToken(sessionToken, env.CONTRABASS_DASHBOARD_SESSION_TOKENS)) {
+      return { kind: "dashboard-session", token: sessionToken };
+    }
   }
 
   return undefined;
+}
+
+async function startGitHubOAuth(context: Context<WorkerRouterEnv>): Promise<Response> {
+  const clientId = context.env.CONTRABASS_GITHUB_CLIENT_ID?.trim();
+  if (clientId === undefined || clientId.length === 0 || dashboardSessionSigningSecret(context.env) === undefined) {
+    return jsonResponse({ error: "oauth_config_missing" }, 500);
+  }
+
+  const requestUrl = new URL(context.req.raw.url);
+  const nonce = await randomTokenPart(24);
+  const next = dashboardRedirectTarget(context.env, requestUrl.searchParams.get("next"));
+  const state = await issueOAuthStateToken(context.env, nonce, next, Date.now() + OAUTH_STATE_TTL_MS);
+  const redirectUri = `${requestUrl.origin}/v1/auth/github/callback`;
+  const authorizeUrl = new URL(context.env.CONTRABASS_GITHUB_AUTHORIZE_URL ?? "https://github.com/login/oauth/authorize");
+  authorizeUrl.searchParams.set("client_id", clientId);
+  authorizeUrl.searchParams.set("redirect_uri", redirectUri);
+  authorizeUrl.searchParams.set("scope", "read:user");
+  authorizeUrl.searchParams.set("state", state);
+
+  return redirectResponse(authorizeUrl.toString(), 302, [
+    serializeCookie(DASHBOARD_OAUTH_STATE_COOKIE_NAME, nonce, {
+      httpOnly: true,
+      path: "/v1/auth/github/callback",
+      sameSite: "Lax",
+      secure: requestUrl.protocol === "https:",
+      maxAge: Math.floor(OAUTH_STATE_TTL_MS / 1000),
+    }),
+  ]);
+}
+
+async function completeGitHubOAuth(context: Context<WorkerRouterEnv>): Promise<Response> {
+  const requestUrl = new URL(context.req.raw.url);
+  const code = requestUrl.searchParams.get("code")?.trim();
+  const state = requestUrl.searchParams.get("state")?.trim();
+  if (code === undefined || code.length === 0 || state === undefined || state.length === 0) {
+    return jsonResponse({ error: "oauth_invalid_callback" }, 400);
+  }
+
+  const statePayload = await validateOAuthStateToken(state, context.env);
+  const stateCookie = extractNamedCookie(context.req.raw.headers.get("cookie"), DASHBOARD_OAUTH_STATE_COOKIE_NAME);
+  if (statePayload === undefined || stateCookie === undefined || !timingSafeEqual(stateCookie, statePayload.nonce)) {
+    return jsonResponse({ error: "oauth_state_invalid" }, 401);
+  }
+
+  const githubUser = await exchangeGitHubOAuthCode(context.env, code, `${requestUrl.origin}/v1/auth/github/callback`);
+  if (githubUser === undefined) {
+    return jsonResponse({ error: "oauth_exchange_failed" }, 401);
+  }
+
+  const expiresAt = Date.now() + DASHBOARD_SESSION_TTL_MS;
+  const sessionToken = await issueDashboardSessionToken(context.env, githubUser, expiresAt);
+  const cookies = [
+    serializeCookie(DASHBOARD_SESSION_COOKIE_NAME, sessionToken, {
+      httpOnly: true,
+      path: "/",
+      sameSite: "Lax",
+      secure: requestUrl.protocol === "https:",
+      maxAge: Math.floor(DASHBOARD_SESSION_TTL_MS / 1000),
+    }),
+    serializeCookie(DASHBOARD_OAUTH_STATE_COOKIE_NAME, "", {
+      httpOnly: true,
+      path: "/v1/auth/github/callback",
+      sameSite: "Lax",
+      secure: requestUrl.protocol === "https:",
+      maxAge: 0,
+    }),
+  ];
+
+  return redirectResponse(statePayload.next, 302, cookies);
 }
 
 async function registerWorker(context: Context<WorkerRouterEnv>): Promise<Response> {
@@ -508,6 +608,10 @@ function extractBearerToken(authorization: string | null): string | undefined {
 }
 
 function extractDashboardSessionCookie(cookieHeader: string | null): string | undefined {
+  return extractNamedCookie(cookieHeader, DASHBOARD_SESSION_COOKIE_NAME);
+}
+
+function extractNamedCookie(cookieHeader: string | null, cookieName: string): string | undefined {
   if (cookieHeader === null) {
     return undefined;
   }
@@ -515,7 +619,7 @@ function extractDashboardSessionCookie(cookieHeader: string | null): string | un
   for (const segment of cookieHeader.split(";")) {
     const [rawName, ...rawValueParts] = segment.trim().split("=");
     const value = rawValueParts.join("=").trim();
-    if (rawName === DASHBOARD_SESSION_COOKIE_NAME && value.length > 0) {
+    if (rawName === cookieName && value.length > 0) {
       try {
         return decodeURIComponent(value);
       } catch {
@@ -563,7 +667,9 @@ function timingSafeEqual(actual: string, expected: string): boolean {
 
 function isPublicWorkerAuthRoute(request: Request): boolean {
   const url = new URL(request.url);
-  return request.method === "POST" && (url.pathname === "/v1/workers/refresh" || url.pathname === "/v1/workers/enroll");
+  return (request.method === "POST" && (url.pathname === "/v1/workers/refresh" || url.pathname === "/v1/workers/enroll"))
+    || (request.method === "GET"
+      && (url.pathname === "/v1/auth/github/login" || url.pathname === "/v1/auth/github/callback"));
 }
 
 async function forwardWorkerRegistration(
@@ -806,6 +912,227 @@ function websocketOrigin(url: URL): string {
   return `${url.protocol === "https:" ? "wss:" : "ws:"}//${url.host}`;
 }
 
+type GitHubOAuthUser = {
+  id: number;
+  login: string;
+};
+
+async function exchangeGitHubOAuthCode(
+  env: Env,
+  code: string,
+  redirectUri: string,
+): Promise<GitHubOAuthUser | undefined> {
+  const clientId = env.CONTRABASS_GITHUB_CLIENT_ID?.trim();
+  const clientSecret = env.CONTRABASS_GITHUB_CLIENT_SECRET?.trim();
+  if (clientId === undefined || clientId.length === 0 || clientSecret === undefined || clientSecret.length === 0) {
+    return undefined;
+  }
+
+  const tokenResponse = await fetch(env.CONTRABASS_GITHUB_TOKEN_URL ?? "https://github.com/login/oauth/access_token", {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      "user-agent": "contrabass-cloud",
+    },
+    body: JSON.stringify({
+      client_id: clientId,
+      client_secret: clientSecret,
+      code,
+      redirect_uri: redirectUri,
+    }),
+  });
+  if (!tokenResponse.ok) {
+    return undefined;
+  }
+
+  const tokenBody = await readJsonObjectResponse(tokenResponse);
+  const accessToken = tokenBody === undefined ? undefined : getStringField(tokenBody, "access_token");
+  if (accessToken === undefined) {
+    return undefined;
+  }
+
+  const userResponse = await fetch(env.CONTRABASS_GITHUB_USER_URL ?? "https://api.github.com/user", {
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${accessToken}`,
+      "user-agent": "contrabass-cloud",
+    },
+  });
+  if (!userResponse.ok) {
+    return undefined;
+  }
+
+  const userBody = await readJsonObjectResponse(userResponse);
+  if (userBody === undefined) {
+    return undefined;
+  }
+
+  const id = userBody.id;
+  const login = getStringField(userBody, "login");
+  return typeof id === "number" && Number.isInteger(id) && login !== undefined ? { id, login } : undefined;
+}
+
+async function readJsonObjectResponse(response: Response): Promise<Record<string, unknown> | undefined> {
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return undefined;
+  }
+
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return undefined;
+  }
+  return body as Record<string, unknown>;
+}
+
+function dashboardRedirectTarget(env: Env, next: string | null): string {
+  const dashboardOrigin = env.CONTRABASS_DASHBOARD_ORIGIN?.trim();
+  const fallback = dashboardOrigin === undefined || dashboardOrigin.length === 0 ? "/" : dashboardOrigin;
+
+  if (next === null || next.trim() === "") {
+    return fallback;
+  }
+
+  const trimmedNext = next.trim();
+  if (trimmedNext.startsWith("/") && !trimmedNext.startsWith("//")) {
+    return dashboardOrigin === undefined || dashboardOrigin.length === 0
+      ? trimmedNext
+      : `${dashboardOrigin}${trimmedNext}`;
+  }
+
+  if (dashboardOrigin !== undefined && dashboardOrigin.length > 0) {
+    try {
+      const nextUrl = new URL(trimmedNext);
+      return nextUrl.origin === dashboardOrigin ? nextUrl.toString() : dashboardOrigin;
+    } catch {
+      return dashboardOrigin;
+    }
+  }
+
+  return "/";
+}
+
+type OAuthStatePayload = {
+  nonce: string;
+  next: string;
+  exp: number;
+};
+
+async function issueOAuthStateToken(env: Env, nonce: string, next: string, expiresAt: number): Promise<string> {
+  const secret = dashboardSessionSigningSecret(env);
+  if (secret === undefined) {
+    throw new Error("CONTRABASS_DASHBOARD_SESSION_SECRET is required to issue OAuth state tokens");
+  }
+
+  const payload = base64UrlEncode(new TextEncoder().encode(JSON.stringify({ nonce, next, exp: expiresAt })));
+  const signature = await hmacSha256Base64Url(secret, payload);
+  return `cbo.${payload}.${signature}`;
+}
+
+async function validateOAuthStateToken(token: string, env: Env): Promise<OAuthStatePayload | undefined> {
+  const secret = dashboardSessionSigningSecret(env);
+  if (secret === undefined) {
+    return undefined;
+  }
+
+  const [prefix, payload, signature] = token.split(".");
+  if (prefix !== "cbo" || payload === undefined || signature === undefined) {
+    return undefined;
+  }
+
+  const expected = await hmacSha256Base64Url(secret, payload);
+  if (!timingSafeEqual(signature, expected)) {
+    return undefined;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(base64UrlDecode(payload)));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const record = parsed as Record<string, unknown>;
+    return typeof record.nonce === "string"
+      && typeof record.next === "string"
+      && typeof record.exp === "number"
+      && record.exp > Date.now()
+      ? { nonce: record.nonce, next: record.next, exp: record.exp }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function issueDashboardSessionToken(
+  env: Env,
+  user: GitHubOAuthUser,
+  expiresAt: number,
+): Promise<string> {
+  const secret = dashboardSessionSigningSecret(env);
+  if (secret === undefined) {
+    throw new Error("CONTRABASS_DASHBOARD_SESSION_SECRET is required to issue dashboard session tokens");
+  }
+
+  const payload = base64UrlEncode(new TextEncoder().encode(JSON.stringify({
+    githubId: user.id,
+    githubLogin: user.login,
+    exp: expiresAt,
+  })));
+  const signature = await hmacSha256Base64Url(secret, payload);
+  return `cbd.${payload}.${signature}`;
+}
+
+type DashboardSessionPayload = {
+  githubId: number;
+  githubLogin: string;
+  exp: number;
+};
+
+async function validateDashboardSessionToken(token: string, env: Env): Promise<DashboardSessionPayload | undefined> {
+  const secret = dashboardSessionSigningSecret(env);
+  if (secret === undefined) {
+    return undefined;
+  }
+
+  const [prefix, payload, signature] = token.split(".");
+  if (prefix !== "cbd" || payload === undefined || signature === undefined) {
+    return undefined;
+  }
+
+  const expected = await hmacSha256Base64Url(secret, payload);
+  if (!timingSafeEqual(signature, expected)) {
+    return undefined;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(base64UrlDecode(payload)));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const record = parsed as Record<string, unknown>;
+    return typeof record.githubId === "number"
+      && Number.isInteger(record.githubId)
+      && typeof record.githubLogin === "string"
+      && typeof record.exp === "number"
+      && record.exp > Date.now()
+      ? { githubId: record.githubId, githubLogin: record.githubLogin, exp: record.exp }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function dashboardSessionSigningSecret(env: Env): string | undefined {
+  const explicit = env.CONTRABASS_DASHBOARD_SESSION_SECRET?.trim();
+  if (explicit !== undefined && explicit.length > 0) {
+    return explicit;
+  }
+
+  const configuredTokens = env.CONTRABASS_DASHBOARD_SESSION_TOKENS?.trim();
+  return configuredTokens === undefined || configuredTokens.length === 0 ? undefined : configuredTokens;
+}
+
 async function issueSessionToken(env: Env, teamId: string, workerId: string, expiresAt: number): Promise<string> {
   const secret = workerTokenSigningSecret(env);
   if (secret === undefined) {
@@ -868,6 +1195,7 @@ function workerTokenConfigErrorResponse(): Response {
   }, 500);
 }
 
+<<<<<<< HEAD
 function isContentHash(value: string): boolean {
   return /^[a-f0-9]{64}$/u.test(value);
 }
@@ -979,6 +1307,12 @@ function defaultConfigActor(principal: AuthPrincipal): string {
     return `worker:${principal.workerId}`;
   }
   return principal.kind === "dashboard-session" ? "dashboard" : "api";
+}
+
+function isIssuedWorkerPrincipal(
+  principal: AuthPrincipal,
+): principal is Extract<AuthPrincipal, { kind: "bearer"; issued: true }> {
+  return principal.kind === "bearer" && "issued" in principal;
 }
 
 function parseSessionPayload(payload: string): IssuedSessionPayload | undefined {
@@ -1131,8 +1465,8 @@ async function forwardTeamCoordinatorRequest(
   }
 
   const principal = context.get("principal");
-  if ("issued" in principal && principal.teamId !== teamId) {
-    return errorResponse("team_forbidden", 403);
+  if (isIssuedWorkerPrincipal(principal) && principal.teamId !== teamId) {
+    return jsonResponse({ error: "team_forbidden" }, 403);
   }
 
   const id = context.env.TEAM_COORDINATOR.idFromName(teamId);
@@ -1214,7 +1548,7 @@ async function forwardIssueRunRequest(
   headers.delete("content-length");
   headers.set("x-contrabass-team-id", teamId);
   headers.set("x-contrabass-run-id", runId);
-  if ("issued" in principal) {
+  if (isIssuedWorkerPrincipal(principal)) {
     headers.set("x-contrabass-worker-id", principal.workerId);
   }
 
@@ -1223,7 +1557,7 @@ async function forwardIssueRunRequest(
     return errorResponse("run_not_found", 404);
   }
 
-  const body = issueRunPath === "/ack" && "issued" in principal
+  const body = issueRunPath === "/ack" && isIssuedWorkerPrincipal(principal)
     ? await ackBodyWithWorkerId(request, principal.workerId)
     : await request.arrayBuffer();
 
@@ -1354,7 +1688,7 @@ async function lookupIssueRefForRun(
 function resolveRunForwardTeamId(context: Context<WorkerRouterEnv>): string | false | undefined {
   const principal = context.get("principal");
   const headerTeamId = context.req.raw.headers.get("x-contrabass-team-id")?.trim();
-  if ("issued" in principal) {
+  if (isIssuedWorkerPrincipal(principal)) {
     if (headerTeamId !== undefined && headerTeamId.length > 0 && headerTeamId !== principal.teamId) {
       return false;
     }
@@ -1370,7 +1704,7 @@ function resolveWorkerScopedTeamId(
 ): string | false | undefined {
   const principal = context.get("principal");
   const headerTeamId = context.req.raw.headers.get("x-contrabass-team-id")?.trim();
-  if ("issued" in principal) {
+  if (isIssuedWorkerPrincipal(principal)) {
     if (workerId !== principal.workerId) {
       return false;
     }
@@ -1393,6 +1727,38 @@ async function ackBodyWithWorkerId(request: Request, workerId: string): Promise<
 
 function notImplemented(): Response {
   return errorResponse("not_implemented", 501);
+}
+
+function redirectResponse(location: string, status: 302 | 303, cookies: string[]): Response {
+  const headers = new Headers({ location });
+  for (const cookie of cookies) {
+    headers.append("set-cookie", cookie);
+  }
+  return new Response(null, { status, headers });
+}
+
+type CookieOptions = {
+  httpOnly: boolean;
+  path: string;
+  sameSite: "Lax" | "Strict" | "None";
+  secure: boolean;
+  maxAge: number;
+};
+
+function serializeCookie(name: string, value: string, options: CookieOptions): string {
+  const segments = [
+    `${name}=${encodeURIComponent(value)}`,
+    `Max-Age=${options.maxAge}`,
+    `Path=${options.path}`,
+    `SameSite=${options.sameSite}`,
+  ];
+  if (options.httpOnly) {
+    segments.push("HttpOnly");
+  }
+  if (options.secure) {
+    segments.push("Secure");
+  }
+  return segments.join("; ");
 }
 
 function jsonResponse(body: Record<string, unknown>, status: number): Response {

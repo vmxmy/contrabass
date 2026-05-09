@@ -1,6 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { handleWorkerRequest, validateAuthPrincipal, type Env } from "./index";
+
+const originalFetch = globalThis.fetch;
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
 
 describe("API Worker router auth middleware", () => {
   it("rejects protected routes without validated auth", async () => {
@@ -659,6 +665,162 @@ describe("API Worker router auth middleware", () => {
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: "invalid_request", protocol_version: "1.0.0" });
+  });
+
+  it("starts GitHub OAuth with a signed state and an httpOnly state cookie", async () => {
+    const response = await handleWorkerRequest(new Request(
+      "https://api.test/v1/auth/github/login?next=https%3A%2F%2Fdashboard.test%2Ft%2Fteam-1%2Fboard",
+    ), envWithGitHubOAuth(createEnv()));
+
+    expect(response.status).toBe(302);
+    const location = response.headers.get("location");
+    expect(location).not.toBeNull();
+    const authorizeUrl = new URL(location ?? "");
+    expect(authorizeUrl.toString()).toContain("https://github.test/login/oauth/authorize");
+    expect(authorizeUrl.searchParams.get("client_id")).toBe("github-client-id");
+    expect(authorizeUrl.searchParams.get("redirect_uri")).toBe("https://api.test/v1/auth/github/callback");
+    expect(authorizeUrl.searchParams.get("scope")).toBe("read:user");
+    expect(authorizeUrl.searchParams.get("state")).toEqual(expect.stringMatching(/^cbo\./u));
+
+    const cookie = response.headers.get("set-cookie") ?? "";
+    expect(cookie).toContain("contrabass_oauth_state=");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=Lax");
+    expect(cookie).toContain("Secure");
+    expect(cookie).toContain("Path=/v1/auth/github/callback");
+  });
+
+  it("completes GitHub OAuth and validates the issued httpOnly dashboard session cookie", async () => {
+    const env = envWithGitHubOAuth(createEnv(async () => Response.json({ ok: true })));
+    const loginResponse = await handleWorkerRequest(new Request(
+      "https://api.test/v1/auth/github/login?next=https%3A%2F%2Fdashboard.test%2Ft%2Fteam-1%2Fboard",
+    ), env);
+    const state = new URL(loginResponse.headers.get("location") ?? "").searchParams.get("state");
+    const nonce = extractCookieValue(loginResponse.headers.get("set-cookie") ?? "", "contrabass_oauth_state");
+    if (state === null || nonce === undefined) {
+      throw new Error("login must issue state and nonce");
+    }
+
+    const seen: Array<{ url: string; method: string; auth?: string; body?: unknown }> = [];
+    const fetchMock: typeof fetch = async (input, init) => {
+      const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
+      const method = init?.method ?? "GET";
+      const entry: { url: string; method: string; auth?: string; body?: unknown } = { url, method };
+      if (init?.headers instanceof Headers) {
+        const auth = init.headers.get("authorization");
+        if (auth !== null) {
+          entry.auth = auth;
+        }
+      }
+      if (typeof init?.body === "string") {
+        entry.body = JSON.parse(init.body);
+      }
+      seen.push(entry);
+      if (url === "https://github.test/login/oauth/access_token") {
+        return Response.json({ access_token: "github-access-token" });
+      }
+      if (url === "https://api.github.test/user") {
+        return Response.json({ id: 12345, login: "octocat" });
+      }
+      return Response.json({ error: "unexpected" }, { status: 500 });
+    };
+    globalThis.fetch = fetchMock;
+
+    const callbackResponse = await handleWorkerRequest(new Request(
+      `https://api.test/v1/auth/github/callback?code=oauth-code&state=${encodeURIComponent(state)}`,
+      { headers: { cookie: `contrabass_oauth_state=${encodeURIComponent(nonce)}` } },
+    ), env);
+
+    expect(callbackResponse.status).toBe(302);
+    expect(callbackResponse.headers.get("location")).toBe("https://dashboard.test/t/team-1/board");
+    const callbackCookie = callbackResponse.headers.get("set-cookie") ?? "";
+    expect(callbackCookie).toContain("contrabass_session=");
+    expect(callbackCookie).toContain("HttpOnly");
+    expect(callbackCookie).toContain("SameSite=Lax");
+    expect(callbackCookie).toContain("Secure");
+    expect(callbackCookie).toContain("contrabass_oauth_state=");
+    expect(callbackCookie).toContain("Max-Age=0");
+
+    const sessionToken = extractCookieValue(callbackCookie, "contrabass_session");
+    if (sessionToken === undefined) {
+      throw new Error("callback must issue session cookie");
+    }
+    await expect(validateAuthPrincipal(new Request("https://api.test/v1/teams/team-1/board", {
+      headers: { cookie: `contrabass_session=${encodeURIComponent(sessionToken)}` },
+    }), env)).resolves.toEqual({
+      kind: "dashboard-session",
+      token: sessionToken,
+      githubId: 12345,
+      githubLogin: "octocat",
+      issued: true,
+    });
+    expect(seen).toEqual([
+      {
+        url: "https://github.test/login/oauth/access_token",
+        method: "POST",
+        body: {
+          client_id: "github-client-id",
+          client_secret: "github-client-secret",
+          code: "oauth-code",
+          redirect_uri: "https://api.test/v1/auth/github/callback",
+        },
+      },
+      {
+        url: "https://api.github.test/user",
+        method: "GET",
+      },
+    ]);
+  });
+
+  it("does not redirect GitHub OAuth callbacks to scheme-relative next URLs", async () => {
+    const env = envWithGitHubOAuth(createEnv(async () => Response.json({ ok: true })));
+    const loginResponse = await handleWorkerRequest(new Request(
+      "https://api.test/v1/auth/github/login?next=%2F%2Fevil.example%2Fpath",
+    ), env);
+    const state = new URL(loginResponse.headers.get("location") ?? "").searchParams.get("state");
+    const nonce = extractCookieValue(loginResponse.headers.get("set-cookie") ?? "", "contrabass_oauth_state");
+    if (state === null || nonce === undefined) {
+      throw new Error("login must issue state and nonce");
+    }
+
+    globalThis.fetch = async (input) => {
+      const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
+      if (url === "https://github.test/login/oauth/access_token") {
+        return Response.json({ access_token: "github-access-token" });
+      }
+      if (url === "https://api.github.test/user") {
+        return Response.json({ id: 12345, login: "octocat" });
+      }
+      return Response.json({ error: "unexpected" }, { status: 500 });
+    };
+
+    const callbackResponse = await handleWorkerRequest(new Request(
+      `https://api.test/v1/auth/github/callback?code=oauth-code&state=${encodeURIComponent(state)}`,
+      { headers: { cookie: `contrabass_oauth_state=${encodeURIComponent(nonce)}` } },
+    ), env);
+
+    expect(callbackResponse.status).toBe(302);
+    expect(callbackResponse.headers.get("location")).toBe("https://dashboard.test");
+  });
+
+  it("rejects a GitHub OAuth callback when the state cookie does not match", async () => {
+    const env = envWithGitHubOAuth(createEnv());
+    const loginResponse = await handleWorkerRequest(
+      new Request("https://api.test/v1/auth/github/login"),
+      env,
+    );
+    const state = new URL(loginResponse.headers.get("location") ?? "").searchParams.get("state");
+    if (state === null) {
+      throw new Error("login must issue state");
+    }
+
+    const response = await handleWorkerRequest(new Request(
+      `https://api.test/v1/auth/github/callback?code=oauth-code&state=${encodeURIComponent(state)}`,
+      { headers: { cookie: "contrabass_oauth_state=wrong" } },
+    ), env);
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({ error: "oauth_state_invalid" });
   });
 
   it("validates bearer and dashboard cookie principals against configured token stores", async () => {
@@ -1590,4 +1752,24 @@ function envWithAuth(
     CONTRABASS_WORKER_SESSION_TOKENS: tokens.workerTokens,
     CONTRABASS_DASHBOARD_SESSION_TOKENS: tokens.dashboardTokens,
   };
+}
+
+function envWithGitHubOAuth(env: Env): Env {
+  return {
+    ...env,
+    CONTRABASS_DASHBOARD_ORIGIN: "https://dashboard.test",
+    CONTRABASS_DASHBOARD_SESSION_SECRET: "dashboard-session-secret",
+    CONTRABASS_GITHUB_CLIENT_ID: "github-client-id",
+    CONTRABASS_GITHUB_CLIENT_SECRET: "github-client-secret",
+    CONTRABASS_GITHUB_AUTHORIZE_URL: "https://github.test/login/oauth/authorize",
+    CONTRABASS_GITHUB_TOKEN_URL: "https://github.test/login/oauth/access_token",
+    CONTRABASS_GITHUB_USER_URL: "https://api.github.test/user",
+  };
+}
+
+function extractCookieValue(setCookie: string, name: string): string | undefined {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const match = new RegExp(`${escapedName}=([^;,]*)`, "u").exec(setCookie);
+  const value = match?.[1];
+  return value === undefined || value.length === 0 ? undefined : decodeURIComponent(value);
 }
