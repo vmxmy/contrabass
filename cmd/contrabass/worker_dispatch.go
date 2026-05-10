@@ -156,7 +156,7 @@ func consumeWorkerDispatchWebSocket(
 			if handleLeaseRevoked != nil {
 				handleLeaseRevoked(leaseFrame.RunID)
 			}
-		// Unknown frame types are silently ignored for forward compatibility.
+			// Unknown frame types are silently ignored for forward compatibility.
 		}
 	}
 }
