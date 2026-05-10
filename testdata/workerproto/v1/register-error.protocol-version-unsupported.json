@@ -1,0 +1,6 @@
+{
+  "protocol_version": "1.0.0",
+  "error": "protocol_version_unsupported",
+  "supported": ["1.0.0"],
+  "message": "worker must speak protocol major version 1"
+}

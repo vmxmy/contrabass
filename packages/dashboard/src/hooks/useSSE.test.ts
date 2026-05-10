@@ -8,7 +8,8 @@ import type {
   TeamSnapshot,
   WebEvent,
 } from '../types'
-import { INITIAL_STATE, applyEvent, sseReducer, useSSE } from './useSSE'
+import { INITIAL_STATE, applyDashboardSubscriptionFrame, applyEvent, sseReducer, useSSE } from './useSSE'
+import type { DashboardSubscriptionFrame } from './useTeamSubscription'
 
 class MockEventSource {
   static instances: MockEventSource[] = []
@@ -116,6 +117,7 @@ describe('useSSE state helpers', () => {
       boardIssues: [],
       agentLogs: [],
       queueEvents: [],
+      dashboardWorkers: {},
     })
   })
 
@@ -449,6 +451,110 @@ describe('useSSE state helpers', () => {
     expect(current.agentLogs).toHaveLength(1000)
     expect(current.agentLogs[0]?.line).toBe('log-6')
     expect(current.agentLogs[999]?.line).toBe('log-1005')
+  })
+
+  it('applies dashboard board-update frames to the rendered snapshot queues', () => {
+    const frame: DashboardSubscriptionFrame = {
+      type: 'board-update',
+      protocol_version: '1.0.0',
+      board: {
+        open: [{ issueRef: 'LIN-1', phase: 'open', lastUpdated: 2_000 }],
+        claimed: [
+          {
+            issueRef: 'LIN-2',
+            runId: 'run-2',
+            assignedWorkerId: 'worker-1',
+            phase: 'claimed',
+            lastUpdated: 3_000,
+          },
+        ],
+        running: [],
+        done: [{ issueRef: 'LIN-3', phase: 'done', lastUpdated: 4_000 }],
+      },
+    }
+
+    const next = applyDashboardSubscriptionFrame(INITIAL_STATE, frame)
+
+    expect(next.state?.issues['LIN-1']?.tracker_meta.linear_state).toBe('Todo')
+    expect(next.state?.issues['LIN-3']?.tracker_meta.linear_state).toBe('Done')
+    expect(next.state?.running).toHaveLength(1)
+    expect(next.state?.running[0]).toMatchObject({
+      issue_id: 'LIN-2',
+      session_id: 'run-2',
+      phase_label: 'claimed',
+    })
+    expect(next.state?.stats.Running).toBe(1)
+  })
+
+  it('applies dashboard run-event frames to running rows and agent logs', () => {
+    const snapshot = makeSnapshot()
+    const seeded = sseReducer(INITIAL_STATE, { type: 'snapshot', data: snapshot })
+    const frame: DashboardSubscriptionFrame = {
+      type: 'run-event',
+      protocol_version: '1.0.0',
+      event_id: '8',
+      payload: {
+        protocol_version: '1.0.0',
+        teamId: 'team-1',
+        runId: 'run-8',
+        issueRef: 'ISSUE-8',
+        workerId: 'worker-8',
+        event: {
+          protocol_version: '1.0.0',
+          kind: 'log',
+          ts: 5_000,
+          payload: {
+            level: 'info',
+            message: 'live output',
+          },
+        },
+      },
+    }
+
+    const next = applyDashboardSubscriptionFrame(seeded, frame)
+
+    expect(next.state?.running.find((entry) => entry.issue_id === 'ISSUE-8')).toMatchObject({
+      session_id: 'run-8',
+      workspace: 'worker-8',
+      last_activity_kind: 'live output',
+    })
+    expect(next.agentLogs[next.agentLogs.length - 1]).toMatchObject({
+      worker_id: 'worker-8',
+      line: 'live output',
+    })
+  })
+
+  it('applies dashboard worker-status and config-changed frames to overview stats', () => {
+    const seeded = sseReducer(INITIAL_STATE, { type: 'snapshot', data: makeSnapshot() })
+    const workerFrame: DashboardSubscriptionFrame = {
+      type: 'worker-status',
+      protocol_version: '1.0.0',
+      worker: {
+        workerId: 'worker-1',
+        maxConcurrency: 3,
+        currentLoad: 2,
+        lastHeartbeatTs: 7_000,
+        kind: 'local',
+        status: 'busy',
+      },
+    }
+    const configFrame: DashboardSubscriptionFrame = {
+      type: 'config-changed',
+      protocol_version: '1.0.0',
+      activeContentHash: 'cfg-2',
+      usageCaps: {
+        max_active_workers: 5,
+      },
+    }
+
+    const afterWorker = applyDashboardSubscriptionFrame(seeded, workerFrame)
+    const afterConfig = applyDashboardSubscriptionFrame(afterWorker, configFrame)
+
+    expect(afterWorker.teamSnapshot?.workers[0]?.id).toBe('worker-1')
+    expect(afterWorker.state?.stats.Running).toBe(2)
+    expect(afterWorker.state?.stats.MaxAgents).toBe(4)
+    expect(afterConfig.state?.stats.MaxAgents).toBe(5)
+    expect(afterConfig.teamSnapshot?.config.max_workers).toBe(5)
   })
 
   it('ignores unknown web event kinds', () => {

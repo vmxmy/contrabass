@@ -1,0 +1,6 @@
+{
+  "protocol_version": "1.0.0",
+  "accept": false,
+  "reason": "at_capacity",
+  "reasonDetail": "max concurrency reached"
+}

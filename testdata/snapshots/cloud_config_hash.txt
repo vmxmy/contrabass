@@ -1,0 +1,8 @@
+contrabass tui — acme  ● connected  config:abc12345
+
+  No issues on the board
+
+Workers
+  (none registered)
+                   
+↑/k up • ↓/j down • ⏎ view detail • q quit

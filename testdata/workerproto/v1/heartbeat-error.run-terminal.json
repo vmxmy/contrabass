@@ -1,0 +1,5 @@
+{
+  "protocol_version": "1.0.0",
+  "error": "run_terminal",
+  "message": "run is already terminal"
+}

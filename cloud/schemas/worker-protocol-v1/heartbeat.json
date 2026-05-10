@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contrabass.dev/schemas/worker-protocol/v1/heartbeat.json",
+  "title": "WorkerHeartbeatRequest",
+  "description": "POST /v1/runs/{runId}/heartbeat — worker extends the lease for an active run. Cadence ≤ heartbeatIntervalSec from register response. See worker-protocol spec: 'Heartbeat and lease extension'.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["lastEventTs", "protocol_version"],
+  "properties": {
+    "progress": {
+      "type": "string",
+      "maxLength": 256,
+      "description": "Short human-readable phase label (e.g., 'planning', 'editing', 'verifying')."
+    },
+    "lastEventTs": { "$ref": "_common.json#/$defs/EpochMillis" },
+    "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+  },
+  "$defs": {
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "lease_revoked",
+        "lease_holder_mismatch",
+        "run_unknown",
+        "run_terminal"
+      ]
+    },
+    "LeaseRevokedError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "protocol_version"],
+      "properties": {
+        "error":            { "const": "lease_revoked" },
+        "message":          { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "LeaseHolderMismatchError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "protocol_version"],
+      "properties": {
+        "error":            { "const": "lease_holder_mismatch" },
+        "message":          { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "RunUnknownError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "protocol_version"],
+      "properties": {
+        "error":            { "const": "run_unknown" },
+        "message":          { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "RunTerminalError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "protocol_version"],
+      "properties": {
+        "error":            { "const": "run_terminal" },
+        "message":          { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    }
+  }
+}

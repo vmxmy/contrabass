@@ -1,0 +1,7 @@
+{
+  "protocol_version": "1.0.0",
+  "error": "events_too_large",
+  "max_events": 200,
+  "max_bytes": 524288,
+  "message": "event post exceeds worker protocol limits"
+}

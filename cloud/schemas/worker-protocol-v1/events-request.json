@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contrabass.dev/schemas/worker-protocol/v1/events-request.json",
+  "title": "WorkerEventsRequest",
+  "description": "Logical decoded form of POST /v1/runs/{runId}/events for tests and golden fixtures. The wire format is NDJSON (Content-Type: application/x-ndjson, one JSON object per line). The maxBytes server invariant (524288) is HTTP-byte counted and cannot be enforced by JSON Schema — see events.json $defs.Limits.",
+  "type": "array",
+  "minItems": 1,
+  "maxItems": 200,
+  "items": { "$ref": "event-line.json" },
+  "$defs": {
+    "Limits": {
+      "description": "Server-enforced limits (informational; HTTP-byte-counted, not part of array contract).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxEventsPerRequest": { "const": 200 },
+        "maxBytesPerRequest":  { "const": 524288 }
+      }
+    },
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "events_too_large",
+        "events_too_many",
+        "lease_revoked",
+        "run_terminal",
+        "run_unknown",
+        "invalid_ndjson"
+      ]
+    },
+    "EventsTooLargeError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "max_events", "max_bytes", "protocol_version"],
+      "properties": {
+        "error":      { "const": "events_too_large" },
+        "max_events": { "const": 200 },
+        "max_bytes":  { "const": 524288 },
+        "message":    { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      },
+      "description": "HTTP 413 body. Mirrors spec scenario 'Worker exceeds per-request event limits'."
+    },
+    "EventsTooManyError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "max_events", "protocol_version"],
+      "properties": {
+        "error":      { "const": "events_too_many" },
+        "max_events": { "const": 200 },
+        "message":    { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "InvalidNdjsonError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "lineNumber", "protocol_version"],
+      "properties": {
+        "error":      { "const": "invalid_ndjson" },
+        "lineNumber": { "type": "integer", "minimum": 1 },
+        "message":    { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    }
+  }
+}

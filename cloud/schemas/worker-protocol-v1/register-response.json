@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contrabass.dev/schemas/worker-protocol/v1/register-response.json",
+  "title": "WorkerRegisterResponse",
+  "description": "POST /v1/workers/register success response (HTTP 200) and structured error response shapes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sessionToken",
+    "sessionTokenExpiresAt",
+    "refreshToken",
+    "dispatchChannel",
+    "heartbeatIntervalSec",
+    "leaseSec",
+    "protocol_version"
+  ],
+  "properties": {
+    "sessionToken": { "$ref": "_common.json#/$defs/BearerToken" },
+    "sessionTokenExpiresAt": {
+      "$ref": "_common.json#/$defs/EpochMillis",
+      "description": "Wall-clock millis when the sessionToken expires. Workers SHOULD refresh ahead of this point via /v1/workers/refresh."
+    },
+    "refreshToken": { "$ref": "_common.json#/$defs/BearerToken" },
+    "dispatchChannel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wsUrl", "longPollUrl"],
+      "properties": {
+        "wsUrl":       { "$ref": "_common.json#/$defs/WsUrl" },
+        "longPollUrl": { "$ref": "_common.json#/$defs/Url" }
+      }
+    },
+    "heartbeatIntervalSec": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1800,
+      "description": "Cadence (seconds) at which the worker MUST send heartbeats per active run."
+    },
+    "leaseSec": { "$ref": "_common.json#/$defs/LeaseSec" },
+    "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+  },
+  "$defs": {
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "protocol_version_unsupported",
+        "team_forbidden",
+        "team_worker_cap_exceeded",
+        "auth_invalid"
+      ]
+    },
+    "ProtocolVersionUnsupportedError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "supported", "protocol_version"],
+      "properties": {
+        "error":   { "const": "protocol_version_unsupported" },
+        "message": { "type": "string", "maxLength": 1024 },
+        "supported": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+        },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      },
+      "description": "HTTP 409 body. Mirrors spec scenario 'Worker advertises an incompatible major version'."
+    },
+    "TeamForbiddenError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "protocol_version"],
+      "properties": {
+        "error":   { "const": "team_forbidden" },
+        "message": { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "TeamWorkerCapExceededError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "max_active_workers", "protocol_version"],
+      "properties": {
+        "error":   { "const": "team_worker_cap_exceeded" },
+        "message": { "type": "string", "maxLength": 1024 },
+        "max_active_workers": { "type": "integer", "minimum": 0 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    },
+    "AuthInvalidError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error", "protocol_version"],
+      "properties": {
+        "error":   { "const": "auth_invalid" },
+        "message": { "type": "string", "maxLength": 1024 },
+        "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+      }
+    }
+  }
+}

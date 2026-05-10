@@ -1,0 +1,22 @@
+name = "litellm-portal-gz-zhiyun"
+main = "src/litellm-portal/index.ts"
+compatibility_date = "2026-05-08"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+preview_urls = false
+routes = [
+  { pattern = "zhiyun.ziikoo.com", custom_domain = true }
+]
+
+[vars]
+CLOUDFLARE_ACCESS_TEAM_DOMAIN = "https://ziikoo.cloudflareaccess.com"
+CLOUDFLARE_ACCESS_AUD = "b791adb332e76931e51a12fb2191d9a888e35d553a6ffd16c27f18ad962cc084"
+LITELLM_PORTAL_ALLOWED_EMAIL_DOMAIN = "gz-zhiyun.com"
+LITELLM_PORTAL_ALLOWED_EMAILS = "blueyang@gmail.com,xu@ziikoo.com"
+LITELLM_BASE_URL = "https://litellm.ziikoo.com"
+LITELLM_PORTAL_COMPANY_NAME = "gz-zhiyun"
+LITELLM_PORTAL_DISPLAY_NAME = "智云AI管理平台"
+
+[observability]
+enabled = true
+head_sampling_rate = 1.0

@@ -1,0 +1,12 @@
+{
+  "protocol_version": "1.0.0",
+  "status": "succeeded",
+  "summary": "fixed LIN-123 and verified focused tests",
+  "artifactKeys": {
+    "logs": "teams/team-alpha/runs/run-20260509-0001/log.txt",
+    "diff": "teams/team-alpha/runs/run-20260509-0001/diff.patch",
+    "summary": "teams/team-alpha/runs/run-20260509-0001/summary.md",
+    "screenshots": ["teams/team-alpha/runs/run-20260509-0001/screenshots/1.png"]
+  },
+  "finalConfigHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}

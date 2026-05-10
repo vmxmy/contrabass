@@ -1,0 +1,10 @@
+{
+  "protocol_version": "1.0.0",
+  "teamId": "team-alpha",
+  "workerId": "worker-local-001",
+  "capabilities": ["agent:codex", "tmux", "git", "os:darwin", "arch:arm64"],
+  "maxConcurrency": 2,
+  "version": "contrabass-dev",
+  "supported_protocol_versions": ["1.0.0"],
+  "kind": "local"
+}

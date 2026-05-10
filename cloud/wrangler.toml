@@ -1,0 +1,131 @@
+name = "contrabass-cloud"
+main = "src/index.ts"
+compatibility_date = "2026-05-08"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[[d1_databases]]
+binding = "CONTROL_PLANE_DB"
+database_name = "contrabass-control-plane"
+database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
+
+[[r2_buckets]]
+binding = "ARTIFACTS_BUCKET"
+bucket_name = "contrabass-artifacts"
+
+[[r2_buckets]]
+binding = "EVENTS_ARCHIVE_BUCKET"
+bucket_name = "contrabass-events-archive"
+
+[[queues.producers]]
+binding = "EVENTS_ARCHIVE_QUEUE"
+queue = "events-archive"
+
+[[queues.consumers]]
+queue = "events-archive"
+max_batch_size = 100
+max_batch_timeout = 30
+max_retries = 3
+dead_letter_queue = "events-archive-dlq"
+
+[[durable_objects.bindings]]
+name = "TEAM_COORDINATOR"
+class_name = "TeamCoordinator"
+
+[[durable_objects.bindings]]
+name = "ISSUE_RUN"
+class_name = "IssueRun"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TeamCoordinator", "IssueRun"]
+
+[observability]
+enabled = true
+head_sampling_rate = 1.0
+
+[env.staging]
+name = "contrabass-cloud-staging"
+workers_dev = true
+
+[[env.staging.d1_databases]]
+binding = "CONTROL_PLANE_DB"
+database_name = "contrabass-control-plane"
+database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
+
+[[env.staging.r2_buckets]]
+binding = "ARTIFACTS_BUCKET"
+bucket_name = "contrabass-artifacts"
+
+[[env.staging.r2_buckets]]
+binding = "EVENTS_ARCHIVE_BUCKET"
+bucket_name = "contrabass-events-archive"
+
+[[env.staging.queues.producers]]
+binding = "EVENTS_ARCHIVE_QUEUE"
+queue = "events-archive"
+
+[[env.staging.queues.consumers]]
+queue = "events-archive"
+max_batch_size = 100
+max_batch_timeout = 30
+max_retries = 3
+dead_letter_queue = "events-archive-dlq"
+
+[[env.staging.durable_objects.bindings]]
+name = "TEAM_COORDINATOR"
+class_name = "TeamCoordinator"
+
+[[env.staging.durable_objects.bindings]]
+name = "ISSUE_RUN"
+class_name = "IssueRun"
+
+[env.staging.vars]
+CONTRABASS_ENV = "staging"
+
+[env.staging.observability]
+enabled = true
+head_sampling_rate = 1.0
+
+[env.production]
+name = "contrabass-cloud"
+workers_dev = true
+
+[[env.production.d1_databases]]
+binding = "CONTROL_PLANE_DB"
+database_name = "contrabass-control-plane"
+database_id = "ee6d3436-9997-4fcf-b241-e5aab094b729"
+
+[[env.production.r2_buckets]]
+binding = "ARTIFACTS_BUCKET"
+bucket_name = "contrabass-artifacts"
+
+[[env.production.r2_buckets]]
+binding = "EVENTS_ARCHIVE_BUCKET"
+bucket_name = "contrabass-events-archive"
+
+[[env.production.queues.producers]]
+binding = "EVENTS_ARCHIVE_QUEUE"
+queue = "events-archive"
+
+[[env.production.queues.consumers]]
+queue = "events-archive"
+max_batch_size = 100
+max_batch_timeout = 30
+max_retries = 3
+dead_letter_queue = "events-archive-dlq"
+
+[[env.production.durable_objects.bindings]]
+name = "TEAM_COORDINATOR"
+class_name = "TeamCoordinator"
+
+[[env.production.durable_objects.bindings]]
+name = "ISSUE_RUN"
+class_name = "IssueRun"
+
+[env.production.vars]
+CONTRABASS_ENV = "production"
+
+[env.production.observability]
+enabled = true
+head_sampling_rate = 1.0

@@ -1,0 +1,5 @@
+{
+  "protocol_version": "1.0.0",
+  "error": "lease_revoked",
+  "message": "run lease has been revoked"
+}

@@ -1,0 +1,18 @@
+{
+  "type": "dispatch",
+  "protocol_version": "1.0.0",
+  "runId": "run-20260509-0001",
+  "issueRef": "LIN-123",
+  "branch": "feature/lin-123",
+  "prompt": "Fix LIN-123 and run the focused tests.",
+  "configHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "leaseSec": 60,
+  "ackDeadlineSec": 5,
+  "artifactUploadURLs": {
+    "logs": "https://r2.example.test/put/run-20260509-0001/logs",
+    "diff": "https://r2.example.test/put/run-20260509-0001/diff",
+    "summary": "https://r2.example.test/put/run-20260509-0001/summary",
+    "screenshots": ["https://r2.example.test/put/run-20260509-0001/screenshots/1"]
+  },
+  "dispatchedAt": 1767225600000
+}

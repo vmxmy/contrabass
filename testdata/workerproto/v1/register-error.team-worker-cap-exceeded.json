@@ -1,0 +1,6 @@
+{
+  "protocol_version": "1.0.0",
+  "error": "team_worker_cap_exceeded",
+  "max_active_workers": 8,
+  "message": "team has reached the active worker limit"
+}

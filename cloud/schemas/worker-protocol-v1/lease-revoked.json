@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contrabass.dev/schemas/worker-protocol/v1/lease-revoked.json",
+  "title": "LeaseRevokedFrame",
+  "description": "Server-to-worker WebSocket frame revoking the lease for a run. See worker-protocol spec: 'Lease revocation push'. On receipt the worker MUST stop the agent (SIGTERM, then SIGKILL after 5s), attempt artifact upload to still-valid presigned URLs, and discard local state for the run.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "protocol_version", "runId", "reason"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "lease-revoked"
+    },
+    "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" },
+    "runId":  { "$ref": "_common.json#/$defs/RunId" },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "heartbeat_timeout",
+        "ack_timeout",
+        "manual_reassign",
+        "cancelled",
+        "team_paused",
+        "config_invalidated",
+        "server_shutdown",
+        "worker_evicted_by_admin",
+        "session_expired",
+        "protocol_version_renegotiation"
+      ]
+    },
+    "reasonDetail": {
+      "type": "string",
+      "maxLength": 1024,
+      "description": "Optional human-readable detail (e.g., admin name on worker_evicted_by_admin)."
+    },
+    "revokedAt": { "$ref": "_common.json#/$defs/EpochMillis" }
+  }
+}

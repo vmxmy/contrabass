@@ -1,0 +1,5 @@
+{
+  "protocol_version": "1.0.0",
+  "error": "lease_revoked",
+  "message": "completion discarded because the lease was revoked"
+}

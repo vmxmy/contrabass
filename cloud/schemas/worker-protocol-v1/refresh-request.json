@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contrabass.dev/schemas/worker-protocol/v1/refresh-request.json",
+  "title": "WorkerRefreshRequest",
+  "description": "POST /v1/workers/refresh request body. See worker-protocol spec: 'Session refresh'.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["refreshToken", "protocol_version"],
+  "properties": {
+    "refreshToken":     { "$ref": "_common.json#/$defs/BearerToken" },
+    "protocol_version": { "$ref": "_common.json#/$defs/ProtocolVersion" }
+  }
+}

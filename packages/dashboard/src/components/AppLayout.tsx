@@ -13,18 +13,29 @@ import type {
   RunningEntry,
   SheetData,
   StateSnapshot,
+  TeamSnapshot,
+  AgentLogEvent,
 } from "../types";
 import type { QueueEventPayload } from "../hooks/useSSE";
 import { AppSidebar, type QueueId } from "./AppSidebar";
 import { IssueDataTable } from "./IssueDataTable";
 import { IssueDetailSheet } from "./IssueDetailSheet";
 import { QueuePanel } from "./QueuePanel";
+import { CloudDashboardViews, type CloudDashboardView } from "./CloudDashboardViews";
+import type { CloudBoardSnapshot } from "../cloudModels";
 
 interface AppLayoutProps {
   state: StateSnapshot;
   connected: boolean;
   runtimeLabel: string;
   queueEvents?: QueueEventPayload[];
+  activeTeamId: string | null;
+  activeCloudView: CloudDashboardView;
+  onTeamChange: (teamId: string, view?: CloudDashboardView) => void;
+  onCloudViewChange: (view: CloudDashboardView) => void;
+  onApplyBoardFrame: (board: CloudBoardSnapshot) => void;
+  teamSnapshot: TeamSnapshot | null;
+  agentLogs: AgentLogEvent[];
 }
 
 interface QueueDef {
@@ -101,6 +112,13 @@ export function AppLayout({
   connected,
   runtimeLabel,
   queueEvents = [],
+  activeTeamId,
+  activeCloudView,
+  onTeamChange,
+  onCloudViewChange,
+  onApplyBoardFrame,
+  teamSnapshot,
+  agentLogs,
 }: AppLayoutProps) {
   const [active, setActive] = useState<QueueId>("running");
   const [selection, setSelection] = useState<DetailSelection | null>(null);
@@ -261,9 +279,22 @@ export function AppLayout({
               />
             </section>
 
+            <section className="min-h-0 flex-1 overflow-hidden">
+              <CloudDashboardViews
+                teamId={activeTeamId}
+                view={activeCloudView}
+                state={state}
+                teamSnapshot={teamSnapshot}
+                agentLogs={agentLogs}
+                onTeamChange={onTeamChange}
+                onViewChange={onCloudViewChange}
+                onApplyBoardFrame={onApplyBoardFrame}
+              />
+            </section>
+
             <QueuePanel events={queueEvents} />
 
-            <section className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border/70 bg-card/80 shadow-lg ring-1 ring-white/5">
+            <section className="max-h-72 overflow-hidden rounded-2xl border border-border/70 bg-card/80 shadow-lg ring-1 ring-white/5">
               <IssueDataTable
                 entries={currentQueue.rows}
                 emptyText={currentQueue.emptyText}

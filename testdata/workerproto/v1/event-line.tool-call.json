@@ -1,0 +1,13 @@
+{
+  "protocol_version": "1.0.0",
+  "ts": 1767225603000,
+  "seq": 3,
+  "kind": "tool_call",
+  "payload": {
+    "tool": "go test",
+    "phase": "start",
+    "args": "./internal/workerproto/v1/...",
+    "tokensIn": 120,
+    "tokensOut": 24
+  }
+}

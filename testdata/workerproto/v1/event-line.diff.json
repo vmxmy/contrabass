@@ -1,0 +1,12 @@
+{
+  "protocol_version": "1.0.0",
+  "ts": 1767225604000,
+  "seq": 4,
+  "kind": "diff",
+  "payload": {
+    "filesChanged": 2,
+    "additions": 120,
+    "deletions": 4,
+    "summary": "added worker protocol fixtures"
+  }
+}

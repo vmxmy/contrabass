@@ -1,0 +1,21 @@
+Implemented task 1.2 only: generated Go worker protocol v1 types under `internal/workerproto/v1/` and added a reproducible `go generate` entry point.
+
+**Files Changed**
+- `internal/workerproto/v1/generate.go` — 3 lines; adds pinned `go generate` command using `go-jsonschema`.
+- `internal/workerproto/v1/types_gen.go` — 832 lines; generated Go structs/enums from `cloud/schemas/worker-protocol-v1/*.json`.
+- `internal/workerproto/v1/protocol.go` — 18 lines; adds `ProtocolVersionCurrent` and typed interfaces for ack/complete oneOf variants.
+- `internal/workerproto/v1/types_test.go` — 86 lines; table-driven marshal tests for wire field names plus oneOf interface compile checks.
+
+**Validation**
+- `go generate ./internal/workerproto/v1/...` — passed; generator emits expected duplicate `ErrorCode` name warnings because each endpoint schema has its own `$defs.ErrorCode`.
+- `go test ./internal/workerproto/v1/... && go vet ./...` — passed.
+- `bunx --bun ajv-cli@5 compile ... --spec=draft2020 --strict=false` for all worker protocol schemas — passed; AJV reported expected ignored `uri` format warnings.
+
+**Spec Coverage**
+- Satisfied task 1.2: Go types are generated from the frozen worker protocol schemas and can be regenerated with `go generate`.
+- No spec scenarios were blocked for this checkbox.
+
+**Deferred**
+- TypeScript generation remains task 1.3.
+- Shared golden fixtures remain task 1.4.
+- I did not touch `openspec/changes/.../tasks.md`, per instruction.

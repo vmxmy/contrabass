@@ -1,0 +1,5 @@
+{
+  "protocol_version": "1.0.0",
+  "error": "auth_invalid",
+  "message": "worker authentication token is invalid"
+}
