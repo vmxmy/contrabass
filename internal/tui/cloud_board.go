@@ -68,12 +68,12 @@ func NewCloudBoardView() CloudBoardView {
 	return CloudBoardView{}
 }
 
-func (v CloudBoardView) SetWidth(w int) CloudBoardView           { v.width = w; return v }
+func (v CloudBoardView) SetWidth(w int) CloudBoardView              { v.width = w; return v }
 func (v CloudBoardView) SetRows(r []CloudBoardEntry) CloudBoardView { v.rows = r; return v }
-func (v CloudBoardView) SetSelected(i int) CloudBoardView        { v.selected = i; return v }
-func (v CloudBoardView) SetFocused(f bool) CloudBoardView        { v.focused = f; return v }
-func (v CloudBoardView) RowCount() int                           { return len(v.rows) }
-func (v CloudBoardView) Selected() int                           { return v.selected }
+func (v CloudBoardView) SetSelected(i int) CloudBoardView           { v.selected = i; return v }
+func (v CloudBoardView) SetFocused(f bool) CloudBoardView           { v.focused = f; return v }
+func (v CloudBoardView) RowCount() int                              { return len(v.rows) }
+func (v CloudBoardView) Selected() int                              { return v.selected }
 
 // SelectedEntry returns the currently selected row.
 func (v CloudBoardView) SelectedEntry() (CloudBoardEntry, bool) {
