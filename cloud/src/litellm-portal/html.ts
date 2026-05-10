@@ -145,7 +145,6 @@ export function renderPortalHtml(env: LiteLLMPortalEnv): string {
             <p class="text-lg font-semibold text-kumo-strong">API Keys</p>
             <p class="text-sm text-kumo-subtle">仅列出当前 LiteLLM 用户拥有的密钥。</p>
           </div>
-          <div id="create-key-root"></div>
         </div>
         <div class="p-6 text-sm text-kumo-subtle">Loading…</div>
       </section>

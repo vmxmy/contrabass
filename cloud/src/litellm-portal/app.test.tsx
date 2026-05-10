@@ -4,6 +4,37 @@
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+vi.mock("@cloudflare/kumo/components/chart", async () => {
+  const ReactModule = await import("react");
+  return {
+    ChartPalette: {
+      categorical: () => "#4290F0",
+    },
+    TimeseriesChart: ({ data, onTimeRangeChange, ariaDescription }: any) =>
+      ReactModule.createElement(
+        "div",
+        {
+          "data-testid": "kumo-timeseries-chart",
+          "data-series": JSON.stringify(data),
+          role: "img",
+          "aria-label": ariaDescription,
+        },
+        ReactModule.createElement(
+          "button",
+          {
+            type: "button",
+            onClick: () => onTimeRangeChange?.(
+              Date.parse("2024-01-01T00:00:00.000Z"),
+              Date.parse("2024-01-08T00:00:00.000Z"),
+            ),
+          },
+          "模拟图表范围",
+        ),
+      ),
+  };
+});
+
 import { ApiKeysCard, CreateKeyButton, ModelAccessCard, PortalErrorBanner, UsagePanel } from "./app";
 import { UsageChart, type UsageTimeseries } from "./chart";
 
@@ -33,7 +64,10 @@ function installPortalConfig() {
     usageWindows: {
       minute: [{ key: "6h", label: "近 6 小时" }],
       hour: [{ key: "48h", label: "近 48 小时" }],
-      day: [{ key: "30d", label: "近 30 天" }],
+      day: [
+        { key: "7d", label: "近 7 天" },
+        { key: "30d", label: "近 30 天" },
+      ],
       week: [{ key: "12w", label: "近 12 周" }],
       month: [{ key: "12mo", label: "近 12 个月" }],
     },
@@ -98,8 +132,10 @@ describe("UsageChart", () => {
   it("renders chart when usage data is provided", async () => {
     render(<UsageChart data={usageData} />);
     await waitFor(() => {
+      expect(screen.queryByTestId("kumo-timeseries-chart")).not.toBeNull();
       expect(screen.queryByText(/峰值/)).not.toBeNull();
     });
+    expect(screen.getByTestId("kumo-timeseries-chart").getAttribute("data-series")).toContain("1704067200000");
   });
 
   it("shows error when error prop is provided", () => {
@@ -121,10 +157,32 @@ describe("UsagePanel", () => {
 
     expect(screen.queryByText("时间粒度")).not.toBeNull();
     expect(screen.queryByText("时间范围")).not.toBeNull();
+    expect(document.querySelector('[aria-label="用量筛选"]')?.className).toContain("sm:grid-cols-2");
     await waitFor(() => {
       expect(screen.queryByText(/峰值/)).not.toBeNull();
     });
     expect(seen[0]).toContain("/api/usage/timeseries?grain=day&window=30d");
+  });
+
+  it("syncs Kumo chart native range selection to the nearest usage preset", async () => {
+    installPortalConfig();
+    const seen: string[] = [];
+    globalThis.fetch = vi.fn(async (input) => {
+      seen.push(String(input));
+      return Response.json(usageData);
+    }) as typeof fetch;
+
+    render(<UsagePanel />);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("kumo-timeseries-chart")).not.toBeNull();
+    });
+    fireEvent.click(screen.getByText("模拟图表范围"));
+
+    await waitFor(() => {
+      expect(seen.some((url) => url.includes("grain=day&window=7d"))).toBe(true);
+      expect(screen.queryByText(/已按图表选择切换到 近 7 天/)).not.toBeNull();
+    });
   });
 
   it("renders semantic error state when usage fetch fails", async () => {
@@ -157,6 +215,7 @@ describe("ApiKeysCard", () => {
     render(<ApiKeysCard />);
 
     expect(screen.queryByText("API Keys")).not.toBeNull();
+    expect(screen.queryByText("创建 Key")).not.toBeNull();
     expect(screen.queryByText("primary")).not.toBeNull();
     expect(screen.queryByText("sk-lit...cret")).not.toBeNull();
     expect(screen.queryByText(/展开全部/)).not.toBeNull();

@@ -1,7 +1,6 @@
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Banner } from "@cloudflare/kumo/components/banner";
 import { Button } from "@cloudflare/kumo/components/button";
-import { ClipboardText } from "@cloudflare/kumo/components/clipboard-text";
 import { Collapsible } from "@cloudflare/kumo/components/collapsible";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
 import { Input } from "@cloudflare/kumo/components/input";
@@ -75,6 +74,18 @@ const usageGrainLabels: Record<string, string> = {
   week: "周",
   month: "月",
 };
+
+type UsageWindowSelection = {
+  grain: string;
+  windowKey: string;
+  label: string;
+};
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+const WEEK_MS = 7 * DAY_MS;
+const MONTH_MS = 30 * DAY_MS;
+const RANGE_MATCH_TOLERANCE = 0.2;
 
 const sourceLabels: Record<string, string> = {
   team: "来自当前用户所属团队配置",
@@ -255,6 +266,34 @@ function defaultWindowFor(grain: string, config: Required<PortalConfig>): string
   return config.defaultUsageWindows[grain] ?? usageWindowOptions(grain, config)[0]?.key ?? "";
 }
 
+function usageWindowDurationMs(key: string): number | null {
+  const match = /^(\d+)(h|d|w|mo)$/.exec(key);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  const unit = match[2];
+  const unitMs = unit === "h" ? HOUR_MS : unit === "d" ? DAY_MS : unit === "w" ? WEEK_MS : MONTH_MS;
+  return amount * unitMs;
+}
+
+function selectionForRange(from: number, to: number, config: Required<PortalConfig>): UsageWindowSelection | null {
+  const duration = Math.abs(to - from);
+  if (!Number.isFinite(duration) || duration <= 0) return null;
+
+  let best: (UsageWindowSelection & { ratio: number }) | null = null;
+  for (const [grain, options] of Object.entries(config.usageWindows)) {
+    for (const option of options) {
+      const optionDuration = usageWindowDurationMs(option.key);
+      if (!optionDuration) continue;
+      const ratio = Math.abs(duration - optionDuration) / optionDuration;
+      if (!best || ratio < best.ratio) {
+        best = { grain, windowKey: option.key, label: option.label, ratio };
+      }
+    }
+  }
+
+  return best && best.ratio <= RANGE_MATCH_TOLERANCE ? best : null;
+}
+
 function UsageSummary({ data, loading }: { data: UsageTimeseries | null; loading: boolean }) {
   const totals = data?.totals;
   const source = data?.source === "spend_logs_v2" ? "实时请求日志" : data ? "LiteLLM 日聚合" : "—";
@@ -354,6 +393,7 @@ export function UsagePanel() {
   const [data, setData] = useState<UsageTimeseries | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [rangeHint, setRangeHint] = useState<string | null>(null);
   const requestIdRef = useRef(0);
 
   const windows = usageWindowOptions(grain, config);
@@ -363,6 +403,28 @@ export function UsagePanel() {
       setWindowKey(defaultWindowFor(grain, config));
     }
   }, [config, grain, windowKey, windows]);
+
+  const handleGrainChange = useCallback((value: unknown) => {
+    const nextGrain = String(value);
+    setGrain(nextGrain);
+    setRangeHint(null);
+  }, []);
+
+  const handleWindowChange = useCallback((value: unknown) => {
+    setWindowKey(String(value));
+    setRangeHint(null);
+  }, []);
+
+  const handleChartRangeChange = useCallback((from: number, to: number) => {
+    const selection = selectionForRange(from, to, config);
+    if (!selection) {
+      setRangeHint("图表选择已捕获；请选择更接近预设的范围以自动取数。");
+      return;
+    }
+    setGrain(selection.grain);
+    setWindowKey(selection.windowKey);
+    setRangeHint(`已按图表选择切换到 ${selection.label} · ${usageGrainLabels[selection.grain] ?? selection.grain}`);
+  }, [config]);
 
   useEffect(() => {
     if (!grain || !windowKey) return;
@@ -410,35 +472,47 @@ export function UsagePanel() {
 
   return (
     <article id="usage-panel" className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line" aria-busy={loading}>
-      <div className="grid gap-6 border-b border-kumo-line bg-kumo-elevated p-6 md:grid-cols-[2fr_1fr]">
+      <div className="grid gap-6 border-b border-kumo-line bg-kumo-elevated p-6 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
         <div className="space-y-2">
-          <p className="text-lg font-semibold text-kumo-strong">Token 用量趋势</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-lg font-semibold text-kumo-strong">Token 用量趋势</p>
+            <span className="rounded-full bg-kumo-info-tint px-2.5 py-1 text-xs font-semibold text-kumo-info">Brush native</span>
+          </div>
           <p className="text-sm leading-relaxed text-kumo-subtle">{windowText}</p>
+          <p className="text-xs text-kumo-subtle">
+            在图表中横向拖拽可按最接近的预设范围重新取数；下方控件仍可键盘精确选择。
+          </p>
+          {rangeHint ? (
+            <p className="text-xs font-medium text-kumo-brand" aria-live="polite">{rangeHint}</p>
+          ) : null}
         </div>
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          <Select
-            label="时间粒度"
-            size="lg"
-            value={grain}
-            renderValue={(value) => usageGrainLabels[String(value)] ?? String(value)}
-            onValueChange={(value) => setGrain(String(value))}
-          >
-            {grains.map((item) => (
-              <Select.Option key={item} value={item}>
-                {usageGrainLabels[item] ?? item}
-              </Select.Option>
-            ))}
-          </Select>
+        <div
+          className="grid w-full min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 md:w-[30rem] md:justify-self-end"
+          aria-label="用量筛选"
+        >
           <Select
             label="时间范围"
             size="lg"
             value={windowKey}
             renderValue={(value) => windows.find((option) => option.key === String(value))?.label ?? String(value)}
-            onValueChange={(value) => setWindowKey(String(value))}
+            onValueChange={handleWindowChange}
           >
             {windows.map((option) => (
               <Select.Option key={option.key} value={option.key}>
                 {option.label}
+              </Select.Option>
+            ))}
+          </Select>
+          <Select
+            label="时间粒度"
+            size="lg"
+            value={grain}
+            renderValue={(value) => usageGrainLabels[String(value)] ?? String(value)}
+            onValueChange={handleGrainChange}
+          >
+            {grains.map((item) => (
+              <Select.Option key={item} value={item}>
+                {usageGrainLabels[item] ?? item}
               </Select.Option>
             ))}
           </Select>
@@ -450,7 +524,7 @@ export function UsagePanel() {
             <Banner variant="error" title="用量数据加载失败" description={error} />
           ) : null}
           <UsageSummary data={data} loading={loading} />
-          <UsageChart data={data} error={error} loading={loading} />
+          <UsageChart data={data} error={error} loading={loading} onTimeRangeChange={handleChartRangeChange} />
           <div className="overflow-x-auto">
             <UsageBucketsTable data={data} loading={loading} />
           </div>
@@ -557,9 +631,12 @@ export function ApiKeysCard() {
 
   return (
     <section className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-      <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-        <p className="text-lg font-semibold text-kumo-strong">API Keys</p>
-        <p className="text-sm text-kumo-subtle">仅列出当前 LiteLLM 用户拥有的密钥。</p>
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-kumo-line bg-kumo-elevated p-6">
+        <div>
+          <p className="text-lg font-semibold text-kumo-strong">API Keys</p>
+          <p className="text-sm text-kumo-subtle">仅列出当前 LiteLLM 用户拥有的密钥。</p>
+        </div>
+        <CreateKeyButton />
       </div>
       <div className="overflow-x-auto">
         {!loaded ? (
@@ -592,12 +669,7 @@ export function ApiKeysCard() {
                   <Table.Row key={key.id ?? key.alias ?? index} className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
                     <Table.Cell className="py-3 pl-5 pr-3 text-kumo-default">{text(key.alias)}</Table.Cell>
                     <Table.Cell className="py-3 pr-3 text-kumo-default">
-                      <ClipboardText
-                        text={displayKey}
-                        size="sm"
-                        tooltip={{ text: "复制", copiedText: "已复制", side: "top" }}
-                        labels={{ copyAction: "复制 API Key 显示值" }}
-                      />
+                      <code className="font-mono text-sm text-kumo-subtle">{displayKey}</code>
                     </Table.Cell>
                     <Table.Cell className="py-3 pr-3 text-kumo-default">
                       <ModelsCell models={models} />
@@ -729,11 +801,9 @@ export function CreateKeyButton() {
 
   const handleClose = useCallback(() => {
     setOpen(false);
+    resetForm();
     if (result) {
-      resetForm();
       window.dispatchEvent(new CustomEvent("litellm-portal:refresh"));
-    } else {
-      resetForm();
     }
   }, [result, resetForm]);
 
@@ -762,51 +832,67 @@ export function CreateKeyButton() {
           </Button>
         )}
       />
-      <Dialog size="base" className="p-8">
+      <Dialog size="base" className="space-y-6 p-8">
         <Dialog.Title className="text-lg font-semibold text-kumo-strong">
           {result ? "Key 已创建" : "创建新 API Key"}
         </Dialog.Title>
+        <Dialog.Description className="text-sm text-kumo-subtle">
+          {result
+            ? "请立即复制完整 Key，关闭后无法再次查看。"
+            : "创建一个新的 API Key，绑定到当前登录用户。"}
+        </Dialog.Description>
 
         {result ? (
-          <div className="mt-4 space-y-4">
+          <div className="space-y-5">
             <Banner
-              variant="warning"
+              variant="alert"
               title="请立即复制"
               description="关闭此对话框后将无法再次查看完整 Key。"
             />
-            <div className="rounded-lg bg-kumo-recessed p-4">
-              <p className="mb-1 text-xs font-medium text-kumo-subtle">Key 名称</p>
-              <p className="font-semibold text-kumo-strong">{result.keyAlias || "—"}</p>
-              <p className="mt-3 mb-1 text-xs font-medium text-kumo-subtle">完整 Key</p>
-              <div className="flex items-center gap-2">
-                <code className="flex-1 break-all font-mono text-sm text-kumo-brand">{result.rawKey}</code>
-                <Button variant="secondary" size="sm" onClick={handleCopy}>
-                  复制
-                </Button>
+
+            <div className="rounded-xl bg-kumo-recessed p-5 ring-1 ring-kumo-line">
+              <div className="space-y-1">
+                <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">Key 名称</p>
+                <p className="text-sm font-semibold text-kumo-strong">{result.keyAlias || "—"}</p>
+              </div>
+              <div className="mt-4 space-y-1">
+                <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">完整 Key</p>
+                <div className="flex items-center gap-3">
+                  <code className="flex-1 overflow-hidden rounded-md bg-kumo-base px-3 py-2 font-mono text-sm text-kumo-brand ring-1 ring-kumo-line">
+                    {result.rawKey}
+                  </code>
+                  <Button variant="secondary" size="sm" onClick={handleCopy}>
+                    复制
+                  </Button>
+                </div>
               </div>
               {result.expires ? (
-                <p className="mt-3 text-xs text-kumo-subtle">过期时间：{result.expires}</p>
+                <div className="mt-4 space-y-1">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">过期时间</p>
+                  <p className="font-mono text-sm text-kumo-default">{result.expires}</p>
+                </div>
               ) : null}
             </div>
-            <Dialog.Close
-              render={(props) => (
-                <Button {...props} variant="primary" onClick={handleClose} className="w-full">
-                  已复制，关闭
-                </Button>
-              )}
-            />
+
+            <div className="flex justify-end">
+              <Dialog.Close
+                render={(props) => (
+                  <Button {...props} variant="primary" onClick={handleClose}>
+                    已复制，关闭
+                  </Button>
+                )}
+              />
+            </div>
           </div>
         ) : (
-          <div className="mt-4 space-y-5">
+          <div className="space-y-5">
             {error ? (
               <Banner variant="error" title="创建失败" description={error} />
             ) : null}
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-kumo-default" htmlFor="create-key-alias">
-                名称 <span className="text-kumo-danger">*</span>
-              </label>
               <Input
                 id="create-key-alias"
+                label={<>名称 <span className="text-kumo-danger">*</span></>}
                 size="lg"
                 placeholder="例如：production-api"
                 value={alias}
@@ -820,6 +906,7 @@ export function CreateKeyButton() {
                 <Select
                   label="允许模型"
                   size="lg"
+                  multiple
                   value={selectedModels}
                   onValueChange={(value) => setSelectedModels(Array.isArray(value) ? value.map(String) : [String(value)])}
                 >
@@ -833,11 +920,9 @@ export function CreateKeyButton() {
             ) : null}
 
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-kumo-default" htmlFor="create-key-budget">
-                预算上限（USD）
-              </label>
               <Input
                 id="create-key-budget"
+                label="预算上限（USD）"
                 size="lg"
                 type="number"
                 min="0"
@@ -901,9 +986,4 @@ if (keysRoot) {
 const errorRoot = document.getElementById("portal-error-root");
 if (errorRoot) {
   createRoot(errorRoot).render(<PortalErrorBanner />);
-}
-
-const createKeyRoot = document.getElementById("create-key-root");
-if (createKeyRoot) {
-  createRoot(createKeyRoot).render(<CreateKeyButton />);
 }

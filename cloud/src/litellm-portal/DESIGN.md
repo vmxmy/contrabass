@@ -473,31 +473,31 @@ Pill for interactive; xl for containers; sm for embedded tiles. Sharp corners ab
 
 ### 当前集成度
 
-Portal 已安装 `@cloudflare/kumo@^2.1.0`，CSS token 体系全面对齐 DESIGN.md 规范，但 React 组件层仅使用 2 个组件：
+Portal 已安装 `@cloudflare/kumo@^2.1.0`，CSS token 体系全面对齐 DESIGN.md 规范，React 岛已经覆盖用量面板、模型、Key 表格、错误提示和创建 Key 弹窗：
 
 | 维度 | 当前使用 | Kumo 可提供 |
 |------|---------|------------|
 | CSS tokens | 全面覆盖（surface / text / semantic / hairline） | 已对齐，无需改动 |
-| React 组件 | `Badge` + `Collapsible`（仅 `app.tsx`） | Button、Select、Dialog、Tooltip、Dropdown、Switch、Progress、Tabs、Accordion 等 |
+| React 组件 | `Badge`、`Banner`、`Button`、`Collapsible`、`Dialog`、`Input`、`Loader/SkeletonLine`、`Select`、`Table`、`TimeseriesChart` | Tooltip、Dropdown、Switch、Tabs、Accordion 等后续按需补齐 |
 | Base UI Primitives | 未使用 | 37 个无样式可访问原语（Popover、Dialog、Slider 等），可从 `@cloudflare/kumo/primitives/*` 导入做二次封装 |
-| 无障碍 | `html.ts` 中 vanilla JS 手动处理 ARIA，无焦点管理 | Kumo 组件开箱处理键盘导航、focus trap/return、ARIA 属性 |
-| 暗色模式 | 未实现 | 语义 token 天然支持，通过 `data-mode="dark"` 或 CSS `light-dark()` 切换 |
+| 无障碍 | 关键 React 岛使用 Kumo 组件；图表提供 `ariaDescription`；Worker shell 仍保留少量 vanilla DOM 更新 | Kumo 组件开箱处理键盘导航、focus trap/return、ARIA 属性 |
+| 暗色模式 | 已通过 `data-mode` + localStorage 持久化；Kumo Chart 接收暗色状态 | 语义 token 天然支持，通过 `data-mode="dark"` 或 CSS `light-dark()` 切换 |
 | 主题 | 仅 Kumo 默认 | 内置 FedRAMP 主题，支持自定义 token 覆盖 |
 
 ### 架构约束
 
-Portal 是 Cloudflare Worker，HTML 以模板字符串形式在 `html.ts` 中生成（~580 行）。React 仅挂载到 2 个 DOM 容器（`#models-root`、`#usage-chart-root`）。`html.ts` 中的交互逻辑（表格渲染、复制按钮、select 控件、状态 pills）均为 vanilla JS 手写 DOM 操作，不享受 Kumo 组件的无障碍和主题能力。
+Portal 是 Cloudflare Worker，HTML 以模板字符串形式在 `html.ts` 中生成。React 通过小岛挂载到 `#usage-panel-root`、`#models-root`、`#keys-root`、`#portal-error-root`，仍避免整页 SPA 化。Worker shell 继续负责首屏骨架、身份/KPI 的轻量 DOM 更新和数据注入；交互密集区域由 React/Kumo 接管。
 
 ### 升级优先级
 
 按投入产出比排序：
 
-1. **Select 控件 → Kumo Select**：用量面板的 grain/window 选择器是原生 `<select>`，替换为 Kumo Select 可获得一致的视觉和无障碍支持。需将控件迁入 React 组件。
-2. **暗色模式**：语义 token 已就绪，仅需添加 `data-mode` 切换器和少量 CSS 变量映射。零架构改动。
-3. **复制反馈 → Kumo Tooltip/Toast**：当前 API Key 的「复制」按钮用 `setTimeout` 替换文本，应改为 Kumo Tooltip 或轻量 Toast 反馈。
-4. **加载态 → Kumo Progress/Skeleton**：当前自定义骨架屏（`animate-pulse bg-kumo-fill`），可统一为 Kumo 的 Progress 或 Skeleton 组件。
-5. **错误展示 → Kumo Dialog/Alert**：底部 `error-banner` 可升级为 Kumo Dialog 或 Alert 组件，提供更好的焦点管理和屏幕阅读器支持。
-6. **表格行展开 → Kumo Accordion/Collapsible**：模型列表的展开/收起已使用 Collapsible，可扩展到表格行详情展开。
+1. **已完成：用量 Select + Kumo Chart**：grain/window 选择器已迁入 React/Kumo，图表已替换为 Kumo `TimeseriesChart`，并支持横向 brush 映射到预设时间范围。
+2. **已完成：暗色模式**：通过 `data-mode` 持久化，图表随 `MutationObserver` 同步暗色状态。
+3. **已完成：加载态 / 错误 / Key 表格 / 创建 Key**：Loader、Skeleton、Banner、Table、Dialog、Button、Input 已覆盖核心交互。
+4. **后续：复制反馈 → Kumo Tooltip/Toast**：新建 Key 的完整密钥复制仍可加 Toast；已有 Key 仅展示 mask，不提供复制。
+5. **后续：更多行级详情 → Kumo Accordion/Collapsible**：Key 模型列表已使用 Collapsible，团队/用量明细可按需扩展。
+6. **后续：bundle 拆分**：如图表继续增重，应评估 `/portal.js` 拆分或延迟加载 chart island。
 
 ### 导入规范
 
@@ -506,6 +506,7 @@ Portal 是 Cloudflare Worker，HTML 以模板字符串形式在 `html.ts` 中生
 import { Button } from "@cloudflare/kumo/components/button";
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Select } from "@cloudflare/kumo/components/select";
+import { TimeseriesChart } from "@cloudflare/kumo/components/chart";
 
 // 高级场景：Base UI primitives 二次封装
 import { Popover } from "@cloudflare/kumo/primitives/popover";
@@ -520,4 +521,8 @@ import { Popover } from "@cloudflare/kumo/primitives/popover";
 
 ### Chart / Bundle 决策
 
-当前 Token 用量图仍保留 Recharts。2026-05-10 本地 spike 显示：通过 `@cloudflare/kumo/components/chart` 引入 `TimeseriesChart` 与 ECharts core 后，最小 React chart bundle 约 806.9KB minified；升级前 portal bundle 基线约 680.0KB minified。本轮迁移 Select、ClipboardText、Table、Banner、Loader/Skeleton 后，`pnpm run analyze:litellm-portal-bundle` 显示 portal app bundle 约 855.0KB minified。由于 Kumo Chart 入口会再带入更大的图表栈，本轮不叠加图表库迁移，后续需等 granular chart entrypoint 或单独 bundle budget change。
+2026-05-10 `litellm-portal-kumo-chart-interactions` 已将 Token 用量图从 Recharts 替换为 Kumo `TimeseriesChart`，并移除 `recharts` 依赖。实现采用 granular import：`@cloudflare/kumo/components/chart` + `echarts/core`，仅注册 `LineChart`、`GridComponent`、`TooltipComponent`、`BrushComponent`、`ToolboxComponent`、`AriaComponent`、`SVGRenderer`。
+
+交互上不再把「时间范围 / 时间粒度」作为两个占满 header 的独立表单：桌面端使用 compact control rail（`sm:grid-cols-2`），图表区域提升到 300px 高，并开启 Kumo/ECharts brush。用户在图表中横向拖拽后，前端会把选中区间映射到最接近的服务端预设窗口（例如 7d / 30d / 48h），再重新请求 `/api/usage/timeseries`；无法匹配预设时只提示，不发起任意窗口查询，保持 Worker API 有界。
+
+Bundle 实测：迁移后 `pnpm run analyze:litellm-portal-bundle` 显示 portal app bundle 为 `1,090,483 bytes` minified；`pnpm run build:litellm-portal` dry-run 上传体积为 `1245.44 KiB / gzip 385.28 KiB`。相对上轮 Kumo UX 基线（约 `849.1KB` minified，dry-run `1009.64 KiB / gzip 289.37 KiB`），Kumo Chart/ECharts 原生交互增加约 `235KB` minified / `96KB` gzip。收益是移除 Recharts、统一 Kumo 视觉/ARIA/暗色行为，并获得 chart-native brush 交互；代价是 bundle 明显增大，后续若继续扩展图表应优先考虑 island 懒加载或独立 chunk。

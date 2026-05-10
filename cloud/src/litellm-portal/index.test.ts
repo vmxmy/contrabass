@@ -32,6 +32,7 @@ describe("litellm portal worker", () => {
     expect(html).toContain('id="usage-panel-root"');
     expect(html).toContain('id="usage-panel"');
     expect(html).toContain('id="keys-root"');
+    expect(html).not.toContain('id="create-key-root"');
     expect(html).toContain('id="portal-error-root"');
     expect(html).toContain('id="theme-toggle"');
     expect(html).toContain("litellm-portal:keys");
@@ -72,7 +73,7 @@ describe("litellm portal worker", () => {
     expect(css).toContain(".md\\:grid-cols-2");
   });
 
-  it("serves the React portal bundle with Kumo Collapsible", async () => {
+  it("serves the React portal bundle with Kumo islands", async () => {
     const response = await handleLiteLLMPortalRequest(
       new Request("https://portal.test/portal.js"),
       portalEnv(),
@@ -86,8 +87,9 @@ describe("litellm portal worker", () => {
     expect(js).toContain("litellm-portal:keys");
     expect(js).toContain("litellm-portal:error");
     expect(js).toContain("usage-panel-root");
-    expect(js).toContain("md:grid-cols-2");
-    expect(js).toContain("ClipboardText");
+    expect(js).toContain("sm:grid-cols-2");
+    expect(js).toContain("Brush native");
+    expect(js).not.toContain("ClipboardText");
     expect(js).toContain("Select");
     expect(js).toContain("Collapsible");
     expect(js).toContain("DefaultTrigger");
