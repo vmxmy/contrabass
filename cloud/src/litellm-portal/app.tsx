@@ -81,6 +81,12 @@ type UsageWindowSelection = {
   label: string;
 };
 
+type UsagePreset = UsageWindowSelection & {
+  durationMs: number;
+};
+
+type GrainMode = "auto" | string;
+
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const WEEK_MS = 7 * DAY_MS;
@@ -275,23 +281,56 @@ function usageWindowDurationMs(key: string): number | null {
   return amount * unitMs;
 }
 
+function usageWindowPresets(config: Required<PortalConfig>): UsagePreset[] {
+  const presets = new Map<string, UsagePreset>();
+  for (const [grain, options] of Object.entries(config.usageWindows)) {
+    for (const option of options) {
+      const durationMs = usageWindowDurationMs(option.key);
+      if (!durationMs) continue;
+      // Later grain groups intentionally win duplicate windows, e.g. 7d -> day instead of hour.
+      presets.set(option.key, {
+        grain,
+        windowKey: option.key,
+        label: option.label,
+        durationMs,
+      });
+    }
+  }
+  return [...presets.values()].sort((a, b) => a.durationMs - b.durationMs);
+}
+
+function presetForWindow(windowKey: string, config: Required<PortalConfig>): UsagePreset | null {
+  return usageWindowPresets(config).find((preset) => preset.windowKey === windowKey) ?? null;
+}
+
+function supportsWindowForGrain(grain: string, windowKey: string, config: Required<PortalConfig>): boolean {
+  return usageWindowOptions(grain, config).some((option) => option.key === windowKey);
+}
+
 function selectionForRange(from: number, to: number, config: Required<PortalConfig>): UsageWindowSelection | null {
   const duration = Math.abs(to - from);
   if (!Number.isFinite(duration) || duration <= 0) return null;
 
   let best: (UsageWindowSelection & { ratio: number }) | null = null;
-  for (const [grain, options] of Object.entries(config.usageWindows)) {
-    for (const option of options) {
-      const optionDuration = usageWindowDurationMs(option.key);
-      if (!optionDuration) continue;
-      const ratio = Math.abs(duration - optionDuration) / optionDuration;
-      if (!best || ratio < best.ratio) {
-        best = { grain, windowKey: option.key, label: option.label, ratio };
-      }
+  for (const preset of usageWindowPresets(config)) {
+    const ratio = Math.abs(duration - preset.durationMs) / preset.durationMs;
+    if (!best || ratio < best.ratio) {
+      best = { grain: preset.grain, windowKey: preset.windowKey, label: preset.label, ratio };
     }
   }
 
   return best && best.ratio <= RANGE_MATCH_TOLERANCE ? best : null;
+}
+
+function controlPillClass(active: boolean, disabled = false): string {
+  const base = "rounded-full px-3 py-1.5 text-xs font-semibold ring-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-kumo-focus";
+  if (disabled) {
+    return `${base} cursor-not-allowed bg-kumo-recessed text-kumo-inactive ring-kumo-line opacity-50`;
+  }
+  if (active) {
+    return `${base} bg-kumo-brand text-kumo-inverse ring-kumo-brand hover:bg-kumo-brand-hover`;
+  }
+  return `${base} bg-kumo-base text-kumo-default ring-kumo-line hover:bg-kumo-tint`;
 }
 
 function UsageSummary({ data, loading }: { data: UsageTimeseries | null; loading: boolean }) {
@@ -388,32 +427,62 @@ function TopModels({ data, loading }: { data: UsageTimeseries | null; loading: b
 export function UsagePanel() {
   const config = useMemo(() => portalConfig(), []);
   const grains = useMemo(() => Object.keys(config.usageWindows), [config]);
-  const [grain, setGrain] = useState("day");
-  const [windowKey, setWindowKey] = useState(defaultWindowFor("day", config));
+  const presets = useMemo(() => usageWindowPresets(config), [config]);
+  const defaultPreset = useMemo(() => {
+    const defaultDayWindow = defaultWindowFor("day", config);
+    return presetForWindow(defaultDayWindow, config) ?? presets.find((preset) => preset.grain === "day") ?? presets[0];
+  }, [config, presets]);
+  const [grainMode, setGrainMode] = useState<GrainMode>("auto");
+  const [grain, setGrain] = useState(defaultPreset?.grain ?? "day");
+  const [windowKey, setWindowKey] = useState(defaultPreset?.windowKey ?? defaultWindowFor("day", config));
   const [data, setData] = useState<UsageTimeseries | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [rangeHint, setRangeHint] = useState<string | null>(null);
   const requestIdRef = useRef(0);
 
-  const windows = usageWindowOptions(grain, config);
+  const activePreset = useMemo(
+    () => presets.find((preset) => preset.windowKey === windowKey) ?? defaultPreset,
+    [defaultPreset, presets, windowKey],
+  );
+  const grainStatus = `${grainMode === "auto" ? "自动粒度" : "手动粒度"}：${usageGrainLabels[grain] ?? grain}`;
 
-  useEffect(() => {
-    if (!windows.some((option) => option.key === windowKey)) {
-      setWindowKey(defaultWindowFor(grain, config));
+  const applyPreset = useCallback((preset: UsageWindowSelection, source: "click" | "brush" = "click") => {
+    const manualGrain = grainMode !== "auto" ? grainMode : null;
+    const canKeepManual = manualGrain ? supportsWindowForGrain(manualGrain, preset.windowKey, config) : false;
+    const nextGrain = canKeepManual && manualGrain ? manualGrain : preset.grain;
+    const nextMode: GrainMode = canKeepManual && manualGrain ? manualGrain : "auto";
+
+    setGrainMode(nextMode);
+    setGrain(nextGrain);
+    setWindowKey(preset.windowKey);
+
+    const nextStatus = `${nextMode === "auto" ? "自动粒度" : "手动粒度"}：${usageGrainLabels[nextGrain] ?? nextGrain}`;
+    if (source === "brush") {
+      setRangeHint(`已按图表选择切换到 ${preset.label} · ${nextStatus}`);
+      return;
     }
-  }, [config, grain, windowKey, windows]);
+    if (manualGrain && !canKeepManual) {
+      setRangeHint(`${preset.label} 不支持手动粒度「${usageGrainLabels[manualGrain] ?? manualGrain}」，已切回 ${nextStatus}`);
+      return;
+    }
+    setRangeHint(null);
+  }, [config, grainMode]);
 
-  const handleGrainChange = useCallback((value: unknown) => {
-    const nextGrain = String(value);
+  const handleAutoGrainClick = useCallback(() => {
+    const preset = activePreset;
+    if (!preset) return;
+    setGrainMode("auto");
+    setGrain(preset.grain);
+    setRangeHint(null);
+  }, [activePreset]);
+
+  const handleManualGrainClick = useCallback((nextGrain: string) => {
+    if (!supportsWindowForGrain(nextGrain, windowKey, config)) return;
+    setGrainMode(nextGrain);
     setGrain(nextGrain);
     setRangeHint(null);
-  }, []);
-
-  const handleWindowChange = useCallback((value: unknown) => {
-    setWindowKey(String(value));
-    setRangeHint(null);
-  }, []);
+  }, [config, windowKey]);
 
   const handleChartRangeChange = useCallback((from: number, to: number) => {
     const selection = selectionForRange(from, to, config);
@@ -421,10 +490,8 @@ export function UsagePanel() {
       setRangeHint("图表选择已捕获；请选择更接近预设的范围以自动取数。");
       return;
     }
-    setGrain(selection.grain);
-    setWindowKey(selection.windowKey);
-    setRangeHint(`已按图表选择切换到 ${selection.label} · ${usageGrainLabels[selection.grain] ?? selection.grain}`);
-  }, [config]);
+    applyPreset(selection, "brush");
+  }, [applyPreset, config]);
 
   useEffect(() => {
     if (!grain || !windowKey) return;
@@ -465,57 +532,76 @@ export function UsagePanel() {
     return () => controller.abort();
   }, [grain, windowKey]);
 
-  const selectedWindowLabel = windows.find((option) => option.key === windowKey)?.label ?? "当前窗口";
+  const selectedWindowLabel = activePreset?.label ?? "当前窗口";
   const windowText = data
     ? `${data.windowLabel} · ${usageGrainLabels[data.grain] ?? data.grain} · ${text(data.start).slice(0, 10)} 至 ${text(data.end).slice(0, 10)}${data.limited ? " · 已达到分页上限" : ""}`
-    : `可切换分钟、小时、天、周、月粒度，用于排查突增和查看管理趋势。当前：${selectedWindowLabel} · ${usageGrainLabels[grain] ?? grain}`;
+    : `点击预设即可取数，系统默认自动匹配粒度；需要细看时再单击粒度芯片。当前：${selectedWindowLabel} · ${grainStatus}`;
 
   return (
     <article id="usage-panel" className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line" aria-busy={loading}>
-      <div className="grid gap-6 border-b border-kumo-line bg-kumo-elevated p-6 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
-        <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-lg font-semibold text-kumo-strong">Token 用量趋势</p>
-            <span className="rounded-full bg-kumo-info-tint px-2.5 py-1 text-xs font-semibold text-kumo-info">Brush native</span>
+      <div className="border-b border-kumo-line bg-kumo-elevated p-6">
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-lg font-semibold text-kumo-strong">Token 用量趋势</p>
+              <span className="rounded-full bg-kumo-info-tint px-2.5 py-1 text-xs font-semibold text-kumo-info">Brush native</span>
+              <span className="rounded-full bg-kumo-success-tint px-2.5 py-1 text-xs font-semibold text-kumo-success">{grainStatus}</span>
+            </div>
+            <p className="text-sm leading-relaxed text-kumo-subtle">{windowText}</p>
+            <p className="text-xs text-kumo-subtle">
+              在图表中横向拖拽会吸附到最接近的时间预设；预设和粒度芯片都支持键盘单次触发。
+            </p>
+            {rangeHint ? (
+              <p className="text-xs font-medium text-kumo-brand" aria-live="polite">{rangeHint}</p>
+            ) : null}
           </div>
-          <p className="text-sm leading-relaxed text-kumo-subtle">{windowText}</p>
-          <p className="text-xs text-kumo-subtle">
-            在图表中横向拖拽可按最接近的预设范围重新取数；下方控件仍可键盘精确选择。
-          </p>
-          {rangeHint ? (
-            <p className="text-xs font-medium text-kumo-brand" aria-live="polite">{rangeHint}</p>
-          ) : null}
         </div>
-        <div
-          className="grid w-full min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 md:w-[30rem] md:justify-self-end"
-          aria-label="用量筛选"
-        >
-          <Select
-            label="时间范围"
-            size="lg"
-            value={windowKey}
-            renderValue={(value) => windows.find((option) => option.key === String(value))?.label ?? String(value)}
-            onValueChange={handleWindowChange}
-          >
-            {windows.map((option) => (
-              <Select.Option key={option.key} value={option.key}>
-                {option.label}
-              </Select.Option>
-            ))}
-          </Select>
-          <Select
-            label="时间粒度"
-            size="lg"
-            value={grain}
-            renderValue={(value) => usageGrainLabels[String(value)] ?? String(value)}
-            onValueChange={handleGrainChange}
-          >
-            {grains.map((item) => (
-              <Select.Option key={item} value={item}>
-                {usageGrainLabels[item] ?? item}
-              </Select.Option>
-            ))}
-          </Select>
+        <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start" aria-label="用量筛选">
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">时间范围预设</p>
+            <div className="flex flex-wrap gap-2" role="group" aria-label="时间范围预设">
+              {presets.map((preset) => (
+                <button
+                  key={preset.windowKey}
+                  type="button"
+                  className={controlPillClass(preset.windowKey === windowKey)}
+                  aria-pressed={preset.windowKey === windowKey}
+                  onClick={() => applyPreset(preset)}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-2 xl:min-w-80">
+            <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">时间粒度</p>
+            <div className="flex flex-wrap gap-2" role="group" aria-label="时间粒度">
+              <button
+                type="button"
+                className={controlPillClass(grainMode === "auto")}
+                aria-pressed={grainMode === "auto"}
+                onClick={handleAutoGrainClick}
+              >
+                自动
+              </button>
+              {grains.map((item) => {
+                const disabled = !supportsWindowForGrain(item, windowKey, config);
+                return (
+                  <button
+                    key={item}
+                    type="button"
+                    className={controlPillClass(grainMode === item, disabled)}
+                    aria-pressed={grainMode === item}
+                    disabled={disabled}
+                    title={disabled ? `${selectedWindowLabel} 不支持${usageGrainLabels[item] ?? item}粒度` : undefined}
+                    onClick={() => handleManualGrainClick(item)}
+                  >
+                    {usageGrainLabels[item] ?? item}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr]">
