@@ -13,7 +13,7 @@ const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 export const SPEND_LOGS_PAGE_SIZE = 100;
 export const SPEND_LOGS_MAX_PAGES = 10;
-export const USAGE_GRAINS = ["minute", "hour", "day", "week", "month"] as const;
+export const USAGE_GRAINS = ["minute", "hour", "day", "month"] as const;
 export const USAGE_WINDOWS: Record<UsageGrain, UsageWindowOption[]> = {
   minute: [
     { key: "1h", label: "近 1 小时", hours: 1 },
@@ -30,11 +30,6 @@ export const USAGE_WINDOWS: Record<UsageGrain, UsageWindowOption[]> = {
     { key: "30d", label: "近 30 天", days: 30 },
     { key: "90d", label: "近 90 天", days: 90 },
   ],
-  week: [
-    { key: "4w", label: "近 4 周", weeks: 4 },
-    { key: "12w", label: "近 12 周", weeks: 12 },
-    { key: "26w", label: "近 26 周", weeks: 26 },
-  ],
   month: [
     { key: "6mo", label: "近 6 个月", months: 6 },
     { key: "12mo", label: "近 12 个月", months: 12 },
@@ -44,7 +39,6 @@ export const DEFAULT_USAGE_WINDOWS: Record<UsageGrain, string> = {
   minute: "6h",
   hour: "48h",
   day: "30d",
-  week: "12w",
   month: "12mo",
 };
 
@@ -174,7 +168,7 @@ async function readSpendLogsTimeseries(
 async function readDailyActivityTimeseries(
   env: LiteLLMPortalEnv,
   userId: string,
-  grain: "day" | "week" | "month",
+  grain: "day" | "month",
   window: UsageWindowOption,
 ): Promise<UsageTimeseries> {
   const range = dailyWindowRange(grain, window, new Date());
@@ -220,12 +214,11 @@ async function readDailyActivityTimeseries(
 function windowToMilliseconds(window: UsageWindowOption): number {
   if (window.hours !== undefined) return window.hours * HOUR_MS;
   if (window.days !== undefined) return window.days * DAY_MS;
-  if (window.weeks !== undefined) return window.weeks * 7 * DAY_MS;
   return (window.months ?? 1) * 31 * DAY_MS;
 }
 
 function dailyWindowRange(
-  grain: "day" | "week" | "month",
+  grain: "day" | "month",
   window: UsageWindowOption,
   now: Date,
 ): { startDate: string; endDate: string; pageSize: number } {
@@ -235,15 +228,6 @@ function dailyWindowRange(
     const monthCount = window.months ?? 12;
     const todayParts = usageDateParts(today);
     const start = fromUsageDateParts(todayParts.year, todayParts.month - monthCount + 1, 1);
-    return {
-      startDate: usageDateOnly(start),
-      endDate,
-      pageSize: daysBetween(start, today) + 1,
-    };
-  }
-  if (grain === "week") {
-    const weekCount = window.weeks ?? 12;
-    const start = addUsageDays(startOfUsageWeek(today), -(weekCount - 1) * 7);
     return {
       startDate: usageDateOnly(start),
       endDate,
@@ -287,9 +271,6 @@ function alignBucketStart(date: Date, grain: UsageGrain): Date {
   if (grain === "month") {
     return fromUsageDateParts(parts.year, parts.month, 1);
   }
-  if (grain === "week") {
-    return startOfUsageWeek(date);
-  }
   if (grain === "day") {
     return startOfUsageDay(date);
   }
@@ -309,9 +290,6 @@ function addGrain(date: Date, grain: UsageGrain): Date {
   }
   if (grain === "day") {
     return fromUsageDateParts(parts.year, parts.month, parts.day + 1);
-  }
-  if (grain === "week") {
-    return fromUsageDateParts(parts.year, parts.month, parts.day + 7);
   }
   return fromUsageDateParts(parts.year, parts.month + 1, 1);
 }
@@ -439,7 +417,6 @@ function bucketLabel(date: Date, grain: UsageGrain): string {
   if (grain === "minute") return `${pad(parts.hour)}:${pad(parts.minute)}`;
   if (grain === "hour") return `${monthDay} ${pad(parts.hour)}:00`;
   if (grain === "day") return monthDay;
-  if (grain === "week") return `周 ${monthDay}`;
   return `${parts.year}-${pad(parts.month + 1)}`;
 }
 
@@ -526,13 +503,6 @@ function fromUsageDateParts(
 function startOfUsageDay(date: Date): Date {
   const parts = usageDateParts(date);
   return fromUsageDateParts(parts.year, parts.month, parts.day);
-}
-
-function startOfUsageWeek(date: Date): Date {
-  const day = startOfUsageDay(date);
-  const usageClockDay = new Date(day.getTime() + USAGE_TIMEZONE_OFFSET_MS);
-  const offset = (usageClockDay.getUTCDay() + 6) % 7;
-  return addUsageDays(day, -offset);
 }
 
 function addUsageDays(date: Date, days: number): Date {

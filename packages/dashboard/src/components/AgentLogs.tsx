@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Badge, Empty, LayerCard, Select, Text } from '@cloudflare/kumo'
 import type { AgentLogEvent } from '../types'
 import { zhCN } from '../i18n/messages'
-import './AgentLogs.css'
 
 type DisplayAgentLogEvent = AgentLogEvent & {
   channel?: string
@@ -12,7 +12,6 @@ interface AgentLogsProps {
   logs: DisplayAgentLogEvent[]
 }
 
-const WORKER_TONE_COUNT = 5
 const MAX_VISIBLE_LOGS = 500
 const HEARTBEAT_TYPES = new Set(['team/stalled'])
 
@@ -31,15 +30,6 @@ function formatTimestamp(timestamp: string): string {
   const minutes = String(date.getMinutes()).padStart(2, '0')
   const seconds = String(date.getSeconds()).padStart(2, '0')
   return `${hours}:${minutes}:${seconds}`
-}
-
-function getWorkerTone(workerID: string): number {
-  let hash = 0
-  for (let index = 0; index < workerID.length; index += 1) {
-    hash = (hash * 31 + workerID.charCodeAt(index)) >>> 0
-  }
-
-  return hash % WORKER_TONE_COUNT
 }
 
 function shouldShowLog(log: DisplayAgentLogEvent): boolean {
@@ -104,57 +94,52 @@ export function AgentLogs({ logs }: AgentLogsProps) {
   }
 
   if (displayableLogs.length === 0) {
-    return (
-      <section className="agent-logs agent-logs--empty" aria-live="polite">
-        <p className="agent-logs__empty-text">{zhCN.agentLogs.empty}</p>
-      </section>
-    )
+    return <Empty size="sm" title={zhCN.agentLogs.empty} />
   }
 
   return (
-    <section className="agent-logs" aria-label={zhCN.agentLogs.ariaLabel}>
-      <header className="agent-logs__header">
-        <h3 className="agent-logs__title">{zhCN.agentLogs.title}</h3>
-        <label className="agent-logs__filter-label" htmlFor="agent-logs-worker-filter">
-          {zhCN.agentLogs.workerFilter}
-        </label>
-        <select
-          id="agent-logs-worker-filter"
-          className="agent-logs__filter"
+    <LayerCard className="p-4" aria-label={zhCN.agentLogs.ariaLabel}>
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <Text variant="heading3" as="h3">{zhCN.agentLogs.title}</Text>
+        <Select
+          label={zhCN.agentLogs.workerFilter}
+          size="sm"
           value={selectedWorker}
-          onChange={(event) => setSelectedWorker(event.target.value)}
+          onValueChange={(value) => setSelectedWorker(String(value))}
         >
-          <option value="all">{zhCN.agentLogs.allWorkers}</option>
+          <Select.Option value="all">{zhCN.agentLogs.allWorkers}</Select.Option>
           {workerIDs.map((workerID) => (
-            <option key={workerID} value={workerID}>
+            <Select.Option key={workerID} value={workerID}>
               {workerID}
-            </option>
+            </Select.Option>
           ))}
-        </select>
-      </header>
+        </Select>
+      </div>
 
-      <div className="agent-logs__viewport" ref={viewportRef} onScroll={handleScroll}>
+      <div className="max-h-96 overflow-auto" ref={viewportRef} onScroll={handleScroll}>
         {visibleLogs.length === 0 ? (
-          <p className="agent-logs__empty-filtered">{zhCN.agentLogs.emptyFiltered}</p>
+          <Text variant="secondary" size="sm">{zhCN.agentLogs.emptyFiltered}</Text>
         ) : (
-          visibleLogs.map((log, index) => {
-            const tone = getWorkerTone(log.worker_id)
-
-            return (
+          <div className="grid gap-2">
+            {visibleLogs.map((log, index) => (
               <div
                 key={`${log.worker_id}-${log.timestamp}-${index}`}
-                className={`agent-logs__line ${log.stream === 'stderr' ? 'agent-logs__line--stderr' : ''}`}
+                className="grid gap-1"
+                data-testid="agent-log-line"
+                data-stream={log.stream}
                 title={log.line}
               >
-                <span className="agent-logs__timestamp">[{formatTimestamp(log.timestamp)}]</span>
-                <span className={`agent-logs__worker agent-logs__worker--tone-${tone}`}>[{log.worker_id}]</span>
-                <span className="agent-logs__message">{log.line}</span>
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="secondary">[{formatTimestamp(log.timestamp)}]</Badge>
+                  <Badge variant={log.stream === 'stderr' ? 'error' : 'info'}>[{log.worker_id}]</Badge>
+                </div>
+                <Text variant={log.stream === 'stderr' ? 'error' : 'mono'}>{log.line}</Text>
               </div>
-            )
-          })
+            ))}
+          </div>
         )}
       </div>
-    </section>
+    </LayerCard>
   )
 }
 

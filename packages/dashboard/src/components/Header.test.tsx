@@ -16,16 +16,16 @@ describe('Header', () => {
     render(<Header connected runtimeSeconds={135} />)
 
     expectInDocument(screen.getByRole('heading', { name: 'Ziikoo' }))
-    expectInDocument(screen.getByText('在线'))
-    expectInDocument(screen.getByText('运行时长'))
-    expectInDocument(screen.getByText('2分 15秒'))
+    expectInDocument(screen.getByText(/在线/u))
+    expectInDocument(screen.getByText(/运行时长/u))
+    expectInDocument(screen.getByText(/2分 15秒/u))
   })
 
   it('renders offline badge when disconnected', () => {
     render(<Header connected={false} runtimeSeconds={1} />)
 
-    expectInDocument(screen.getByText('离线'))
-    expectInDocument(screen.getByText('运行时长'))
-    expectInDocument(screen.getByText('0分 1秒'))
+    expectInDocument(screen.getByText(/离线/u))
+    expectInDocument(screen.getByText(/运行时长/u))
+    expectInDocument(screen.getByText(/0分 1秒/u))
   })
 })

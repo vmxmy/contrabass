@@ -132,7 +132,7 @@ describe('SessionsTable', () => {
     const pill = screen.getByLabelText('Exploration')
     expectInDocument(pill)
     // Stage name label above boxes
-    expectInDocument(screen.getByText('探索'))
+    expectInDocument(screen.getByText(/探索/u))
   })
 
   it('renders stage pill with last box highlighted for stage 5', () => {
@@ -140,7 +140,7 @@ describe('SessionsTable', () => {
 
     const pill = screen.getByLabelText('Wrapping')
     expectInDocument(pill)
-    expectInDocument(screen.getByText('收尾'))
+    expectInDocument(screen.getByText(/收尾/u))
   })
 
   it('falls back to phase_label when agent_stage is empty', () => {

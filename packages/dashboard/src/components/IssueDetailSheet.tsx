@@ -1,10 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
+import { Badge, Banner, Button, CodeBlock, Dialog, Text } from "@cloudflare/kumo";
+import { X } from "@phosphor-icons/react";
 import type {
   Issue,
   IssueDetailResponse,
@@ -190,33 +186,36 @@ export function IssueDetailSheet({
   }, [data, issueID]);
 
   return (
-    <Sheet open={data !== null} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="right"
-        className="flex flex-col gap-0 overflow-y-auto px-0 sm:max-w-[520px]"
-      >
+    <Dialog.Root open={data !== null} onOpenChange={(open) => { if (!open) onOpenChange(false); }}>
+      <Dialog size="lg" className="flex flex-col gap-0 overflow-y-auto px-0">
         {data ? (
           <>
-            <SheetHeader className="border-b border-border/70 px-6 py-5">
+            <div className="border-b border-kumo-hairline px-6 py-5">
               <div className="mb-1 flex flex-wrap items-center gap-2">
-                <span className="font-mono text-xs text-muted-foreground">
+                <span className="font-mono text-xs text-kumo-subtle">
                   {displayedIssue?.identifier ??
                     running?.issue_id?.slice(0, 8) ??
                     backoff?.issue_id?.slice(0, 8) ??
                     "—"}
                 </span>
                 {isStale ? (
-                  <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                  <span className="rounded-full bg-kumo-tint px-2 py-0.5 text-xs text-kumo-subtle">
                     {zhCN.detail.badgeStale}
                   </span>
                 ) : null}
+                <Dialog.Close
+                  className="ml-auto"
+                  render={(props) => (
+                    <Button {...props} variant="ghost" shape="square" icon={<X />} aria-label="Close" />
+                  )}
+                />
               </div>
-              <SheetTitle className="text-lg font-semibold leading-snug text-foreground">
+              <Dialog.Title className="text-lg font-semibold leading-snug text-kumo-default">
                 {displayedIssue?.title ??
                   running?.issue_id ??
                   backoff?.issue_id ??
                   "—"}
-              </SheetTitle>
+              </Dialog.Title>
               <div className="mt-2 flex flex-wrap gap-2">
                 {linearState ? <StatusBadge>{linearState}</StatusBadge> : null}
                 {kind === "backoff" ? (
@@ -233,14 +232,14 @@ export function IssueDetailSheet({
                   </StatusBadge>
                 ) : null}
               </div>
-            </SheetHeader>
+            </div>
 
             <div className="flex-1 space-y-5 px-6 py-5 text-sm">
               {kind === "running" && running ? (
                 <>
                   {running.phase_label ? (
                     <DetailSection label={zhCN.detail.phaseLabel}>
-                      <p className="whitespace-normal break-words text-foreground">
+                      <p className="whitespace-normal break-words text-kumo-default">
                         {running.phase_label}
                       </p>
                     </DetailSection>
@@ -248,10 +247,10 @@ export function IssueDetailSheet({
 
                   {running.last_activity_at ? (
                     <DetailSection label={zhCN.detail.lastActivity}>
-                      <p className="text-foreground">
+                      <p className="text-kumo-default">
                         {formatRelativeTime(running.last_activity_at)}
                         {running.last_activity_kind ? (
-                          <span className="ml-2 text-xs text-muted-foreground">
+                          <span className="ml-2 text-xs text-kumo-subtle">
                             {running.last_activity_kind}
                           </span>
                         ) : null}
@@ -260,7 +259,7 @@ export function IssueDetailSheet({
                   ) : null}
 
                   <DetailSection label="差异">
-                    <p className="font-mono text-xs text-foreground">
+                    <p className="font-mono text-xs text-kumo-default">
                       {running.diff_status && running.diff_status !== "ok"
                         ? zhCN.detail.diffUnavailable
                         : running.diff_added === 0 &&
@@ -272,14 +271,14 @@ export function IssueDetailSheet({
                   </DetailSection>
 
                   <DetailSection label="Token">
-                    <p className="font-mono text-xs text-foreground">
+                    <p className="font-mono text-xs text-kumo-default">
                       {running.tokens_in.toLocaleString()} 输入 /{" "}
                       {running.tokens_out.toLocaleString()} 输出
                     </p>
                   </DetailSection>
 
                   <DetailSection label="已运行">
-                    <p className="font-mono text-xs text-foreground">
+                    <p className="font-mono text-xs text-kumo-default">
                       {formatElapsedSince(running.started_at)}
                     </p>
                   </DetailSection>
@@ -289,19 +288,17 @@ export function IssueDetailSheet({
               {kind === "backoff" && backoff ? (
                 <>
                   <DetailSection label={zhCN.detail.error}>
-                    <pre className="whitespace-pre-wrap break-words rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2.5 font-mono text-xs text-foreground">
-                      {backoff.error || zhCN.detail.noErrorInfo}
-                    </pre>
+                    <CodeBlock lang="bash" code={backoff.error || zhCN.detail.noErrorInfo} />
                   </DetailSection>
 
                   <DetailSection label="下次重试">
-                    <p className="text-foreground">
+                    <p className="text-kumo-default">
                       {formatRetryIn(backoff.retry_at)}
                     </p>
                   </DetailSection>
 
                   <DetailSection label="重试次数">
-                    <p className="font-mono text-xs text-foreground">
+                    <p className="font-mono text-xs text-kumo-default">
                       {zhCN.detail.attempt(backoff.attempt)}
                     </p>
                   </DetailSection>
@@ -327,17 +324,17 @@ export function IssueDetailSheet({
             </div>
 
             {kind === "running" && running ? (
-              <div className="border-t border-border/70 px-6 py-4">
-                <button
+              <div className="border-t border-kumo-hairline px-6 py-4">
+                <Button
                   type="button"
+                  variant="secondary-destructive"
                   onClick={() => handleStopAgent(running.issue_id)}
                   disabled={stopping}
-                  className="inline-flex h-9 items-center justify-center rounded-lg border border-destructive/40 bg-destructive/10 px-4 text-sm font-medium text-destructive transition hover:bg-destructive/15 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {stopping ? zhCN.detail.stopping : zhCN.detail.stopAgent}
-                </button>
+                </Button>
                 {stopError ? (
-                  <p className="mt-2 text-xs text-destructive">
+                  <p className="mt-2 text-xs text-kumo-danger">
                     {zhCN.detail.stopFailed(stopError)}
                   </p>
                 ) : null}
@@ -345,24 +342,23 @@ export function IssueDetailSheet({
             ) : null}
 
             {kind === "running" && running ? (
-              <div className="border-t border-border/70 px-6 py-4">
-                <button
+              <div className="border-t border-kumo-hairline px-6 py-4">
+                <Button
                   type="button"
+                  variant="ghost"
                   aria-expanded={debugOpen}
                   aria-controls="detail-debug-panel"
                   onClick={() => setDebugOpen((v) => !v)}
-                  className="flex w-full items-center justify-between text-xs font-medium text-muted-foreground hover:text-foreground"
                 >
-                  <span>{zhCN.detail.debugInfo}</span>
-                  <span aria-hidden>{debugOpen ? "▾" : "▸"}</span>
-                </button>
+                  {zhCN.detail.debugInfo} {debugOpen ? "▾" : "▸"}
+                </Button>
 
                 <div id="detail-debug-panel" hidden={!debugOpen}>
-                  <div className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
+                  <div className="mt-3 grid gap-2 text-xs">
                     {running.pid > 0 ? (
                       <>
-                        <span className="text-muted-foreground">PID</span>
-                        <span className="font-mono text-foreground">
+                        <span className="text-kumo-subtle">PID</span>
+                        <span className="font-mono text-kumo-default">
                           {running.pid}
                         </span>
                       </>
@@ -370,10 +366,10 @@ export function IssueDetailSheet({
 
                     {running.session_id ? (
                       <>
-                        <span className="text-muted-foreground">
+                        <span className="text-kumo-subtle">
                           Session ID
                         </span>
-                        <span className="break-all font-mono text-foreground">
+                        <span className="break-all font-mono text-kumo-default">
                           {running.session_id}
                         </span>
                       </>
@@ -381,24 +377,25 @@ export function IssueDetailSheet({
 
                     {running.workspace ? (
                       <>
-                        <span className="pt-0.5 text-muted-foreground">
+                        <span className="pt-0.5 text-kumo-subtle">
                           {zhCN.detail.workspace}
                         </span>
                         <div className="flex min-w-0 flex-col gap-1.5">
-                          <code className="break-all font-mono text-foreground">
+                          <code className="break-all font-mono text-kumo-default">
                             {running.workspace}
                           </code>
-                          <button
+                          <Button
                             type="button"
+                            size="xs"
+                            variant="secondary"
                             onClick={() =>
                               handleCopyWorkspace(running.workspace)
                             }
-                            className="w-fit rounded bg-muted/60 px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
                           >
                             {copied ? zhCN.detail.copied : zhCN.detail.copyPath}
-                          </button>
+                          </Button>
                           {copyFailed ? (
-                            <span className="text-xs text-destructive">
+                            <span className="text-xs text-kumo-danger">
                               {zhCN.detail.copyFailed}
                             </span>
                           ) : null}
@@ -411,8 +408,8 @@ export function IssueDetailSheet({
             ) : null}
           </>
         ) : null}
-      </SheetContent>
-    </Sheet>
+      </Dialog>
+    </Dialog.Root>
   );
 }
 
@@ -421,7 +418,7 @@ function BaseIssueSections({ issue }: { issue: Issue }) {
     <>
       {issue.description ? (
         <DetailSection label="描述">
-          <p className="whitespace-normal break-words leading-relaxed text-muted-foreground">
+          <p className="whitespace-normal break-words leading-relaxed text-kumo-subtle">
             {issue.description}
           </p>
         </DetailSection>
@@ -433,7 +430,7 @@ function BaseIssueSections({ issue }: { issue: Issue }) {
             {issue.labels.map((label) => (
               <span
                 key={label}
-                className="rounded-md border border-border/70 bg-muted/50 px-2 py-0.5 text-xs text-foreground"
+                className="rounded-md border border-kumo-hairline bg-kumo-tint px-2 py-0.5 text-xs text-kumo-default"
               >
                 {label}
               </span>
@@ -444,7 +441,7 @@ function BaseIssueSections({ issue }: { issue: Issue }) {
 
       {issue.branch_name ? (
         <DetailSection label="分支">
-          <p className="break-all font-mono text-xs text-muted-foreground">
+          <p className="break-all font-mono text-xs text-kumo-subtle">
             {issue.branch_name}
           </p>
         </DetailSection>
@@ -452,7 +449,7 @@ function BaseIssueSections({ issue }: { issue: Issue }) {
 
       {issue.updated_at ? (
         <DetailSection label="更新时间">
-          <p className="text-xs text-muted-foreground">
+          <p className="text-xs text-kumo-subtle">
             {formatRelativeTime(issue.updated_at)}
           </p>
         </DetailSection>
@@ -475,7 +472,7 @@ function LinearDetailSection({
   return (
     <DetailSection label={zhCN.detail.linearMetadata}>
       {loading ? (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-xs text-kumo-subtle">
           {zhCN.detail.loadingDetails}
         </p>
       ) : null}
@@ -483,32 +480,32 @@ function LinearDetailSection({
         <InlineError message={zhCN.detail.detailLoadFailed(error)} />
       ) : null}
       {!loading && !error && !linear ? (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-xs text-kumo-subtle">
           {zhCN.detail.noLinearDetails}
         </p>
       ) : null}
       {linear ? (
-        <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-lg border border-border/70 bg-muted/20 p-3 text-xs">
-          <span className="text-muted-foreground">负责人</span>
-          <span className="text-foreground">
+        <div className="grid gap-2 rounded-lg border border-kumo-hairline bg-kumo-tint p-3 text-xs">
+          <span className="text-kumo-subtle">负责人</span>
+          <span className="text-kumo-default">
             {displayUserName(linear.assignee)}
           </span>
-          <span className="text-muted-foreground">创建者</span>
-          <span className="text-foreground">
+          <span className="text-kumo-subtle">创建者</span>
+          <span className="text-kumo-default">
             {displayUserName(linear.creator)}
           </span>
-          <span className="text-muted-foreground">团队</span>
-          <span className="text-foreground">
+          <span className="text-kumo-subtle">团队</span>
+          <span className="text-kumo-default">
             {linear.team?.name ?? linear.team?.key ?? "—"}
           </span>
-          <span className="text-muted-foreground">项目</span>
-          <span className="text-foreground">{linear.project?.name ?? "—"}</span>
-          <span className="text-muted-foreground">周期</span>
-          <span className="text-foreground">{linear.cycle?.name ?? "—"}</span>
-          <span className="text-muted-foreground">估分</span>
-          <span className="text-foreground">{linear.estimate ?? "—"}</span>
-          <span className="text-muted-foreground">截止</span>
-          <span className="text-foreground">{linear.due_date || "—"}</span>
+          <span className="text-kumo-subtle">项目</span>
+          <span className="text-kumo-default">{linear.project?.name ?? "—"}</span>
+          <span className="text-kumo-subtle">周期</span>
+          <span className="text-kumo-default">{linear.cycle?.name ?? "—"}</span>
+          <span className="text-kumo-subtle">估分</span>
+          <span className="text-kumo-default">{linear.estimate ?? "—"}</span>
+          <span className="text-kumo-subtle">截止</span>
+          <span className="text-kumo-default">{linear.due_date || "—"}</span>
         </div>
       ) : null}
       {linear?.relations?.length ? (
@@ -516,7 +513,7 @@ function LinearDetailSection({
           {linear.relations.map((relation) => (
             <span
               key={`${relation.direction}-${relation.type}-${relation.issue.id}`}
-              className="rounded-md border border-border/70 px-2 py-1 text-xs text-muted-foreground"
+              className="rounded-md border border-kumo-hairline px-2 py-1 text-xs text-kumo-subtle"
             >
               {relation.direction === "inverse" ? "被" : ""}
               {relation.type}:{" "}
@@ -528,7 +525,7 @@ function LinearDetailSection({
         </div>
       ) : null}
       {!linear && issue?.url ? (
-        <p className="text-xs text-muted-foreground">{issue.url}</p>
+        <p className="text-xs text-kumo-subtle">{issue.url}</p>
       ) : null}
     </DetailSection>
   );
@@ -551,7 +548,7 @@ function TimelineSection({
   return (
     <DetailSection label={zhCN.detail.workflowTimeline}>
       {loading ? (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-xs text-kumo-subtle">
           {zhCN.detail.loadingTimeline}
         </p>
       ) : null}
@@ -559,7 +556,7 @@ function TimelineSection({
         <InlineError message={zhCN.detail.timelineLoadFailed(error)} />
       ) : null}
       {!loading && !error && timeline && timeline.nodes.length === 0 ? (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-xs text-kumo-subtle">
           {zhCN.detail.noTimeline}
         </p>
       ) : null}
@@ -589,9 +586,9 @@ function TimelineRow({
     (state) => state.run_id === node.run_id && state.node_id === node.node_id,
   );
   return (
-    <div className="rounded-lg border border-border/70 bg-card/70 px-3 py-2.5">
+    <div className="rounded-lg border border-kumo-hairline bg-kumo-base px-3 py-2.5">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="font-medium text-foreground">
+        <span className="font-medium text-kumo-default">
           {node.title || node.node_id}
         </span>
         <StatusBadge
@@ -612,12 +609,12 @@ function TimelineRow({
         ))}
       </div>
       {node.summary || node.body ? (
-        <p className="mt-2 whitespace-normal break-words text-xs leading-relaxed text-muted-foreground">
+        <p className="mt-2 whitespace-normal break-words text-xs leading-relaxed text-kumo-subtle">
           {node.summary || node.body}
         </p>
       ) : null}
       {node.completed_at ? (
-        <p className="mt-2 text-xs text-muted-foreground">
+        <p className="mt-2 text-xs text-kumo-subtle">
           {formatRelativeTime(node.completed_at)}
         </p>
       ) : null}
@@ -626,14 +623,7 @@ function TimelineRow({
 }
 
 function InlineError({ message }: { message: string }) {
-  return (
-    <p
-      className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
-      role="alert"
-    >
-      {message}
-    </p>
-  );
+  return <Banner variant="error" title={message} />;
 }
 
 function StatusBadge({
@@ -643,18 +633,8 @@ function StatusBadge({
   children: ReactNode;
   variant?: "default" | "destructive" | "muted";
 }) {
-  const cls = {
-    default: "border-border/80 bg-muted/60 text-foreground",
-    destructive: "border-destructive/50 bg-destructive/10 text-destructive",
-    muted: "border-border/50 bg-muted/40 text-muted-foreground",
-  }[variant];
-  return (
-    <span
-      className={`inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-medium ${cls}`}
-    >
-      {children}
-    </span>
-  );
+  const badgeVariant = variant === "destructive" ? "error" : variant === "muted" ? "secondary" : "info";
+  return <Badge variant={badgeVariant}>{children}</Badge>;
 }
 
 function DetailSection({
@@ -665,10 +645,8 @@ function DetailSection({
   children: ReactNode;
 }) {
   return (
-    <div className="space-y-1.5">
-      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-        {label}
-      </p>
+    <div className="grid gap-1.5">
+      <Text variant="secondary" size="sm">{label}</Text>
       {children}
     </div>
   );

@@ -62,16 +62,22 @@ const usageData: UsageTimeseries = {
 function installPortalConfig() {
   window.__PORTAL_CONFIG = {
     usageWindows: {
-      minute: [{ key: "6h", label: "近 6 小时" }],
-      hour: [{ key: "48h", label: "近 48 小时" }],
+      minute: [
+        { key: "6h", label: "近 6 小时" },
+        { key: "24h", label: "近 24 小时" },
+      ],
+      hour: [
+        { key: "24h", label: "近 24 小时" },
+        { key: "48h", label: "近 48 小时" },
+        { key: "7d", label: "近 7 天" },
+      ],
       day: [
         { key: "7d", label: "近 7 天" },
         { key: "30d", label: "近 30 天" },
       ],
-      week: [{ key: "12w", label: "近 12 周" }],
       month: [{ key: "12mo", label: "近 12 个月" }],
     },
-    defaultUsageWindows: { minute: "6h", hour: "48h", day: "30d", week: "12w", month: "12mo" },
+    defaultUsageWindows: { minute: "6h", hour: "48h", day: "30d", month: "12mo" },
   };
 }
 
@@ -145,7 +151,7 @@ describe("UsageChart", () => {
 });
 
 describe("UsagePanel", () => {
-  it("fetches default usage data and renders Kumo Select labels", async () => {
+  it("fetches default usage data and renders one-click time preset controls", async () => {
     installPortalConfig();
     const seen: string[] = [];
     globalThis.fetch = vi.fn(async (input) => {
@@ -155,13 +161,75 @@ describe("UsagePanel", () => {
 
     render(<UsagePanel />);
 
+    expect(screen.queryByRole("group", { name: "时间范围预设" })).not.toBeNull();
     expect(screen.queryByText("时间粒度")).not.toBeNull();
-    expect(screen.queryByText("时间范围")).not.toBeNull();
-    expect(document.querySelector('[aria-label="用量筛选"]')?.className).toContain("sm:grid-cols-2");
+    expect(screen.queryByRole("button", { name: "近 7 天" })).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "近 30 天" })).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "自动" })).not.toBeNull();
+    expect(screen.queryByText("自动粒度：天")).not.toBeNull();
     await waitFor(() => {
       expect(screen.queryByText(/峰值/)).not.toBeNull();
     });
     expect(seen[0]).toContain("/api/usage/timeseries?grain=day&window=30d");
+  });
+
+  it("uses preset auto grain and allows one-click manual grain when valid", async () => {
+    installPortalConfig();
+    const seen: string[] = [];
+    globalThis.fetch = vi.fn(async (input) => {
+      seen.push(String(input));
+      return Response.json(usageData);
+    }) as typeof fetch;
+
+    render(<UsagePanel />);
+
+    await waitFor(() => {
+      expect(seen[0]).toContain("grain=day&window=30d");
+    });
+
+    const hourButton = screen.getByRole("button", { name: "小时" }) as HTMLButtonElement;
+    expect(hourButton.disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "近 7 天" }));
+    await waitFor(() => {
+      expect(seen.some((url) => url.includes("grain=day&window=7d"))).toBe(true);
+    });
+
+    await waitFor(() => {
+      expect(hourButton.disabled).toBe(false);
+    });
+    fireEvent.click(hourButton);
+    await waitFor(() => {
+      expect(seen.some((url) => url.includes("grain=hour&window=7d"))).toBe(true);
+      expect(screen.queryByText("手动粒度：小时")).not.toBeNull();
+    });
+  });
+
+  it("falls back to auto grain when a manual grain does not support the selected preset", async () => {
+    installPortalConfig();
+    const seen: string[] = [];
+    globalThis.fetch = vi.fn(async (input) => {
+      seen.push(String(input));
+      return Response.json(usageData);
+    }) as typeof fetch;
+
+    render(<UsagePanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: "近 7 天" }));
+    const hourButton = screen.getByRole("button", { name: "小时" }) as HTMLButtonElement;
+    await waitFor(() => {
+      expect(hourButton.disabled).toBe(false);
+    });
+    fireEvent.click(hourButton);
+    await waitFor(() => {
+      expect(seen.some((url) => url.includes("grain=hour&window=7d"))).toBe(true);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "近 30 天" }));
+    await waitFor(() => {
+      expect(seen.some((url) => url.includes("grain=day&window=30d"))).toBe(true);
+      expect(screen.queryByText(/已切回 自动粒度：天/)).not.toBeNull();
+    });
   });
 
   it("syncs Kumo chart native range selection to the nearest usage preset", async () => {
@@ -181,7 +249,7 @@ describe("UsagePanel", () => {
 
     await waitFor(() => {
       expect(seen.some((url) => url.includes("grain=day&window=7d"))).toBe(true);
-      expect(screen.queryByText(/已按图表选择切换到 近 7 天/)).not.toBeNull();
+      expect(screen.queryByText(/已按图表选择切换到 近 7 天 · 自动粒度：天/)).not.toBeNull();
     });
   });
 

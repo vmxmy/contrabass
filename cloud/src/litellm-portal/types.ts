@@ -111,14 +111,13 @@ export type LiteLLMUsageAnalytics = {
   topModels: LiteLLMModelUsage[];
 };
 
-export type UsageGrain = "minute" | "hour" | "day" | "week" | "month";
+export type UsageGrain = "minute" | "hour" | "day" | "month";
 
 export type UsageWindowOption = {
   key: string;
   label: string;
   hours?: number;
   days?: number;
-  weeks?: number;
   months?: number;
 };
 

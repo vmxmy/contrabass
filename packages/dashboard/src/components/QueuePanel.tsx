@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Badge, Empty, LayerCard, Text } from "@cloudflare/kumo";
 import type { QueueEventPayload } from "../hooks/useSSE";
 
 interface QueuePanelProps {
@@ -79,44 +80,22 @@ export function QueuePanel({
   }, [intervalMs, ttlMs]);
 
   if (rows.length === 0) {
-    return (
-      <section
-        aria-label="Queue"
-        style={{ color: "var(--text-secondary)", fontSize: "0.875rem" }}
-      >
-        No blocked issues
-      </section>
-    );
+    return <Empty size="sm" title="No blocked issues" />;
   }
 
   return (
     <section aria-label="Queue">
-      <ul
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: "0.5rem",
-          listStyle: "none",
-          margin: 0,
-          padding: 0,
-        }}
-      >
+      <div className="grid gap-2">
         {rows.map((row) => (
-          <li
-            key={row.issueID}
-            style={{
-              background: "var(--bg-secondary)",
-              border: "1px solid var(--border-color)",
-              borderRadius: "var(--radius-lg)",
-              padding: "0.65rem 0.75rem",
-            }}
-          >
-            <strong>{row.identifier}</strong>{" "}
-            <span style={{ color: "var(--text-secondary)" }}>blocked by</span>{" "}
-            {row.blockers.join(", ")}
-          </li>
+          <LayerCard key={row.issueID} className="p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="warning">{row.identifier}</Badge>
+              <Text as="span" variant="secondary" size="sm">blocked by</Text>
+              <Text as="span" variant="mono">{row.blockers.join(", ")}</Text>
+            </div>
+          </LayerCard>
         ))}
-      </ul>
+      </div>
     </section>
   );
 }

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Badge, Banner, Button, Empty, Input, InputArea, LayerCard, Table } from '@cloudflare/kumo'
 import type { BoardIssue } from '../types'
 import { formatDateTime, formatIssueState } from '../i18n/format'
 import { zhCN } from '../i18n/messages'
 import { apiFetch } from '../lib/api'
-import './BoardView.css'
 
 interface BoardViewProps {
   issues: BoardIssue[]
@@ -26,16 +26,16 @@ function getStateLabel(state: string): string {
   return formatIssueState(state)
 }
 
-function getStateClassName(state: string): string {
+function stateVariant(state: string): 'secondary' | 'warning' | 'success' {
   if (state === 'in_progress') {
-    return 'board-view__state-badge board-view__state-badge--in-progress'
+    return 'warning'
   }
 
   if (state === 'done') {
-    return 'board-view__state-badge board-view__state-badge--done'
+    return 'success'
   }
 
-  return 'board-view__state-badge board-view__state-badge--open'
+  return 'secondary'
 }
 
 async function readIssueFromResponse(response: Response): Promise<BoardIssue | null> {
@@ -189,63 +189,62 @@ export function BoardView({ issues }: BoardViewProps) {
   }
 
   return (
-    <section className="board-view" aria-label={zhCN.board.ariaLabel}>
-      <form className="board-view__create" onSubmit={handleCreateIssue}>
-        <input
-          className="board-view__input"
-          type="text"
-          placeholder={zhCN.board.titlePlaceholder}
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          aria-label={zhCN.board.titlePlaceholder}
-          disabled={submitting}
-        />
-        <input
-          className="board-view__input"
-          type="text"
-          placeholder={zhCN.board.descriptionPlaceholder}
-          value={description}
-          onChange={(event) => setDescription(event.target.value)}
-          aria-label={zhCN.board.descriptionPlaceholder}
-          disabled={submitting}
-        />
-        <button className="board-view__button" type="submit" disabled={submitting || !title.trim()}>
-          {submitting ? zhCN.board.creating : zhCN.board.create}
-        </button>
-      </form>
+    <section aria-label={zhCN.board.ariaLabel}>
+      <LayerCard className="p-4">
+        <form className="grid gap-3 md:grid-cols-3" onSubmit={handleCreateIssue}>
+          <Input
+            type="text"
+            placeholder={zhCN.board.titlePlaceholder}
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            aria-label={zhCN.board.titlePlaceholder}
+            disabled={submitting}
+          />
+          <Input
+            type="text"
+            placeholder={zhCN.board.descriptionPlaceholder}
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            aria-label={zhCN.board.descriptionPlaceholder}
+            disabled={submitting}
+          />
+          <Button type="submit" variant="primary" disabled={submitting || !title.trim()} loading={submitting}>
+            {submitting ? zhCN.board.creating : zhCN.board.create}
+          </Button>
+        </form>
+      </LayerCard>
 
       {errorMessage ? (
-        <p className="board-view__error" role="alert">
-          {errorMessage}
-        </p>
+        <div className="mt-3">
+          <Banner variant="error" title={errorMessage} />
+        </div>
       ) : null}
 
       {sortedIssues.length === 0 ? (
-        <div className="board-view__empty">{zhCN.board.empty}</div>
+        <Empty size="sm" title={zhCN.board.empty} />
       ) : (
-        <div className="board-view__wrapper">
-          <table className="board-view__table" aria-label={zhCN.board.tableAriaLabel}>
-            <thead>
-              <tr>
-                <th>{zhCN.board.headers.identifier}</th>
-                <th>{zhCN.board.headers.title}</th>
-                <th>{zhCN.board.headers.state}</th>
-                <th>{zhCN.board.headers.assignee}</th>
-                <th>{zhCN.board.headers.updated}</th>
-              </tr>
-            </thead>
-            <tbody>
+        <LayerCard className="mt-3 overflow-x-auto p-0">
+          <Table aria-label={zhCN.board.tableAriaLabel}>
+            <Table.Header>
+              <Table.Row>
+                <Table.Head>{zhCN.board.headers.identifier}</Table.Head>
+                <Table.Head>{zhCN.board.headers.title}</Table.Head>
+                <Table.Head>{zhCN.board.headers.state}</Table.Head>
+                <Table.Head>{zhCN.board.headers.assignee}</Table.Head>
+                <Table.Head>{zhCN.board.headers.updated}</Table.Head>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
               {sortedIssues.map((issue) => {
                 const isEditing = editingIdentifier === issue.identifier
 
                 return (
-                  <tr key={issue.id}>
-                    <td className="board-view__mono">{issue.identifier}</td>
-                    <td>
+                  <Table.Row key={issue.id}>
+                    <Table.Cell>{issue.identifier}</Table.Cell>
+                    <Table.Cell>
                       {isEditing ? (
-                        <div className="board-view__edit">
-                          <input
-                            className="board-view__input board-view__input--compact"
+                        <div className="grid gap-2">
+                          <Input
                             type="text"
                             value={editDraft.title}
                             onChange={(event) =>
@@ -253,55 +252,47 @@ export function BoardView({ issues }: BoardViewProps) {
                             }
                             aria-label={zhCN.board.editTitleAria(issue.identifier)}
                           />
-                          <input
-                            className="board-view__input board-view__input--compact"
-                            type="text"
+                          <InputArea
                             value={editDraft.description}
                             onChange={(event) =>
                               setEditDraft((prev) => ({ ...prev, description: event.target.value }))
                             }
                             aria-label={zhCN.board.editDescriptionAria(issue.identifier)}
                           />
-                          <div className="board-view__actions">
-                            <button
-                              className="board-view__button board-view__button--small"
+                          <div className="flex flex-wrap gap-2">
+                            <Button
                               type="button"
+                              size="sm"
+                              variant="primary"
                               onClick={() => {
                                 void handleSaveEdit(issue.identifier)
                               }}
                             >
                               {zhCN.board.save}
-                            </button>
-                            <button
-                              className="board-view__button board-view__button--ghost board-view__button--small"
-                              type="button"
-                              onClick={handleCancelEditing}
-                            >
+                            </Button>
+                            <Button type="button" size="sm" variant="secondary" onClick={handleCancelEditing}>
                               {zhCN.board.cancel}
-                            </button>
+                            </Button>
                           </div>
                         </div>
                       ) : (
-                        <button
-                          className="board-view__title"
-                          type="button"
-                          onClick={() => handleStartEditing(issue)}
-                        >
+                        <Button type="button" variant="ghost" onClick={() => handleStartEditing(issue)}>
                           {issue.title}
-                        </button>
+                        </Button>
                       )}
-                    </td>
-                    <td>
-                      <div className="board-view__state">
-                        <span className={getStateClassName(issue.state)}>{getStateLabel(issue.state)}</span>
-                        <div className="board-view__state-actions">
+                    </Table.Cell>
+                    <Table.Cell>
+                      <div className="grid gap-2">
+                        <Badge variant={stateVariant(issue.state)}>{getStateLabel(issue.state)}</Badge>
+                        <div className="flex flex-wrap gap-2">
                           {(['open', 'in_progress', 'done'] as IssueState[]).map((nextState) => {
                             const active = toIssueState(issue.state) === nextState
 
                             return (
-                              <button
+                              <Button
                                 key={nextState}
-                                className={`board-view__button board-view__button--small ${active ? 'board-view__button--active' : ''}`}
+                                size="xs"
+                                variant={active ? 'primary' : 'secondary'}
                                 type="button"
                                 disabled={active}
                                 onClick={() => {
@@ -309,20 +300,20 @@ export function BoardView({ issues }: BoardViewProps) {
                                 }}
                               >
                                 {zhCN.board.stateAction(formatIssueState(nextState))}
-                              </button>
+                              </Button>
                             )
                           })}
                         </div>
                       </div>
-                    </td>
-                    <td>{issue.assignee || '-'}</td>
-                    <td>{formatDateTime(issue.updated_at)}</td>
-                  </tr>
+                    </Table.Cell>
+                    <Table.Cell>{issue.assignee || '-'}</Table.Cell>
+                    <Table.Cell>{formatDateTime(issue.updated_at)}</Table.Cell>
+                  </Table.Row>
                 )
               })}
-            </tbody>
-          </table>
-        </div>
+            </Table.Body>
+          </Table>
+        </LayerCard>
       )}
     </section>
   )

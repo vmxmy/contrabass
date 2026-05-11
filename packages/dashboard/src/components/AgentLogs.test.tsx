@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import type { AgentLogEvent } from '../types'
 import { AgentLogs } from './AgentLogs'
@@ -55,12 +55,12 @@ describe('AgentLogs', () => {
   it('applies stderr styling for stderr lines', () => {
     render(<AgentLogs logs={[createLog({ line: 'stderr output', stream: 'stderr' })]} />)
 
-    const stderrLine = screen.getByText('stderr output').closest('.agent-logs__line')
+    const stderrLine = screen.getByTestId('agent-log-line')
     expectInDocument(stderrLine)
-    expect(stderrLine?.className.includes('agent-logs__line--stderr')).toBe(true)
+    expect(stderrLine.getAttribute('data-stream')).toBe('stderr')
   })
 
-  it('shows worker filter options and filters logs', () => {
+  it('shows worker filter options and filters logs', async () => {
     render(
       <AgentLogs
         logs={[
@@ -71,14 +71,23 @@ describe('AgentLogs', () => {
       />,
     )
 
-    const filter = screen.getByLabelText('工作器') as HTMLSelectElement
-    const optionValues = Array.from(filter.options).map((option) => option.value)
-    expect(optionValues).toEqual(['all', 'worker-a', 'worker-z'])
+    fireEvent.click(screen.getByRole('combobox', { name: '工作器' }))
+    const listbox = await screen.findByRole('listbox')
+    const optionLabels = within(listbox).getAllByRole('option').map((option) => option.textContent)
+    expect(optionLabels).toEqual(['全部', 'worker-a', 'worker-z'])
 
-    fireEvent.change(filter, { target: { value: 'worker-a' } })
-    expectInDocument(screen.getByText('a-line'))
-    expect(screen.queryByText('z-line')).toBeNull()
-    expect(screen.queryByText('z-line-2')).toBeNull()
+    const workerAOption = within(listbox).getByRole('option', { name: 'worker-a' })
+    fireEvent.mouseMove(workerAOption)
+    fireEvent.mouseOver(workerAOption)
+    fireEvent.mouseDown(workerAOption)
+    fireEvent.mouseUp(workerAOption)
+    fireEvent.click(workerAOption)
+
+    await waitFor(() => {
+      expectInDocument(screen.getByText('a-line'))
+      expect(screen.queryByText('z-line')).toBeNull()
+      expect(screen.queryByText('z-line-2')).toBeNull()
+    })
   })
 
   it('renders at most 500 log lines', () => {
@@ -90,9 +99,9 @@ describe('AgentLogs', () => {
       }),
     )
 
-    const { container } = render(<AgentLogs logs={logs} />)
+    render(<AgentLogs logs={logs} />)
 
-    expect(container.querySelectorAll('.agent-logs__line')).toHaveLength(500)
+    expect(screen.getAllByTestId('agent-log-line')).toHaveLength(500)
     expect(screen.queryByText('line-1')).toBeNull()
     expectInDocument(screen.getByText('line-520'))
   })

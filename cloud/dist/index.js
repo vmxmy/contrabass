@@ -139,6 +139,14 @@ var IssueRun = class {
       return;
     }
     await this.sendLeaseRevoked(record, "heartbeat_timeout");
+    emitIssueRunMetric(this.env, {
+      event: "lease_revocation",
+      teamId: record.teamId ?? "",
+      runId: record.runId ?? "",
+      workerId: record.leaseHolder,
+      reason: "heartbeat_timeout",
+      leaseSec: record.leaseSec
+    });
     await this.transitionRecord(record, "queued", now, { clearLease: true });
     await this.state.storage.deleteAlarm();
   }
@@ -330,6 +338,14 @@ var IssueRun = class {
     await this.state.storage.put(EVENT_LOG_KEY, [...existing ?? [], ...messages]);
     await this.forwardEventsToTeamCoordinator(record, messages);
     await this.enqueueEvents(messages);
+    emitIssueRunMetric(this.env, {
+      event: "event_ingest",
+      teamId,
+      runId,
+      workerId: workerId ?? record.leaseHolder,
+      acceptedCount: messages.length,
+      durationMs: Date.now() - receivedAt
+    });
     return jsonResponse({ protocol_version: "1.0.0", accepted: messages.length });
   }
   async handleComplete(request, body) {
@@ -740,6 +756,34 @@ function eventsTooLargeResponse() {
   }, 413);
 }
 __name(eventsTooLargeResponse, "eventsTooLargeResponse");
+function emitIssueRunMetric(env, metric) {
+  try {
+    env.OBSERVABILITY_METRICS?.writeDataPoint({
+      indexes: [metric.teamId],
+      doubles: [
+        metric.durationMs ?? 0,
+        metric.acceptedCount ?? 0,
+        metric.leaseSec ?? 0,
+        Date.now()
+      ],
+      blobs: [
+        metric.event,
+        metric.teamId,
+        metric.runId,
+        metric.workerId ?? "",
+        metric.reason ?? ""
+      ]
+    });
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "issue_run_metrics_error",
+      teamId: metric.teamId,
+      runId: metric.runId,
+      message: error instanceof Error ? error.message : String(error)
+    }));
+  }
+}
+__name(emitIssueRunMetric, "emitIssueRunMetric");
 
 // src/do/team-coordinator.ts
 var TEAM_RECORD_KEY = "team-coordinator:record";
@@ -971,13 +1015,16 @@ var TeamCoordinator = class {
     };
     await this.persistWorkerRegistry(updatedRegistry);
     await this.persistUsageCounters(acceptedCounters);
-    const board = mergeBoard(await this.ensureBoard(), boardWithEntries([
+    const currentBoard = await this.ensureBoard();
+    const openEntry = currentBoard.open.find((e) => e.issueRef === issueRef);
+    const now = Date.now();
+    const board = mergeBoard(currentBoard, boardWithEntries([
       {
         issueRef,
         runId,
         assignedWorkerId: worker2.workerId,
         phase: "claimed",
-        lastUpdated: Date.now()
+        lastUpdated: now
       }
     ]));
     await this.state.storage.put(BOARD_KEY, board);
@@ -989,6 +1036,15 @@ var TeamCoordinator = class {
       this.sendToWorker(worker2.workerId, dispatch);
     } else {
       await this.deliverLongPollDispatch(worker2.workerId, dispatch);
+    }
+    if (record.teamId !== void 0) {
+      emitDispatchMetric(this.env, {
+        teamId: record.teamId,
+        runId,
+        workerId: worker2.workerId,
+        workerKind: worker2.kind,
+        dispatchLatencyMs: openEntry !== void 0 ? now - openEntry.lastUpdated : 0
+      });
     }
     return jsonResponse2({ dispatched: true, worker: worker2, dispatch, board });
   }
@@ -1018,11 +1074,13 @@ var TeamCoordinator = class {
     if (refreshedBoard === void 0) {
       return jsonResponse2({ error: "invalid_request", message: "body must include a valid board or entries" }, 400);
     }
-    const board = isFullBoardRefreshBody(body) ? refreshedBoard : mergeBoard(await this.ensureBoard(), refreshedBoard);
+    const existingBoard = await this.ensureBoard();
+    const issueStats = boardRefreshStats(existingBoard, refreshedBoard);
+    const board = isFullBoardRefreshBody(body) ? refreshedBoard : mergeBoard(existingBoard, refreshedBoard);
     await this.state.storage.put(BOARD_KEY, board);
     await this.touchRecord(request);
     this.broadcast(boardUpdateFrame(board));
-    return jsonResponse2({ board });
+    return jsonResponse2({ board, issueStats });
   }
   async reassignRun(request) {
     const body = await readObjectBody2(request);
@@ -1220,6 +1278,9 @@ var TeamCoordinator = class {
       }
     }
     this.broadcast(frame);
+    if (notification.type === "config-changed") {
+      this.broadcastToAllWorkerSubscribers(frame);
+    }
     return jsonResponse2({ accepted: true, type: notification.type });
   }
   async emitNoWorkerAvailable(request, payload, requiredCapabilities) {
@@ -1353,6 +1414,21 @@ var TeamCoordinator = class {
       this.workerDispatchSubscribers.delete(workerId);
     }
   }
+  broadcastToAllWorkerSubscribers(frame) {
+    const message = JSON.stringify(frame);
+    for (const [workerId, sockets] of this.workerDispatchSubscribers) {
+      for (const socket of sockets) {
+        try {
+          socket.send(message);
+        } catch {
+          sockets.delete(socket);
+        }
+      }
+      if (sockets.size === 0) {
+        this.workerDispatchSubscribers.delete(workerId);
+      }
+    }
+  }
   async deliverLongPollDispatch(workerId, dispatch) {
     const waiters = this.workerLongPollWaiters.get(workerId);
     const waiter = waiters?.values().next().value;
@@ -1392,18 +1468,18 @@ var TeamCoordinator = class {
     return dispatch;
   }
   waitForWorkerDispatch(workerId, waitMs) {
-    return new Promise((resolve) => {
+    return new Promise((resolve2) => {
       const waiters = this.workerLongPollWaiters.get(workerId) ?? /* @__PURE__ */ new Set();
       const timeout = setTimeout(() => {
         waiters.delete(resolveOnce);
         if (waiters.size === 0) {
           this.workerLongPollWaiters.delete(workerId);
         }
-        resolve(void 0);
+        resolve2(void 0);
       }, waitMs);
       const resolveOnce = /* @__PURE__ */ __name((dispatch) => {
         clearTimeout(timeout);
-        resolve(dispatch);
+        resolve2(dispatch);
       }, "resolveOnce");
       waiters.add(resolveOnce);
       this.workerLongPollWaiters.set(workerId, waiters);
@@ -1453,12 +1529,12 @@ function emptyBoard() {
   };
 }
 __name(emptyBoard, "emptyBoard");
-function normalizeBoard(raw2) {
+function normalizeBoard(raw3) {
   return {
-    open: normalizeBoardEntries(raw2.open, "open"),
-    claimed: normalizeBoardEntries(raw2.claimed, "claimed"),
-    running: normalizeBoardEntries(raw2.running, "running"),
-    done: normalizeBoardEntries(raw2.done, "done")
+    open: normalizeBoardEntries(raw3.open, "open"),
+    claimed: normalizeBoardEntries(raw3.claimed, "claimed"),
+    running: normalizeBoardEntries(raw3.running, "running"),
+    done: normalizeBoardEntries(raw3.done, "done")
   };
 }
 __name(normalizeBoard, "normalizeBoard");
@@ -1474,11 +1550,32 @@ function isFullBoardRefreshBody(body) {
   return hasBoardLists(maybeBoard);
 }
 __name(isFullBoardRefreshBody, "isFullBoardRefreshBody");
+function boardRefreshStats(existing, updates) {
+  const updatedEntries = BOARD_PHASES.flatMap((phase) => updates[phase]);
+  let issuesNew = 0;
+  let issuesUpdated = 0;
+  for (const update of updatedEntries) {
+    const existingEntry = BOARD_PHASES.flatMap((phase) => existing[phase]).find((entry) => boardEntriesReferToSameIssue(entry, update));
+    if (existingEntry === void 0) {
+      issuesNew += 1;
+    } else if (!boardEntriesEqual(existingEntry, update)) {
+      issuesUpdated += 1;
+    }
+  }
+  return { issuesNew, issuesUpdated };
+}
+__name(boardRefreshStats, "boardRefreshStats");
+function boardEntriesEqual(left, right) {
+  return left.issueRef === right.issueRef && left.externalId === right.externalId && left.runId === right.runId && left.assignedWorkerId === right.assignedWorkerId && left.phase === right.phase && left.lastUpdated === right.lastUpdated;
+}
+__name(boardEntriesEqual, "boardEntriesEqual");
 function mergeBoard(existing, updates) {
-  const updatedRefs = new Set(BOARD_PHASES.flatMap((phase) => updates[phase].map((entry) => entry.issueRef)));
+  const updatedEntries = BOARD_PHASES.flatMap((phase) => updates[phase]);
   const merged = emptyBoard();
   for (const phase of BOARD_PHASES) {
-    merged[phase] = existing[phase].filter((entry) => !updatedRefs.has(entry.issueRef));
+    merged[phase] = existing[phase].filter((entry) => {
+      return !updatedEntries.some((update) => boardEntriesReferToSameIssue(entry, update));
+    });
   }
   for (const phase of BOARD_PHASES) {
     merged[phase].push(...updates[phase]);
@@ -1486,6 +1583,13 @@ function mergeBoard(existing, updates) {
   return merged;
 }
 __name(mergeBoard, "mergeBoard");
+function boardEntriesReferToSameIssue(existing, update) {
+  if (existing.externalId !== void 0 && update.externalId !== void 0) {
+    return existing.externalId === update.externalId;
+  }
+  return existing.issueRef === update.issueRef;
+}
+__name(boardEntriesReferToSameIssue, "boardEntriesReferToSameIssue");
 function boardFromRefreshBody(body, now) {
   const maybeBoard = getObjectField(body, "board") ?? body;
   if (hasBoardLists(maybeBoard)) {
@@ -1562,11 +1666,13 @@ function normalizeBoardEntry(value, defaultPhase, now) {
   if (issueRef === void 0) {
     return void 0;
   }
+  const externalId = getStringField2(entry, "externalId") ?? getStringField2(entry, "external_id");
   const phase = phaseFromUnknown(entry.phase) ?? defaultPhase ?? "open";
   const runId = getStringField2(entry, "runId") ?? getStringField2(entry, "run_id");
   const assignedWorkerId = getStringField2(entry, "assignedWorkerId") ?? getStringField2(entry, "assigned_worker_id") ?? getStringField2(entry, "workerId") ?? getStringField2(entry, "worker_id");
   return {
     issueRef,
+    ...externalId === void 0 ? {} : { externalId },
     ...runId === void 0 ? {} : { runId },
     ...assignedWorkerId === void 0 ? {} : { assignedWorkerId },
     phase,
@@ -1630,8 +1736,8 @@ function appendNotification(notifications, notification) {
 }
 __name(appendNotification, "appendNotification");
 function nextNotificationEventId(notifications) {
-  const last = notifications.at(-1);
-  const lastEventId = last === void 0 ? 0 : Number.parseInt(last.eventId, 10);
+  const last2 = notifications.at(-1);
+  const lastEventId = last2 === void 0 ? 0 : Number.parseInt(last2.eventId, 10);
   return String((Number.isFinite(lastEventId) ? lastEventId : 0) + 1);
 }
 __name(nextNotificationEventId, "nextNotificationEventId");
@@ -1786,11 +1892,11 @@ function getSubscriptionWorkerId(request) {
 }
 __name(getSubscriptionWorkerId, "getSubscriptionWorkerId");
 function getLastEventId(request) {
-  const raw2 = new URL(request.url).searchParams.get("last_event_id");
-  if (raw2 === null || raw2.trim() === "") {
+  const raw3 = new URL(request.url).searchParams.get("last_event_id");
+  if (raw3 === null || raw3.trim() === "") {
     return void 0;
   }
-  const eventId = Number.parseInt(raw2, 10);
+  const eventId = Number.parseInt(raw3, 10);
   return Number.isFinite(eventId) ? eventId : void 0;
 }
 __name(getLastEventId, "getLastEventId");
@@ -1850,9 +1956,9 @@ function workerRecordFromRegistrationBody(body, now) {
   };
 }
 __name(workerRecordFromRegistrationBody, "workerRecordFromRegistrationBody");
-function normalizeWorkerRegistry(raw2, now) {
+function normalizeWorkerRegistry(raw3, now) {
   const registry = {};
-  for (const [workerId, worker2] of Object.entries(raw2)) {
+  for (const [workerId, worker2] of Object.entries(raw3)) {
     const normalized = normalizeWorkerRecord(workerId, worker2, now);
     if (normalized !== void 0) {
       registry[normalized.workerId] = normalized;
@@ -2008,6 +2114,32 @@ function jsonResponse2(body, status = 200) {
   });
 }
 __name(jsonResponse2, "jsonResponse");
+function emitDispatchMetric(env, metric) {
+  try {
+    env.OBSERVABILITY_METRICS?.writeDataPoint({
+      indexes: [metric.teamId],
+      doubles: [
+        metric.dispatchLatencyMs,
+        Date.now()
+      ],
+      blobs: [
+        "dispatch_latency",
+        metric.teamId,
+        metric.runId,
+        metric.workerId,
+        metric.workerKind
+      ]
+    });
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "dispatch_metrics_error",
+      teamId: metric.teamId,
+      runId: metric.runId,
+      message: error instanceof Error ? error.message : String(error)
+    }));
+  }
+}
+__name(emitDispatchMetric, "emitDispatchMetric");
 function teamWorkerCapExceededResponse(maxActiveWorkers) {
   return jsonResponse2({
     error: "team_worker_cap_exceeded",
@@ -2519,7 +2651,7 @@ var HonoRequest = class {
     return parseBody(this, options);
   }
   #cachedBody = /* @__PURE__ */ __name((key) => {
-    const { bodyCache, raw: raw2 } = this;
+    const { bodyCache, raw: raw3 } = this;
     const cachedBody = bodyCache[key];
     if (cachedBody) {
       return cachedBody;
@@ -2533,7 +2665,7 @@ var HonoRequest = class {
         return new Response(body)[key]();
       });
     }
-    return bodyCache[key] = raw2[key]();
+    return bodyCache[key] = raw3[key]();
   }, "#cachedBody");
   /**
    * `.json()` can parse Request body of type `application/json`
@@ -3793,13 +3925,13 @@ function buildMatcherFromPreprocessedRoutes(routes) {
   const [regexp, indexReplacementMap, paramReplacementMap] = trie.buildRegExp();
   for (let i = 0, len = handlerData.length; i < len; i++) {
     for (let j = 0, len2 = handlerData[i].length; j < len2; j++) {
-      const map2 = handlerData[i][j]?.[1];
-      if (!map2) {
+      const map3 = handlerData[i][j]?.[1];
+      if (!map3) {
         continue;
       }
-      const keys = Object.keys(map2);
+      const keys = Object.keys(map3);
       for (let k = 0, len3 = keys.length; k < len3; k++) {
-        map2[keys[k]] = paramReplacementMap[map2[keys[k]]];
+        map3[keys[k]] = paramReplacementMap[map3[keys[k]]];
       }
     }
   }
@@ -4106,10 +4238,10 @@ var Node2 = class _Node2 {
           if (matcher instanceof RegExp) {
             if (partOffsets === null) {
               partOffsets = new Array(len);
-              let offset = path[0] === "/" ? 1 : 0;
+              let offset2 = path[0] === "/" ? 1 : 0;
               for (let p = 0; p < len; p++) {
-                partOffsets[p] = offset;
-                offset += parts[p].length + 1;
+                partOffsets[p] = offset2;
+                offset2 += parts[p].length + 1;
               }
             }
             const restPathString = path.substring(partOffsets[i]);
@@ -4198,6 +4330,5080 @@ var Hono2 = class extends Hono {
     this.router = options.router ?? new SmartRouter({
       routers: [new RegExpRouter(), new TrieRouter()]
     });
+  }
+};
+
+// ../node_modules/.bun/liquidjs@10.25.7/node_modules/liquidjs/dist/liquid.browser.mjs
+var Token = class {
+  static {
+    __name(this, "Token");
+  }
+  constructor(kind, input, begin, end, file) {
+    this.kind = kind;
+    this.input = input;
+    this.begin = begin;
+    this.end = end;
+    this.file = file;
+  }
+  getText() {
+    return this.input.slice(this.begin, this.end);
+  }
+  getPosition() {
+    let [row, col] = [1, 1];
+    for (let i = 0; i < this.begin; i++) {
+      if (this.input[i] === "\n") {
+        row++;
+        col = 1;
+      } else
+        col++;
+    }
+    return [row, col];
+  }
+  size() {
+    return this.end - this.begin;
+  }
+};
+var Drop = class {
+  static {
+    __name(this, "Drop");
+  }
+  liquidMethodMissing(key, context) {
+    return void 0;
+  }
+};
+var toString$1 = Object.prototype.toString;
+var toLowerCase = String.prototype.toLowerCase;
+var hasOwnProperty = Object.hasOwnProperty;
+function isString(value) {
+  return typeof value === "string";
+}
+__name(isString, "isString");
+function isFunction(value) {
+  return typeof value === "function";
+}
+__name(isFunction, "isFunction");
+function isPromise(val) {
+  return val && isFunction(val.then);
+}
+__name(isPromise, "isPromise");
+function isIterator(val) {
+  return val && isFunction(val.next) && isFunction(val.throw) && isFunction(val.return);
+}
+__name(isIterator, "isIterator");
+function stringify(value) {
+  value = toValue(value);
+  if (isString(value))
+    return value;
+  if (isNil(value))
+    return "";
+  if (isArray(value))
+    return value.map((x) => stringify(x)).join("");
+  return String(value);
+}
+__name(stringify, "stringify");
+function toEnumerable(val) {
+  val = toValue(val);
+  if (isArray(val))
+    return val;
+  if (isString(val) && val.length > 0)
+    return [val];
+  if (isIterable(val))
+    return Array.from(val);
+  if (isObject(val))
+    return Object.keys(val).map((key) => [key, val[key]]);
+  return [];
+}
+__name(toEnumerable, "toEnumerable");
+function toArray(val) {
+  val = toValue(val);
+  if (isNil(val))
+    return [];
+  if (isArray(val))
+    return val;
+  return [val];
+}
+__name(toArray, "toArray");
+function toValue(value) {
+  return value instanceof Drop && isFunction(value.valueOf) ? value.valueOf() : value;
+}
+__name(toValue, "toValue");
+function toNumber(value) {
+  return +toValue(value) || 0;
+}
+__name(toNumber, "toNumber");
+function isNumber(value) {
+  return typeof value === "number";
+}
+__name(isNumber, "isNumber");
+function toLiquid(value) {
+  if (value && isFunction(value.toLiquid))
+    return toLiquid(value.toLiquid());
+  return value;
+}
+__name(toLiquid, "toLiquid");
+function isNil(value) {
+  return value == null;
+}
+__name(isNil, "isNil");
+function isUndefined(value) {
+  return value === void 0;
+}
+__name(isUndefined, "isUndefined");
+function isArray(value) {
+  return toString$1.call(value) === "[object Array]";
+}
+__name(isArray, "isArray");
+function isArrayLike(value) {
+  return value && isNumber(value.length);
+}
+__name(isArrayLike, "isArrayLike");
+function isIterable(value) {
+  return isObject(value) && Symbol.iterator in value;
+}
+__name(isIterable, "isIterable");
+function forOwn(obj, iteratee) {
+  obj = obj || {};
+  for (const k in obj) {
+    if (hasOwnProperty.call(obj, k)) {
+      if (iteratee(obj[k], k, obj) === false)
+        break;
+    }
+  }
+  return obj;
+}
+__name(forOwn, "forOwn");
+function last(arr) {
+  return arr[arr.length - 1];
+}
+__name(last, "last");
+function isObject(value) {
+  const type = typeof value;
+  return value !== null && (type === "object" || type === "function");
+}
+__name(isObject, "isObject");
+function range(start, stop, step = 1) {
+  const arr = [];
+  for (let i = start; i < stop; i += step) {
+    arr.push(i);
+  }
+  return arr;
+}
+__name(range, "range");
+function padStart(str, length, ch = " ") {
+  return pad(str, length, ch, (str2, ch2) => ch2 + str2);
+}
+__name(padStart, "padStart");
+function padEnd(str, length, ch = " ") {
+  return pad(str, length, ch, (str2, ch2) => str2 + ch2);
+}
+__name(padEnd, "padEnd");
+function pad(str, length, ch, add) {
+  str = String(str);
+  let n = length - str.length;
+  while (n-- > 0)
+    str = add(str, ch);
+  return str;
+}
+__name(pad, "pad");
+function identify(val) {
+  return val;
+}
+__name(identify, "identify");
+function changeCase(str) {
+  const hasLowerCase = [...str].some((ch) => ch >= "a" && ch <= "z");
+  return hasLowerCase ? str.toUpperCase() : str.toLowerCase();
+}
+__name(changeCase, "changeCase");
+function ellipsis(str, N) {
+  return str.length > N ? str.slice(0, N - 3) + "..." : str;
+}
+__name(ellipsis, "ellipsis");
+function orderedCompare(a, b) {
+  if (isNil(a) && isNil(b))
+    return 0;
+  if (isNil(a))
+    return 1;
+  if (isNil(b))
+    return -1;
+  if (a < b)
+    return -1;
+  if (a > b)
+    return 1;
+  return 0;
+}
+__name(orderedCompare, "orderedCompare");
+function caseInsensitiveCompare(a, b) {
+  if (isNil(a) && isNil(b))
+    return 0;
+  if (isNil(a))
+    return 1;
+  if (isNil(b))
+    return -1;
+  a = toLowerCase.call(a);
+  b = toLowerCase.call(b);
+  if (a < b)
+    return -1;
+  if (a > b)
+    return 1;
+  return 0;
+}
+__name(caseInsensitiveCompare, "caseInsensitiveCompare");
+function argumentsToValue(fn) {
+  return function(...args) {
+    return fn.call(this, ...args.map(toValue));
+  };
+}
+__name(argumentsToValue, "argumentsToValue");
+function argumentsToNumber(fn) {
+  return function(...args) {
+    return fn.call(this, ...args.map(toNumber));
+  };
+}
+__name(argumentsToNumber, "argumentsToNumber");
+function* strictUniq(array) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const element of array) {
+    const key = JSON.stringify(element);
+    if (!seen.has(key)) {
+      seen.add(key);
+      yield element;
+    }
+  }
+}
+__name(strictUniq, "strictUniq");
+var TRAIT = "__liquidClass__";
+var LiquidError = class extends Error {
+  static {
+    __name(this, "LiquidError");
+  }
+  constructor(err, token) {
+    super(typeof err === "string" ? err : err.message);
+    this.context = "";
+    if (typeof err !== "string")
+      Object.defineProperty(this, "originalError", { value: err, enumerable: false });
+    Object.defineProperty(this, "token", { value: token, enumerable: false });
+    Object.defineProperty(this, TRAIT, { value: "LiquidError", enumerable: false });
+  }
+  update() {
+    Object.defineProperty(this, "context", { value: mkContext(this.token), enumerable: false });
+    this.message = mkMessage(this.message, this.token);
+    this.stack = this.message + "\n" + this.context + "\n" + this.stack;
+    if (this.originalError)
+      this.stack += "\nFrom " + this.originalError.stack;
+  }
+  static is(obj) {
+    return (obj === null || obj === void 0 ? void 0 : obj[TRAIT]) === "LiquidError";
+  }
+};
+var TokenizationError = class extends LiquidError {
+  static {
+    __name(this, "TokenizationError");
+  }
+  constructor(message, token) {
+    super(message, token);
+    this.name = "TokenizationError";
+    super.update();
+  }
+};
+var ParseError = class extends LiquidError {
+  static {
+    __name(this, "ParseError");
+  }
+  constructor(err, token) {
+    super(err, token);
+    this.name = "ParseError";
+    this.message = err.message;
+    super.update();
+  }
+};
+var RenderError = class extends LiquidError {
+  static {
+    __name(this, "RenderError");
+  }
+  constructor(err, tpl) {
+    super(err, tpl.token);
+    this.name = "RenderError";
+    this.message = err.message;
+    super.update();
+  }
+  static is(obj) {
+    return obj.name === "RenderError";
+  }
+};
+var LiquidErrors = class extends LiquidError {
+  static {
+    __name(this, "LiquidErrors");
+  }
+  constructor(errors) {
+    super(errors[0], errors[0].token);
+    this.errors = errors;
+    this.name = "LiquidErrors";
+    const s = errors.length > 1 ? "s" : "";
+    this.message = `${errors.length} error${s} found`;
+    super.update();
+  }
+  static is(obj) {
+    return obj.name === "LiquidErrors";
+  }
+};
+var UndefinedVariableError = class extends LiquidError {
+  static {
+    __name(this, "UndefinedVariableError");
+  }
+  constructor(err, token) {
+    super(err, token);
+    this.name = "UndefinedVariableError";
+    this.message = err.message;
+    super.update();
+  }
+};
+var InternalUndefinedVariableError = class extends Error {
+  static {
+    __name(this, "InternalUndefinedVariableError");
+  }
+  constructor(variableName) {
+    super(`undefined variable: ${variableName}`);
+    this.name = "InternalUndefinedVariableError";
+    this.variableName = variableName;
+  }
+};
+var AssertionError = class extends Error {
+  static {
+    __name(this, "AssertionError");
+  }
+  constructor(message) {
+    super(message);
+    this.name = "AssertionError";
+    this.message = message + "";
+  }
+};
+function mkContext(token) {
+  const [line, col] = token.getPosition();
+  const lines = token.input.split("\n");
+  const begin = Math.max(line - 2, 1);
+  const end = Math.min(line + 3, lines.length);
+  const context = range(begin, end + 1).map((lineNumber) => {
+    const rowIndicator = lineNumber === line ? ">> " : "   ";
+    const num = padStart(String(lineNumber), String(end).length);
+    let text = `${rowIndicator}${num}| `;
+    const colIndicator = lineNumber === line ? "\n" + padStart("^", col + text.length) : "";
+    text += lines[lineNumber - 1];
+    text += colIndicator;
+    return text;
+  }).join("\n");
+  return context;
+}
+__name(mkContext, "mkContext");
+function mkMessage(msg, token) {
+  if (token.file)
+    msg += `, file:${token.file}`;
+  const [line, col] = token.getPosition();
+  msg += `, line:${line}, col:${col}`;
+  return msg;
+}
+__name(mkMessage, "mkMessage");
+var TYPES = [0, 0, 0, 0, 0, 0, 0, 0, 0, 20, 4, 4, 4, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 20, 2, 8, 0, 0, 0, 0, 8, 0, 0, 0, 64, 0, 65, 0, 0, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 0, 0, 2, 2, 2, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0];
+var WORD = 1;
+var BLANK = 4;
+var QUOTE = 8;
+var INLINE_BLANK = 16;
+var NUMBER = 32;
+var SIGN = 64;
+var PUNCTUATION = 128;
+function isWord(char) {
+  const code = char.charCodeAt(0);
+  return code >= 128 ? !TYPES[code] : !!(TYPES[code] & WORD);
+}
+__name(isWord, "isWord");
+TYPES[160] = TYPES[5760] = TYPES[6158] = TYPES[8192] = TYPES[8193] = TYPES[8194] = TYPES[8195] = TYPES[8196] = TYPES[8197] = TYPES[8198] = TYPES[8199] = TYPES[8200] = TYPES[8201] = TYPES[8202] = TYPES[8232] = TYPES[8233] = TYPES[8239] = TYPES[8287] = TYPES[12288] = BLANK;
+TYPES[8220] = TYPES[8221] = PUNCTUATION;
+function assert(predicate, message) {
+  if (!predicate) {
+    const msg = typeof message === "function" ? message() : message || `expect ${predicate} to be true`;
+    throw new AssertionError(msg);
+  }
+}
+__name(assert, "assert");
+function assertEmpty(predicate, message = `unexpected ${JSON.stringify(predicate)}`) {
+  assert(!predicate, message);
+}
+__name(assertEmpty, "assertEmpty");
+var NullDrop = class extends Drop {
+  static {
+    __name(this, "NullDrop");
+  }
+  equals(value) {
+    return isNil(toValue(value));
+  }
+  gt() {
+    return false;
+  }
+  geq() {
+    return false;
+  }
+  lt() {
+    return false;
+  }
+  leq() {
+    return false;
+  }
+  valueOf() {
+    return null;
+  }
+};
+var EmptyDrop = class _EmptyDrop extends Drop {
+  static {
+    __name(this, "EmptyDrop");
+  }
+  equals(value) {
+    if (value instanceof _EmptyDrop)
+      return false;
+    value = toValue(value);
+    if (isString(value) || isArray(value))
+      return value.length === 0;
+    if (isObject(value))
+      return Object.keys(value).length === 0;
+    return false;
+  }
+  gt() {
+    return false;
+  }
+  geq() {
+    return false;
+  }
+  lt() {
+    return false;
+  }
+  leq() {
+    return false;
+  }
+  valueOf() {
+    return "";
+  }
+  static is(value) {
+    return value instanceof _EmptyDrop;
+  }
+};
+var BlankDrop = class _BlankDrop extends EmptyDrop {
+  static {
+    __name(this, "BlankDrop");
+  }
+  equals(value) {
+    if (value === false)
+      return true;
+    if (isNil(toValue(value)))
+      return true;
+    if (isString(value))
+      return /^\s*$/.test(value);
+    return super.equals(value);
+  }
+  static is(value) {
+    return value instanceof _BlankDrop;
+  }
+};
+var ForloopDrop = class extends Drop {
+  static {
+    __name(this, "ForloopDrop");
+  }
+  constructor(length, collection, variable) {
+    super();
+    this.i = 0;
+    this.length = length;
+    this.name = `${variable}-${collection}`;
+  }
+  next() {
+    this.i++;
+  }
+  index0() {
+    return this.i;
+  }
+  index() {
+    return this.i + 1;
+  }
+  first() {
+    return this.i === 0;
+  }
+  last() {
+    return this.i === this.length - 1;
+  }
+  rindex() {
+    return this.length - this.i;
+  }
+  rindex0() {
+    return this.length - this.i - 1;
+  }
+  valueOf() {
+    return JSON.stringify(this);
+  }
+};
+var SimpleEmitter = class {
+  static {
+    __name(this, "SimpleEmitter");
+  }
+  constructor() {
+    this.buffer = "";
+  }
+  write(html) {
+    this.buffer += stringify(html);
+  }
+};
+var StreamedEmitter = class {
+  static {
+    __name(this, "StreamedEmitter");
+  }
+  constructor() {
+    this.buffer = "";
+    this.stream = null;
+    throw new Error("streaming not supported in browser");
+  }
+};
+var KeepingTypeEmitter = class {
+  static {
+    __name(this, "KeepingTypeEmitter");
+  }
+  constructor() {
+    this.buffer = "";
+  }
+  write(html) {
+    html = toValue(html);
+    if (typeof html !== "string" && this.buffer === "") {
+      this.buffer = html;
+    } else {
+      this.buffer = stringify(this.buffer) + stringify(html);
+    }
+  }
+};
+var BlockDrop = class extends Drop {
+  static {
+    __name(this, "BlockDrop");
+  }
+  constructor(superBlockRender = () => "") {
+    super();
+    this.superBlockRender = superBlockRender;
+  }
+  /**
+   * Provide parent access in child block by
+   * {{ block.super }}
+   */
+  *super() {
+    const emitter = new SimpleEmitter();
+    yield this.superBlockRender(emitter);
+    return emitter.buffer;
+  }
+};
+function isComparable(arg) {
+  return arg && isFunction(arg.equals) && isFunction(arg.gt) && isFunction(arg.geq) && isFunction(arg.lt) && isFunction(arg.leq);
+}
+__name(isComparable, "isComparable");
+var nil = new NullDrop();
+var literalValues = {
+  "true": true,
+  "false": false,
+  "nil": nil,
+  "null": nil,
+  "empty": new EmptyDrop(),
+  "blank": new BlankDrop()
+};
+function createTrie(input) {
+  const trie = {};
+  for (const [name, data] of Object.entries(input)) {
+    let node = trie;
+    for (let i = 0; i < name.length; i++) {
+      const c = name[i];
+      node[c] = node[c] || {};
+      if (i === name.length - 1 && isWord(name[i])) {
+        node[c].needBoundary = true;
+      }
+      node = node[c];
+    }
+    node.data = data;
+    node.end = true;
+  }
+  return trie;
+}
+__name(createTrie, "createTrie");
+var __assign = /* @__PURE__ */ __name(function() {
+  __assign = Object.assign || /* @__PURE__ */ __name(function __assign2(t) {
+    for (var s, i = 1, n = arguments.length; i < n; i++) {
+      s = arguments[i];
+      for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p)) t[p] = s[p];
+    }
+    return t;
+  }, "__assign");
+  return __assign.apply(this, arguments);
+}, "__assign");
+function __awaiter(thisArg, _arguments, P, generator) {
+  function adopt(value) {
+    return value instanceof P ? value : new P(function(resolve2) {
+      resolve2(value);
+    });
+  }
+  __name(adopt, "adopt");
+  return new (P || (P = Promise))(function(resolve2, reject2) {
+    function fulfilled(value) {
+      try {
+        step(generator.next(value));
+      } catch (e) {
+        reject2(e);
+      }
+    }
+    __name(fulfilled, "fulfilled");
+    function rejected(value) {
+      try {
+        step(generator["throw"](value));
+      } catch (e) {
+        reject2(e);
+      }
+    }
+    __name(rejected, "rejected");
+    function step(result) {
+      result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
+    }
+    __name(step, "step");
+    step((generator = generator.apply(thisArg, _arguments || [])).next());
+  });
+}
+__name(__awaiter, "__awaiter");
+function toLiquidAsync(asyncFn, syncFn) {
+  const syncImpl = syncFn || asyncFn;
+  return (sync, ...args) => {
+    return sync ? syncImpl(...args) : asyncFn(...args);
+  };
+}
+__name(toLiquidAsync, "toLiquidAsync");
+function toPromise(val) {
+  return __awaiter(this, void 0, void 0, function* () {
+    if (!isIterator(val))
+      return val;
+    let value;
+    let done = false;
+    let next = "next";
+    do {
+      const state = val[next](value);
+      done = state.done;
+      value = state.value;
+      next = "next";
+      try {
+        if (isIterator(value))
+          value = toPromise(value);
+        if (isPromise(value))
+          value = yield value;
+      } catch (err) {
+        next = "throw";
+        value = err;
+      }
+    } while (!done);
+    return value;
+  });
+}
+__name(toPromise, "toPromise");
+function toValueSync(val) {
+  if (!isIterator(val))
+    return val;
+  let value;
+  let done = false;
+  let next = "next";
+  do {
+    const state = val[next](value);
+    done = state.done;
+    value = state.value;
+    next = "next";
+    if (isIterator(value)) {
+      try {
+        value = toValueSync(value);
+      } catch (err) {
+        next = "throw";
+        value = err;
+      }
+    }
+  } while (!done);
+  return value;
+}
+__name(toValueSync, "toValueSync");
+var rFormat = /%([-_0^#:]+)?(\d+)?([EO])?(.)/;
+function daysInMonth(d) {
+  const feb = isLeapYear(d) ? 29 : 28;
+  return [31, feb, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+}
+__name(daysInMonth, "daysInMonth");
+function getDayOfYear(d) {
+  let num = 0;
+  for (let i = 0; i < d.getMonth(); ++i) {
+    num += daysInMonth(d)[i];
+  }
+  return num + d.getDate();
+}
+__name(getDayOfYear, "getDayOfYear");
+function getWeekOfYear(d, startDay) {
+  const now = getDayOfYear(d) + (startDay - d.getDay());
+  const jan1 = new Date(d.getFullYear(), 0, 1);
+  const then = 7 - jan1.getDay() + startDay;
+  return String(Math.floor((now - then) / 7) + 1);
+}
+__name(getWeekOfYear, "getWeekOfYear");
+function isLeapYear(d) {
+  const year = d.getFullYear();
+  return !!((year & 3) === 0 && (year % 100 || year % 400 === 0 && year));
+}
+__name(isLeapYear, "isLeapYear");
+function ordinal(d) {
+  const date2 = d.getDate();
+  if ([11, 12, 13].includes(date2))
+    return "th";
+  switch (date2 % 10) {
+    case 1:
+      return "st";
+    case 2:
+      return "nd";
+    case 3:
+      return "rd";
+    default:
+      return "th";
+  }
+}
+__name(ordinal, "ordinal");
+function century(d) {
+  return parseInt(d.getFullYear().toString().substring(0, 2), 10);
+}
+__name(century, "century");
+var padWidths = {
+  d: 2,
+  e: 2,
+  H: 2,
+  I: 2,
+  j: 3,
+  k: 2,
+  l: 2,
+  L: 3,
+  m: 2,
+  M: 2,
+  S: 2,
+  U: 2,
+  W: 2
+};
+var padSpaceChars = new Set("aAbBceklpP");
+function getTimezoneOffset(d, opts) {
+  const nOffset = Math.abs(d.getTimezoneOffset());
+  const h = Math.floor(nOffset / 60);
+  const m = nOffset % 60;
+  return (d.getTimezoneOffset() > 0 ? "-" : "+") + padStart(h, 2, "0") + (opts.flags[":"] ? ":" : "") + padStart(m, 2, "0");
+}
+__name(getTimezoneOffset, "getTimezoneOffset");
+var formatCodes = {
+  a: /* @__PURE__ */ __name((d) => d.getShortWeekdayName(), "a"),
+  A: /* @__PURE__ */ __name((d) => d.getLongWeekdayName(), "A"),
+  b: /* @__PURE__ */ __name((d) => d.getShortMonthName(), "b"),
+  B: /* @__PURE__ */ __name((d) => d.getLongMonthName(), "B"),
+  c: /* @__PURE__ */ __name((d) => d.toLocaleString(), "c"),
+  C: /* @__PURE__ */ __name((d) => century(d), "C"),
+  d: /* @__PURE__ */ __name((d) => d.getDate(), "d"),
+  e: /* @__PURE__ */ __name((d) => d.getDate(), "e"),
+  H: /* @__PURE__ */ __name((d) => d.getHours(), "H"),
+  I: /* @__PURE__ */ __name((d) => String(d.getHours() % 12 || 12), "I"),
+  j: /* @__PURE__ */ __name((d) => getDayOfYear(d), "j"),
+  k: /* @__PURE__ */ __name((d) => d.getHours(), "k"),
+  l: /* @__PURE__ */ __name((d) => String(d.getHours() % 12 || 12), "l"),
+  L: /* @__PURE__ */ __name((d) => d.getMilliseconds(), "L"),
+  m: /* @__PURE__ */ __name((d) => d.getMonth() + 1, "m"),
+  M: /* @__PURE__ */ __name((d) => d.getMinutes(), "M"),
+  N: /* @__PURE__ */ __name((d, opts) => {
+    const width = Number(opts.width) || 9;
+    const str = String(d.getMilliseconds()).slice(0, width);
+    return padEnd(str, width, "0");
+  }, "N"),
+  p: /* @__PURE__ */ __name((d) => d.getHours() < 12 ? "AM" : "PM", "p"),
+  P: /* @__PURE__ */ __name((d) => d.getHours() < 12 ? "am" : "pm", "P"),
+  q: /* @__PURE__ */ __name((d) => ordinal(d), "q"),
+  s: /* @__PURE__ */ __name((d) => Math.round(d.getTime() / 1e3), "s"),
+  S: /* @__PURE__ */ __name((d) => d.getSeconds(), "S"),
+  u: /* @__PURE__ */ __name((d) => d.getDay() || 7, "u"),
+  U: /* @__PURE__ */ __name((d) => getWeekOfYear(d, 0), "U"),
+  w: /* @__PURE__ */ __name((d) => d.getDay(), "w"),
+  W: /* @__PURE__ */ __name((d) => getWeekOfYear(d, 1), "W"),
+  x: /* @__PURE__ */ __name((d) => d.toLocaleDateString(), "x"),
+  X: /* @__PURE__ */ __name((d) => d.toLocaleTimeString(), "X"),
+  y: /* @__PURE__ */ __name((d) => d.getFullYear().toString().slice(2, 4), "y"),
+  Y: /* @__PURE__ */ __name((d) => d.getFullYear(), "Y"),
+  z: getTimezoneOffset,
+  Z: /* @__PURE__ */ __name((d, opts) => d.getTimeZoneName() || getTimezoneOffset(d, opts), "Z"),
+  "t": /* @__PURE__ */ __name(() => "	", "t"),
+  "n": /* @__PURE__ */ __name(() => "\n", "n"),
+  "%": /* @__PURE__ */ __name(() => "%", "%")
+};
+formatCodes.h = formatCodes.b;
+function strftime(d, formatStr) {
+  let output = "";
+  let remaining = formatStr;
+  let match2;
+  while (match2 = rFormat.exec(remaining)) {
+    output += remaining.slice(0, match2.index);
+    remaining = remaining.slice(match2.index + match2[0].length);
+    output += format(d, match2);
+  }
+  return output + remaining;
+}
+__name(strftime, "strftime");
+function format(d, match2) {
+  const [input, flagStr = "", width, modifier, conversion] = match2;
+  const convert = formatCodes[conversion];
+  if (!convert)
+    return input;
+  const flags = {};
+  for (const flag of flagStr)
+    flags[flag] = true;
+  let ret = String(convert(d, { flags, width, modifier }));
+  let padChar = padSpaceChars.has(conversion) ? " " : "0";
+  let padWidth = width || padWidths[conversion] || 0;
+  if (flags["^"])
+    ret = ret.toUpperCase();
+  else if (flags["#"])
+    ret = changeCase(ret);
+  if (flags["_"])
+    padChar = " ";
+  else if (flags["0"])
+    padChar = "0";
+  if (flags["-"])
+    padWidth = 0;
+  return padStart(ret, padWidth, padChar);
+}
+__name(format, "format");
+function getDateTimeFormat() {
+  return typeof Intl !== "undefined" ? Intl.DateTimeFormat : void 0;
+}
+__name(getDateTimeFormat, "getDateTimeFormat");
+var OneMinute = 6e4;
+var TIMEZONE_PATTERN = /([zZ]|([+-])(\d{2}):?(\d{2}))$/;
+var monthNames = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December"
+];
+var monthNamesShort = monthNames.map((name) => name.slice(0, 3));
+var dayNames = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday"
+];
+var dayNamesShort = dayNames.map((name) => name.slice(0, 3));
+var LiquidDate = class _LiquidDate {
+  static {
+    __name(this, "LiquidDate");
+  }
+  constructor(init, locale, timezone) {
+    this.locale = locale;
+    this.DateTimeFormat = getDateTimeFormat();
+    this.date = new Date(init);
+    this.timezoneFixed = timezone !== void 0;
+    if (timezone === void 0) {
+      timezone = this.date.getTimezoneOffset();
+    }
+    this.timezoneOffset = isString(timezone) ? _LiquidDate.getTimezoneOffset(timezone, this.date) : timezone;
+    this.timezoneName = isString(timezone) ? timezone : "";
+    const diff = (this.date.getTimezoneOffset() - this.timezoneOffset) * OneMinute;
+    const time = this.date.getTime() + diff;
+    this.displayDate = new Date(time);
+  }
+  getTime() {
+    return this.displayDate.getTime();
+  }
+  getMilliseconds() {
+    return this.displayDate.getMilliseconds();
+  }
+  getSeconds() {
+    return this.displayDate.getSeconds();
+  }
+  getMinutes() {
+    return this.displayDate.getMinutes();
+  }
+  getHours() {
+    return this.displayDate.getHours();
+  }
+  getDay() {
+    return this.displayDate.getDay();
+  }
+  getDate() {
+    return this.displayDate.getDate();
+  }
+  getMonth() {
+    return this.displayDate.getMonth();
+  }
+  getFullYear() {
+    return this.displayDate.getFullYear();
+  }
+  toLocaleString(locale, init) {
+    if (init === null || init === void 0 ? void 0 : init.timeZone) {
+      return this.date.toLocaleString(locale, init);
+    }
+    return this.displayDate.toLocaleString(locale, init);
+  }
+  toLocaleTimeString(locale) {
+    return this.displayDate.toLocaleTimeString(locale);
+  }
+  toLocaleDateString(locale) {
+    return this.displayDate.toLocaleDateString(locale);
+  }
+  getTimezoneOffset() {
+    return this.timezoneOffset;
+  }
+  getTimeZoneName() {
+    if (this.timezoneFixed)
+      return this.timezoneName;
+    if (!this.DateTimeFormat)
+      return;
+    return this.DateTimeFormat().resolvedOptions().timeZone;
+  }
+  getLongMonthName() {
+    var _a;
+    return (_a = this.format({ month: "long" })) !== null && _a !== void 0 ? _a : monthNames[this.getMonth()];
+  }
+  getShortMonthName() {
+    var _a;
+    return (_a = this.format({ month: "short" })) !== null && _a !== void 0 ? _a : monthNamesShort[this.getMonth()];
+  }
+  getLongWeekdayName() {
+    var _a;
+    return (_a = this.format({ weekday: "long" })) !== null && _a !== void 0 ? _a : dayNames[this.displayDate.getDay()];
+  }
+  getShortWeekdayName() {
+    var _a;
+    return (_a = this.format({ weekday: "short" })) !== null && _a !== void 0 ? _a : dayNamesShort[this.displayDate.getDay()];
+  }
+  valid() {
+    return !isNaN(this.getTime());
+  }
+  format(options) {
+    return this.DateTimeFormat && this.DateTimeFormat(this.locale, options).format(this.displayDate);
+  }
+  /**
+   * Create a Date object fixed to it's declared Timezone. Both
+   * - 2021-08-06T02:29:00.000Z and
+   * - 2021-08-06T02:29:00.000+08:00
+   * will always be displayed as
+   * - 2021-08-06 02:29:00
+   * regardless timezoneOffset in JavaScript realm
+   *
+   * The implementation hack:
+   * Instead of calling `.getMonth()`/`.getUTCMonth()` respect to `preserveTimezones`,
+   * we create a different Date to trick strftime, it's both simpler and more performant.
+   * Given that a template is expected to be parsed fewer times than rendered.
+   */
+  static createDateFixedToTimezone(dateString, locale) {
+    const m = dateString.match(TIMEZONE_PATTERN);
+    if (m && m[1] === "Z") {
+      return new _LiquidDate(+new Date(dateString), locale, 0);
+    }
+    if (m && m[2] && m[3] && m[4]) {
+      const [, , sign, hours, minutes] = m;
+      const offset2 = (sign === "+" ? -1 : 1) * (parseInt(hours, 10) * 60 + parseInt(minutes, 10));
+      return new _LiquidDate(+new Date(dateString), locale, offset2);
+    }
+    return new _LiquidDate(dateString, locale);
+  }
+  static getTimezoneOffset(timezoneName, date2) {
+    const localDateString = date2.toLocaleString("en-US", { timeZone: timezoneName });
+    const utcDateString = date2.toLocaleString("en-US", { timeZone: "UTC" });
+    const localDate = new Date(localDateString);
+    const utcDate = new Date(utcDateString);
+    return (+utcDate - +localDate) / (60 * 1e3);
+  }
+};
+var Limiter = class {
+  static {
+    __name(this, "Limiter");
+  }
+  constructor(resource, limit2) {
+    this.base = 0;
+    this.message = `${resource} limit exceeded`;
+    this.limit = limit2;
+  }
+  use(count) {
+    if (+count > 0) {
+      assert(this.base + +count <= this.limit, this.message);
+      this.base += +count;
+    }
+  }
+  check(count) {
+    if (+count > 0) {
+      assert(+count <= this.limit, this.message);
+    }
+  }
+};
+var DelimitedToken = class extends Token {
+  static {
+    __name(this, "DelimitedToken");
+  }
+  constructor(kind, [contentBegin, contentEnd], input, begin, end, trimLeft2, trimRight2, file) {
+    super(kind, input, begin, end, file);
+    this.trimLeft = false;
+    this.trimRight = false;
+    const tl = input[contentBegin] === "-";
+    const tr = input[contentEnd - 1] === "-";
+    let l = tl ? contentBegin + 1 : contentBegin;
+    let r = tr ? contentEnd - 1 : contentEnd;
+    while (l < r && TYPES[input.charCodeAt(l)] & BLANK)
+      l++;
+    while (r > l && TYPES[input.charCodeAt(r - 1)] & BLANK)
+      r--;
+    this.contentRange = [l, r];
+    this.trimLeft = tl || trimLeft2;
+    this.trimRight = tr || trimRight2;
+  }
+  get content() {
+    return this.input.slice(this.contentRange[0], this.contentRange[1]);
+  }
+};
+var TagToken = class extends DelimitedToken {
+  static {
+    __name(this, "TagToken");
+  }
+  constructor(input, begin, end, options, file) {
+    const { trimTagLeft, trimTagRight, tagDelimiterLeft, tagDelimiterRight } = options;
+    const [valueBegin, valueEnd] = [begin + tagDelimiterLeft.length, end - tagDelimiterRight.length];
+    super(TokenKind.Tag, [valueBegin, valueEnd], input, begin, end, trimTagLeft, trimTagRight, file);
+    this.tokenizer = new Tokenizer(input, options.operators, file, this.contentRange);
+    this.name = this.tokenizer.readTagName();
+    this.tokenizer.assert(this.name, `illegal tag syntax, tag name expected`);
+    this.tokenizer.skipBlank();
+    this.args = this.tokenizer.input.slice(this.tokenizer.p, this.contentRange[1]);
+  }
+};
+var OutputToken = class extends DelimitedToken {
+  static {
+    __name(this, "OutputToken");
+  }
+  constructor(input, begin, end, options, file) {
+    const { trimOutputLeft, trimOutputRight, outputDelimiterLeft, outputDelimiterRight } = options;
+    const valueRange = [begin + outputDelimiterLeft.length, end - outputDelimiterRight.length];
+    super(TokenKind.Output, valueRange, input, begin, end, trimOutputLeft, trimOutputRight, file);
+  }
+};
+var HTMLToken = class extends Token {
+  static {
+    __name(this, "HTMLToken");
+  }
+  constructor(input, begin, end, file) {
+    super(TokenKind.HTML, input, begin, end, file);
+    this.input = input;
+    this.begin = begin;
+    this.end = end;
+    this.file = file;
+    this.trimLeft = 0;
+    this.trimRight = 0;
+  }
+  getContent() {
+    return this.input.slice(this.begin + this.trimLeft, this.end - this.trimRight);
+  }
+};
+var NumberToken = class extends Token {
+  static {
+    __name(this, "NumberToken");
+  }
+  constructor(input, begin, end, file) {
+    super(TokenKind.Number, input, begin, end, file);
+    this.input = input;
+    this.begin = begin;
+    this.end = end;
+    this.file = file;
+    this.content = Number(this.getText());
+  }
+};
+var IdentifierToken = class extends Token {
+  static {
+    __name(this, "IdentifierToken");
+  }
+  constructor(input, begin, end, file) {
+    super(TokenKind.Word, input, begin, end, file);
+    this.input = input;
+    this.begin = begin;
+    this.end = end;
+    this.file = file;
+    this.content = this.getText();
+  }
+};
+var LiteralToken = class extends Token {
+  static {
+    __name(this, "LiteralToken");
+  }
+  constructor(input, begin, end, file) {
+    super(TokenKind.Literal, input, begin, end, file);
+    this.input = input;
+    this.begin = begin;
+    this.end = end;
+    this.file = file;
+    this.literal = this.getText();
+    this.content = literalValues[this.literal];
+  }
+};
+var operatorPrecedences = {
+  "==": 2,
+  "!=": 2,
+  ">": 2,
+  "<": 2,
+  ">=": 2,
+  "<=": 2,
+  "contains": 2,
+  "not": 1,
+  "and": 0,
+  "or": 0
+};
+var operatorTypes = {
+  "==": 0,
+  "!=": 0,
+  ">": 0,
+  "<": 0,
+  ">=": 0,
+  "<=": 0,
+  "contains": 0,
+  "not": 1,
+  "and": 0,
+  "or": 0
+  /* OperatorType.Binary */
+};
+var OperatorToken = class extends Token {
+  static {
+    __name(this, "OperatorToken");
+  }
+  constructor(input, begin, end, file) {
+    super(TokenKind.Operator, input, begin, end, file);
+    this.input = input;
+    this.begin = begin;
+    this.end = end;
+    this.file = file;
+    this.operator = this.getText();
+  }
+  getPrecedence() {
+    const key = this.getText();
+    return key in operatorPrecedences ? operatorPrecedences[key] : 1;
+  }
+};
+var PropertyAccessToken = class extends Token {
+  static {
+    __name(this, "PropertyAccessToken");
+  }
+  constructor(variable, props, input, begin, end, file) {
+    super(TokenKind.PropertyAccess, input, begin, end, file);
+    this.variable = variable;
+    this.props = props;
+  }
+};
+var FilterToken = class extends Token {
+  static {
+    __name(this, "FilterToken");
+  }
+  constructor(name, args, input, begin, end, file) {
+    super(TokenKind.Filter, input, begin, end, file);
+    this.name = name;
+    this.args = args;
+  }
+};
+var HashToken = class extends Token {
+  static {
+    __name(this, "HashToken");
+  }
+  constructor(input, begin, end, name, value, file) {
+    super(TokenKind.Hash, input, begin, end, file);
+    this.input = input;
+    this.begin = begin;
+    this.end = end;
+    this.name = name;
+    this.value = value;
+    this.file = file;
+  }
+};
+var rHex = /[\da-fA-F]/;
+var rOct = /[0-7]/;
+var escapeChar = {
+  b: "\b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "	",
+  v: "\v"
+};
+function hexVal(c) {
+  const code = c.charCodeAt(0);
+  if (code >= 97)
+    return code - 87;
+  if (code >= 65)
+    return code - 55;
+  return code - 48;
+}
+__name(hexVal, "hexVal");
+function parseStringLiteral(str) {
+  let ret = "";
+  for (let i = 1; i < str.length - 1; i++) {
+    if (str[i] !== "\\") {
+      ret += str[i];
+      continue;
+    }
+    if (escapeChar[str[i + 1]] !== void 0) {
+      ret += escapeChar[str[++i]];
+    } else if (str[i + 1] === "u") {
+      let val = 0;
+      let j = i + 2;
+      while (j <= i + 5 && rHex.test(str[j])) {
+        val = val * 16 + hexVal(str[j++]);
+      }
+      i = j - 1;
+      ret += String.fromCharCode(val);
+    } else if (!rOct.test(str[i + 1])) {
+      ret += str[++i];
+    } else {
+      let j = i + 1;
+      let val = 0;
+      while (j <= i + 3 && rOct.test(str[j])) {
+        val = val * 8 + hexVal(str[j++]);
+      }
+      i = j - 1;
+      ret += String.fromCharCode(val);
+    }
+  }
+  return ret;
+}
+__name(parseStringLiteral, "parseStringLiteral");
+var QuotedToken = class extends Token {
+  static {
+    __name(this, "QuotedToken");
+  }
+  constructor(input, begin, end, file) {
+    super(TokenKind.Quoted, input, begin, end, file);
+    this.input = input;
+    this.begin = begin;
+    this.end = end;
+    this.file = file;
+    this.content = parseStringLiteral(this.getText());
+  }
+};
+var RangeToken = class extends Token {
+  static {
+    __name(this, "RangeToken");
+  }
+  constructor(input, begin, end, lhs, rhs, file) {
+    super(TokenKind.Range, input, begin, end, file);
+    this.input = input;
+    this.begin = begin;
+    this.end = end;
+    this.lhs = lhs;
+    this.rhs = rhs;
+    this.file = file;
+  }
+};
+var LiquidTagToken = class extends DelimitedToken {
+  static {
+    __name(this, "LiquidTagToken");
+  }
+  constructor(input, begin, end, options, file) {
+    super(TokenKind.Tag, [begin, end], input, begin, end, false, false, file);
+    this.tokenizer = new Tokenizer(input, options.operators, file, this.contentRange);
+    this.name = this.tokenizer.readTagName();
+    this.tokenizer.assert(this.name, "illegal liquid tag syntax");
+    this.tokenizer.skipBlank();
+  }
+  get args() {
+    return this.tokenizer.input.slice(this.tokenizer.p, this.contentRange[1]);
+  }
+};
+var FilteredValueToken = class extends Token {
+  static {
+    __name(this, "FilteredValueToken");
+  }
+  constructor(initial, filters2, input, begin, end, file) {
+    super(TokenKind.FilteredValue, input, begin, end, file);
+    this.initial = initial;
+    this.filters = filters2;
+    this.input = input;
+    this.begin = begin;
+    this.end = end;
+    this.file = file;
+  }
+};
+var polyfill = {
+  now: /* @__PURE__ */ __name(() => Date.now(), "now")
+};
+function getPerformance() {
+  return typeof global === "object" && global.performance || typeof window === "object" && window.performance || polyfill;
+}
+__name(getPerformance, "getPerformance");
+var Render = class {
+  static {
+    __name(this, "Render");
+  }
+  renderTemplatesToNodeStream(templates, ctx) {
+    const emitter = new StreamedEmitter();
+    Promise.resolve().then(() => toPromise(this.renderTemplates(templates, ctx, emitter))).then(() => emitter.end(), (err) => emitter.error(err));
+    return emitter.stream;
+  }
+  *renderTemplates(templates, ctx, emitter) {
+    if (!emitter) {
+      emitter = ctx.opts.keepOutputType ? new KeepingTypeEmitter() : new SimpleEmitter();
+    }
+    const errors = [];
+    for (const tpl of templates) {
+      ctx.renderLimit.check(getPerformance().now());
+      try {
+        const html = yield tpl.render(ctx, emitter);
+        html && emitter.write(html);
+        if (ctx.breakCalled || ctx.continueCalled)
+          break;
+      } catch (e) {
+        const err = LiquidError.is(e) ? e : new RenderError(e, tpl);
+        if (ctx.opts.catchAllErrors)
+          errors.push(err);
+        else
+          throw err;
+      }
+    }
+    if (errors.length) {
+      throw new LiquidErrors(errors);
+    }
+    return emitter.buffer;
+  }
+};
+var Expression = class {
+  static {
+    __name(this, "Expression");
+  }
+  constructor(tokens) {
+    this.postfix = [...toPostfix(tokens)];
+  }
+  *evaluate(ctx, lenient) {
+    assert(ctx, "unable to evaluate: context not defined");
+    const operands = [];
+    for (const token of this.postfix) {
+      if (isOperatorToken(token)) {
+        const r = operands.pop();
+        let result;
+        if (operatorTypes[token.operator] === 1) {
+          result = yield ctx.opts.operators[token.operator](r, ctx);
+        } else {
+          const l = operands.pop();
+          result = yield ctx.opts.operators[token.operator](l, r, ctx);
+        }
+        operands.push(result);
+      } else {
+        operands.push(yield evalToken(token, ctx, lenient));
+      }
+    }
+    return operands[0];
+  }
+  valid() {
+    return !!this.postfix.length;
+  }
+};
+function* evalToken(token, ctx, lenient = false) {
+  if (!token)
+    return;
+  if ("content" in token)
+    return token.content;
+  if (isPropertyAccessToken(token))
+    return yield evalPropertyAccessToken(token, ctx, lenient);
+  if (isRangeToken(token))
+    return yield evalRangeToken(token, ctx);
+}
+__name(evalToken, "evalToken");
+function* evalPropertyAccessToken(token, ctx, lenient) {
+  const props = [];
+  for (const prop of token.props) {
+    props.push(yield evalToken(prop, ctx, false));
+  }
+  try {
+    if (token.variable) {
+      const variable = yield evalToken(token.variable, ctx, lenient);
+      return yield ctx._getFromScope(variable, props);
+    } else {
+      return yield ctx._get(props);
+    }
+  } catch (e) {
+    if (lenient && e.name === "InternalUndefinedVariableError")
+      return null;
+    throw new UndefinedVariableError(e, token);
+  }
+}
+__name(evalPropertyAccessToken, "evalPropertyAccessToken");
+function evalQuotedToken(token) {
+  return token.content;
+}
+__name(evalQuotedToken, "evalQuotedToken");
+function* evalRangeToken(token, ctx) {
+  const low = yield evalToken(token.lhs, ctx);
+  const high = yield evalToken(token.rhs, ctx);
+  ctx.memoryLimit.use(high - low + 1);
+  return range(+low, +high + 1);
+}
+__name(evalRangeToken, "evalRangeToken");
+function* toPostfix(tokens) {
+  const ops = [];
+  for (const token of tokens) {
+    if (isOperatorToken(token)) {
+      while (ops.length && ops[ops.length - 1].getPrecedence() > token.getPrecedence()) {
+        yield ops.pop();
+      }
+      ops.push(token);
+    } else
+      yield token;
+  }
+  while (ops.length) {
+    yield ops.pop();
+  }
+}
+__name(toPostfix, "toPostfix");
+function isTruthy(val, ctx) {
+  return !isFalsy(val, ctx);
+}
+__name(isTruthy, "isTruthy");
+function isFalsy(val, ctx) {
+  val = toValue(val);
+  if (ctx.opts.jsTruthy) {
+    return !val;
+  } else {
+    return val === false || void 0 === val || val === null;
+  }
+}
+__name(isFalsy, "isFalsy");
+var defaultOperators = {
+  "==": equals,
+  "!=": /* @__PURE__ */ __name((l, r) => !equals(l, r), "!="),
+  ">": /* @__PURE__ */ __name((l, r) => {
+    if (isComparable(l))
+      return l.gt(r);
+    if (isComparable(r))
+      return r.lt(l);
+    return toValue(l) > toValue(r);
+  }, ">"),
+  "<": /* @__PURE__ */ __name((l, r) => {
+    if (isComparable(l))
+      return l.lt(r);
+    if (isComparable(r))
+      return r.gt(l);
+    return toValue(l) < toValue(r);
+  }, "<"),
+  ">=": /* @__PURE__ */ __name((l, r) => {
+    if (isComparable(l))
+      return l.geq(r);
+    if (isComparable(r))
+      return r.leq(l);
+    return toValue(l) >= toValue(r);
+  }, ">="),
+  "<=": /* @__PURE__ */ __name((l, r) => {
+    if (isComparable(l))
+      return l.leq(r);
+    if (isComparable(r))
+      return r.geq(l);
+    return toValue(l) <= toValue(r);
+  }, "<="),
+  "contains": /* @__PURE__ */ __name((l, r) => {
+    l = toValue(l);
+    if (isArray(l))
+      return l.some((i) => equals(i, r));
+    if (isFunction(l === null || l === void 0 ? void 0 : l.indexOf))
+      return l.indexOf(toValue(r)) > -1;
+    return false;
+  }, "contains"),
+  "not": /* @__PURE__ */ __name((v, ctx) => isFalsy(toValue(v), ctx), "not"),
+  "and": /* @__PURE__ */ __name((l, r, ctx) => isTruthy(toValue(l), ctx) && isTruthy(toValue(r), ctx), "and"),
+  "or": /* @__PURE__ */ __name((l, r, ctx) => isTruthy(toValue(l), ctx) || isTruthy(toValue(r), ctx), "or")
+};
+function equals(lhs, rhs) {
+  if (isComparable(lhs))
+    return lhs.equals(rhs);
+  if (isComparable(rhs))
+    return rhs.equals(lhs);
+  lhs = toValue(lhs);
+  rhs = toValue(rhs);
+  if (isArray(lhs)) {
+    return isArray(rhs) && arrayEquals(lhs, rhs);
+  }
+  return lhs === rhs;
+}
+__name(equals, "equals");
+function arrayEquals(lhs, rhs) {
+  if (lhs.length !== rhs.length)
+    return false;
+  return !lhs.some((value, i) => !equals(value, rhs[i]));
+}
+__name(arrayEquals, "arrayEquals");
+function arrayIncludes(arr, item) {
+  return arr.some((value) => equals(value, item));
+}
+__name(arrayIncludes, "arrayIncludes");
+var Node3 = class {
+  static {
+    __name(this, "Node");
+  }
+  constructor(key, value, next, prev) {
+    this.key = key;
+    this.value = value;
+    this.next = next;
+    this.prev = prev;
+  }
+};
+var LRU = class {
+  static {
+    __name(this, "LRU");
+  }
+  constructor(limit2, size2 = 0) {
+    this.limit = limit2;
+    this.size = size2;
+    this.cache = {};
+    this.head = new Node3("HEAD", null, null, null);
+    this.tail = new Node3("TAIL", null, null, null);
+    this.head.next = this.tail;
+    this.tail.prev = this.head;
+  }
+  write(key, value) {
+    if (this.cache[key]) {
+      this.cache[key].value = value;
+    } else {
+      const node = new Node3(key, value, this.head.next, this.head);
+      this.head.next.prev = node;
+      this.head.next = node;
+      this.cache[key] = node;
+      this.size++;
+      this.ensureLimit();
+    }
+  }
+  read(key) {
+    if (!this.cache[key])
+      return;
+    const { value } = this.cache[key];
+    this.remove(key);
+    this.write(key, value);
+    return value;
+  }
+  remove(key) {
+    const node = this.cache[key];
+    node.prev.next = node.next;
+    node.next.prev = node.prev;
+    delete this.cache[key];
+    this.size--;
+  }
+  clear() {
+    this.head.next = this.tail;
+    this.tail.prev = this.head;
+    this.size = 0;
+    this.cache = {};
+  }
+  ensureLimit() {
+    if (this.size > this.limit)
+      this.remove(this.tail.prev.key);
+  }
+};
+function domResolve(root, path) {
+  const base = document.createElement("base");
+  base.href = root;
+  const head = document.getElementsByTagName("head")[0];
+  head.insertBefore(base, head.firstChild);
+  const a = document.createElement("a");
+  a.href = path;
+  const resolved = a.href;
+  head.removeChild(base);
+  return resolved;
+}
+__name(domResolve, "domResolve");
+function resolve(root, filepath, ext) {
+  if (root.length && last(root) !== "/")
+    root += "/";
+  const url = domResolve(root, filepath);
+  return url.replace(/^(\w+:\/\/[^/]+)(\/[^?]+)/, (str, origin, path) => {
+    const last2 = path.split("/").pop();
+    if (/\.\w+$/.test(last2))
+      return str;
+    return origin + path + ext;
+  });
+}
+__name(resolve, "resolve");
+function readFile(url) {
+  return __awaiter(this, void 0, void 0, function* () {
+    return new Promise((resolve2, reject2) => {
+      const xhr = new XMLHttpRequest();
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve2(xhr.responseText);
+        } else {
+          reject2(new Error(xhr.statusText));
+        }
+      };
+      xhr.onerror = () => {
+        reject2(new Error("An error occurred whilst receiving the response."));
+      };
+      xhr.open("GET", url);
+      xhr.send();
+    });
+  });
+}
+__name(readFile, "readFile");
+function readFileSync(url) {
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", url, false);
+  xhr.send();
+  if (xhr.status < 200 || xhr.status >= 300) {
+    throw new Error(xhr.statusText);
+  }
+  return xhr.responseText;
+}
+__name(readFileSync, "readFileSync");
+function exists(filepath) {
+  return __awaiter(this, void 0, void 0, function* () {
+    return true;
+  });
+}
+__name(exists, "exists");
+function existsSync(filepath) {
+  return true;
+}
+__name(existsSync, "existsSync");
+function dirname(filepath) {
+  return domResolve(filepath, ".");
+}
+__name(dirname, "dirname");
+var sep = "/";
+var fs = /* @__PURE__ */ Object.freeze({
+  __proto__: null,
+  resolve,
+  readFile,
+  readFileSync,
+  exists,
+  existsSync,
+  dirname,
+  sep
+});
+function defaultFilter(value, defaultValue, ...args) {
+  value = toValue(value);
+  if (isArray(value) || isString(value))
+    return value.length ? value : defaultValue;
+  if (value === false && new Map(args).get("allow_false"))
+    return false;
+  return isFalsy(value, this.context) ? defaultValue : value;
+}
+__name(defaultFilter, "defaultFilter");
+function json(value, space = 0) {
+  return JSON.stringify(value, null, space);
+}
+__name(json, "json");
+function inspect(value, space = 0) {
+  const ancestors = [];
+  return JSON.stringify(value, function(_key, value2) {
+    if (typeof value2 !== "object" || value2 === null)
+      return value2;
+    while (ancestors.length > 0 && ancestors[ancestors.length - 1] !== this)
+      ancestors.pop();
+    if (ancestors.includes(value2))
+      return "[Circular]";
+    ancestors.push(value2);
+    return value2;
+  }, space);
+}
+__name(inspect, "inspect");
+function to_integer(value) {
+  return Number(value);
+}
+__name(to_integer, "to_integer");
+var raw2 = {
+  raw: true,
+  handler: identify
+};
+var misc = {
+  default: defaultFilter,
+  raw: raw2,
+  jsonify: json,
+  to_integer,
+  json,
+  inspect
+};
+var escapeMap = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&#34;",
+  "'": "&#39;"
+};
+var unescapeMap = {
+  "&amp;": "&",
+  "&lt;": "<",
+  "&gt;": ">",
+  "&#34;": '"',
+  "&#39;": "'"
+};
+function escape(str) {
+  str = stringify(str);
+  this.context.memoryLimit.use(str.length);
+  return str.replace(/&|<|>|"|'/g, (m) => escapeMap[m]);
+}
+__name(escape, "escape");
+function xml_escape(str) {
+  return escape.call(this, str);
+}
+__name(xml_escape, "xml_escape");
+function unescape(str) {
+  str = stringify(str);
+  this.context.memoryLimit.use(str.length);
+  return str.replace(/&(amp|lt|gt|#34|#39);/g, (m) => unescapeMap[m]);
+}
+__name(unescape, "unescape");
+function escape_once(str) {
+  return escape.call(this, unescape.call(this, str));
+}
+__name(escape_once, "escape_once");
+function newline_to_br(v) {
+  const str = stringify(v);
+  this.context.memoryLimit.use(str.length);
+  return str.replace(/\r?\n/gm, "<br />\n");
+}
+__name(newline_to_br, "newline_to_br");
+function strip_html(v) {
+  const str = stringify(v);
+  this.context.memoryLimit.use(str.length);
+  return str.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<.*?>|<!--[\s\S]*?-->/g, "");
+}
+__name(strip_html, "strip_html");
+var htmlFilters = /* @__PURE__ */ Object.freeze({
+  __proto__: null,
+  escape,
+  xml_escape,
+  escape_once,
+  newline_to_br,
+  strip_html
+});
+var MapFS = class {
+  static {
+    __name(this, "MapFS");
+  }
+  constructor(mapping) {
+    this.mapping = mapping;
+    this.sep = "/";
+  }
+  exists(filepath) {
+    return __awaiter(this, void 0, void 0, function* () {
+      return this.existsSync(filepath);
+    });
+  }
+  existsSync(filepath) {
+    return !isNil(this.mapping[filepath]);
+  }
+  readFile(filepath) {
+    return __awaiter(this, void 0, void 0, function* () {
+      return this.readFileSync(filepath);
+    });
+  }
+  readFileSync(filepath) {
+    const content = this.mapping[filepath];
+    if (isNil(content))
+      throw new Error(`ENOENT: ${filepath}`);
+    return content;
+  }
+  dirname(filepath) {
+    const segments = filepath.split(this.sep);
+    segments.pop();
+    return segments.join(this.sep);
+  }
+  resolve(dir, file, ext) {
+    file += ext;
+    if (dir === ".")
+      return file;
+    const segments = dir.split(/\/+/);
+    for (const segment of file.split(this.sep)) {
+      if (segment === "." || segment === "")
+        continue;
+      else if (segment === "..") {
+        if (segments.length > 1 || segments[0] !== "")
+          segments.pop();
+      } else
+        segments.push(segment);
+    }
+    return segments.join(this.sep);
+  }
+};
+var defaultOptions = {
+  root: ["."],
+  layouts: ["."],
+  partials: ["."],
+  relativeReference: true,
+  jekyllInclude: false,
+  keyValueSeparator: ":",
+  cache: void 0,
+  extname: "",
+  fs,
+  dynamicPartials: true,
+  jsTruthy: false,
+  dateFormat: "%A, %B %-e, %Y at %-l:%M %P %z",
+  locale: "",
+  trimTagRight: false,
+  trimTagLeft: false,
+  trimOutputRight: false,
+  trimOutputLeft: false,
+  greedy: true,
+  tagDelimiterLeft: "{%",
+  tagDelimiterRight: "%}",
+  outputDelimiterLeft: "{{",
+  outputDelimiterRight: "}}",
+  preserveTimezones: false,
+  strictFilters: false,
+  strictVariables: false,
+  ownPropertyOnly: true,
+  lenientIf: false,
+  globals: {},
+  keepOutputType: false,
+  operators: defaultOperators,
+  memoryLimit: Infinity,
+  parseLimit: Infinity,
+  renderLimit: Infinity
+};
+function normalize(options) {
+  var _a, _b;
+  if (options.hasOwnProperty("root")) {
+    if (!options.hasOwnProperty("partials"))
+      options.partials = options.root;
+    if (!options.hasOwnProperty("layouts"))
+      options.layouts = options.root;
+  }
+  if (options.hasOwnProperty("cache")) {
+    let cache;
+    if (typeof options.cache === "number")
+      cache = options.cache > 0 ? new LRU(options.cache) : void 0;
+    else if (typeof options.cache === "object")
+      cache = options.cache;
+    else
+      cache = options.cache ? new LRU(1024) : void 0;
+    options.cache = cache;
+  }
+  options = Object.assign(Object.assign(Object.assign({}, defaultOptions), options.jekyllInclude ? { dynamicPartials: false } : {}), options);
+  if ((!options.fs.dirname || !options.fs.sep) && options.relativeReference) {
+    console.warn("[LiquidJS] `fs.dirname` and `fs.sep` are required for relativeReference, set relativeReference to `false` to suppress this warning");
+    options.relativeReference = false;
+  }
+  options.root = normalizeDirectoryList(options.root);
+  options.partials = normalizeDirectoryList(options.partials);
+  options.layouts = normalizeDirectoryList(options.layouts);
+  options.outputEscape = options.outputEscape && getOutputEscapeFunction(options.outputEscape);
+  if (!options.locale) {
+    options.locale = (_b = (_a = getDateTimeFormat()) === null || _a === void 0 ? void 0 : _a().resolvedOptions().locale) !== null && _b !== void 0 ? _b : "en-US";
+  }
+  if (options.templates) {
+    options.fs = new MapFS(options.templates);
+    options.relativeReference = true;
+    options.root = options.partials = options.layouts = ".";
+  }
+  return options;
+}
+__name(normalize, "normalize");
+function getOutputEscapeFunction(nameOrFunction) {
+  if (nameOrFunction === "escape")
+    return escape;
+  if (nameOrFunction === "json")
+    return misc.json;
+  assert(isFunction(nameOrFunction), "`outputEscape` need to be of type string or function");
+  return nameOrFunction;
+}
+__name(getOutputEscapeFunction, "getOutputEscapeFunction");
+function normalizeDirectoryList(value) {
+  let list = [];
+  if (isArray(value))
+    list = value;
+  if (isString(value))
+    list = [value];
+  return list;
+}
+__name(normalizeDirectoryList, "normalizeDirectoryList");
+function whiteSpaceCtrl(tokens, options) {
+  let inRaw = false;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (!isDelimitedToken(token))
+      continue;
+    if (!inRaw && token.trimLeft) {
+      trimLeft(tokens[i - 1], options.greedy);
+    }
+    if (isTagToken(token)) {
+      if (token.name === "raw")
+        inRaw = true;
+      else if (token.name === "endraw")
+        inRaw = false;
+    }
+    if (!inRaw && token.trimRight) {
+      trimRight(tokens[i + 1], options.greedy);
+    }
+  }
+}
+__name(whiteSpaceCtrl, "whiteSpaceCtrl");
+function trimLeft(token, greedy) {
+  if (!token || !isHTMLToken(token))
+    return;
+  const mask = greedy ? BLANK : INLINE_BLANK;
+  while (TYPES[token.input.charCodeAt(token.end - 1 - token.trimRight)] & mask)
+    token.trimRight++;
+}
+__name(trimLeft, "trimLeft");
+function trimRight(token, greedy) {
+  if (!token || !isHTMLToken(token))
+    return;
+  const mask = greedy ? BLANK : INLINE_BLANK;
+  while (TYPES[token.input.charCodeAt(token.begin + token.trimLeft)] & mask)
+    token.trimLeft++;
+  if (token.input.charAt(token.begin + token.trimLeft) === "\n")
+    token.trimLeft++;
+}
+__name(trimRight, "trimRight");
+var Tokenizer = class {
+  static {
+    __name(this, "Tokenizer");
+  }
+  constructor(input, operators = defaultOptions.operators, file, range2) {
+    this.input = input;
+    this.file = file;
+    this.rawBeginAt = -1;
+    this.p = range2 ? range2[0] : 0;
+    this.N = range2 ? range2[1] : input.length;
+    this.opTrie = createTrie(operators);
+    this.literalTrie = createTrie(literalValues);
+  }
+  readExpression() {
+    return new Expression(this.readExpressionTokens());
+  }
+  *readExpressionTokens() {
+    while (this.p < this.N) {
+      const operator = this.readOperator();
+      if (operator) {
+        yield operator;
+        continue;
+      }
+      const operand = this.readValue();
+      if (operand) {
+        yield operand;
+        continue;
+      }
+      return;
+    }
+  }
+  readOperator() {
+    this.skipBlank();
+    const end = this.matchTrie(this.opTrie);
+    if (end === -1)
+      return;
+    return new OperatorToken(this.input, this.p, this.p = end, this.file);
+  }
+  matchTrie(trie) {
+    let node = trie;
+    let i = this.p;
+    let info;
+    while (node[this.input[i]] && i < this.N) {
+      node = node[this.input[i++]];
+      if (node["end"])
+        info = node;
+    }
+    if (!info)
+      return -1;
+    if (info["needBoundary"] && isWord(this.peek(i - this.p)))
+      return -1;
+    return i;
+  }
+  readFilteredValue() {
+    const begin = this.p;
+    const initial = this.readExpression();
+    this.assert(initial.valid(), `invalid value expression: ${this.snapshot()}`);
+    const filters2 = this.readFilters();
+    return new FilteredValueToken(initial, filters2, this.input, begin, this.p, this.file);
+  }
+  readFilters() {
+    const filters2 = [];
+    while (true) {
+      const filter2 = this.readFilter();
+      if (!filter2)
+        return filters2;
+      filters2.push(filter2);
+    }
+  }
+  readFilter() {
+    this.skipBlank();
+    if (this.end())
+      return null;
+    this.assert(this.read() === "|", `expected "|" before filter`);
+    const name = this.readIdentifier();
+    if (!name.size()) {
+      this.assert(this.end(), `expected filter name`);
+      return null;
+    }
+    const args = [];
+    this.skipBlank();
+    if (this.peek() === ":") {
+      do {
+        ++this.p;
+        const arg = this.readFilterArg();
+        arg && args.push(arg);
+        this.skipBlank();
+        this.assert(this.end() || this.peek() === "," || this.peek() === "|", () => `unexpected character ${this.snapshot()}`);
+      } while (this.peek() === ",");
+    } else if (this.peek() === "|" || this.end()) ;
+    else {
+      throw this.error('expected ":" after filter name');
+    }
+    return new FilterToken(name.getText(), args, this.input, name.begin, this.p, this.file);
+  }
+  readFilterArg() {
+    const key = this.readValue();
+    if (!key)
+      return;
+    this.skipBlank();
+    if (this.peek() !== ":")
+      return key;
+    ++this.p;
+    const value = this.readValue();
+    return [key.getText(), value];
+  }
+  readTopLevelTokens(options = defaultOptions) {
+    const tokens = [];
+    while (this.p < this.N) {
+      const token = this.readTopLevelToken(options);
+      tokens.push(token);
+    }
+    whiteSpaceCtrl(tokens, options);
+    return tokens;
+  }
+  readTopLevelToken(options) {
+    const { tagDelimiterLeft, outputDelimiterLeft } = options;
+    if (this.rawBeginAt > -1)
+      return this.readEndrawOrRawContent(options);
+    if (this.match(tagDelimiterLeft))
+      return this.readTagToken(options);
+    if (this.match(outputDelimiterLeft))
+      return this.readOutputToken(options);
+    return this.readHTMLToken([tagDelimiterLeft, outputDelimiterLeft]);
+  }
+  readHTMLToken(stopStrings) {
+    const begin = this.p;
+    while (this.p < this.N) {
+      if (stopStrings.some((str) => this.match(str)))
+        break;
+      ++this.p;
+    }
+    return new HTMLToken(this.input, begin, this.p, this.file);
+  }
+  readTagToken(options) {
+    const { file, input } = this;
+    const begin = this.p;
+    if (this.readToDelimiter(options.tagDelimiterRight) === -1) {
+      throw this.error(`tag ${this.snapshot(begin)} not closed`, begin);
+    }
+    const token = new TagToken(input, begin, this.p, options, file);
+    if (token.name === "raw")
+      this.rawBeginAt = begin;
+    return token;
+  }
+  readToDelimiter(delimiter, respectQuoted = false) {
+    this.skipBlank();
+    while (this.p < this.N) {
+      if (respectQuoted && this.peekType() & QUOTE) {
+        this.readQuoted();
+        continue;
+      }
+      ++this.p;
+      if (this.rmatch(delimiter))
+        return this.p;
+    }
+    return -1;
+  }
+  readOutputToken(options = defaultOptions) {
+    const { file, input } = this;
+    const { outputDelimiterRight } = options;
+    const begin = this.p;
+    if (this.readToDelimiter(outputDelimiterRight, true) === -1) {
+      throw this.error(`output ${this.snapshot(begin)} not closed`, begin);
+    }
+    return new OutputToken(input, begin, this.p, options, file);
+  }
+  readEndrawOrRawContent(options) {
+    const { tagDelimiterLeft, tagDelimiterRight } = options;
+    const begin = this.p;
+    let leftPos = this.readTo(tagDelimiterLeft) - tagDelimiterLeft.length;
+    while (this.p < this.N) {
+      if (this.readIdentifier().getText() !== "endraw") {
+        leftPos = this.readTo(tagDelimiterLeft) - tagDelimiterLeft.length;
+        continue;
+      }
+      while (this.p <= this.N) {
+        if (this.rmatch(tagDelimiterRight)) {
+          const end = this.p;
+          if (begin === leftPos) {
+            this.rawBeginAt = -1;
+            return new TagToken(this.input, begin, end, options, this.file);
+          } else {
+            this.p = leftPos;
+            return new HTMLToken(this.input, begin, leftPos, this.file);
+          }
+        }
+        if (this.rmatch(tagDelimiterLeft))
+          break;
+        this.p++;
+      }
+    }
+    throw this.error(`raw ${this.snapshot(this.rawBeginAt)} not closed`, begin);
+  }
+  readLiquidTagTokens(options = defaultOptions) {
+    const tokens = [];
+    while (this.p < this.N) {
+      const token = this.readLiquidTagToken(options);
+      token && tokens.push(token);
+    }
+    return tokens;
+  }
+  readLiquidTagToken(options) {
+    this.skipBlank();
+    if (this.end())
+      return;
+    const begin = this.p;
+    this.readToDelimiter("\n");
+    const end = this.p;
+    return new LiquidTagToken(this.input, begin, end, options, this.file);
+  }
+  error(msg, pos = this.p) {
+    return new TokenizationError(msg, new IdentifierToken(this.input, pos, this.N, this.file));
+  }
+  assert(pred, msg, pos) {
+    if (!pred)
+      throw this.error(typeof msg === "function" ? msg() : msg, pos);
+  }
+  snapshot(begin = this.p) {
+    return JSON.stringify(ellipsis(this.input.slice(begin, this.N), 32));
+  }
+  /**
+   * @deprecated use #readIdentifier instead
+   */
+  readWord() {
+    return this.readIdentifier();
+  }
+  readIdentifier() {
+    this.skipBlank();
+    const begin = this.p;
+    while (!this.end() && isWord(this.peek()))
+      ++this.p;
+    return new IdentifierToken(this.input, begin, this.p, this.file);
+  }
+  readNonEmptyIdentifier() {
+    const id = this.readIdentifier();
+    return id.size() ? id : void 0;
+  }
+  readTagName() {
+    this.skipBlank();
+    if (this.input[this.p] === "#")
+      return this.input.slice(this.p, ++this.p);
+    return this.readIdentifier().getText();
+  }
+  readHashes(jekyllStyle) {
+    const hashes = [];
+    while (true) {
+      const hash = this.readHash(jekyllStyle);
+      if (!hash)
+        return hashes;
+      hashes.push(hash);
+    }
+  }
+  readHash(jekyllStyle) {
+    this.skipBlank();
+    if (this.peek() === ",")
+      ++this.p;
+    const begin = this.p;
+    const name = this.readNonEmptyIdentifier();
+    if (!name)
+      return;
+    let value;
+    this.skipBlank();
+    const sep2 = isString(jekyllStyle) ? jekyllStyle : jekyllStyle ? "=" : ":";
+    if (this.peek() === sep2) {
+      ++this.p;
+      value = this.readValue();
+    }
+    return new HashToken(this.input, begin, this.p, name, value, this.file);
+  }
+  remaining() {
+    return this.input.slice(this.p, this.N);
+  }
+  advance(step = 1) {
+    this.p += step;
+  }
+  end() {
+    return this.p >= this.N;
+  }
+  read() {
+    return this.input[this.p++];
+  }
+  readTo(end) {
+    while (this.p < this.N) {
+      ++this.p;
+      if (this.rmatch(end))
+        return this.p;
+    }
+    return -1;
+  }
+  readValue() {
+    this.skipBlank();
+    const begin = this.p;
+    const variable = this.readLiteral() || this.readQuoted() || this.readRange() || this.readNumber();
+    const props = this.readProperties(!variable);
+    if (!props.length)
+      return variable;
+    return new PropertyAccessToken(variable, props, this.input, begin, this.p);
+  }
+  readScopeValue() {
+    this.skipBlank();
+    const begin = this.p;
+    const props = this.readProperties();
+    if (!props.length)
+      return void 0;
+    return new PropertyAccessToken(void 0, props, this.input, begin, this.p);
+  }
+  readProperties(isBegin = true) {
+    const props = [];
+    while (true) {
+      if (this.peek() === "[") {
+        this.p++;
+        const prop = this.readValue() || new IdentifierToken(this.input, this.p, this.p, this.file);
+        this.assert(this.readTo("]") !== -1, "[ not closed");
+        props.push(prop);
+        continue;
+      }
+      if (isBegin && !props.length) {
+        const prop = this.readNonEmptyIdentifier();
+        if (prop) {
+          props.push(prop);
+          continue;
+        }
+      }
+      if (this.peek() === "." && this.peek(1) !== ".") {
+        this.p++;
+        const prop = this.readNonEmptyIdentifier();
+        if (!prop)
+          break;
+        props.push(prop);
+        continue;
+      }
+      break;
+    }
+    return props;
+  }
+  readNumber() {
+    this.skipBlank();
+    let decimalFound = false;
+    let digitFound = false;
+    let n = 0;
+    if (this.peekType() & SIGN)
+      n++;
+    while (this.p + n <= this.N) {
+      if (this.peekType(n) & NUMBER) {
+        digitFound = true;
+        n++;
+      } else if (this.peek(n) === "." && this.peek(n + 1) !== ".") {
+        if (decimalFound || !digitFound)
+          return;
+        decimalFound = true;
+        n++;
+      } else
+        break;
+    }
+    if (digitFound && !isWord(this.peek(n))) {
+      const num = new NumberToken(this.input, this.p, this.p + n, this.file);
+      this.advance(n);
+      return num;
+    }
+  }
+  readLiteral() {
+    this.skipBlank();
+    const end = this.matchTrie(this.literalTrie);
+    if (end === -1)
+      return;
+    const literal = new LiteralToken(this.input, this.p, end, this.file);
+    this.p = end;
+    return literal;
+  }
+  readRange() {
+    this.skipBlank();
+    const begin = this.p;
+    if (this.peek() !== "(")
+      return;
+    ++this.p;
+    const lhs = this.readValueOrThrow();
+    this.skipBlank();
+    this.assert(this.read() === "." && this.read() === ".", "invalid range syntax");
+    const rhs = this.readValueOrThrow();
+    this.skipBlank();
+    this.assert(this.read() === ")", "invalid range syntax");
+    return new RangeToken(this.input, begin, this.p, lhs, rhs, this.file);
+  }
+  readValueOrThrow() {
+    const value = this.readValue();
+    this.assert(value, () => `unexpected token ${this.snapshot()}, value expected`);
+    return value;
+  }
+  readQuoted() {
+    this.skipBlank();
+    const begin = this.p;
+    if (!(this.peekType() & QUOTE))
+      return;
+    ++this.p;
+    let escaped = false;
+    while (this.p < this.N) {
+      ++this.p;
+      if (this.input[this.p - 1] === this.input[begin] && !escaped)
+        break;
+      if (escaped)
+        escaped = false;
+      else if (this.input[this.p - 1] === "\\")
+        escaped = true;
+    }
+    return new QuotedToken(this.input, begin, this.p, this.file);
+  }
+  *readFileNameTemplate(options) {
+    const { outputDelimiterLeft } = options;
+    const htmlStopStrings = [",", " ", "\r", "\n", "	", outputDelimiterLeft];
+    const htmlStopStringSet = new Set(htmlStopStrings);
+    while (this.p < this.N && !htmlStopStringSet.has(this.peek())) {
+      yield this.match(outputDelimiterLeft) ? this.readOutputToken(options) : this.readHTMLToken(htmlStopStrings);
+    }
+  }
+  match(word) {
+    for (let i = 0; i < word.length; i++) {
+      if (word[i] !== this.input[this.p + i])
+        return false;
+    }
+    return true;
+  }
+  rmatch(pattern) {
+    for (let i = 0; i < pattern.length; i++) {
+      if (pattern[pattern.length - 1 - i] !== this.input[this.p - 1 - i])
+        return false;
+    }
+    return true;
+  }
+  peekType(n = 0) {
+    return this.p + n >= this.N ? 0 : TYPES[this.input.charCodeAt(this.p + n)];
+  }
+  peek(n = 0) {
+    return this.p + n >= this.N ? "" : this.input[this.p + n];
+  }
+  skipBlank() {
+    while (this.peekType() & BLANK)
+      ++this.p;
+  }
+};
+var ParseStream = class {
+  static {
+    __name(this, "ParseStream");
+  }
+  constructor(tokens, parseToken) {
+    this.handlers = {};
+    this.stopRequested = false;
+    this.tokens = tokens;
+    this.parseToken = parseToken;
+  }
+  on(name, cb) {
+    this.handlers[name] = cb;
+    return this;
+  }
+  trigger(event, arg) {
+    const h = this.handlers[event];
+    return h ? (h.call(this, arg), true) : false;
+  }
+  start() {
+    this.trigger("start");
+    let token;
+    while (!this.stopRequested && (token = this.tokens.shift())) {
+      if (this.trigger("token", token))
+        continue;
+      if (isTagToken(token) && this.trigger(`tag:${token.name}`, token)) {
+        continue;
+      }
+      const template = this.parseToken(token, this.tokens);
+      this.trigger("template", template);
+    }
+    if (!this.stopRequested)
+      this.trigger("end");
+    return this;
+  }
+  stop() {
+    this.stopRequested = true;
+    return this;
+  }
+};
+var TemplateImpl = class {
+  static {
+    __name(this, "TemplateImpl");
+  }
+  constructor(token) {
+    this.token = token;
+  }
+};
+var Tag = class extends TemplateImpl {
+  static {
+    __name(this, "Tag");
+  }
+  constructor(token, remainTokens, liquid) {
+    super(token);
+    this.name = token.name;
+    this.liquid = liquid;
+    this.tokenizer = token.tokenizer;
+  }
+};
+var Hash = class {
+  static {
+    __name(this, "Hash");
+  }
+  constructor(input, jekyllStyle) {
+    this.hash = {};
+    const tokenizer = input instanceof Tokenizer ? input : new Tokenizer(input, {});
+    for (const hash of tokenizer.readHashes(jekyllStyle)) {
+      this.hash[hash.name.content] = hash.value;
+    }
+  }
+  *render(ctx) {
+    const hash = {};
+    for (const key of Object.keys(this.hash)) {
+      hash[key] = this.hash[key] === void 0 ? true : yield evalToken(this.hash[key], ctx);
+    }
+    return hash;
+  }
+};
+function createTagClass(options) {
+  return class extends Tag {
+    constructor(token, tokens, liquid) {
+      super(token, tokens, liquid);
+      if (isFunction(options.parse)) {
+        options.parse.call(this, token, tokens);
+      }
+    }
+    *render(ctx, emitter) {
+      const hash = yield new Hash(this.token.args, ctx.opts.keyValueSeparator).render(ctx);
+      return yield options.render.call(this, ctx, emitter, hash);
+    }
+  };
+}
+__name(createTagClass, "createTagClass");
+function isKeyValuePair(arr) {
+  return isArray(arr);
+}
+__name(isKeyValuePair, "isKeyValuePair");
+var Filter = class {
+  static {
+    __name(this, "Filter");
+  }
+  constructor(token, options, liquid) {
+    this.token = token;
+    this.name = token.name;
+    this.handler = isFunction(options) ? options : isFunction(options === null || options === void 0 ? void 0 : options.handler) ? options.handler : identify;
+    this.raw = !isFunction(options) && !!(options === null || options === void 0 ? void 0 : options.raw);
+    this.args = token.args;
+    this.liquid = liquid;
+  }
+  *render(value, context) {
+    const argv = [];
+    for (const arg of this.args) {
+      if (isKeyValuePair(arg))
+        argv.push([arg[0], yield evalToken(arg[1], context)]);
+      else
+        argv.push(yield evalToken(arg, context));
+    }
+    return yield this.handler.apply({ context, token: this.token, liquid: this.liquid }, [value, ...argv]);
+  }
+};
+var Value = class {
+  static {
+    __name(this, "Value");
+  }
+  /**
+   * @param str the value to be valuated, eg.: "foobar" | truncate: 3
+   */
+  constructor(input, liquid) {
+    this.filters = [];
+    const token = typeof input === "string" ? new Tokenizer(input, liquid.options.operators).readFilteredValue() : input;
+    this.initial = token.initial;
+    this.filters = token.filters.map((token2) => new Filter(token2, this.getFilter(liquid, token2.name), liquid));
+  }
+  *value(ctx, lenient) {
+    lenient = lenient || ctx.opts.lenientIf && this.filters.length > 0 && this.filters[0].name === "default";
+    let val = yield this.initial.evaluate(ctx, lenient);
+    for (const filter2 of this.filters) {
+      val = yield filter2.render(val, ctx);
+    }
+    return val;
+  }
+  getFilter(liquid, name) {
+    const impl = liquid.filters[name];
+    assert(impl || !liquid.options.strictFilters, () => `undefined filter: ${name}`);
+    return impl;
+  }
+};
+var Output = class extends TemplateImpl {
+  static {
+    __name(this, "Output");
+  }
+  constructor(token, liquid) {
+    var _a;
+    super(token);
+    const tokenizer = new Tokenizer(token.input, liquid.options.operators, token.file, token.contentRange);
+    this.value = new Value(tokenizer.readFilteredValue(), liquid);
+    const filters2 = this.value.filters;
+    const outputEscape = liquid.options.outputEscape;
+    if (!((_a = filters2[filters2.length - 1]) === null || _a === void 0 ? void 0 : _a.raw) && outputEscape) {
+      const token2 = new FilterToken(toString.call(outputEscape), [], "", 0, 0);
+      filters2.push(new Filter(token2, outputEscape, liquid));
+    }
+  }
+  *render(ctx, emitter) {
+    const val = yield this.value.value(ctx, false);
+    emitter.write(val);
+  }
+  *arguments() {
+    yield this.value;
+  }
+};
+var HTML = class extends TemplateImpl {
+  static {
+    __name(this, "HTML");
+  }
+  constructor(token) {
+    super(token);
+    this.str = token.getContent();
+  }
+  *render(ctx, emitter) {
+    emitter.write(this.str);
+  }
+};
+var Variable = class _Variable {
+  static {
+    __name(this, "Variable");
+  }
+  constructor(segments, location) {
+    this.segments = segments;
+    this.location = location;
+  }
+  toString() {
+    return segmentsString(this.segments, true);
+  }
+  /** Return this variable's segments as an array, possibly with nested arrays for nested paths. */
+  toArray() {
+    function* _visit2(...segments) {
+      for (const segment of segments) {
+        if (segment instanceof _Variable) {
+          yield Array.from(_visit2(...segment.segments));
+        } else {
+          yield segment;
+        }
+      }
+    }
+    __name(_visit2, "_visit");
+    return Array.from(_visit2(...this.segments));
+  }
+};
+var VariableMap = class {
+  static {
+    __name(this, "VariableMap");
+  }
+  constructor() {
+    this.map = /* @__PURE__ */ new Map();
+  }
+  get(key) {
+    const k = segmentsString([key.segments[0]]);
+    if (!this.map.has(k)) {
+      this.map.set(k, []);
+    }
+    return this.map.get(k);
+  }
+  has(key) {
+    return this.map.has(segmentsString([key.segments[0]]));
+  }
+  push(variable) {
+    this.get(variable).push(variable);
+  }
+  asObject() {
+    return Object.fromEntries(this.map);
+  }
+};
+var defaultStaticAnalysisOptions = {
+  partials: true
+};
+function* _analyze(templates, partials, sync) {
+  const variables = new VariableMap();
+  const globals = new VariableMap();
+  const locals = new VariableMap();
+  const rootScope = new DummyScope(/* @__PURE__ */ new Set());
+  const seen = /* @__PURE__ */ new Set();
+  function updateVariables(variable, scope) {
+    variables.push(variable);
+    const aliased = scope.alias(variable);
+    if (aliased !== void 0) {
+      const root = aliased.segments[0];
+      if (isString(root) && !rootScope.has(root)) {
+        globals.push(aliased);
+      }
+    } else {
+      const root = variable.segments[0];
+      if (isString(root) && !scope.has(root)) {
+        globals.push(variable);
+      }
+    }
+    for (const segment of variable.segments) {
+      if (segment instanceof Variable) {
+        updateVariables(segment, scope);
+      }
+    }
+  }
+  __name(updateVariables, "updateVariables");
+  function* visit3(template, scope) {
+    if (template.arguments) {
+      for (const arg of template.arguments()) {
+        for (const variable of extractVariables(arg)) {
+          updateVariables(variable, scope);
+        }
+      }
+    }
+    if (template.localScope) {
+      for (const ident of template.localScope()) {
+        scope.add(ident.content);
+        scope.deleteAlias(ident.content);
+        const [row, col] = ident.getPosition();
+        locals.push(new Variable([ident.content], { row, col, file: ident.file }));
+      }
+    }
+    if (template.children) {
+      if (template.partialScope) {
+        const partial = template.partialScope();
+        if (partial === void 0) {
+          for (const child of yield template.children(partials, sync)) {
+            yield visit3(child, scope);
+          }
+          return;
+        }
+        if (seen.has(partial.name))
+          return;
+        const partialScopeNames = /* @__PURE__ */ new Set();
+        const partialScope = partial.isolated ? new DummyScope(partialScopeNames) : scope.push(partialScopeNames);
+        for (const name of partial.scope) {
+          if (isString(name)) {
+            partialScopeNames.add(name);
+          } else {
+            const [alias, argument] = name;
+            partialScopeNames.add(alias);
+            const variables2 = Array.from(extractVariables(argument));
+            if (variables2.length) {
+              partialScope.setAlias(alias, variables2[0].segments);
+            }
+          }
+        }
+        for (const child of yield template.children(partials, sync)) {
+          yield visit3(child, partialScope);
+          seen.add(partial.name);
+        }
+        partialScope.pop();
+      } else {
+        if (template.blockScope) {
+          scope.push(new Set(template.blockScope()));
+        }
+        for (const child of yield template.children(partials, sync)) {
+          yield visit3(child, scope);
+        }
+        if (template.blockScope) {
+          scope.pop();
+        }
+      }
+    }
+  }
+  __name(visit3, "visit");
+  for (const template of templates) {
+    yield visit3(template, rootScope);
+  }
+  return {
+    variables: variables.asObject(),
+    globals: globals.asObject(),
+    locals: locals.asObject()
+  };
+}
+__name(_analyze, "_analyze");
+function analyze(template, options = {}) {
+  const opts = Object.assign(Object.assign({}, defaultStaticAnalysisOptions), options);
+  return toPromise(_analyze(template, opts.partials, false));
+}
+__name(analyze, "analyze");
+function analyzeSync(template, options = {}) {
+  const opts = Object.assign(Object.assign({}, defaultStaticAnalysisOptions), options);
+  return toValueSync(_analyze(template, opts.partials, true));
+}
+__name(analyzeSync, "analyzeSync");
+var DummyScope = class {
+  static {
+    __name(this, "DummyScope");
+  }
+  constructor(globals) {
+    this.stack = [{ names: globals, aliases: /* @__PURE__ */ new Map() }];
+  }
+  /** Return true if `name` is in scope.  */
+  has(name) {
+    for (const scope of this.stack) {
+      if (scope.names.has(name)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  push(scope) {
+    this.stack.push({ names: scope, aliases: /* @__PURE__ */ new Map() });
+    return this;
+  }
+  pop() {
+    var _a;
+    return (_a = this.stack.pop()) === null || _a === void 0 ? void 0 : _a.names;
+  }
+  // Add a name to the template scope.
+  add(name) {
+    this.stack[0].names.add(name);
+  }
+  /** Return the variable that `variable` aliases, or `variable` if it doesn't alias anything. */
+  alias(variable) {
+    const root = variable.segments[0];
+    if (!isString(root))
+      return void 0;
+    const alias = this.getAlias(root);
+    if (alias === void 0)
+      return void 0;
+    return new Variable([...alias, ...variable.segments.slice(1)], variable.location);
+  }
+  // TODO: `from` could be a path with multiple segments, like `include.x`.
+  setAlias(from, to) {
+    this.stack[this.stack.length - 1].aliases.set(from, to);
+  }
+  deleteAlias(name) {
+    this.stack[this.stack.length - 1].aliases.delete(name);
+  }
+  getAlias(name) {
+    for (const scope of this.stack) {
+      if (scope.aliases.has(name)) {
+        return scope.aliases.get(name);
+      }
+      if (scope.names.has(name)) {
+        return void 0;
+      }
+    }
+    return void 0;
+  }
+};
+function* extractVariables(value) {
+  if (isValueToken(value)) {
+    yield* extractValueTokenVariables(value);
+  } else if (value instanceof Value) {
+    yield* extractFilteredValueVariables(value);
+  }
+}
+__name(extractVariables, "extractVariables");
+function* extractFilteredValueVariables(value) {
+  for (const token of value.initial.postfix) {
+    if (isValueToken(token)) {
+      yield* extractValueTokenVariables(token);
+    }
+  }
+  for (const filter2 of value.filters) {
+    for (const arg of filter2.args) {
+      if (isKeyValuePair(arg) && arg[1]) {
+        yield* extractValueTokenVariables(arg[1]);
+      } else if (isValueToken(arg)) {
+        yield* extractValueTokenVariables(arg);
+      }
+    }
+  }
+}
+__name(extractFilteredValueVariables, "extractFilteredValueVariables");
+function* extractValueTokenVariables(token) {
+  if (isRangeToken(token)) {
+    yield* extractValueTokenVariables(token.lhs);
+    yield* extractValueTokenVariables(token.rhs);
+  } else if (isPropertyAccessToken(token)) {
+    yield extractPropertyAccessVariable(token);
+  }
+}
+__name(extractValueTokenVariables, "extractValueTokenVariables");
+function extractPropertyAccessVariable(token) {
+  const segments = [];
+  let file = token.file;
+  const root = token.props[0];
+  file = file || root.file;
+  if (isQuotedToken(root) || isNumberToken(root) || isWordToken(root)) {
+    segments.push(root.content);
+  } else if (isPropertyAccessToken(root)) {
+    segments.push(...extractPropertyAccessVariable(root).segments);
+  }
+  for (const prop of token.props.slice(1)) {
+    file = file || prop.file;
+    if (isQuotedToken(prop) || isNumberToken(prop) || isWordToken(prop)) {
+      segments.push(prop.content);
+    } else if (isPropertyAccessToken(prop)) {
+      segments.push(extractPropertyAccessVariable(prop));
+    }
+  }
+  const [row, col] = token.getPosition();
+  return new Variable(segments, {
+    row,
+    col,
+    file
+  });
+}
+__name(extractPropertyAccessVariable, "extractPropertyAccessVariable");
+var RE_PROPERTY = /^[\u0080-\uFFFFa-zA-Z_][\u0080-\uFFFFa-zA-Z0-9_-]*$/;
+function segmentsString(segments, bracketedRoot = false) {
+  const buf = [];
+  const root = segments[0];
+  if (isString(root)) {
+    if (!bracketedRoot || root.match(RE_PROPERTY)) {
+      buf.push(`${root}`);
+    } else {
+      buf.push(`['${root}']`);
+    }
+  }
+  for (const segment of segments.slice(1)) {
+    if (segment instanceof Variable) {
+      buf.push(`[${segmentsString(segment.segments)}]`);
+    } else if (isString(segment)) {
+      if (segment.match(RE_PROPERTY)) {
+        buf.push(`.${segment}`);
+      } else {
+        buf.push(`['${segment}']`);
+      }
+    } else {
+      buf.push(`[${segment}]`);
+    }
+  }
+  return buf.join("");
+}
+__name(segmentsString, "segmentsString");
+var LookupType;
+(function(LookupType2) {
+  LookupType2["Partials"] = "partials";
+  LookupType2["Layouts"] = "layouts";
+  LookupType2["Root"] = "root";
+})(LookupType || (LookupType = {}));
+var Loader = class {
+  static {
+    __name(this, "Loader");
+  }
+  constructor(options) {
+    var _a, _b, _c, _d;
+    this.options = options;
+    if (options.relativeReference) {
+      const sep2 = options.fs.sep;
+      assert(sep2, "`fs.sep` is required for relative reference");
+      const prefixes = ["." + sep2, ".." + sep2, "./", "../"];
+      this.shouldLoadRelative = (referencedFile) => prefixes.some((prefix) => referencedFile.startsWith(prefix));
+    } else {
+      this.shouldLoadRelative = (_referencedFile) => false;
+    }
+    const fs2 = options.fs;
+    this.contains = toLiquidAsync(((_a = fs2.contains) === null || _a === void 0 ? void 0 : _a.bind(fs2)) || (() => __awaiter(this, void 0, void 0, function* () {
+      return true;
+    })), ((_b = fs2.containsSync) === null || _b === void 0 ? void 0 : _b.bind(fs2)) || (() => true));
+    this.exists = toLiquidAsync(((_c = fs2.exists) === null || _c === void 0 ? void 0 : _c.bind(fs2)) || (() => __awaiter(this, void 0, void 0, function* () {
+      return false;
+    })), (_d = fs2.existsSync) === null || _d === void 0 ? void 0 : _d.bind(fs2));
+  }
+  *lookup(file, type, sync, currentFile) {
+    const dirs = this.options[type];
+    for (const filepath of this.candidates(file, dirs, currentFile)) {
+      let allowed = false;
+      for (const dir of dirs) {
+        if (yield this.contains(!!sync, dir, filepath)) {
+          allowed = true;
+          break;
+        }
+      }
+      if (!allowed)
+        continue;
+      if (yield this.exists(!!sync, filepath))
+        return filepath;
+    }
+    throw this.lookupError(file, dirs);
+  }
+  *candidates(file, dirs, currentFile) {
+    const { fs: fs2, extname } = this.options;
+    if (this.shouldLoadRelative(file) && currentFile) {
+      const referenced = fs2.resolve(this.dirname(currentFile), file, extname);
+      yield referenced;
+    }
+    for (const dir of dirs) {
+      const referenced = fs2.resolve(dir, file, extname);
+      yield referenced;
+    }
+    if (fs2.fallback !== void 0) {
+      const filepath = fs2.fallback(file);
+      if (filepath !== void 0)
+        yield filepath;
+    }
+  }
+  dirname(path) {
+    const fs2 = this.options.fs;
+    assert(fs2.dirname, "`fs.dirname` is required for relative reference");
+    return fs2.dirname(path);
+  }
+  lookupError(file, roots) {
+    const err = new Error("ENOENT");
+    err.message = `ENOENT: Failed to lookup "${file}" in "${roots}"`;
+    err.code = "ENOENT";
+    return err;
+  }
+};
+var Parser = class {
+  static {
+    __name(this, "Parser");
+  }
+  constructor(liquid) {
+    var _a, _b;
+    this.liquid = liquid;
+    this.cache = this.liquid.options.cache;
+    this.fs = this.liquid.options.fs;
+    this.parseFile = this.cache ? this._parseFileCached : this._parseFile;
+    this.loader = new Loader(this.liquid.options);
+    this.parseLimit = new Limiter("parse length", liquid.options.parseLimit);
+    this.readFile = toLiquidAsync(((_a = this.fs.readFile) === null || _a === void 0 ? void 0 : _a.bind(this.fs)) || (() => __awaiter(this, void 0, void 0, function* () {
+      throw new Error("readFile not implemented");
+    })), (_b = this.fs.readFileSync) === null || _b === void 0 ? void 0 : _b.bind(this.fs));
+  }
+  parse(html, filepath) {
+    html = String(html);
+    this.parseLimit.use(html.length);
+    const tokenizer = new Tokenizer(html, this.liquid.options.operators, filepath);
+    const tokens = tokenizer.readTopLevelTokens(this.liquid.options);
+    return this.parseTokens(tokens);
+  }
+  parseTokens(tokens) {
+    let token;
+    const templates = [];
+    const errors = [];
+    while (token = tokens.shift()) {
+      try {
+        templates.push(this.parseToken(token, tokens));
+      } catch (err) {
+        if (this.liquid.options.catchAllErrors)
+          errors.push(err);
+        else
+          throw err;
+      }
+    }
+    if (errors.length)
+      throw new LiquidErrors(errors);
+    return templates;
+  }
+  parseToken(token, remainTokens) {
+    try {
+      if (isTagToken(token)) {
+        const TagClass = this.liquid.tags[token.name];
+        assert(TagClass, `tag "${token.name}" not found`);
+        return new TagClass(token, remainTokens, this.liquid, this);
+      }
+      if (isOutputToken(token)) {
+        return new Output(token, this.liquid);
+      }
+      return new HTML(token);
+    } catch (e) {
+      if (LiquidError.is(e))
+        throw e;
+      throw new ParseError(e, token);
+    }
+  }
+  parseStream(tokens) {
+    return new ParseStream(tokens, (token, tokens2) => this.parseToken(token, tokens2));
+  }
+  *_parseFileCached(file, sync, type = LookupType.Root, currentFile) {
+    const cache = this.cache;
+    const key = this.loader.shouldLoadRelative(file) ? currentFile + "," + file : type + ":" + file;
+    const tpls = yield cache.read(key);
+    if (tpls)
+      return tpls;
+    const task = this._parseFile(file, sync, type, currentFile);
+    const taskOrTpl = sync ? yield task : toPromise(task);
+    cache.write(key, taskOrTpl);
+    try {
+      return yield taskOrTpl;
+    } catch (err) {
+      cache.remove(key);
+      throw err;
+    }
+  }
+  *_parseFile(file, sync, type = LookupType.Root, currentFile) {
+    const filepath = yield this.loader.lookup(file, type, sync, currentFile);
+    return this.parse(yield this.readFile(!!sync, filepath), filepath);
+  }
+};
+var TokenKind;
+(function(TokenKind2) {
+  TokenKind2[TokenKind2["Number"] = 1] = "Number";
+  TokenKind2[TokenKind2["Literal"] = 2] = "Literal";
+  TokenKind2[TokenKind2["Tag"] = 4] = "Tag";
+  TokenKind2[TokenKind2["Output"] = 8] = "Output";
+  TokenKind2[TokenKind2["HTML"] = 16] = "HTML";
+  TokenKind2[TokenKind2["Filter"] = 32] = "Filter";
+  TokenKind2[TokenKind2["Hash"] = 64] = "Hash";
+  TokenKind2[TokenKind2["PropertyAccess"] = 128] = "PropertyAccess";
+  TokenKind2[TokenKind2["Word"] = 256] = "Word";
+  TokenKind2[TokenKind2["Range"] = 512] = "Range";
+  TokenKind2[TokenKind2["Quoted"] = 1024] = "Quoted";
+  TokenKind2[TokenKind2["Operator"] = 2048] = "Operator";
+  TokenKind2[TokenKind2["FilteredValue"] = 4096] = "FilteredValue";
+  TokenKind2[TokenKind2["Delimited"] = 12] = "Delimited";
+})(TokenKind || (TokenKind = {}));
+function isDelimitedToken(val) {
+  return !!(getKind(val) & TokenKind.Delimited);
+}
+__name(isDelimitedToken, "isDelimitedToken");
+function isOperatorToken(val) {
+  return getKind(val) === TokenKind.Operator;
+}
+__name(isOperatorToken, "isOperatorToken");
+function isHTMLToken(val) {
+  return getKind(val) === TokenKind.HTML;
+}
+__name(isHTMLToken, "isHTMLToken");
+function isOutputToken(val) {
+  return getKind(val) === TokenKind.Output;
+}
+__name(isOutputToken, "isOutputToken");
+function isTagToken(val) {
+  return getKind(val) === TokenKind.Tag;
+}
+__name(isTagToken, "isTagToken");
+function isQuotedToken(val) {
+  return getKind(val) === TokenKind.Quoted;
+}
+__name(isQuotedToken, "isQuotedToken");
+function isNumberToken(val) {
+  return getKind(val) === TokenKind.Number;
+}
+__name(isNumberToken, "isNumberToken");
+function isPropertyAccessToken(val) {
+  return getKind(val) === TokenKind.PropertyAccess;
+}
+__name(isPropertyAccessToken, "isPropertyAccessToken");
+function isWordToken(val) {
+  return getKind(val) === TokenKind.Word;
+}
+__name(isWordToken, "isWordToken");
+function isRangeToken(val) {
+  return getKind(val) === TokenKind.Range;
+}
+__name(isRangeToken, "isRangeToken");
+function isValueToken(val) {
+  return (getKind(val) & 1667) > 0;
+}
+__name(isValueToken, "isValueToken");
+function getKind(val) {
+  return val ? val.kind : -1;
+}
+__name(getKind, "getKind");
+var Context2 = class _Context {
+  static {
+    __name(this, "Context");
+  }
+  constructor(env = {}, opts = defaultOptions, renderOptions = {}, { memoryLimit, renderLimit } = {}) {
+    var _a, _b, _c, _d, _e;
+    this.scopes = [{}];
+    this.registers = {};
+    this.breakCalled = false;
+    this.continueCalled = false;
+    this.sync = !!renderOptions.sync;
+    this.opts = opts;
+    this.globals = (_a = renderOptions.globals) !== null && _a !== void 0 ? _a : opts.globals;
+    this.environments = isObject(env) ? env : Object(env);
+    this.strictVariables = (_b = renderOptions.strictVariables) !== null && _b !== void 0 ? _b : this.opts.strictVariables;
+    this.ownPropertyOnly = (_c = renderOptions.ownPropertyOnly) !== null && _c !== void 0 ? _c : opts.ownPropertyOnly;
+    this.memoryLimit = memoryLimit !== null && memoryLimit !== void 0 ? memoryLimit : new Limiter("memory alloc", (_d = renderOptions.memoryLimit) !== null && _d !== void 0 ? _d : opts.memoryLimit);
+    this.renderLimit = renderLimit !== null && renderLimit !== void 0 ? renderLimit : new Limiter("template render", getPerformance().now() + ((_e = renderOptions.renderLimit) !== null && _e !== void 0 ? _e : opts.renderLimit));
+  }
+  getRegister(key, defaultValue = void 0) {
+    return this.registers[key] = this.registers[key] || defaultValue;
+  }
+  setRegister(key, value) {
+    return this.registers[key] = value;
+  }
+  saveRegister(...keys) {
+    return keys.map((key) => [key, this.getRegister(key)]);
+  }
+  restoreRegister(keyValues) {
+    return keyValues.forEach(([key, value]) => this.setRegister(key, value));
+  }
+  getAll() {
+    return [this.globals, this.environments, ...this.scopes].reduce((ctx, val) => __assign(ctx, val), {});
+  }
+  /**
+   * @deprecated use `_get()` or `getSync()` instead
+   */
+  get(paths) {
+    return this.getSync(paths);
+  }
+  getSync(paths) {
+    return toValueSync(this._get(paths));
+  }
+  *_get(paths) {
+    const scope = this.findScope(paths[0]);
+    return yield this._getFromScope(scope, paths);
+  }
+  /**
+   * @deprecated use `_get()` instead
+   */
+  getFromScope(scope, paths) {
+    return toValueSync(this._getFromScope(scope, paths));
+  }
+  *_getFromScope(scope, paths, strictVariables = this.strictVariables) {
+    if (isString(paths))
+      paths = paths.split(".");
+    for (let i = 0; i < paths.length; i++) {
+      scope = yield this.readProperty(scope, paths[i]);
+      if (strictVariables && isUndefined(scope)) {
+        throw new InternalUndefinedVariableError(paths.slice(0, i + 1).join("."));
+      }
+    }
+    return scope;
+  }
+  push(ctx) {
+    return this.scopes.push(ctx);
+  }
+  pop() {
+    return this.scopes.pop();
+  }
+  bottom() {
+    return this.scopes[0];
+  }
+  spawn(scope = {}) {
+    return new _Context(scope, this.opts, {
+      sync: this.sync,
+      globals: this.globals,
+      strictVariables: this.strictVariables
+    }, {
+      renderLimit: this.renderLimit,
+      memoryLimit: this.memoryLimit
+    });
+  }
+  findScope(key) {
+    for (let i = this.scopes.length - 1; i >= 0; i--) {
+      const candidate = this.scopes[i];
+      if (key in candidate)
+        return candidate;
+    }
+    if (key in this.environments)
+      return this.environments;
+    return this.globals;
+  }
+  readProperty(obj, key) {
+    obj = toLiquid(obj);
+    key = toValue(key);
+    if (isNil(obj))
+      return obj;
+    if (isArray(obj) && key < 0)
+      return obj[obj.length + +key];
+    const value = readJSProperty(obj, key, this.ownPropertyOnly);
+    if (value === void 0 && obj instanceof Drop)
+      return obj.liquidMethodMissing(key, this);
+    if (isFunction(value))
+      return value.call(obj);
+    if (key === "size")
+      return readSize(obj);
+    else if (key === "first")
+      return readFirst(obj);
+    else if (key === "last")
+      return readLast(obj);
+    return value;
+  }
+};
+function readJSProperty(obj, key, ownPropertyOnly) {
+  if (ownPropertyOnly && !hasOwnProperty.call(obj, key) && !(obj instanceof Drop))
+    return void 0;
+  return obj[key];
+}
+__name(readJSProperty, "readJSProperty");
+function readFirst(obj) {
+  if (isArray(obj))
+    return obj[0];
+  return obj["first"];
+}
+__name(readFirst, "readFirst");
+function readLast(obj) {
+  if (isArray(obj))
+    return obj[obj.length - 1];
+  return obj["last"];
+}
+__name(readLast, "readLast");
+function readSize(obj) {
+  if (hasOwnProperty.call(obj, "size") || obj["size"] !== void 0)
+    return obj["size"];
+  if (isArray(obj) || isString(obj))
+    return obj.length;
+  if (typeof obj === "object")
+    return Object.keys(obj).length;
+}
+__name(readSize, "readSize");
+var BlockMode;
+(function(BlockMode2) {
+  BlockMode2[BlockMode2["OUTPUT"] = 0] = "OUTPUT";
+  BlockMode2[BlockMode2["STORE"] = 1] = "STORE";
+})(BlockMode || (BlockMode = {}));
+var abs = argumentsToNumber(Math.abs);
+var at_least = argumentsToNumber(Math.max);
+var at_most = argumentsToNumber(Math.min);
+var ceil = argumentsToNumber(Math.ceil);
+var divided_by = argumentsToNumber((dividend, divisor, integerArithmetic = false) => integerArithmetic ? Math.floor(dividend / divisor) : dividend / divisor);
+var floor = argumentsToNumber(Math.floor);
+var minus = argumentsToNumber((v, arg) => v - arg);
+var plus = argumentsToNumber((lhs, rhs) => lhs + rhs);
+var modulo = argumentsToNumber((v, arg) => v % arg);
+var times = argumentsToNumber((v, arg) => v * arg);
+function round(v, arg = 0) {
+  v = toNumber(v);
+  arg = toNumber(arg);
+  const amp = Math.pow(10, arg);
+  const scaled = v * amp;
+  return Math.sign(v) * Math.round(Math.abs(scaled)) / amp;
+}
+__name(round, "round");
+var mathFilters = /* @__PURE__ */ Object.freeze({
+  __proto__: null,
+  abs,
+  at_least,
+  at_most,
+  ceil,
+  divided_by,
+  floor,
+  minus,
+  plus,
+  modulo,
+  times,
+  round
+});
+var url_decode = /* @__PURE__ */ __name((x) => decodeURIComponent(stringify(x)).replace(/\+/g, " "), "url_decode");
+var url_encode = /* @__PURE__ */ __name((x) => encodeURIComponent(stringify(x)).replace(/%20/g, "+"), "url_encode");
+var cgi_escape = /* @__PURE__ */ __name((x) => encodeURIComponent(stringify(x)).replace(/%20/g, "+").replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase()), "cgi_escape");
+var uri_escape = /* @__PURE__ */ __name((x) => encodeURI(stringify(x)).replace(/%5B/g, "[").replace(/%5D/g, "]"), "uri_escape");
+var rSlugifyDefault = /[^\p{M}\p{L}\p{Nd}]+/ug;
+var rSlugifyReplacers = {
+  "raw": /\s+/g,
+  "default": rSlugifyDefault,
+  "pretty": /[^\p{M}\p{L}\p{Nd}._~!$&'()+,;=@]+/ug,
+  "ascii": /[^A-Za-z0-9]+/g,
+  "latin": rSlugifyDefault,
+  "none": null
+};
+function slugify(str, mode = "default", cased = false) {
+  str = stringify(str);
+  const replacer = rSlugifyReplacers[mode];
+  if (replacer) {
+    if (mode === "latin")
+      str = removeAccents(str);
+    str = str.replace(replacer, "-").replace(/^-|-$/g, "");
+  }
+  return cased ? str : str.toLowerCase();
+}
+__name(slugify, "slugify");
+function removeAccents(str) {
+  return str.replace(/[àáâãäå]/g, "a").replace(/[æ]/g, "ae").replace(/[ç]/g, "c").replace(/[èéêë]/g, "e").replace(/[ìíîï]/g, "i").replace(/[ð]/g, "d").replace(/[ñ]/g, "n").replace(/[òóôõöø]/g, "o").replace(/[ùúûü]/g, "u").replace(/[ýÿ]/g, "y").replace(/[ß]/g, "ss").replace(/[œ]/g, "oe").replace(/[þ]/g, "th").replace(/[ẞ]/g, "SS").replace(/[Œ]/g, "OE").replace(/[Þ]/g, "TH");
+}
+__name(removeAccents, "removeAccents");
+var urlFilters = /* @__PURE__ */ Object.freeze({
+  __proto__: null,
+  url_decode,
+  url_encode,
+  cgi_escape,
+  uri_escape,
+  slugify
+});
+var join = argumentsToValue(function(v, arg) {
+  const array = toArray(v);
+  const sep2 = isNil(arg) ? " " : stringify(arg);
+  const complexity = array.length * (1 + sep2.length);
+  this.context.memoryLimit.use(complexity);
+  return array.join(sep2);
+});
+var last$1 = argumentsToValue((v) => isArrayLike(v) ? last(v) : "");
+var first = argumentsToValue((v) => isArrayLike(v) ? v[0] : "");
+var reverse = argumentsToValue(function(v) {
+  const array = toArray(v);
+  this.context.memoryLimit.use(array.length);
+  return [...array].reverse();
+});
+function* sortBy(arr, property, comparator) {
+  const values = [];
+  const array = toArray(arr);
+  this.context.memoryLimit.use(array.length);
+  for (const item of array) {
+    values.push([
+      item,
+      property ? yield this.context._getFromScope(item, stringify(property).split("."), false) : item
+    ]);
+  }
+  return values.sort((lhs, rhs) => comparator(lhs[1], rhs[1])).map((tuple) => tuple[0]);
+}
+__name(sortBy, "sortBy");
+function* sort(arr, property) {
+  return yield* sortBy.call(this, arr, property, orderedCompare);
+}
+__name(sort, "sort");
+function* sort_natural(arr, property) {
+  return yield* sortBy.call(this, arr, property, caseInsensitiveCompare);
+}
+__name(sort_natural, "sort_natural");
+var size = /* @__PURE__ */ __name((v) => v && v.length || 0, "size");
+function* map(arr, property) {
+  const results = [];
+  const array = toArray(arr);
+  this.context.memoryLimit.use(array.length);
+  for (const item of array) {
+    results.push(yield this.context._getFromScope(item, stringify(property), false));
+  }
+  return results;
+}
+__name(map, "map");
+function* sum(arr, property) {
+  let sum2 = 0;
+  const array = toArray(arr);
+  for (const item of array) {
+    const data = Number(property ? yield this.context._getFromScope(item, stringify(property), false) : item);
+    sum2 += Number.isNaN(data) ? 0 : data;
+  }
+  return sum2;
+}
+__name(sum, "sum");
+function compact(arr) {
+  const array = toArray(arr);
+  this.context.memoryLimit.use(array.length);
+  return array.filter((x) => !isNil(toValue(x)));
+}
+__name(compact, "compact");
+function concat(v, arg = []) {
+  const lhs = toArray(v);
+  const rhs = toArray(arg);
+  this.context.memoryLimit.use(lhs.length + rhs.length);
+  return lhs.concat(rhs);
+}
+__name(concat, "concat");
+function push(v, arg) {
+  return concat.call(this, v, [arg]);
+}
+__name(push, "push");
+function unshift(v, arg) {
+  const array = toArray(v);
+  this.context.memoryLimit.use(array.length);
+  const clone = [...array];
+  clone.unshift(arg);
+  return clone;
+}
+__name(unshift, "unshift");
+function pop(v) {
+  const clone = [...toArray(v)];
+  clone.pop();
+  return clone;
+}
+__name(pop, "pop");
+function shift(v) {
+  const array = toArray(v);
+  this.context.memoryLimit.use(array.length);
+  const clone = [...array];
+  clone.shift();
+  return clone;
+}
+__name(shift, "shift");
+function slice(v, begin, length = 1) {
+  v = toValue(v);
+  if (isNil(v))
+    return [];
+  if (!isArray(v))
+    v = stringify(v);
+  begin = begin < 0 ? v.length + begin : begin;
+  this.context.memoryLimit.use(length);
+  return v.slice(begin, begin + length);
+}
+__name(slice, "slice");
+function expectedMatcher(expected) {
+  if (this.context.opts.jekyllWhere) {
+    return (v) => EmptyDrop.is(expected) ? equals(v, expected) : isArray(v) ? arrayIncludes(v, expected) : equals(v, expected);
+  } else if (expected === void 0) {
+    return (v) => isTruthy(v, this.context);
+  } else {
+    return (v) => equals(v, expected);
+  }
+}
+__name(expectedMatcher, "expectedMatcher");
+function* filter(include, arr, property, expected) {
+  const values = [];
+  arr = toArray(arr);
+  this.context.memoryLimit.use(arr.length);
+  const token = new Tokenizer(stringify(property)).readScopeValue();
+  for (const item of arr) {
+    values.push(yield evalToken(token, this.context.spawn(item)));
+  }
+  const matcher = expectedMatcher.call(this, expected);
+  return arr.filter((_, i) => matcher(values[i]) === include);
+}
+__name(filter, "filter");
+function* filter_exp(include, arr, itemName, exp) {
+  const filtered = [];
+  const keyTemplate = new Value(stringify(exp), this.liquid);
+  const array = toArray(arr);
+  this.context.memoryLimit.use(array.length);
+  for (const item of array) {
+    this.context.push({ [itemName]: item });
+    const value = yield keyTemplate.value(this.context);
+    this.context.pop();
+    if (value === include)
+      filtered.push(item);
+  }
+  return filtered;
+}
+__name(filter_exp, "filter_exp");
+function* where(arr, property, expected) {
+  return yield* filter.call(this, true, arr, property, expected);
+}
+__name(where, "where");
+function* reject(arr, property, expected) {
+  return yield* filter.call(this, false, arr, property, expected);
+}
+__name(reject, "reject");
+function* where_exp(arr, itemName, exp) {
+  return yield* filter_exp.call(this, true, arr, itemName, exp);
+}
+__name(where_exp, "where_exp");
+function* reject_exp(arr, itemName, exp) {
+  return yield* filter_exp.call(this, false, arr, itemName, exp);
+}
+__name(reject_exp, "reject_exp");
+function* group_by(arr, property) {
+  const map3 = /* @__PURE__ */ new Map();
+  arr = toEnumerable(arr);
+  const token = new Tokenizer(stringify(property)).readScopeValue();
+  this.context.memoryLimit.use(arr.length);
+  for (const item of arr) {
+    const key = yield evalToken(token, this.context.spawn(item));
+    if (!map3.has(key))
+      map3.set(key, []);
+    map3.get(key).push(item);
+  }
+  return [...map3.entries()].map(([name, items]) => ({ name, items }));
+}
+__name(group_by, "group_by");
+function* group_by_exp(arr, itemName, exp) {
+  const map3 = /* @__PURE__ */ new Map();
+  const keyTemplate = new Value(stringify(exp), this.liquid);
+  arr = toEnumerable(arr);
+  this.context.memoryLimit.use(arr.length);
+  for (const item of arr) {
+    this.context.push({ [itemName]: item });
+    const key = yield keyTemplate.value(this.context);
+    this.context.pop();
+    if (!map3.has(key))
+      map3.set(key, []);
+    map3.get(key).push(item);
+  }
+  return [...map3.entries()].map(([name, items]) => ({ name, items }));
+}
+__name(group_by_exp, "group_by_exp");
+function* search(arr, property, expected) {
+  const token = new Tokenizer(stringify(property)).readScopeValue();
+  const array = toArray(arr);
+  const matcher = expectedMatcher.call(this, expected);
+  for (let index = 0; index < array.length; index++) {
+    const value = yield evalToken(token, this.context.spawn(array[index]));
+    if (matcher(value))
+      return [index, array[index]];
+  }
+}
+__name(search, "search");
+function* search_exp(arr, itemName, exp) {
+  const predicate = new Value(stringify(exp), this.liquid);
+  const array = toArray(arr);
+  for (let index = 0; index < array.length; index++) {
+    this.context.push({ [itemName]: array[index] });
+    const value = yield predicate.value(this.context);
+    this.context.pop();
+    if (value)
+      return [index, array[index]];
+  }
+}
+__name(search_exp, "search_exp");
+function* has(arr, property, expected) {
+  const result = yield* search.call(this, arr, property, expected);
+  return !!result;
+}
+__name(has, "has");
+function* has_exp(arr, itemName, exp) {
+  const result = yield* search_exp.call(this, arr, itemName, exp);
+  return !!result;
+}
+__name(has_exp, "has_exp");
+function* find_index(arr, property, expected) {
+  const result = yield* search.call(this, arr, property, expected);
+  return result ? result[0] : void 0;
+}
+__name(find_index, "find_index");
+function* find_index_exp(arr, itemName, exp) {
+  const result = yield* search_exp.call(this, arr, itemName, exp);
+  return result ? result[0] : void 0;
+}
+__name(find_index_exp, "find_index_exp");
+function* find(arr, property, expected) {
+  const result = yield* search.call(this, arr, property, expected);
+  return result ? result[1] : void 0;
+}
+__name(find, "find");
+function* find_exp(arr, itemName, exp) {
+  const result = yield* search_exp.call(this, arr, itemName, exp);
+  return result ? result[1] : void 0;
+}
+__name(find_exp, "find_exp");
+function uniq(arr) {
+  arr = toArray(arr);
+  this.context.memoryLimit.use(arr.length);
+  return [...new Set(arr)];
+}
+__name(uniq, "uniq");
+function sample(v, count = 1) {
+  v = toValue(v);
+  if (isNil(v))
+    return [];
+  if (!isArray(v))
+    v = stringify(v);
+  this.context.memoryLimit.use(count);
+  const shuffled = [...v].sort(() => Math.random() - 0.5);
+  if (count === 1)
+    return shuffled[0];
+  return shuffled.slice(0, count);
+}
+__name(sample, "sample");
+var arrayFilters = /* @__PURE__ */ Object.freeze({
+  __proto__: null,
+  join,
+  last: last$1,
+  first,
+  reverse,
+  sort,
+  sort_natural,
+  size,
+  map,
+  sum,
+  compact,
+  concat,
+  push,
+  unshift,
+  pop,
+  shift,
+  slice,
+  where,
+  reject,
+  where_exp,
+  reject_exp,
+  group_by,
+  group_by_exp,
+  has,
+  has_exp,
+  find_index,
+  find_index_exp,
+  find,
+  find_exp,
+  uniq,
+  sample
+});
+function date(v, format2, timezoneOffset) {
+  var _a, _b, _c;
+  const size2 = ((_a = v === null || v === void 0 ? void 0 : v.length) !== null && _a !== void 0 ? _a : 0) + ((_b = format2 === null || format2 === void 0 ? void 0 : format2.length) !== null && _b !== void 0 ? _b : 0) + ((_c = timezoneOffset === null || timezoneOffset === void 0 ? void 0 : timezoneOffset.length) !== null && _c !== void 0 ? _c : 0);
+  this.context.memoryLimit.use(size2);
+  const date2 = parseDate(v, this.context.opts, timezoneOffset);
+  if (!date2)
+    return v;
+  format2 = toValue(format2);
+  format2 = isNil(format2) ? this.context.opts.dateFormat : stringify(format2);
+  return strftime(date2, format2);
+}
+__name(date, "date");
+function date_to_xmlschema(v) {
+  return date.call(this, v, "%Y-%m-%dT%H:%M:%S%:z");
+}
+__name(date_to_xmlschema, "date_to_xmlschema");
+function date_to_rfc822(v) {
+  return date.call(this, v, "%a, %d %b %Y %H:%M:%S %z");
+}
+__name(date_to_rfc822, "date_to_rfc822");
+function date_to_string(v, type, style) {
+  return stringify_date.call(this, v, "%b", type, style);
+}
+__name(date_to_string, "date_to_string");
+function date_to_long_string(v, type, style) {
+  return stringify_date.call(this, v, "%B", type, style);
+}
+__name(date_to_long_string, "date_to_long_string");
+function stringify_date(v, month_type, type, style) {
+  const date2 = parseDate(v, this.context.opts);
+  if (!date2)
+    return v;
+  if (type === "ordinal") {
+    const d = date2.getDate();
+    return style === "US" ? strftime(date2, `${month_type} ${d}%q, %Y`) : strftime(date2, `${d}%q ${month_type} %Y`);
+  }
+  return strftime(date2, `%d ${month_type} %Y`);
+}
+__name(stringify_date, "stringify_date");
+function parseDate(v, opts, timezoneOffset) {
+  let date2;
+  const defaultTimezoneOffset = timezoneOffset !== null && timezoneOffset !== void 0 ? timezoneOffset : opts.timezoneOffset;
+  const locale = opts.locale;
+  v = toValue(v);
+  if (isNil(v)) {
+    return void 0;
+  } else if (v === "now" || v === "today") {
+    date2 = new LiquidDate(Date.now(), locale, defaultTimezoneOffset);
+  } else if (isNumber(v)) {
+    date2 = new LiquidDate(v * 1e3, locale, defaultTimezoneOffset);
+  } else if (isString(v)) {
+    if (/^\d+$/.test(v)) {
+      date2 = new LiquidDate(+v * 1e3, locale, defaultTimezoneOffset);
+    } else if (opts.preserveTimezones && timezoneOffset === void 0) {
+      date2 = LiquidDate.createDateFixedToTimezone(v, locale);
+    } else {
+      date2 = new LiquidDate(v, locale, defaultTimezoneOffset);
+    }
+  } else {
+    date2 = new LiquidDate(v, locale, defaultTimezoneOffset);
+  }
+  return date2.valid() ? date2 : void 0;
+}
+__name(parseDate, "parseDate");
+var dateFilters = /* @__PURE__ */ Object.freeze({
+  __proto__: null,
+  date,
+  date_to_xmlschema,
+  date_to_rfc822,
+  date_to_string,
+  date_to_long_string
+});
+var rCJKWord = /[\u4E00-\u9FFF\uF900-\uFAFF\u3400-\u4DBF\u3040-\u309F\u30A0-\u30FF\uAC00-\uD7AF]/gu;
+var rNonCJKWord = /[^\u4E00-\u9FFF\uF900-\uFAFF\u3400-\u4DBF\u3040-\u309F\u30A0-\u30FF\uAC00-\uD7AF\s]+/gu;
+function append(v, arg) {
+  assert(arguments.length === 2, "append expect 2 arguments");
+  const lhs = stringify(v);
+  const rhs = stringify(arg);
+  this.context.memoryLimit.use(lhs.length + rhs.length);
+  return lhs + rhs;
+}
+__name(append, "append");
+function prepend(v, arg) {
+  assert(arguments.length === 2, "prepend expect 2 arguments");
+  const lhs = stringify(v);
+  const rhs = stringify(arg);
+  this.context.memoryLimit.use(lhs.length + rhs.length);
+  return rhs + lhs;
+}
+__name(prepend, "prepend");
+function lstrip(v, chars) {
+  const str = stringify(v);
+  this.context.memoryLimit.use(str.length);
+  if (chars) {
+    chars = stringify(chars);
+    this.context.memoryLimit.use(chars.length);
+    for (let i = 0, set2 = new Set(chars); i < str.length; i++) {
+      if (!set2.has(str[i]))
+        return str.slice(i);
+    }
+    return "";
+  }
+  return str.trimStart();
+}
+__name(lstrip, "lstrip");
+function downcase(v) {
+  const str = stringify(v);
+  this.context.memoryLimit.use(str.length);
+  return str.toLowerCase();
+}
+__name(downcase, "downcase");
+function upcase(v) {
+  const str = stringify(v);
+  this.context.memoryLimit.use(str.length);
+  return stringify(str).toUpperCase();
+}
+__name(upcase, "upcase");
+function remove(v, arg) {
+  const str = stringify(v);
+  arg = stringify(arg);
+  this.context.memoryLimit.use(str.length + arg.length);
+  return str.split(arg).join("");
+}
+__name(remove, "remove");
+function remove_first(v, l) {
+  const str = stringify(v);
+  l = stringify(l);
+  this.context.memoryLimit.use(str.length + l.length);
+  return str.replace(l, "");
+}
+__name(remove_first, "remove_first");
+function remove_last(v, l) {
+  const str = stringify(v);
+  const pattern = stringify(l);
+  this.context.memoryLimit.use(str.length + pattern.length);
+  const index = str.lastIndexOf(pattern);
+  if (index === -1)
+    return str;
+  return str.substring(0, index) + str.substring(index + pattern.length);
+}
+__name(remove_last, "remove_last");
+function rstrip(str, chars) {
+  str = stringify(str);
+  this.context.memoryLimit.use(str.length);
+  if (chars) {
+    chars = stringify(chars);
+    this.context.memoryLimit.use(chars.length);
+    for (let i = str.length - 1, set2 = new Set(chars); i >= 0; i--) {
+      if (!set2.has(str[i]))
+        return str.slice(0, i + 1);
+    }
+    return "";
+  }
+  return str.trimEnd();
+}
+__name(rstrip, "rstrip");
+function split(v, arg) {
+  const str = stringify(v);
+  this.context.memoryLimit.use(str.length);
+  const arr = str.split(stringify(arg));
+  while (arr.length && arr[arr.length - 1] === "")
+    arr.pop();
+  return arr;
+}
+__name(split, "split");
+function strip(v, chars) {
+  const str = stringify(v);
+  this.context.memoryLimit.use(str.length);
+  if (chars) {
+    const set2 = new Set(stringify(chars));
+    this.context.memoryLimit.use(set2.size);
+    let i = 0;
+    let j = str.length - 1;
+    while (set2.has(str[i]))
+      i++;
+    while (j >= i && set2.has(str[j]))
+      j--;
+    return str.slice(i, j + 1);
+  }
+  return str.trim();
+}
+__name(strip, "strip");
+function strip_newlines(v) {
+  const str = stringify(v);
+  this.context.memoryLimit.use(str.length);
+  return str.replace(/\r?\n/gm, "");
+}
+__name(strip_newlines, "strip_newlines");
+function capitalize(str) {
+  str = stringify(str);
+  this.context.memoryLimit.use(str.length);
+  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+}
+__name(capitalize, "capitalize");
+function replace(v, pattern, replacement) {
+  const str = stringify(v);
+  pattern = stringify(pattern);
+  replacement = stringify(replacement);
+  const parts = str.split(pattern);
+  const outputSize = str.length + (parts.length - 1) * (replacement.length - pattern.length);
+  this.context.memoryLimit.use(outputSize);
+  return parts.join(replacement);
+}
+__name(replace, "replace");
+function replace_first(v, arg1, arg2) {
+  const str = stringify(v);
+  arg1 = stringify(arg1);
+  arg2 = stringify(arg2);
+  this.context.memoryLimit.use(str.length + arg1.length + arg2.length);
+  return str.replace(arg1, () => arg2);
+}
+__name(replace_first, "replace_first");
+function replace_last(v, arg1, arg2) {
+  const str = stringify(v);
+  const pattern = stringify(arg1);
+  const replacement = stringify(arg2);
+  this.context.memoryLimit.use(str.length + pattern.length + replacement.length);
+  const index = str.lastIndexOf(pattern);
+  if (index === -1)
+    return str;
+  return str.substring(0, index) + replacement + str.substring(index + pattern.length);
+}
+__name(replace_last, "replace_last");
+function truncate(v, l = 50, o = "...") {
+  const str = stringify(v);
+  o = stringify(o);
+  this.context.memoryLimit.use(str.length + o.length);
+  if (str.length <= l)
+    return v;
+  return str.substring(0, l - o.length) + o;
+}
+__name(truncate, "truncate");
+function truncatewords(v, words = 15, o = "...") {
+  const str = stringify(v);
+  o = stringify(o);
+  this.context.memoryLimit.use(str.length + o.length);
+  const arr = str.split(/\s+/);
+  if (words <= 0)
+    words = 1;
+  let ret = arr.slice(0, words).join(" ");
+  if (arr.length >= words)
+    ret += o;
+  return ret;
+}
+__name(truncatewords, "truncatewords");
+function normalize_whitespace(v) {
+  const str = stringify(v);
+  this.context.memoryLimit.use(str.length);
+  return str.replace(/\s+/g, " ");
+}
+__name(normalize_whitespace, "normalize_whitespace");
+function number_of_words(input, mode) {
+  const str = stringify(input);
+  this.context.memoryLimit.use(str.length);
+  input = str.trim();
+  if (!input)
+    return 0;
+  switch (mode) {
+    case "cjk":
+      return (input.match(rCJKWord) || []).length + (input.match(rNonCJKWord) || []).length;
+    case "auto":
+      return rCJKWord.test(input) ? input.match(rCJKWord).length + (input.match(rNonCJKWord) || []).length : input.split(/\s+/).length;
+    default:
+      return input.split(/\s+/).length;
+  }
+}
+__name(number_of_words, "number_of_words");
+function array_to_sentence_string(array, connector = "and") {
+  connector = stringify(connector);
+  this.context.memoryLimit.use(array.length + connector.length);
+  switch (array.length) {
+    case 0:
+      return "";
+    case 1:
+      return array[0];
+    case 2:
+      return `${array[0]} ${connector} ${array[1]}`;
+    default:
+      return `${array.slice(0, -1).join(", ")}, ${connector} ${array[array.length - 1]}`;
+  }
+}
+__name(array_to_sentence_string, "array_to_sentence_string");
+var stringFilters = /* @__PURE__ */ Object.freeze({
+  __proto__: null,
+  append,
+  prepend,
+  lstrip,
+  downcase,
+  upcase,
+  remove,
+  remove_first,
+  remove_last,
+  rstrip,
+  split,
+  strip,
+  strip_newlines,
+  capitalize,
+  replace,
+  replace_first,
+  replace_last,
+  truncate,
+  truncatewords,
+  normalize_whitespace,
+  number_of_words,
+  array_to_sentence_string
+});
+function base64Encode(str) {
+  return btoa(String.fromCharCode(...new TextEncoder().encode(str)));
+}
+__name(base64Encode, "base64Encode");
+function base64Decode(str) {
+  return new TextDecoder().decode(Uint8Array.from(atob(str), (c) => c.charCodeAt(0)));
+}
+__name(base64Decode, "base64Decode");
+function base64_encode(value) {
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) {
+    this.context.memoryLimit.use(value.byteLength);
+    return value.toString("base64");
+  }
+  const str = stringify(value);
+  this.context.memoryLimit.use(str.length);
+  return base64Encode(str);
+}
+__name(base64_encode, "base64_encode");
+function base64_decode(value) {
+  const str = stringify(value);
+  this.context.memoryLimit.use(str.length);
+  return base64Decode(str);
+}
+__name(base64_decode, "base64_decode");
+var base64Filters = /* @__PURE__ */ Object.freeze({
+  __proto__: null,
+  base64_encode,
+  base64_decode
+});
+var filters = Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, htmlFilters), mathFilters), urlFilters), arrayFilters), dateFilters), stringFilters), base64Filters), misc);
+var AssignTag = class extends Tag {
+  static {
+    __name(this, "AssignTag");
+  }
+  constructor(token, remainTokens, liquid) {
+    super(token, remainTokens, liquid);
+    this.identifier = this.tokenizer.readIdentifier();
+    this.key = this.identifier.content;
+    this.tokenizer.assert(this.key, "expected variable name");
+    this.tokenizer.skipBlank();
+    this.tokenizer.assert(this.tokenizer.peek() === "=", 'expected "="');
+    this.tokenizer.advance();
+    this.value = new Value(this.tokenizer.readFilteredValue(), this.liquid);
+  }
+  *render(ctx) {
+    ctx.bottom()[this.key] = yield this.value.value(ctx, this.liquid.options.lenientIf);
+  }
+  *arguments() {
+    yield this.value;
+  }
+  *localScope() {
+    yield this.identifier;
+  }
+};
+var MODIFIERS = ["offset", "limit", "reversed"];
+var ForTag = class extends Tag {
+  static {
+    __name(this, "ForTag");
+  }
+  constructor(token, remainTokens, liquid, parser) {
+    super(token, remainTokens, liquid);
+    const variable = this.tokenizer.readIdentifier();
+    const inStr = this.tokenizer.readIdentifier();
+    const collection = this.tokenizer.readValue();
+    if (!variable.size() || inStr.content !== "in" || !collection) {
+      throw new Error(`illegal tag: ${token.getText()}`);
+    }
+    this.variable = variable.content;
+    this.collection = collection;
+    this.hash = new Hash(this.tokenizer, liquid.options.keyValueSeparator);
+    this.templates = [];
+    this.elseTemplates = [];
+    let p;
+    const stream = parser.parseStream(remainTokens).on("start", () => p = this.templates).on("tag:else", (tag) => {
+      assertEmpty(tag.args);
+      p = this.elseTemplates;
+    }).on("tag:endfor", (tag) => {
+      assertEmpty(tag.args);
+      stream.stop();
+    }).on("template", (tpl) => p.push(tpl)).on("end", () => {
+      throw new Error(`tag ${token.getText()} not closed`);
+    });
+    stream.start();
+  }
+  *render(ctx, emitter) {
+    const r = this.liquid.renderer;
+    let collection = toEnumerable(yield evalToken(this.collection, ctx));
+    if (!collection.length) {
+      yield r.renderTemplates(this.elseTemplates, ctx, emitter);
+      return;
+    }
+    const continueKey = "continue-" + this.variable + "-" + this.collection.getText();
+    ctx.push({ continue: ctx.getRegister(continueKey, {}) });
+    const hash = yield this.hash.render(ctx);
+    ctx.pop();
+    const modifiers = this.liquid.options.orderedFilterParameters ? Object.keys(hash).filter((x) => MODIFIERS.includes(x)) : MODIFIERS.filter((x) => hash[x] !== void 0);
+    collection = modifiers.reduce((collection2, modifier) => {
+      if (modifier === "offset")
+        return offset(collection2, hash["offset"]);
+      if (modifier === "limit")
+        return limit(collection2, hash["limit"]);
+      return reversed(collection2);
+    }, collection);
+    ctx.setRegister(continueKey, (hash["offset"] || 0) + collection.length);
+    const scope = { forloop: new ForloopDrop(collection.length, this.collection.getText(), this.variable) };
+    ctx.push(scope);
+    for (const item of collection) {
+      scope[this.variable] = item;
+      ctx.continueCalled = ctx.breakCalled = false;
+      yield r.renderTemplates(this.templates, ctx, emitter);
+      if (ctx.breakCalled)
+        break;
+      scope.forloop.next();
+    }
+    ctx.continueCalled = ctx.breakCalled = false;
+    ctx.pop();
+  }
+  *children() {
+    const templates = this.templates.slice();
+    if (this.elseTemplates) {
+      templates.push(...this.elseTemplates);
+    }
+    return templates;
+  }
+  *arguments() {
+    yield this.collection;
+    for (const v of Object.values(this.hash.hash)) {
+      if (isValueToken(v)) {
+        yield v;
+      }
+    }
+  }
+  blockScope() {
+    return [this.variable, "forloop"];
+  }
+};
+function reversed(arr) {
+  return [...arr].reverse();
+}
+__name(reversed, "reversed");
+function offset(arr, count) {
+  return arr.slice(count);
+}
+__name(offset, "offset");
+function limit(arr, count) {
+  return arr.slice(0, count);
+}
+__name(limit, "limit");
+var CaptureTag = class extends Tag {
+  static {
+    __name(this, "CaptureTag");
+  }
+  constructor(tagToken, remainTokens, liquid, parser) {
+    super(tagToken, remainTokens, liquid);
+    this.templates = [];
+    this.identifier = this.readVariable();
+    this.variable = this.identifier.content;
+    while (remainTokens.length) {
+      const token = remainTokens.shift();
+      if (isTagToken(token) && token.name === "endcapture")
+        return;
+      this.templates.push(parser.parseToken(token, remainTokens));
+    }
+    throw new Error(`tag ${tagToken.getText()} not closed`);
+  }
+  readVariable() {
+    let ident = this.tokenizer.readIdentifier();
+    if (ident.content)
+      return ident;
+    ident = this.tokenizer.readQuoted();
+    if (ident)
+      return ident;
+    throw this.tokenizer.error("invalid capture name");
+  }
+  *render(ctx) {
+    const r = this.liquid.renderer;
+    const html = yield r.renderTemplates(this.templates, ctx);
+    ctx.bottom()[this.variable] = html;
+  }
+  *children() {
+    return this.templates;
+  }
+  *localScope() {
+    yield this.identifier;
+  }
+};
+var CaseTag = class extends Tag {
+  static {
+    __name(this, "CaseTag");
+  }
+  constructor(tagToken, remainTokens, liquid, parser) {
+    super(tagToken, remainTokens, liquid);
+    this.branches = [];
+    this.elseTemplates = [];
+    this.value = new Value(this.tokenizer.readFilteredValue(), this.liquid);
+    this.elseTemplates = [];
+    let p = [];
+    let elseCount = 0;
+    const stream = parser.parseStream(remainTokens).on("tag:when", (token) => {
+      if (elseCount > 0) {
+        return;
+      }
+      p = [];
+      const values = [];
+      while (!token.tokenizer.end()) {
+        values.push(token.tokenizer.readValueOrThrow());
+        token.tokenizer.skipBlank();
+        if (token.tokenizer.peek() === ",") {
+          token.tokenizer.readTo(",");
+        } else {
+          token.tokenizer.readTo("or");
+        }
+      }
+      this.branches.push({
+        values,
+        templates: p
+      });
+    }).on("tag:else", () => {
+      elseCount++;
+      p = this.elseTemplates;
+    }).on("tag:endcase", () => stream.stop()).on("template", (tpl) => {
+      if (p !== this.elseTemplates || elseCount === 1) {
+        p.push(tpl);
+      }
+    }).on("end", () => {
+      throw new Error(`tag ${tagToken.getText()} not closed`);
+    });
+    stream.start();
+  }
+  *render(ctx, emitter) {
+    const r = this.liquid.renderer;
+    const target = toValue(yield this.value.value(ctx, ctx.opts.lenientIf));
+    let branchHit = false;
+    for (const branch of this.branches) {
+      for (const valueToken of branch.values) {
+        const value = yield evalToken(valueToken, ctx, ctx.opts.lenientIf);
+        if (equals(target, value)) {
+          yield r.renderTemplates(branch.templates, ctx, emitter);
+          branchHit = true;
+          break;
+        }
+      }
+    }
+    if (!branchHit) {
+      yield r.renderTemplates(this.elseTemplates, ctx, emitter);
+    }
+  }
+  *arguments() {
+    yield this.value;
+    yield* this.branches.flatMap((b) => b.values);
+  }
+  *children() {
+    const templates = this.branches.flatMap((b) => b.templates);
+    if (this.elseTemplates) {
+      templates.push(...this.elseTemplates);
+    }
+    return templates;
+  }
+};
+var CommentTag = class extends Tag {
+  static {
+    __name(this, "CommentTag");
+  }
+  constructor(tagToken, remainTokens, liquid) {
+    super(tagToken, remainTokens, liquid);
+    while (remainTokens.length) {
+      const token = remainTokens.shift();
+      if (isTagToken(token) && token.name === "endcomment")
+        return;
+    }
+    throw new Error(`tag ${tagToken.getText()} not closed`);
+  }
+  render() {
+  }
+};
+var RenderTag = class extends Tag {
+  static {
+    __name(this, "RenderTag");
+  }
+  constructor(token, remainTokens, liquid, parser) {
+    super(token, remainTokens, liquid);
+    const tokenizer = this.tokenizer;
+    this.file = parseFilePath(tokenizer, this.liquid, parser);
+    this.currentFile = token.file;
+    while (!tokenizer.end()) {
+      tokenizer.skipBlank();
+      const begin = tokenizer.p;
+      const keyword = tokenizer.readIdentifier();
+      if (keyword.content === "with" || keyword.content === "for") {
+        tokenizer.skipBlank();
+        if (tokenizer.peek() !== ":") {
+          const value = tokenizer.readValue();
+          if (value) {
+            const beforeAs = tokenizer.p;
+            const asStr = tokenizer.readIdentifier();
+            let alias;
+            if (asStr.content === "as")
+              alias = tokenizer.readIdentifier();
+            else
+              tokenizer.p = beforeAs;
+            this[keyword.content] = { value, alias: alias && alias.content };
+            tokenizer.skipBlank();
+            if (tokenizer.peek() === ",")
+              tokenizer.advance();
+            continue;
+          }
+        }
+      }
+      tokenizer.p = begin;
+      break;
+    }
+    this.hash = new Hash(tokenizer, liquid.options.keyValueSeparator);
+  }
+  *render(ctx, emitter) {
+    const { liquid, hash } = this;
+    const filepath = yield renderFilePath(this["file"], ctx, liquid);
+    assert(filepath, () => `illegal file path "${filepath}"`);
+    const childCtx = ctx.spawn();
+    const scope = childCtx.bottom();
+    __assign(scope, yield hash.render(ctx));
+    if (this["with"]) {
+      const { value, alias } = this["with"];
+      scope[alias || filepath] = yield evalToken(value, ctx);
+    }
+    if (this["for"]) {
+      const { value, alias } = this["for"];
+      const collection = toEnumerable(yield evalToken(value, ctx));
+      scope["forloop"] = new ForloopDrop(collection.length, value.getText(), alias);
+      for (const item of collection) {
+        scope[alias] = item;
+        const templates = yield liquid._parsePartialFile(filepath, childCtx.sync, this["currentFile"]);
+        yield liquid.renderer.renderTemplates(templates, childCtx, emitter);
+        scope["forloop"].next();
+      }
+    } else {
+      const templates = yield liquid._parsePartialFile(filepath, childCtx.sync, this["currentFile"]);
+      yield liquid.renderer.renderTemplates(templates, childCtx, emitter);
+    }
+  }
+  *children(partials, sync) {
+    if (partials && isString(this["file"])) {
+      return yield this.liquid._parsePartialFile(this["file"], sync, this["currentFile"]);
+    }
+    return [];
+  }
+  partialScope() {
+    if (isString(this["file"])) {
+      const names = Object.keys(this.hash.hash);
+      if (this["with"]) {
+        const { value, alias } = this["with"];
+        if (isString(alias)) {
+          names.push([alias, value]);
+        } else if (isString(this.file)) {
+          names.push([this.file, value]);
+        }
+      }
+      if (this["for"]) {
+        const { value, alias } = this["for"];
+        if (isString(alias)) {
+          names.push([alias, value]);
+        } else if (isString(this.file)) {
+          names.push([this.file, value]);
+        }
+      }
+      return { name: this["file"], isolated: true, scope: names };
+    }
+  }
+  *arguments() {
+    for (const v of Object.values(this.hash.hash)) {
+      if (isValueToken(v)) {
+        yield v;
+      }
+    }
+    if (this["with"]) {
+      const { value } = this["with"];
+      if (isValueToken(value)) {
+        yield value;
+      }
+    }
+    if (this["for"]) {
+      const { value } = this["for"];
+      if (isValueToken(value)) {
+        yield value;
+      }
+    }
+  }
+};
+function parseFilePath(tokenizer, liquid, parser) {
+  if (liquid.options.dynamicPartials) {
+    const file = tokenizer.readValue();
+    tokenizer.assert(file, "illegal file path");
+    if (file.getText() === "none")
+      return;
+    if (isQuotedToken(file)) {
+      const templates2 = parser.parse(evalQuotedToken(file));
+      return optimize(templates2);
+    }
+    return file;
+  }
+  const tokens = [...tokenizer.readFileNameTemplate(liquid.options)];
+  const templates = optimize(parser.parseTokens(tokens));
+  return templates === "none" ? void 0 : templates;
+}
+__name(parseFilePath, "parseFilePath");
+function optimize(templates) {
+  if (templates.length === 1 && isHTMLToken(templates[0].token))
+    return templates[0].token.getContent();
+  return templates;
+}
+__name(optimize, "optimize");
+function* renderFilePath(file, ctx, liquid) {
+  if (typeof file === "string")
+    return file;
+  if (Array.isArray(file))
+    return liquid.renderer.renderTemplates(file, ctx);
+  return yield evalToken(file, ctx);
+}
+__name(renderFilePath, "renderFilePath");
+var IncludeTag = class extends Tag {
+  static {
+    __name(this, "IncludeTag");
+  }
+  constructor(token, remainTokens, liquid, parser) {
+    super(token, remainTokens, liquid);
+    const { tokenizer } = token;
+    this["file"] = parseFilePath(tokenizer, this.liquid, parser);
+    this["currentFile"] = token.file;
+    const begin = tokenizer.p;
+    const withStr = tokenizer.readIdentifier();
+    if (withStr.content === "with") {
+      tokenizer.skipBlank();
+      if (tokenizer.peek() !== ":") {
+        this.withVar = tokenizer.readValue();
+      } else
+        tokenizer.p = begin;
+    } else
+      tokenizer.p = begin;
+    this.hash = new Hash(tokenizer, liquid.options.jekyllInclude || liquid.options.keyValueSeparator);
+  }
+  *render(ctx, emitter) {
+    const { liquid, hash, withVar } = this;
+    const { renderer } = liquid;
+    const filepath = yield renderFilePath(this["file"], ctx, liquid);
+    assert(filepath, () => `illegal file path "${filepath}"`);
+    const saved = ctx.saveRegister("blocks", "blockMode");
+    ctx.setRegister("blocks", {});
+    ctx.setRegister("blockMode", BlockMode.OUTPUT);
+    const scope = yield hash.render(ctx);
+    if (withVar)
+      scope[filepath] = yield evalToken(withVar, ctx);
+    const templates = yield liquid._parsePartialFile(filepath, ctx.sync, this["currentFile"]);
+    ctx.push(ctx.opts.jekyllInclude ? { include: scope } : scope);
+    yield renderer.renderTemplates(templates, ctx, emitter);
+    ctx.pop();
+    ctx.restoreRegister(saved);
+  }
+  *children(partials, sync) {
+    if (partials && isString(this["file"])) {
+      return yield this.liquid._parsePartialFile(this["file"], sync, this["currentFile"]);
+    }
+    return [];
+  }
+  partialScope() {
+    if (isString(this["file"])) {
+      let names;
+      if (this.liquid.options.jekyllInclude) {
+        names = ["include"];
+      } else {
+        names = Object.keys(this.hash.hash);
+        if (this.withVar) {
+          names.push([this["file"], this.withVar]);
+        }
+      }
+      return { name: this["file"], isolated: false, scope: names };
+    }
+  }
+  *arguments() {
+    yield* Object.values(this.hash.hash).filter(isValueToken);
+    if (isValueToken(this["file"])) {
+      yield this["file"];
+    }
+    if (isValueToken(this.withVar)) {
+      yield this.withVar;
+    }
+  }
+};
+var DecrementTag = class extends Tag {
+  static {
+    __name(this, "DecrementTag");
+  }
+  constructor(token, remainTokens, liquid) {
+    super(token, remainTokens, liquid);
+    this.identifier = this.tokenizer.readIdentifier();
+    this.variable = this.identifier.content;
+  }
+  render(context, emitter) {
+    const scope = context.environments;
+    if (!isNumber(scope[this.variable])) {
+      scope[this.variable] = 0;
+    }
+    emitter.write(stringify(--scope[this.variable]));
+  }
+  *localScope() {
+    yield this.identifier;
+  }
+};
+var CycleTag = class extends Tag {
+  static {
+    __name(this, "CycleTag");
+  }
+  constructor(token, remainTokens, liquid) {
+    super(token, remainTokens, liquid);
+    this.candidates = [];
+    const group = this.tokenizer.readValue();
+    this.tokenizer.skipBlank();
+    if (group) {
+      if (this.tokenizer.peek() === ":") {
+        this.group = group;
+        this.tokenizer.advance();
+      } else
+        this.candidates.push(group);
+    }
+    while (!this.tokenizer.end()) {
+      const value = this.tokenizer.readValue();
+      if (value)
+        this.candidates.push(value);
+      this.tokenizer.readTo(",");
+    }
+    this.tokenizer.assert(this.candidates.length, () => `empty candidates: "${token.getText()}"`);
+  }
+  *render(ctx, emitter) {
+    const group = yield evalToken(this.group, ctx);
+    const fingerprint = `cycle:${group}:` + this.candidates.join(",");
+    const groups = ctx.getRegister("cycle", {});
+    let idx = groups[fingerprint];
+    if (idx === void 0) {
+      idx = groups[fingerprint] = 0;
+    }
+    const candidate = this.candidates[idx];
+    idx = (idx + 1) % this.candidates.length;
+    groups[fingerprint] = idx;
+    return yield evalToken(candidate, ctx);
+  }
+  *arguments() {
+    yield* this.candidates;
+    if (this.group) {
+      yield this.group;
+    }
+  }
+};
+var IfTag = class extends Tag {
+  static {
+    __name(this, "IfTag");
+  }
+  constructor(tagToken, remainTokens, liquid, parser) {
+    super(tagToken, remainTokens, liquid);
+    this.branches = [];
+    let p = [];
+    parser.parseStream(remainTokens).on("start", () => this.branches.push({
+      value: new Value(tagToken.tokenizer.readFilteredValue(), this.liquid),
+      templates: p = []
+    })).on("tag:elsif", (token) => {
+      assert(!this.elseTemplates, "unexpected elsif after else");
+      this.branches.push({
+        value: new Value(token.tokenizer.readFilteredValue(), this.liquid),
+        templates: p = []
+      });
+    }).on("tag:else", (tag) => {
+      assertEmpty(tag.args);
+      assert(!this.elseTemplates, "duplicated else");
+      p = this.elseTemplates = [];
+    }).on("tag:endif", function(tag) {
+      assertEmpty(tag.args);
+      this.stop();
+    }).on("template", (tpl) => p.push(tpl)).on("end", () => {
+      throw new Error(`tag ${tagToken.getText()} not closed`);
+    }).start();
+  }
+  *render(ctx, emitter) {
+    const r = this.liquid.renderer;
+    for (const { value, templates } of this.branches) {
+      const v = yield value.value(ctx, ctx.opts.lenientIf);
+      if (isTruthy(v, ctx)) {
+        yield r.renderTemplates(templates, ctx, emitter);
+        return;
+      }
+    }
+    yield r.renderTemplates(this.elseTemplates || [], ctx, emitter);
+  }
+  *children() {
+    const templates = this.branches.flatMap((b) => b.templates);
+    if (this.elseTemplates) {
+      templates.push(...this.elseTemplates);
+    }
+    return templates;
+  }
+  arguments() {
+    return this.branches.map((b) => b.value);
+  }
+};
+var IncrementTag = class extends Tag {
+  static {
+    __name(this, "IncrementTag");
+  }
+  constructor(token, remainTokens, liquid) {
+    super(token, remainTokens, liquid);
+    this.identifier = this.tokenizer.readIdentifier();
+    this.variable = this.identifier.content;
+  }
+  render(context, emitter) {
+    const scope = context.environments;
+    if (!isNumber(scope[this.variable])) {
+      scope[this.variable] = 0;
+    }
+    const val = scope[this.variable];
+    scope[this.variable]++;
+    emitter.write(stringify(val));
+  }
+  *localScope() {
+    yield this.identifier;
+  }
+};
+var LayoutTag = class extends Tag {
+  static {
+    __name(this, "LayoutTag");
+  }
+  constructor(token, remainTokens, liquid, parser) {
+    super(token, remainTokens, liquid);
+    this.file = parseFilePath(this.tokenizer, this.liquid, parser);
+    this["currentFile"] = token.file;
+    this.args = new Hash(this.tokenizer, liquid.options.keyValueSeparator);
+    this.templates = parser.parseTokens(remainTokens);
+  }
+  *render(ctx, emitter) {
+    const { liquid, args, file } = this;
+    const { renderer } = liquid;
+    if (file === void 0) {
+      ctx.setRegister("blockMode", BlockMode.OUTPUT);
+      yield renderer.renderTemplates(this.templates, ctx, emitter);
+      return;
+    }
+    const filepath = yield renderFilePath(this.file, ctx, liquid);
+    assert(filepath, () => `illegal file path "${filepath}"`);
+    const templates = yield liquid._parseLayoutFile(filepath, ctx.sync, this["currentFile"]);
+    ctx.setRegister("blockMode", BlockMode.STORE);
+    const html = yield renderer.renderTemplates(this.templates, ctx);
+    const blocks = ctx.getRegister("blocks", {});
+    if (blocks[""] === void 0)
+      blocks[""] = (parent, emitter2) => emitter2.write(html);
+    ctx.setRegister("blockMode", BlockMode.OUTPUT);
+    ctx.push(yield args.render(ctx));
+    yield renderer.renderTemplates(templates, ctx, emitter);
+    ctx.pop();
+  }
+  *children(partials) {
+    const templates = this.templates.slice();
+    if (partials && isString(this.file)) {
+      templates.push(...yield this.liquid._parsePartialFile(this.file, true, this["currentFile"]));
+    }
+    return templates;
+  }
+  *arguments() {
+    for (const v of Object.values(this.args.hash)) {
+      if (isValueToken(v)) {
+        yield v;
+      }
+    }
+    if (isValueToken(this.file)) {
+      yield this.file;
+    }
+  }
+  partialScope() {
+    if (isString(this.file)) {
+      return { name: this.file, isolated: false, scope: Object.keys(this.args.hash) };
+    }
+  }
+};
+var BlockTag = class extends Tag {
+  static {
+    __name(this, "BlockTag");
+  }
+  constructor(token, remainTokens, liquid, parser) {
+    super(token, remainTokens, liquid);
+    this.templates = [];
+    const match2 = /\w+/.exec(token.args);
+    this.block = match2 ? match2[0] : "";
+    while (remainTokens.length) {
+      const token2 = remainTokens.shift();
+      if (isTagToken(token2) && token2.name === "endblock")
+        return;
+      const template = parser.parseToken(token2, remainTokens);
+      this.templates.push(template);
+    }
+    throw new Error(`tag ${token.getText()} not closed`);
+  }
+  *render(ctx, emitter) {
+    const blockRender = this.getBlockRender(ctx);
+    if (ctx.getRegister("blockMode") === BlockMode.STORE) {
+      ctx.getRegister("blocks", {})[this.block] = blockRender;
+    } else {
+      yield blockRender(new BlockDrop(), emitter);
+    }
+  }
+  getBlockRender(ctx) {
+    const self = this;
+    const { liquid, templates } = this;
+    const renderChild = ctx.getRegister("blocks", {})[this.block];
+    const renderCurrent = /* @__PURE__ */ __name(function* (superBlock, emitter) {
+      const stack = ctx.getRegister("blockStack", []);
+      if (stack.includes(self))
+        throw new Error("block tag cannot be nested");
+      stack.push(self);
+      ctx.push({ block: superBlock });
+      yield liquid.renderer.renderTemplates(templates, ctx, emitter);
+      ctx.pop();
+      stack.pop();
+    }, "renderCurrent");
+    return renderChild ? (superBlock, emitter) => renderChild(new BlockDrop((emitter2) => renderCurrent(superBlock, emitter2)), emitter) : renderCurrent;
+  }
+  *children() {
+    return this.templates;
+  }
+  blockScope() {
+    return ["block"];
+  }
+};
+var RawTag = class extends Tag {
+  static {
+    __name(this, "RawTag");
+  }
+  constructor(tagToken, remainTokens, liquid) {
+    super(tagToken, remainTokens, liquid);
+    this.tokens = [];
+    while (remainTokens.length) {
+      const token = remainTokens.shift();
+      if (isTagToken(token) && token.name === "endraw")
+        return;
+      this.tokens.push(token);
+    }
+    throw new Error(`tag ${tagToken.getText()} not closed`);
+  }
+  render() {
+    return this.tokens.map((token) => token.getText()).join("");
+  }
+};
+var TablerowloopDrop = class extends ForloopDrop {
+  static {
+    __name(this, "TablerowloopDrop");
+  }
+  constructor(length, cols, collection, variable) {
+    super(length, collection, variable);
+    this.length = length;
+    this.cols = cols;
+  }
+  row() {
+    return Math.floor(this.i / this.cols) + 1;
+  }
+  col0() {
+    return this.i % this.cols;
+  }
+  col() {
+    return this.col0() + 1;
+  }
+  col_first() {
+    return this.col0() === 0;
+  }
+  col_last() {
+    return this.col() === this.cols;
+  }
+};
+var TablerowTag = class extends Tag {
+  static {
+    __name(this, "TablerowTag");
+  }
+  constructor(tagToken, remainTokens, liquid, parser) {
+    super(tagToken, remainTokens, liquid);
+    const variable = this.tokenizer.readIdentifier();
+    this.tokenizer.skipBlank();
+    const predicate = this.tokenizer.readIdentifier();
+    const collectionToken = this.tokenizer.readValue();
+    if (predicate.content !== "in" || !collectionToken) {
+      throw new Error(`illegal tag: ${tagToken.getText()}`);
+    }
+    this.variable = variable.content;
+    this.collection = collectionToken;
+    this.args = new Hash(this.tokenizer, liquid.options.keyValueSeparator);
+    this.templates = [];
+    let p;
+    const stream = parser.parseStream(remainTokens).on("start", () => p = this.templates).on("tag:endtablerow", () => stream.stop()).on("template", (tpl) => p.push(tpl)).on("end", () => {
+      throw new Error(`tag ${tagToken.getText()} not closed`);
+    });
+    stream.start();
+  }
+  *render(ctx, emitter) {
+    let collection = toEnumerable(yield evalToken(this.collection, ctx));
+    const args = yield this.args.render(ctx);
+    const offset2 = args.offset || 0;
+    const limit2 = args.limit === void 0 ? collection.length : args.limit;
+    collection = collection.slice(offset2, offset2 + limit2);
+    const cols = args.cols || collection.length;
+    const r = this.liquid.renderer;
+    const tablerowloop = new TablerowloopDrop(collection.length, cols, this.collection.getText(), this.variable);
+    const scope = { tablerowloop };
+    ctx.push(scope);
+    for (let idx = 0; idx < collection.length; idx++, tablerowloop.next()) {
+      scope[this.variable] = collection[idx];
+      if (tablerowloop.col0() === 0) {
+        if (tablerowloop.row() !== 1)
+          emitter.write("</tr>");
+        emitter.write(`<tr class="row${tablerowloop.row()}">`);
+      }
+      emitter.write(`<td class="col${tablerowloop.col()}">`);
+      yield r.renderTemplates(this.templates, ctx, emitter);
+      emitter.write("</td>");
+    }
+    if (collection.length)
+      emitter.write("</tr>");
+    ctx.pop();
+  }
+  *children() {
+    return this.templates;
+  }
+  *arguments() {
+    yield this.collection;
+    for (const v of Object.values(this.args.hash)) {
+      if (isValueToken(v)) {
+        yield v;
+      }
+    }
+  }
+  blockScope() {
+    return [this.variable, "tablerowloop"];
+  }
+};
+var UnlessTag = class extends Tag {
+  static {
+    __name(this, "UnlessTag");
+  }
+  constructor(tagToken, remainTokens, liquid, parser) {
+    super(tagToken, remainTokens, liquid);
+    this.branches = [];
+    this.elseTemplates = [];
+    let p = [];
+    let elseCount = 0;
+    parser.parseStream(remainTokens).on("start", () => this.branches.push({
+      value: new Value(tagToken.tokenizer.readFilteredValue(), this.liquid),
+      test: isFalsy,
+      templates: p = []
+    })).on("tag:elsif", (token) => {
+      if (elseCount > 0) {
+        p = [];
+        return;
+      }
+      this.branches.push({
+        value: new Value(token.tokenizer.readFilteredValue(), this.liquid),
+        test: isTruthy,
+        templates: p = []
+      });
+    }).on("tag:else", () => {
+      elseCount++;
+      p = this.elseTemplates;
+    }).on("tag:endunless", function() {
+      this.stop();
+    }).on("template", (tpl) => {
+      if (p !== this.elseTemplates || elseCount === 1) {
+        p.push(tpl);
+      }
+    }).on("end", () => {
+      throw new Error(`tag ${tagToken.getText()} not closed`);
+    }).start();
+  }
+  *render(ctx, emitter) {
+    const r = this.liquid.renderer;
+    for (const { value, test, templates } of this.branches) {
+      const v = yield value.value(ctx, ctx.opts.lenientIf);
+      if (test(v, ctx)) {
+        yield r.renderTemplates(templates, ctx, emitter);
+        return;
+      }
+    }
+    yield r.renderTemplates(this.elseTemplates, ctx, emitter);
+  }
+  *children() {
+    const children = this.branches.flatMap((b) => b.templates);
+    if (this.elseTemplates) {
+      children.push(...this.elseTemplates);
+    }
+    return children;
+  }
+  arguments() {
+    return this.branches.map((b) => b.value);
+  }
+};
+var BreakTag = class extends Tag {
+  static {
+    __name(this, "BreakTag");
+  }
+  render(ctx, _emitter) {
+    ctx.breakCalled = true;
+  }
+};
+var ContinueTag = class extends Tag {
+  static {
+    __name(this, "ContinueTag");
+  }
+  render(ctx, _emitter) {
+    ctx.continueCalled = true;
+  }
+};
+var EchoTag = class extends Tag {
+  static {
+    __name(this, "EchoTag");
+  }
+  constructor(token, remainTokens, liquid) {
+    super(token, remainTokens, liquid);
+    this.tokenizer.skipBlank();
+    if (!this.tokenizer.end()) {
+      this.value = new Value(this.tokenizer.readFilteredValue(), this.liquid);
+    }
+  }
+  *render(ctx, emitter) {
+    if (!this.value)
+      return;
+    const val = yield this.value.value(ctx, false);
+    emitter.write(val);
+  }
+  *arguments() {
+    if (this.value) {
+      yield this.value;
+    }
+  }
+};
+var LiquidTag = class extends Tag {
+  static {
+    __name(this, "LiquidTag");
+  }
+  constructor(token, remainTokens, liquid, parser) {
+    super(token, remainTokens, liquid);
+    const tokens = this.tokenizer.readLiquidTagTokens(this.liquid.options);
+    this.templates = parser.parseTokens(tokens);
+  }
+  *render(ctx, emitter) {
+    yield this.liquid.renderer.renderTemplates(this.templates, ctx, emitter);
+  }
+  *children() {
+    return this.templates;
+  }
+};
+var InlineCommentTag = class extends Tag {
+  static {
+    __name(this, "InlineCommentTag");
+  }
+  constructor(tagToken, remainTokens, liquid) {
+    super(tagToken, remainTokens, liquid);
+    if (tagToken.args.search(/\n\s*[^#\s]/g) !== -1) {
+      throw new Error("every line of an inline comment must start with a '#' character");
+    }
+  }
+  render() {
+  }
+};
+var tags = {
+  assign: AssignTag,
+  "for": ForTag,
+  capture: CaptureTag,
+  "case": CaseTag,
+  comment: CommentTag,
+  include: IncludeTag,
+  render: RenderTag,
+  decrement: DecrementTag,
+  increment: IncrementTag,
+  cycle: CycleTag,
+  "if": IfTag,
+  layout: LayoutTag,
+  block: BlockTag,
+  raw: RawTag,
+  tablerow: TablerowTag,
+  unless: UnlessTag,
+  "break": BreakTag,
+  "continue": ContinueTag,
+  echo: EchoTag,
+  liquid: LiquidTag,
+  "#": InlineCommentTag
+};
+var Liquid = class _Liquid {
+  static {
+    __name(this, "Liquid");
+  }
+  constructor(opts = {}) {
+    this.renderer = new Render();
+    this.filters = {};
+    this.tags = {};
+    this.options = normalize(opts);
+    this.parser = new Parser(this);
+    forOwn(tags, (conf, name) => this.registerTag(name, conf));
+    forOwn(filters, (handler, name) => this.registerFilter(name, handler));
+  }
+  parse(html, filepath) {
+    const parser = new Parser(this);
+    return parser.parse(html, filepath);
+  }
+  _render(tpl, scope, renderOptions) {
+    const ctx = scope instanceof Context2 ? scope : new Context2(scope, this.options, renderOptions);
+    return this.renderer.renderTemplates(tpl, ctx);
+  }
+  render(tpl, scope, renderOptions) {
+    return __awaiter(this, void 0, void 0, function* () {
+      return toPromise(this._render(tpl, scope, Object.assign(Object.assign({}, renderOptions), { sync: false })));
+    });
+  }
+  renderSync(tpl, scope, renderOptions) {
+    return toValueSync(this._render(tpl, scope, Object.assign(Object.assign({}, renderOptions), { sync: true })));
+  }
+  renderToNodeStream(tpl, scope, renderOptions = {}) {
+    const ctx = new Context2(scope, this.options, renderOptions);
+    return this.renderer.renderTemplatesToNodeStream(tpl, ctx);
+  }
+  _parseAndRender(html, scope, renderOptions) {
+    const tpl = this.parse(html);
+    return this._render(tpl, scope, renderOptions);
+  }
+  parseAndRender(html, scope, renderOptions) {
+    return __awaiter(this, void 0, void 0, function* () {
+      return toPromise(this._parseAndRender(html, scope, Object.assign(Object.assign({}, renderOptions), { sync: false })));
+    });
+  }
+  parseAndRenderSync(html, scope, renderOptions) {
+    return toValueSync(this._parseAndRender(html, scope, Object.assign(Object.assign({}, renderOptions), { sync: true })));
+  }
+  _parsePartialFile(file, sync, currentFile) {
+    return new Parser(this).parseFile(file, sync, LookupType.Partials, currentFile);
+  }
+  _parseLayoutFile(file, sync, currentFile) {
+    return new Parser(this).parseFile(file, sync, LookupType.Layouts, currentFile);
+  }
+  _parseFile(file, sync, lookupType, currentFile) {
+    return new Parser(this).parseFile(file, sync, lookupType, currentFile);
+  }
+  parseFile(file, lookupType) {
+    return __awaiter(this, void 0, void 0, function* () {
+      return toPromise(new Parser(this).parseFile(file, false, lookupType));
+    });
+  }
+  parseFileSync(file, lookupType) {
+    return toValueSync(new Parser(this).parseFile(file, true, lookupType));
+  }
+  *_renderFile(file, ctx, renderFileOptions) {
+    const templates = yield this._parseFile(file, renderFileOptions.sync, renderFileOptions.lookupType);
+    return yield this._render(templates, ctx, renderFileOptions);
+  }
+  renderFile(file, ctx, renderFileOptions) {
+    return __awaiter(this, void 0, void 0, function* () {
+      return toPromise(this._renderFile(file, ctx, Object.assign(Object.assign({}, renderFileOptions), { sync: false })));
+    });
+  }
+  renderFileSync(file, ctx, renderFileOptions) {
+    return toValueSync(this._renderFile(file, ctx, Object.assign(Object.assign({}, renderFileOptions), { sync: true })));
+  }
+  renderFileToNodeStream(file, scope, renderOptions) {
+    return __awaiter(this, void 0, void 0, function* () {
+      const templates = yield this.parseFile(file);
+      return this.renderToNodeStream(templates, scope, renderOptions);
+    });
+  }
+  _evalValue(str, scope) {
+    const value = new Value(str, this);
+    const ctx = scope instanceof Context2 ? scope : new Context2(scope, this.options);
+    return value.value(ctx);
+  }
+  evalValue(str, scope) {
+    return __awaiter(this, void 0, void 0, function* () {
+      return toPromise(this._evalValue(str, scope));
+    });
+  }
+  evalValueSync(str, scope) {
+    return toValueSync(this._evalValue(str, scope));
+  }
+  registerFilter(name, filter2) {
+    this.filters[name] = filter2;
+  }
+  registerTag(name, tag) {
+    this.tags[name] = isFunction(tag) ? tag : createTagClass(tag);
+  }
+  plugin(plugin) {
+    return plugin.call(this, _Liquid);
+  }
+  express() {
+    const self = this;
+    let firstCall = true;
+    return function(filePath, ctx, callback) {
+      if (firstCall) {
+        firstCall = false;
+        const dirs = normalizeDirectoryList(this.root);
+        self.options.root.unshift(...dirs);
+        self.options.layouts.unshift(...dirs);
+        self.options.partials.unshift(...dirs);
+      }
+      self.renderFile(filePath, ctx).then((html) => callback(null, html), callback);
+    };
+  }
+  analyze(template, options = {}) {
+    return __awaiter(this, void 0, void 0, function* () {
+      return analyze(template, options);
+    });
+  }
+  analyzeSync(template, options = {}) {
+    return analyzeSync(template, options);
+  }
+  parseAndAnalyze(html, filename, options = {}) {
+    return __awaiter(this, void 0, void 0, function* () {
+      return analyze(this.parse(html, filename), options);
+    });
+  }
+  parseAndAnalyzeSync(html, filename, options = {}) {
+    return analyzeSync(this.parse(html, filename), options);
+  }
+  /** Return an array of all variables without their properties. */
+  variables(template, options = {}) {
+    return __awaiter(this, void 0, void 0, function* () {
+      const analysis = yield analyze(isString(template) ? this.parse(template) : template, options);
+      return Object.keys(analysis.variables);
+    });
+  }
+  /** Return an array of all variables without their properties. */
+  variablesSync(template, options = {}) {
+    const analysis = analyzeSync(isString(template) ? this.parse(template) : template, options);
+    return Object.keys(analysis.variables);
+  }
+  /** Return an array of all variables including their properties/paths. */
+  fullVariables(template, options = {}) {
+    return __awaiter(this, void 0, void 0, function* () {
+      const analysis = yield analyze(isString(template) ? this.parse(template) : template, options);
+      return Array.from(new Set(Object.values(analysis.variables).flatMap((a) => a.map((v) => String(v)))));
+    });
+  }
+  /** Return an array of all variables including their properties/paths. */
+  fullVariablesSync(template, options = {}) {
+    const analysis = analyzeSync(isString(template) ? this.parse(template) : template, options);
+    return Array.from(new Set(Object.values(analysis.variables).flatMap((a) => a.map((v) => String(v)))));
+  }
+  /** Return an array of all variables, each as an array of properties/segments. */
+  variableSegments(template, options = {}) {
+    return __awaiter(this, void 0, void 0, function* () {
+      const analysis = yield analyze(isString(template) ? this.parse(template) : template, options);
+      return Array.from(strictUniq(Object.values(analysis.variables).flatMap((a) => a.map((v) => v.toArray()))));
+    });
+  }
+  /** Return an array of all variables, each as an array of properties/segments. */
+  variableSegmentsSync(template, options = {}) {
+    const analysis = analyzeSync(isString(template) ? this.parse(template) : template, options);
+    return Array.from(strictUniq(Object.values(analysis.variables).flatMap((a) => a.map((v) => v.toArray()))));
+  }
+  /** Return an array of all expected context variables without their properties. */
+  globalVariables(template, options = {}) {
+    return __awaiter(this, void 0, void 0, function* () {
+      const analysis = yield analyze(isString(template) ? this.parse(template) : template, options);
+      return Object.keys(analysis.globals);
+    });
+  }
+  /** Return an array of all expected context variables without their properties. */
+  globalVariablesSync(template, options = {}) {
+    const analysis = analyzeSync(isString(template) ? this.parse(template) : template, options);
+    return Object.keys(analysis.globals);
+  }
+  /** Return an array of all expected context variables including their properties/paths. */
+  globalFullVariables(template, options = {}) {
+    return __awaiter(this, void 0, void 0, function* () {
+      const analysis = yield analyze(isString(template) ? this.parse(template) : template, options);
+      return Array.from(new Set(Object.values(analysis.globals).flatMap((a) => a.map((v) => String(v)))));
+    });
+  }
+  /** Return an array of all expected context variables including their properties/paths. */
+  globalFullVariablesSync(template, options = {}) {
+    const analysis = analyzeSync(isString(template) ? this.parse(template) : template, options);
+    return Array.from(new Set(Object.values(analysis.globals).flatMap((a) => a.map((v) => String(v)))));
+  }
+  /** Return an array of all expected context variables, each as an array of properties/segments. */
+  globalVariableSegments(template, options = {}) {
+    return __awaiter(this, void 0, void 0, function* () {
+      const analysis = yield analyze(isString(template) ? this.parse(template) : template, options);
+      return Array.from(strictUniq(Object.values(analysis.globals).flatMap((a) => a.map((v) => v.toArray()))));
+    });
+  }
+  /** Return an array of all expected context variables, each as an array of properties/segments. */
+  globalVariableSegmentsSync(template, options = {}) {
+    const analysis = analyzeSync(isString(template) ? this.parse(template) : template, options);
+    return Array.from(strictUniq(Object.values(analysis.globals).flatMap((a) => a.map((v) => v.toArray()))));
   }
 };
 
@@ -4410,11 +9616,11 @@ var Directives = class _Directives {
   static {
     __name(this, "Directives");
   }
-  constructor(yaml, tags) {
+  constructor(yaml, tags2) {
     this.docStart = null;
     this.docEnd = false;
     this.yaml = Object.assign({}, _Directives.defaultYaml, yaml);
-    this.tags = Object.assign({}, _Directives.defaultTags, tags);
+    this.tags = Object.assign({}, _Directives.defaultTags, tags2);
   }
   clone() {
     const copy = new _Directives(this.yaml, this.tags);
@@ -4542,12 +9748,12 @@ var Directives = class _Directives {
     const tagEntries = Object.entries(this.tags);
     let tagNames;
     if (doc && tagEntries.length > 0 && isNode(doc.contents)) {
-      const tags = {};
+      const tags2 = {};
       visit(doc.contents, (_key, node) => {
         if (isNode(node) && node.tag)
-          tags[node.tag] = true;
+          tags2[node.tag] = true;
       });
-      tagNames = Object.keys(tags);
+      tagNames = Object.keys(tags2);
     } else
       tagNames = [];
     for (const [handle, prefix] of tagEntries) {
@@ -4850,15 +10056,15 @@ Scalar.QUOTE_SINGLE = "QUOTE_SINGLE";
 
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/doc/createNode.js
 var defaultTagPrefix = "tag:yaml.org,2002:";
-function findTagObject(value, tagName, tags) {
+function findTagObject(value, tagName, tags2) {
   if (tagName) {
-    const match2 = tags.filter((t) => t.tag === tagName);
+    const match2 = tags2.filter((t) => t.tag === tagName);
     const tagObj = match2.find((t) => !t.format) ?? match2[0];
     if (!tagObj)
       throw new Error(`Tag ${tagName} not found`);
     return tagObj;
   }
-  return tags.find((t) => t.identify?.(value) && !t.format);
+  return tags2.find((t) => t.identify?.(value) && !t.format);
 }
 __name(findTagObject, "findTagObject");
 function createNode(value, tagName, ctx) {
@@ -4867,9 +10073,9 @@ function createNode(value, tagName, ctx) {
   if (isNode(value))
     return value;
   if (isPair(value)) {
-    const map2 = ctx.schema[MAP].createNode?.(ctx.schema, null, ctx);
-    map2.items.push(value);
-    return map2;
+    const map3 = ctx.schema[MAP].createNode?.(ctx.schema, null, ctx);
+    map3.items.push(value);
+    return map3;
   }
   if (value instanceof String || value instanceof Number || value instanceof Boolean || typeof BigInt !== "undefined" && value instanceof BigInt) {
     value = value.valueOf();
@@ -5084,7 +10290,7 @@ function foldFlowLines(text, indent, mode = "flow", { indentAtStart, lineWidth =
     else
       end = lineWidth - indentAtStart;
   }
-  let split = void 0;
+  let split2 = void 0;
   let prev = void 0;
   let overflow = false;
   let i = -1;
@@ -5117,18 +10323,18 @@ function foldFlowLines(text, indent, mode = "flow", { indentAtStart, lineWidth =
       if (mode === FOLD_BLOCK)
         i = consumeMoreIndentedLines(text, i, indent.length);
       end = i + indent.length + endStep;
-      split = void 0;
+      split2 = void 0;
     } else {
       if (ch === " " && prev && prev !== " " && prev !== "\n" && prev !== "	") {
         const next = text[i + 1];
         if (next && next !== " " && next !== "\n" && next !== "	")
-          split = i;
+          split2 = i;
       }
       if (i >= end) {
-        if (split) {
-          folds.push(split);
-          end = split + endStep;
-          split = void 0;
+        if (split2) {
+          folds.push(split2);
+          end = split2 + endStep;
+          split2 = void 0;
         } else if (mode === FOLD_QUOTED) {
           while (prev === " " || prev === "	") {
             prev = ch;
@@ -5141,7 +10347,7 @@ function foldFlowLines(text, indent, mode = "flow", { indentAtStart, lineWidth =
           folds.push(j);
           escapedFolds[j] = true;
           end = j + endStep;
-          split = void 0;
+          split2 = void 0;
         } else {
           overflow = true;
         }
@@ -5202,16 +10408,16 @@ var containsDocumentMarker = /* @__PURE__ */ __name((str) => /^(%|---|\.\.\.)/m.
 function lineLengthOverLimit(str, lineWidth, indentLength) {
   if (!lineWidth || lineWidth < 0)
     return false;
-  const limit = lineWidth - indentLength;
+  const limit2 = lineWidth - indentLength;
   const strLen = str.length;
-  if (strLen <= limit)
+  if (strLen <= limit2)
     return false;
   for (let i = 0, start = 0; i < strLen; ++i) {
     if (str[i] === "\n") {
-      if (i - start > limit)
+      if (i - start > limit2)
         return true;
       start = i + 1;
-      if (strLen - start <= limit)
+      if (strLen - start <= limit2)
         return false;
     }
   }
@@ -5219,27 +10425,27 @@ function lineLengthOverLimit(str, lineWidth, indentLength) {
 }
 __name(lineLengthOverLimit, "lineLengthOverLimit");
 function doubleQuotedString(value, ctx) {
-  const json = JSON.stringify(value);
+  const json2 = JSON.stringify(value);
   if (ctx.options.doubleQuotedAsJSON)
-    return json;
+    return json2;
   const { implicitKey } = ctx;
   const minMultiLineLength = ctx.options.doubleQuotedMinMultiLineLength;
   const indent = ctx.indent || (containsDocumentMarker(value) ? "  " : "");
   let str = "";
   let start = 0;
-  for (let i = 0, ch = json[i]; ch; ch = json[++i]) {
-    if (ch === " " && json[i + 1] === "\\" && json[i + 2] === "n") {
-      str += json.slice(start, i) + "\\ ";
+  for (let i = 0, ch = json2[i]; ch; ch = json2[++i]) {
+    if (ch === " " && json2[i + 1] === "\\" && json2[i + 2] === "n") {
+      str += json2.slice(start, i) + "\\ ";
       i += 1;
       start = i;
       ch = "\\";
     }
     if (ch === "\\")
-      switch (json[i + 1]) {
+      switch (json2[i + 1]) {
         case "u":
           {
-            str += json.slice(start, i);
-            const code = json.substr(i + 2, 4);
+            str += json2.slice(start, i);
+            const code = json2.substr(i + 2, 4);
             switch (code) {
               case "0000":
                 str += "\\0";
@@ -5269,23 +10475,23 @@ function doubleQuotedString(value, ctx) {
                 if (code.substr(0, 2) === "00")
                   str += "\\x" + code.substr(2);
                 else
-                  str += json.substr(i, 6);
+                  str += json2.substr(i, 6);
             }
             i += 5;
             start = i + 1;
           }
           break;
         case "n":
-          if (implicitKey || json[i + 2] === '"' || json.length < minMultiLineLength) {
+          if (implicitKey || json2[i + 2] === '"' || json2.length < minMultiLineLength) {
             i += 1;
           } else {
-            str += json.slice(start, i) + "\n\n";
-            while (json[i + 2] === "\\" && json[i + 3] === "n" && json[i + 4] !== '"') {
+            str += json2.slice(start, i) + "\n\n";
+            while (json2[i + 2] === "\\" && json2[i + 3] === "n" && json2[i + 4] !== '"') {
               str += "\n";
               i += 2;
             }
             str += indent;
-            if (json[i + 2] === " ")
+            if (json2[i + 2] === " ")
               str += "\\";
             i += 1;
             start = i + 1;
@@ -5295,7 +10501,7 @@ function doubleQuotedString(value, ctx) {
           i += 1;
       }
   }
-  str = start ? str + json.slice(start) : json;
+  str = start ? str + json2.slice(start) : json2;
   return implicitKey ? str : foldFlowLines(str, indent, FOLD_QUOTED, getFoldOptions(ctx, false));
 }
 __name(doubleQuotedString, "doubleQuotedString");
@@ -5432,8 +10638,8 @@ function plainString(item, ctx, onComment, onChompKeep) {
 ${indent}`);
   if (actualString) {
     const test = /* @__PURE__ */ __name((tag) => tag.default && tag.tag !== "tag:yaml.org,2002:str" && tag.test?.test(str), "test");
-    const { compat, tags } = ctx.doc.schema;
-    if (tags.some(test) || compat?.some(test))
+    const { compat, tags: tags2 } = ctx.doc.schema;
+    if (tags2.some(test) || compat?.some(test))
       return quotedString(value, ctx);
   }
   return implicitKey ? str : foldFlowLines(str, indent, FOLD_FLOW, getFoldOptions(ctx, false));
@@ -5517,9 +10723,9 @@ function createStringifyContext(doc, options) {
   };
 }
 __name(createStringifyContext, "createStringifyContext");
-function getTagObject(tags, item) {
+function getTagObject(tags2, item) {
   if (item.tag) {
-    const match2 = tags.filter((t) => t.tag === item.tag);
+    const match2 = tags2.filter((t) => t.tag === item.tag);
     if (match2.length > 0)
       return match2.find((t) => t.format === item.format) ?? match2[0];
   }
@@ -5527,7 +10733,7 @@ function getTagObject(tags, item) {
   let obj;
   if (isScalar(item)) {
     obj = item.value;
-    let match2 = tags.filter((t) => t.identify?.(obj));
+    let match2 = tags2.filter((t) => t.identify?.(obj));
     if (match2.length > 1) {
       const testMatch = match2.filter((t) => t.test);
       if (testMatch.length > 0)
@@ -5536,7 +10742,7 @@ function getTagObject(tags, item) {
     tagObj = match2.find((t) => t.format === item.format) ?? match2.find((t) => !t.format);
   } else {
     obj = item;
-    tagObj = tags.find((t) => t.nodeClass && obj instanceof t.nodeClass);
+    tagObj = tags2.find((t) => t.nodeClass && obj instanceof t.nodeClass);
   }
   if (!tagObj) {
     const name = obj?.constructor?.name ?? typeof obj;
@@ -5560,7 +10766,7 @@ function stringifyProps(node, tagObj, { anchors, doc }) {
   return props.join(" ");
 }
 __name(stringifyProps, "stringifyProps");
-function stringify(item, ctx, onComment, onChompKeep) {
+function stringify2(item, ctx, onComment, onChompKeep) {
   if (isPair(item))
     return item.toString(ctx, onComment, onChompKeep);
   if (isAlias(item)) {
@@ -5589,7 +10795,7 @@ function stringify(item, ctx, onComment, onChompKeep) {
   return isScalar(node) || str[0] === "{" || str[0] === "[" ? `${props} ${str}` : `${props}
 ${ctx.indent}${str}`;
 }
-__name(stringify, "stringify");
+__name(stringify2, "stringify");
 
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/stringify/stringifyPair.js
 function stringifyPair({ key, value }, ctx, onComment, onChompKeep) {
@@ -5612,7 +10818,7 @@ function stringifyPair({ key, value }, ctx, onComment, onChompKeep) {
   });
   let keyCommentDone = false;
   let chompKeep = false;
-  let str = stringify(key, ctx, () => keyCommentDone = true, () => chompKeep = true);
+  let str = stringify2(key, ctx, () => keyCommentDone = true, () => chompKeep = true);
   if (!explicitKey && !ctx.inFlow && str.length > 1024) {
     if (simpleKeys)
       throw new Error("With simple keys, single line scalar must not span more than 1024 characters");
@@ -5664,7 +10870,7 @@ ${indent}:`;
     ctx.indent = ctx.indent.substring(2);
   }
   let valueCommentDone = false;
-  const valueStr = stringify(value, ctx, () => valueCommentDone = true, () => chompKeep = true);
+  const valueStr = stringify2(value, ctx, () => valueCommentDone = true, () => chompKeep = true);
   let ws = " ";
   if (keyComment || vsb || vcb) {
     ws = vsb ? "\n" : "";
@@ -5736,31 +10942,31 @@ var merge = {
   stringify: /* @__PURE__ */ __name(() => MERGE_KEY, "stringify")
 };
 var isMergeKey = /* @__PURE__ */ __name((ctx, key) => (merge.identify(key) || isScalar(key) && (!key.type || key.type === Scalar.PLAIN) && merge.identify(key.value)) && ctx?.doc.schema.tags.some((tag) => tag.tag === merge.tag && tag.default), "isMergeKey");
-function addMergeToJSMap(ctx, map2, value) {
+function addMergeToJSMap(ctx, map3, value) {
   value = ctx && isAlias(value) ? value.resolve(ctx.doc) : value;
   if (isSeq(value))
     for (const it of value.items)
-      mergeValue(ctx, map2, it);
+      mergeValue(ctx, map3, it);
   else if (Array.isArray(value))
     for (const it of value)
-      mergeValue(ctx, map2, it);
+      mergeValue(ctx, map3, it);
   else
-    mergeValue(ctx, map2, value);
+    mergeValue(ctx, map3, value);
 }
 __name(addMergeToJSMap, "addMergeToJSMap");
-function mergeValue(ctx, map2, value) {
+function mergeValue(ctx, map3, value) {
   const source = ctx && isAlias(value) ? value.resolve(ctx.doc) : value;
   if (!isMap(source))
     throw new Error("Merge sources must be maps or map aliases");
   const srcMap = source.toJSON(null, ctx, Map);
   for (const [key, value2] of srcMap) {
-    if (map2 instanceof Map) {
-      if (!map2.has(key))
-        map2.set(key, value2);
-    } else if (map2 instanceof Set) {
-      map2.add(key);
-    } else if (!Object.prototype.hasOwnProperty.call(map2, key)) {
-      Object.defineProperty(map2, key, {
+    if (map3 instanceof Map) {
+      if (!map3.has(key))
+        map3.set(key, value2);
+    } else if (map3 instanceof Set) {
+      map3.add(key);
+    } else if (!Object.prototype.hasOwnProperty.call(map3, key)) {
+      Object.defineProperty(map3, key, {
         value: value2,
         writable: true,
         enumerable: true,
@@ -5768,37 +10974,37 @@ function mergeValue(ctx, map2, value) {
       });
     }
   }
-  return map2;
+  return map3;
 }
 __name(mergeValue, "mergeValue");
 
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/nodes/addPairToJSMap.js
-function addPairToJSMap(ctx, map2, { key, value }) {
+function addPairToJSMap(ctx, map3, { key, value }) {
   if (isNode(key) && key.addToJSMap)
-    key.addToJSMap(ctx, map2, value);
+    key.addToJSMap(ctx, map3, value);
   else if (isMergeKey(ctx, key))
-    addMergeToJSMap(ctx, map2, value);
+    addMergeToJSMap(ctx, map3, value);
   else {
     const jsKey = toJS(key, "", ctx);
-    if (map2 instanceof Map) {
-      map2.set(jsKey, toJS(value, jsKey, ctx));
-    } else if (map2 instanceof Set) {
-      map2.add(jsKey);
+    if (map3 instanceof Map) {
+      map3.set(jsKey, toJS(value, jsKey, ctx));
+    } else if (map3 instanceof Set) {
+      map3.add(jsKey);
     } else {
       const stringKey = stringifyKey(key, jsKey, ctx);
       const jsValue = toJS(value, stringKey, ctx);
-      if (stringKey in map2)
-        Object.defineProperty(map2, stringKey, {
+      if (stringKey in map3)
+        Object.defineProperty(map3, stringKey, {
           value: jsValue,
           writable: true,
           enumerable: true,
           configurable: true
         });
       else
-        map2[stringKey] = jsValue;
+        map3[stringKey] = jsValue;
     }
   }
-  return map2;
+  return map3;
 }
 __name(addPairToJSMap, "addPairToJSMap");
 function stringifyKey(key, jsKey, ctx) {
@@ -5863,8 +11069,8 @@ var Pair = class _Pair {
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/stringify/stringifyCollection.js
 function stringifyCollection(collection, ctx, options) {
   const flow = ctx.inFlow ?? collection.flow;
-  const stringify4 = flow ? stringifyFlowCollection : stringifyBlockCollection;
-  return stringify4(collection, ctx, options);
+  const stringify5 = flow ? stringifyFlowCollection : stringifyBlockCollection;
+  return stringify5(collection, ctx, options);
 }
 __name(stringifyCollection, "stringifyCollection");
 function stringifyBlockCollection({ comment, items }, ctx, { blockItemPrefix, flowChars, itemIndent, onChompKeep, onComment }) {
@@ -5890,7 +11096,7 @@ function stringifyBlockCollection({ comment, items }, ctx, { blockItemPrefix, fl
       }
     }
     chompKeep = false;
-    let str2 = stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
+    let str2 = stringify2(item, itemCtx, () => comment2 = null, () => chompKeep = true);
     if (comment2)
       str2 += lineComment(str2, itemIndent, commentString(comment2));
     if (chompKeep && comment2)
@@ -5958,7 +11164,7 @@ function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
     }
     if (comment)
       reqNewline = true;
-    let str = stringify(item, itemCtx, () => comment = null);
+    let str = stringify2(item, itemCtx, () => comment = null);
     if (i < items.length - 1)
       str += ",";
     if (comment)
@@ -5973,7 +11179,7 @@ function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
     return start + end;
   } else {
     if (!reqNewline) {
-      const len = lines.reduce((sum, line) => sum + line.length + 2, 2);
+      const len = lines.reduce((sum2, line) => sum2 + line.length + 2, 2);
       reqNewline = ctx.options.lineWidth > 0 && len > ctx.options.lineWidth;
     }
     if (reqNewline) {
@@ -6030,14 +11236,14 @@ var YAMLMap = class extends Collection {
    */
   static from(schema4, obj, ctx) {
     const { keepUndefined, replacer } = ctx;
-    const map2 = new this(schema4);
+    const map3 = new this(schema4);
     const add = /* @__PURE__ */ __name((key, value) => {
       if (typeof replacer === "function")
         value = replacer.call(obj, key, value);
       else if (Array.isArray(replacer) && !replacer.includes(key))
         return;
       if (value !== void 0 || keepUndefined)
-        map2.items.push(createPair(key, value, ctx));
+        map3.items.push(createPair(key, value, ctx));
     }, "add");
     if (obj instanceof Map) {
       for (const [key, value] of obj)
@@ -6047,9 +11253,9 @@ var YAMLMap = class extends Collection {
         add(key, obj[key]);
     }
     if (typeof schema4.sortMapEntries === "function") {
-      map2.items.sort(schema4.sortMapEntries);
+      map3.items.sort(schema4.sortMapEntries);
     }
-    return map2;
+    return map3;
   }
   /**
    * Adds a value to the collection.
@@ -6108,12 +11314,12 @@ var YAMLMap = class extends Collection {
    * @returns Instance of Type, Map, or Object
    */
   toJSON(_, ctx, Type) {
-    const map2 = Type ? new Type() : ctx?.mapAsMap ? /* @__PURE__ */ new Map() : {};
+    const map3 = Type ? new Type() : ctx?.mapAsMap ? /* @__PURE__ */ new Map() : {};
     if (ctx?.onCreate)
-      ctx.onCreate(map2);
+      ctx.onCreate(map3);
     for (const item of this.items)
-      addPairToJSMap(ctx, map2, item);
-    return map2;
+      addPairToJSMap(ctx, map3, item);
+    return map3;
   }
   toString(ctx, onComment, onChompKeep) {
     if (!ctx)
@@ -6135,15 +11341,15 @@ var YAMLMap = class extends Collection {
 };
 
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/schema/common/map.js
-var map = {
+var map2 = {
   collection: "map",
   default: true,
   nodeClass: YAMLMap,
   tag: "tag:yaml.org,2002:map",
-  resolve(map2, onError) {
-    if (!isMap(map2))
+  resolve(map3, onError) {
+    if (!isMap(map3))
       onError("Expected a mapping for this tag");
-    return map2;
+    return map3;
   },
   createNode: /* @__PURE__ */ __name((schema4, obj, ctx) => YAMLMap.from(schema4, obj, ctx), "createNode")
 };
@@ -6311,14 +11517,14 @@ var boolTag = {
 };
 
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/stringify/stringifyNumber.js
-function stringifyNumber({ format, minFractionDigits, tag, value }) {
+function stringifyNumber({ format: format2, minFractionDigits, tag, value }) {
   if (typeof value === "bigint")
     return String(value);
   const num = typeof value === "number" ? value : Number(value);
   if (!isFinite(num))
     return isNaN(num) ? ".nan" : num < 0 ? "-.inf" : ".inf";
   let n = JSON.stringify(value);
-  if (!format && minFractionDigits && (!tag || tag === "tag:yaml.org,2002:float") && /^\d/.test(n)) {
+  if (!format2 && minFractionDigits && (!tag || tag === "tag:yaml.org,2002:float") && /^\d/.test(n)) {
     let i = n.indexOf(".");
     if (i < 0) {
       i = n.length;
@@ -6370,7 +11576,7 @@ var float = {
 
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/schema/core/int.js
 var intIdentify = /* @__PURE__ */ __name((value) => typeof value === "bigint" || Number.isInteger(value), "intIdentify");
-var intResolve = /* @__PURE__ */ __name((str, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str.substring(offset), radix), "intResolve");
+var intResolve = /* @__PURE__ */ __name((str, offset2, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str.substring(offset2), radix), "intResolve");
 function intStringify(node, radix, prefix) {
   const { value } = node;
   if (intIdentify(value) && value >= 0)
@@ -6407,7 +11613,7 @@ var intHex = {
 
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/schema/core/schema.js
 var schema = [
-  map,
+  map2,
   seq,
   string,
   nullTag,
@@ -6477,7 +11683,7 @@ var jsonError = {
     return str;
   }
 };
-var schema2 = [map, seq].concat(jsonScalars, jsonError);
+var schema2 = [map2, seq].concat(jsonScalars, jsonError);
 
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/schema/yaml-1.1/binary.js
 var binary = {
@@ -6622,9 +11828,9 @@ var YAMLOMap = class _YAMLOMap extends YAMLSeq {
   toJSON(_, ctx) {
     if (!ctx)
       return super.toJSON(_);
-    const map2 = /* @__PURE__ */ new Map();
+    const map3 = /* @__PURE__ */ new Map();
     if (ctx?.onCreate)
-      ctx.onCreate(map2);
+      ctx.onCreate(map3);
     for (const pair of this.items) {
       let key, value;
       if (isPair(pair)) {
@@ -6633,11 +11839,11 @@ var YAMLOMap = class _YAMLOMap extends YAMLSeq {
       } else {
         key = toJS(pair, "", ctx);
       }
-      if (map2.has(key))
+      if (map3.has(key))
         throw new Error("Ordered maps must not include duplicate keys");
-      map2.set(key, value);
+      map3.set(key, value);
     }
-    return map2;
+    return map3;
   }
   static from(schema4, iterable, ctx) {
     const pairs2 = createPairs(schema4, iterable, ctx);
@@ -6736,11 +11942,11 @@ var float2 = {
 
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/schema/yaml-1.1/int.js
 var intIdentify3 = /* @__PURE__ */ __name((value) => typeof value === "bigint" || Number.isInteger(value), "intIdentify");
-function intResolve2(str, offset, radix, { intAsBigInt }) {
+function intResolve2(str, offset2, radix, { intAsBigInt }) {
   const sign = str[0];
   if (sign === "-" || sign === "+")
-    offset += 1;
-  str = str.substring(offset).replace(/_/g, "");
+    offset2 += 1;
+  str = str.substring(offset2).replace(/_/g, "");
   if (intAsBigInt) {
     switch (radix) {
       case 2:
@@ -6875,15 +12081,15 @@ var set = {
   default: false,
   tag: "tag:yaml.org,2002:set",
   createNode: /* @__PURE__ */ __name((schema4, iterable, ctx) => YAMLSet.from(schema4, iterable, ctx), "createNode"),
-  resolve(map2, onError) {
-    if (isMap(map2)) {
-      if (map2.hasAllNullValues(true))
-        return Object.assign(new YAMLSet(), map2);
+  resolve(map3, onError) {
+    if (isMap(map3)) {
+      if (map3.hasAllNullValues(true))
+        return Object.assign(new YAMLSet(), map3);
       else
         onError("Set items must all have null values");
     } else
       onError("Expected a mapping for this tag");
-    return map2;
+    return map3;
   }
 };
 
@@ -6955,22 +12161,22 @@ var timestamp = {
       throw new Error("!!timestamp expects a date, starting with yyyy-mm-dd");
     const [, year, month, day, hour, minute, second] = match2.map(Number);
     const millisec = match2[7] ? Number((match2[7] + "00").substr(1, 3)) : 0;
-    let date = Date.UTC(year, month - 1, day, hour || 0, minute || 0, second || 0, millisec);
+    let date2 = Date.UTC(year, month - 1, day, hour || 0, minute || 0, second || 0, millisec);
     const tz = match2[8];
     if (tz && tz !== "Z") {
       let d = parseSexagesimal(tz, false);
       if (Math.abs(d) < 30)
         d *= 60;
-      date -= 6e4 * d;
+      date2 -= 6e4 * d;
     }
-    return new Date(date);
+    return new Date(date2);
   },
   stringify: /* @__PURE__ */ __name(({ value }) => value?.toISOString().replace(/(T00:00:00)?\.000Z$/, "") ?? "", "stringify")
 };
 
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/schema/yaml-1.1/schema.js
 var schema3 = [
-  map,
+  map2,
   seq,
   string,
   nullTag,
@@ -6996,7 +12202,7 @@ var schema3 = [
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/schema/tags.js
 var schemas = /* @__PURE__ */ new Map([
   ["core", schema],
-  ["failsafe", [map, seq, string]],
+  ["failsafe", [map2, seq, string]],
   ["json", schema2],
   ["yaml11", schema3],
   ["yaml-1.1", schema3]
@@ -7012,7 +12218,7 @@ var tagsByName = {
   intHex,
   intOct,
   intTime,
-  map,
+  map: map2,
   merge,
   null: nullTag,
   omap,
@@ -7034,10 +12240,10 @@ function getTags(customTags, schemaName, addMergeTag) {
   if (schemaTags && !customTags) {
     return addMergeTag && !schemaTags.includes(merge) ? schemaTags.concat(merge) : schemaTags.slice();
   }
-  let tags = schemaTags;
-  if (!tags) {
+  let tags2 = schemaTags;
+  if (!tags2) {
     if (Array.isArray(customTags))
-      tags = [];
+      tags2 = [];
     else {
       const keys = Array.from(schemas.keys()).filter((key) => key !== "yaml11").map((key) => JSON.stringify(key)).join(", ");
       throw new Error(`Unknown schema "${schemaName}"; use one of ${keys} or define customTags array`);
@@ -7045,22 +12251,22 @@ function getTags(customTags, schemaName, addMergeTag) {
   }
   if (Array.isArray(customTags)) {
     for (const tag of customTags)
-      tags = tags.concat(tag);
+      tags2 = tags2.concat(tag);
   } else if (typeof customTags === "function") {
-    tags = customTags(tags.slice());
+    tags2 = customTags(tags2.slice());
   }
   if (addMergeTag)
-    tags = tags.concat(merge);
-  return tags.reduce((tags2, tag) => {
+    tags2 = tags2.concat(merge);
+  return tags2.reduce((tags3, tag) => {
     const tagObj = typeof tag === "string" ? tagsByName[tag] : tag;
     if (!tagObj) {
       const tagName = JSON.stringify(tag);
       const keys = Object.keys(tagsByName).map((key) => JSON.stringify(key)).join(", ");
       throw new Error(`Unknown custom tag ${tagName}; use one of ${keys}`);
     }
-    if (!tags2.includes(tagObj))
-      tags2.push(tagObj);
-    return tags2;
+    if (!tags3.includes(tagObj))
+      tags3.push(tagObj);
+    return tags3;
   }, []);
 }
 __name(getTags, "getTags");
@@ -7077,7 +12283,7 @@ var Schema = class _Schema {
     this.knownTags = resolveKnownTags ? coreKnownTags : {};
     this.tags = getTags(customTags, this.name, merge2);
     this.toStringOptions = toStringDefaults ?? null;
-    Object.defineProperty(this, MAP, { value: map });
+    Object.defineProperty(this, MAP, { value: map2 });
     Object.defineProperty(this, SCALAR, { value: string });
     Object.defineProperty(this, SEQ, { value: seq });
     this.sortMapEntries = typeof sortMapEntries === "function" ? sortMapEntries : sortMapEntries === true ? sortMapEntriesByKey : null;
@@ -7125,7 +12331,7 @@ function stringifyDocument(doc, options) {
       contentComment = doc.contents.comment;
     }
     const onChompKeep = contentComment ? void 0 : () => chompKeep = true;
-    let body = stringify(doc.contents, ctx, () => contentComment = null, onChompKeep);
+    let body = stringify2(doc.contents, ctx, () => contentComment = null, onChompKeep);
     if (contentComment)
       body += lineComment(body, "", commentString(contentComment));
     if ((body[0] === "|" || body[0] === ">") && lines[lines.length - 1] === "---") {
@@ -7133,7 +12339,7 @@ function stringifyDocument(doc, options) {
     } else
       lines.push(body);
   } else {
-    lines.push(stringify(doc.contents, ctx));
+    lines.push(stringify2(doc.contents, ctx));
   }
   if (doc.directives?.docEnd) {
     if (doc.comment) {
@@ -7415,11 +12621,11 @@ var Document = class _Document {
       throw new Error(`With a null YAML version, the { schema: Schema } option is required`);
   }
   // json & jsonArg are only used from toJSON()
-  toJS({ json, jsonArg, mapAsMap, maxAliasCount, onAnchor, reviver } = {}) {
+  toJS({ json: json2, jsonArg, mapAsMap, maxAliasCount, onAnchor, reviver } = {}) {
     const ctx = {
       anchors: /* @__PURE__ */ new Map(),
       doc: this,
-      keep: !json,
+      keep: !json2,
       mapAsMap: mapAsMap === true,
       mapKeyWarned: false,
       maxAliasCount: typeof maxAliasCount === "number" ? maxAliasCount : 100
@@ -7523,7 +12729,7 @@ ${pointer}
 }, "prettifyError");
 
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/compose/resolve-props.js
-function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIndent, startOnNewline }) {
+function resolveProps(tokens, { flow, indicator, next, offset: offset2, onError, parentIndent, startOnNewline }) {
   let spaceBefore = false;
   let atNewline = startOnNewline;
   let hasSpace = startOnNewline;
@@ -7631,8 +12837,8 @@ function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIn
         hasSpace = false;
     }
   }
-  const last = tokens[tokens.length - 1];
-  const end = last ? last.offset + last.source.length : offset;
+  const last2 = tokens[tokens.length - 1];
+  const end = last2 ? last2.offset + last2.source.length : offset2;
   if (reqSpace && next && next.type !== "space" && next.type !== "newline" && next.type !== "comma" && (next.type !== "scalar" || next.source !== "")) {
     onError(next.offset, "MISSING_CHAR", "Tags and anchors must be separated from the next token by white space");
   }
@@ -7703,12 +12909,12 @@ function flowIndentCheck(indent, fc, onError) {
 __name(flowIndentCheck, "flowIndentCheck");
 
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/compose/util-map-includes.js
-function mapIncludes(ctx, items, search) {
+function mapIncludes(ctx, items, search2) {
   const { uniqueKeys } = ctx.options;
   if (uniqueKeys === false)
     return false;
   const isEqual = typeof uniqueKeys === "function" ? uniqueKeys : (a, b) => a === b || isScalar(a) && isScalar(b) && a.value === b.value;
-  return items.some((pair) => isEqual(pair.key, search));
+  return items.some((pair) => isEqual(pair.key, search2));
 }
 __name(mapIncludes, "mapIncludes");
 
@@ -7716,17 +12922,17 @@ __name(mapIncludes, "mapIncludes");
 var startColMsg = "All mapping items must start at the same column";
 function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeEmptyNode2 }, ctx, bm, onError, tag) {
   const NodeClass = tag?.nodeClass ?? YAMLMap;
-  const map2 = new NodeClass(ctx.schema);
+  const map3 = new NodeClass(ctx.schema);
   if (ctx.atRoot)
     ctx.atRoot = false;
-  let offset = bm.offset;
+  let offset2 = bm.offset;
   let commentEnd = null;
   for (const collItem of bm.items) {
-    const { start, key, sep, value } = collItem;
+    const { start, key, sep: sep2, value } = collItem;
     const keyProps = resolveProps(start, {
       indicator: "explicit-key-ind",
-      next: key ?? sep?.[0],
-      offset,
+      next: key ?? sep2?.[0],
+      offset: offset2,
       onError,
       parentIndent: bm.indent,
       startOnNewline: true
@@ -7735,17 +12941,17 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
     if (implicitKey) {
       if (key) {
         if (key.type === "block-seq")
-          onError(offset, "BLOCK_AS_IMPLICIT_KEY", "A block sequence may not be used as an implicit map key");
+          onError(offset2, "BLOCK_AS_IMPLICIT_KEY", "A block sequence may not be used as an implicit map key");
         else if ("indent" in key && key.indent !== bm.indent)
-          onError(offset, "BAD_INDENT", startColMsg);
+          onError(offset2, "BAD_INDENT", startColMsg);
       }
-      if (!keyProps.anchor && !keyProps.tag && !sep) {
+      if (!keyProps.anchor && !keyProps.tag && !sep2) {
         commentEnd = keyProps.end;
         if (keyProps.comment) {
-          if (map2.comment)
-            map2.comment += "\n" + keyProps.comment;
+          if (map3.comment)
+            map3.comment += "\n" + keyProps.comment;
           else
-            map2.comment = keyProps.comment;
+            map3.comment = keyProps.comment;
         }
         continue;
       }
@@ -7753,7 +12959,7 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
         onError(key ?? start[start.length - 1], "MULTILINE_IMPLICIT_KEY", "Implicit keys need to be on a single line");
       }
     } else if (keyProps.found?.indent !== bm.indent) {
-      onError(offset, "BAD_INDENT", startColMsg);
+      onError(offset2, "BAD_INDENT", startColMsg);
     }
     ctx.atKey = true;
     const keyStart = keyProps.end;
@@ -7761,9 +12967,9 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
     if (ctx.schema.compat)
       flowIndentCheck(bm.indent, key, onError);
     ctx.atKey = false;
-    if (mapIncludes(ctx, map2.items, keyNode))
+    if (mapIncludes(ctx, map3.items, keyNode))
       onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-    const valueProps = resolveProps(sep ?? [], {
+    const valueProps = resolveProps(sep2 ?? [], {
       indicator: "map-value-ind",
       next: value,
       offset: keyNode.range[2],
@@ -7771,22 +12977,22 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
       parentIndent: bm.indent,
       startOnNewline: !key || key.type === "block-scalar"
     });
-    offset = valueProps.end;
+    offset2 = valueProps.end;
     if (valueProps.found) {
       if (implicitKey) {
         if (value?.type === "block-map" && !valueProps.hasNewline)
-          onError(offset, "BLOCK_AS_IMPLICIT_KEY", "Nested mappings are not allowed in compact mappings");
+          onError(offset2, "BLOCK_AS_IMPLICIT_KEY", "Nested mappings are not allowed in compact mappings");
         if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
           onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
       }
-      const valueNode = value ? composeNode2(ctx, value, valueProps, onError) : composeEmptyNode2(ctx, offset, sep, null, valueProps, onError);
+      const valueNode = value ? composeNode2(ctx, value, valueProps, onError) : composeEmptyNode2(ctx, offset2, sep2, null, valueProps, onError);
       if (ctx.schema.compat)
         flowIndentCheck(bm.indent, value, onError);
-      offset = valueNode.range[2];
+      offset2 = valueNode.range[2];
       const pair = new Pair(keyNode, valueNode);
       if (ctx.options.keepSourceTokens)
         pair.srcToken = collItem;
-      map2.items.push(pair);
+      map3.items.push(pair);
     } else {
       if (implicitKey)
         onError(keyNode.range, "MISSING_CHAR", "Implicit map keys need to be followed by map values");
@@ -7799,13 +13005,13 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
       const pair = new Pair(keyNode);
       if (ctx.options.keepSourceTokens)
         pair.srcToken = collItem;
-      map2.items.push(pair);
+      map3.items.push(pair);
     }
   }
-  if (commentEnd && commentEnd < offset)
+  if (commentEnd && commentEnd < offset2)
     onError(commentEnd, "IMPOSSIBLE", "Map comment with trailing content");
-  map2.range = [bm.offset, offset, commentEnd ?? offset];
-  return map2;
+  map3.range = [bm.offset, offset2, commentEnd ?? offset2];
+  return map3;
 }
 __name(resolveBlockMap, "resolveBlockMap");
 
@@ -7817,13 +13023,13 @@ function resolveBlockSeq({ composeNode: composeNode2, composeEmptyNode: composeE
     ctx.atRoot = false;
   if (ctx.atKey)
     ctx.atKey = false;
-  let offset = bs.offset;
+  let offset2 = bs.offset;
   let commentEnd = null;
   for (const { start, value } of bs.items) {
     const props = resolveProps(start, {
       indicator: "seq-item-ind",
       next: value,
-      offset,
+      offset: offset2,
       onError,
       parentIndent: bs.indent,
       startOnNewline: true
@@ -7833,7 +13039,7 @@ function resolveBlockSeq({ composeNode: composeNode2, composeEmptyNode: composeE
         if (value && value.type === "block-seq")
           onError(props.end, "BAD_INDENT", "All sequence items must start at the same column");
         else
-          onError(offset, "MISSING_CHAR", "Sequence item without - indicator");
+          onError(offset2, "MISSING_CHAR", "Sequence item without - indicator");
       } else {
         commentEnd = props.end;
         if (props.comment)
@@ -7844,20 +13050,20 @@ function resolveBlockSeq({ composeNode: composeNode2, composeEmptyNode: composeE
     const node = value ? composeNode2(ctx, value, props, onError) : composeEmptyNode2(ctx, props.end, start, null, props, onError);
     if (ctx.schema.compat)
       flowIndentCheck(bs.indent, value, onError);
-    offset = node.range[2];
+    offset2 = node.range[2];
     seq2.items.push(node);
   }
-  seq2.range = [bs.offset, offset, commentEnd ?? offset];
+  seq2.range = [bs.offset, offset2, commentEnd ?? offset2];
   return seq2;
 }
 __name(resolveBlockSeq, "resolveBlockSeq");
 
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/compose/resolve-end.js
-function resolveEnd(end, offset, reqSpace, onError) {
+function resolveEnd(end, offset2, reqSpace, onError) {
   let comment = "";
   if (end) {
     let hasSpace = false;
-    let sep = "";
+    let sep2 = "";
     for (const token of end) {
       const { source, type } = token;
       switch (type) {
@@ -7871,22 +13077,22 @@ function resolveEnd(end, offset, reqSpace, onError) {
           if (!comment)
             comment = cb;
           else
-            comment += sep + cb;
-          sep = "";
+            comment += sep2 + cb;
+          sep2 = "";
           break;
         }
         case "newline":
           if (comment)
-            sep += source;
+            sep2 += source;
           hasSpace = true;
           break;
         default:
           onError(token, "UNEXPECTED_TOKEN", `Unexpected ${type} at node end`);
       }
-      offset += source.length;
+      offset2 += source.length;
     }
   }
-  return { comment, offset };
+  return { comment, offset: offset2 };
 }
 __name(resolveEnd, "resolveEnd");
 
@@ -7904,21 +13110,21 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
     ctx.atRoot = false;
   if (ctx.atKey)
     ctx.atKey = false;
-  let offset = fc.offset + fc.start.source.length;
+  let offset2 = fc.offset + fc.start.source.length;
   for (let i = 0; i < fc.items.length; ++i) {
     const collItem = fc.items[i];
-    const { start, key, sep, value } = collItem;
+    const { start, key, sep: sep2, value } = collItem;
     const props = resolveProps(start, {
       flow: fcName,
       indicator: "explicit-key-ind",
-      next: key ?? sep?.[0],
-      offset,
+      next: key ?? sep2?.[0],
+      offset: offset2,
       onError,
       parentIndent: fc.indent,
       startOnNewline: false
     });
     if (!props.found) {
-      if (!props.anchor && !props.tag && !sep && !value) {
+      if (!props.anchor && !props.tag && !sep2 && !value) {
         if (i === 0 && props.comma)
           onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
         else if (i < fc.items.length - 1)
@@ -7929,7 +13135,7 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
           else
             coll.comment = props.comment;
         }
-        offset = props.end;
+        offset2 = props.end;
         continue;
       }
       if (!isMap2 && ctx.options.strict && containsNewline(key))
@@ -7972,10 +13178,10 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
         }
       }
     }
-    if (!isMap2 && !sep && !props.found) {
-      const valueNode = value ? composeNode2(ctx, value, props, onError) : composeEmptyNode2(ctx, props.end, sep, null, props, onError);
+    if (!isMap2 && !sep2 && !props.found) {
+      const valueNode = value ? composeNode2(ctx, value, props, onError) : composeEmptyNode2(ctx, props.end, sep2, null, props, onError);
       coll.items.push(valueNode);
-      offset = valueNode.range[2];
+      offset2 = valueNode.range[2];
       if (isBlock(value))
         onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
     } else {
@@ -7985,7 +13191,7 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
       if (isBlock(key))
         onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
       ctx.atKey = false;
-      const valueProps = resolveProps(sep ?? [], {
+      const valueProps = resolveProps(sep2 ?? [], {
         flow: fcName,
         indicator: "map-value-ind",
         next: value,
@@ -7996,8 +13202,8 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
       });
       if (valueProps.found) {
         if (!isMap2 && !props.found && ctx.options.strict) {
-          if (sep)
-            for (const st of sep) {
+          if (sep2)
+            for (const st of sep2) {
               if (st === valueProps.found)
                 break;
               if (st.type === "newline") {
@@ -8014,7 +13220,7 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
         else
           onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
       }
-      const valueNode = value ? composeNode2(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode2(ctx, valueProps.end, sep, null, valueProps, onError) : null;
+      const valueNode = value ? composeNode2(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode2(ctx, valueProps.end, sep2, null, valueProps, onError) : null;
       if (valueNode) {
         if (isBlock(value))
           onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -8028,30 +13234,30 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
       if (ctx.options.keepSourceTokens)
         pair.srcToken = collItem;
       if (isMap2) {
-        const map2 = coll;
-        if (mapIncludes(ctx, map2.items, keyNode))
+        const map3 = coll;
+        if (mapIncludes(ctx, map3.items, keyNode))
           onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-        map2.items.push(pair);
+        map3.items.push(pair);
       } else {
-        const map2 = new YAMLMap(ctx.schema);
-        map2.flow = true;
-        map2.items.push(pair);
+        const map3 = new YAMLMap(ctx.schema);
+        map3.flow = true;
+        map3.items.push(pair);
         const endRange = (valueNode ?? keyNode).range;
-        map2.range = [keyNode.range[0], endRange[1], endRange[2]];
-        coll.items.push(map2);
+        map3.range = [keyNode.range[0], endRange[1], endRange[2]];
+        coll.items.push(map3);
       }
-      offset = valueNode ? valueNode.range[2] : valueProps.end;
+      offset2 = valueNode ? valueNode.range[2] : valueProps.end;
     }
   }
   const expectedEnd = isMap2 ? "}" : "]";
   const [ce, ...ee] = fc.end;
-  let cePos = offset;
+  let cePos = offset2;
   if (ce && ce.source === expectedEnd)
     cePos = ce.offset + ce.source.length;
   else {
     const name = fcName[0].toUpperCase() + fcName.substring(1);
     const msg = atRoot ? `${name} must end with a ${expectedEnd}` : `${name} in block collection must be sufficiently indented and end with a ${expectedEnd}`;
-    onError(offset, atRoot ? "MISSING_CHAR" : "BAD_INDENT", msg);
+    onError(offset2, atRoot ? "MISSING_CHAR" : "BAD_INDENT", msg);
     if (ce && ce.source.length !== 1)
       ee.unshift(ce);
   }
@@ -8149,7 +13355,7 @@ function resolveBlockScalar(ctx, scalar, onError) {
     return { value: value2, type, comment: header.comment, range: [start, end2, end2] };
   }
   let trimIndent = scalar.indent + header.indent;
-  let offset = scalar.offset + header.length;
+  let offset2 = scalar.offset + header.length;
   let contentStart = 0;
   for (let i = 0; i < chompStart; ++i) {
     const [indent, content] = lines[i];
@@ -8159,59 +13365,59 @@ function resolveBlockScalar(ctx, scalar, onError) {
     } else {
       if (indent.length < trimIndent) {
         const message = "Block scalars with more-indented leading empty lines must use an explicit indentation indicator";
-        onError(offset + indent.length, "MISSING_CHAR", message);
+        onError(offset2 + indent.length, "MISSING_CHAR", message);
       }
       if (header.indent === 0)
         trimIndent = indent.length;
       contentStart = i;
       if (trimIndent === 0 && !ctx.atRoot) {
         const message = "Block scalar values in collections must be indented";
-        onError(offset, "BAD_INDENT", message);
+        onError(offset2, "BAD_INDENT", message);
       }
       break;
     }
-    offset += indent.length + content.length + 1;
+    offset2 += indent.length + content.length + 1;
   }
   for (let i = lines.length - 1; i >= chompStart; --i) {
     if (lines[i][0].length > trimIndent)
       chompStart = i + 1;
   }
   let value = "";
-  let sep = "";
+  let sep2 = "";
   let prevMoreIndented = false;
   for (let i = 0; i < contentStart; ++i)
     value += lines[i][0].slice(trimIndent) + "\n";
   for (let i = contentStart; i < chompStart; ++i) {
     let [indent, content] = lines[i];
-    offset += indent.length + content.length + 1;
+    offset2 += indent.length + content.length + 1;
     const crlf = content[content.length - 1] === "\r";
     if (crlf)
       content = content.slice(0, -1);
     if (content && indent.length < trimIndent) {
       const src = header.indent ? "explicit indentation indicator" : "first line";
       const message = `Block scalar lines must not be less indented than their ${src}`;
-      onError(offset - content.length - (crlf ? 2 : 1), "BAD_INDENT", message);
+      onError(offset2 - content.length - (crlf ? 2 : 1), "BAD_INDENT", message);
       indent = "";
     }
     if (type === Scalar.BLOCK_LITERAL) {
-      value += sep + indent.slice(trimIndent) + content;
-      sep = "\n";
+      value += sep2 + indent.slice(trimIndent) + content;
+      sep2 = "\n";
     } else if (indent.length > trimIndent || content[0] === "	") {
-      if (sep === " ")
-        sep = "\n";
-      else if (!prevMoreIndented && sep === "\n")
-        sep = "\n\n";
-      value += sep + indent.slice(trimIndent) + content;
-      sep = "\n";
+      if (sep2 === " ")
+        sep2 = "\n";
+      else if (!prevMoreIndented && sep2 === "\n")
+        sep2 = "\n\n";
+      value += sep2 + indent.slice(trimIndent) + content;
+      sep2 = "\n";
       prevMoreIndented = true;
     } else if (content === "") {
-      if (sep === "\n")
+      if (sep2 === "\n")
         value += "\n";
       else
-        sep = "\n";
+        sep2 = "\n";
     } else {
-      value += sep + content;
-      sep = " ";
+      value += sep2 + content;
+      sep2 = " ";
       prevMoreIndented = false;
     }
   }
@@ -8231,7 +13437,7 @@ function resolveBlockScalar(ctx, scalar, onError) {
   return { value, type, comment: header.comment, range: [start, end, end] };
 }
 __name(resolveBlockScalar, "resolveBlockScalar");
-function parseBlockScalarHeader({ offset, props }, strict, onError) {
+function parseBlockScalarHeader({ offset: offset2, props }, strict, onError) {
   if (props[0].type !== "block-scalar-header") {
     onError(props[0], "IMPOSSIBLE", "Block scalar header not found");
     return null;
@@ -8250,7 +13456,7 @@ function parseBlockScalarHeader({ offset, props }, strict, onError) {
       if (!indent && n)
         indent = n;
       else if (error === -1)
-        error = offset + i;
+        error = offset2 + i;
     }
   }
   if (error !== -1)
@@ -8293,23 +13499,23 @@ function parseBlockScalarHeader({ offset, props }, strict, onError) {
 }
 __name(parseBlockScalarHeader, "parseBlockScalarHeader");
 function splitLines(source) {
-  const split = source.split(/\n( *)/);
-  const first = split[0];
-  const m = first.match(/^( *)/);
-  const line0 = m?.[1] ? [m[1], first.slice(m[1].length)] : ["", first];
+  const split2 = source.split(/\n( *)/);
+  const first2 = split2[0];
+  const m = first2.match(/^( *)/);
+  const line0 = m?.[1] ? [m[1], first2.slice(m[1].length)] : ["", first2];
   const lines = [line0];
-  for (let i = 1; i < split.length; i += 2)
-    lines.push([split[i], split[i + 1]]);
+  for (let i = 1; i < split2.length; i += 2)
+    lines.push([split2[i], split2[i + 1]]);
   return lines;
 }
 __name(splitLines, "splitLines");
 
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/compose/resolve-flow-scalar.js
 function resolveFlowScalar(scalar, strict, onError) {
-  const { offset, type, source, end } = scalar;
+  const { offset: offset2, type, source, end } = scalar;
   let _type;
   let value;
-  const _onError = /* @__PURE__ */ __name((rel, code, msg) => onError(offset + rel, code, msg), "_onError");
+  const _onError = /* @__PURE__ */ __name((rel, code, msg) => onError(offset2 + rel, code, msg), "_onError");
   switch (type) {
     case "scalar":
       _type = Scalar.PLAIN;
@@ -8330,16 +13536,16 @@ function resolveFlowScalar(scalar, strict, onError) {
         value: "",
         type: null,
         comment: "",
-        range: [offset, offset + source.length, offset + source.length]
+        range: [offset2, offset2 + source.length, offset2 + source.length]
       };
   }
-  const valueEnd = offset + source.length;
+  const valueEnd = offset2 + source.length;
   const re = resolveEnd(end, valueEnd, strict, onError);
   return {
     value,
     type: _type,
     comment: re.comment,
-    range: [offset, valueEnd, re.offset]
+    range: [offset2, valueEnd, re.offset]
   };
 }
 __name(resolveFlowScalar, "resolveFlowScalar");
@@ -8379,37 +13585,37 @@ function singleQuotedValue(source, onError) {
 }
 __name(singleQuotedValue, "singleQuotedValue");
 function foldLines(source) {
-  let first, line;
+  let first2, line;
   try {
-    first = new RegExp("(.*?)(?<![ 	])[ 	]*\r?\n", "sy");
+    first2 = new RegExp("(.*?)(?<![ 	])[ 	]*\r?\n", "sy");
     line = new RegExp("[ 	]*(.*?)(?:(?<![ 	])[ 	]*)?\r?\n", "sy");
   } catch {
-    first = /(.*?)[ \t]*\r?\n/sy;
+    first2 = /(.*?)[ \t]*\r?\n/sy;
     line = /[ \t]*(.*?)[ \t]*\r?\n/sy;
   }
-  let match2 = first.exec(source);
+  let match2 = first2.exec(source);
   if (!match2)
     return source;
   let res = match2[1];
-  let sep = " ";
-  let pos = first.lastIndex;
+  let sep2 = " ";
+  let pos = first2.lastIndex;
   line.lastIndex = pos;
   while (match2 = line.exec(source)) {
     if (match2[1] === "") {
-      if (sep === "\n")
-        res += sep;
+      if (sep2 === "\n")
+        res += sep2;
       else
-        sep = "\n";
+        sep2 = "\n";
     } else {
-      res += sep + match2[1];
-      sep = " ";
+      res += sep2 + match2[1];
+      sep2 = " ";
     }
     pos = line.lastIndex;
   }
-  const last = /[ \t]*(.*)/sy;
-  last.lastIndex = pos;
-  match2 = last.exec(source);
-  return res + sep + (match2?.[1] ?? "");
+  const last2 = /[ \t]*(.*)/sy;
+  last2.lastIndex = pos;
+  match2 = last2.exec(source);
+  return res + sep2 + (match2?.[1] ?? "");
 }
 __name(foldLines, "foldLines");
 function doubleQuotedValue(source, onError) {
@@ -8419,9 +13625,9 @@ function doubleQuotedValue(source, onError) {
     if (ch === "\r" && source[i + 1] === "\n")
       continue;
     if (ch === "\n") {
-      const { fold, offset } = foldNewline(source, i);
+      const { fold, offset: offset2 } = foldNewline(source, i);
       res += fold;
-      i = offset;
+      i = offset2;
     } else if (ch === "\\") {
       let next = source[++i];
       const cc = escapeCodes[next];
@@ -8440,9 +13646,9 @@ function doubleQuotedValue(source, onError) {
         res += parseCharCode(source, i + 1, length, onError);
         i += length;
       } else {
-        const raw2 = source.substr(i - 1, 2);
-        onError(i - 1, "BAD_DQ_ESCAPE", `Invalid escape sequence ${raw2}`);
-        res += raw2;
+        const raw3 = source.substr(i - 1, 2);
+        onError(i - 1, "BAD_DQ_ESCAPE", `Invalid escape sequence ${raw3}`);
+        res += raw3;
       }
     } else if (ch === " " || ch === "	") {
       const wsStart = i;
@@ -8460,20 +13666,20 @@ function doubleQuotedValue(source, onError) {
   return res;
 }
 __name(doubleQuotedValue, "doubleQuotedValue");
-function foldNewline(source, offset) {
+function foldNewline(source, offset2) {
   let fold = "";
-  let ch = source[offset + 1];
+  let ch = source[offset2 + 1];
   while (ch === " " || ch === "	" || ch === "\n" || ch === "\r") {
-    if (ch === "\r" && source[offset + 2] !== "\n")
+    if (ch === "\r" && source[offset2 + 2] !== "\n")
       break;
     if (ch === "\n")
       fold += "\n";
-    offset += 1;
-    ch = source[offset + 1];
+    offset2 += 1;
+    ch = source[offset2 + 1];
   }
   if (!fold)
     fold = " ";
-  return { fold, offset };
+  return { fold, offset: offset2 };
 }
 __name(foldNewline, "foldNewline");
 var escapeCodes = {
@@ -8509,14 +13715,14 @@ var escapeCodes = {
   "\\": "\\",
   "	": "	"
 };
-function parseCharCode(source, offset, length, onError) {
-  const cc = source.substr(offset, length);
+function parseCharCode(source, offset2, length, onError) {
+  const cc = source.substr(offset2, length);
   const ok = cc.length === length && /^[0-9a-fA-F]+$/.test(cc);
   const code = ok ? parseInt(cc, 16) : NaN;
   if (isNaN(code)) {
-    const raw2 = source.substr(offset - 2, length + 2);
-    onError(offset - 2, "BAD_DQ_ESCAPE", `Invalid escape sequence ${raw2}`);
-    return raw2;
+    const raw3 = source.substr(offset2 - 2, length + 2);
+    onError(offset2 - 2, "BAD_DQ_ESCAPE", `Invalid escape sequence ${raw3}`);
+    return raw3;
   }
   return String.fromCodePoint(code);
 }
@@ -8524,7 +13730,7 @@ __name(parseCharCode, "parseCharCode");
 
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/compose/compose-scalar.js
 function composeScalar(ctx, token, tagToken, onError) {
-  const { value, type, comment, range } = token.type === "block-scalar" ? resolveBlockScalar(ctx, token, onError) : resolveFlowScalar(token, ctx.options.strict, onError);
+  const { value, type, comment, range: range2 } = token.type === "block-scalar" ? resolveBlockScalar(ctx, token, onError) : resolveFlowScalar(token, ctx.options.strict, onError);
   const tagName = tagToken ? ctx.directives.tagName(tagToken.source, (msg) => onError(tagToken, "TAG_RESOLVE_FAILED", msg)) : null;
   let tag;
   if (ctx.options.stringKeys && ctx.atKey) {
@@ -8544,7 +13750,7 @@ function composeScalar(ctx, token, tagToken, onError) {
     onError(tagToken ?? token, "TAG_RESOLVE_FAILED", msg);
     scalar = new Scalar(value);
   }
-  scalar.range = range;
+  scalar.range = range2;
   scalar.source = value;
   if (type)
     scalar.type = type;
@@ -8597,7 +13803,7 @@ function findScalarTagByTest({ atKey, directives, schema: schema4 }, value, toke
 __name(findScalarTagByTest, "findScalarTagByTest");
 
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/compose/util-empty-scalar-position.js
-function emptyScalarPosition(offset, before, pos) {
+function emptyScalarPosition(offset2, before, pos) {
   if (before) {
     if (pos === null)
       pos = before.length;
@@ -8607,18 +13813,18 @@ function emptyScalarPosition(offset, before, pos) {
         case "space":
         case "comment":
         case "newline":
-          offset -= st.source.length;
+          offset2 -= st.source.length;
           continue;
       }
       st = before[++i];
       while (st?.type === "space") {
-        offset += st.source.length;
+        offset2 += st.source.length;
         st = before[++i];
       }
       break;
     }
   }
-  return offset;
+  return offset2;
 }
 __name(emptyScalarPosition, "emptyScalarPosition");
 
@@ -8676,10 +13882,10 @@ function composeNode(ctx, token, props, onError) {
   return node;
 }
 __name(composeNode, "composeNode");
-function composeEmptyNode(ctx, offset, before, pos, { spaceBefore, comment, anchor, tag, end }, onError) {
+function composeEmptyNode(ctx, offset2, before, pos, { spaceBefore, comment, anchor, tag, end }, onError) {
   const token = {
     type: "scalar",
-    offset: emptyScalarPosition(offset, before, pos),
+    offset: emptyScalarPosition(offset2, before, pos),
     indent: -1,
     source: ""
   };
@@ -8698,15 +13904,15 @@ function composeEmptyNode(ctx, offset, before, pos, { spaceBefore, comment, anch
   return node;
 }
 __name(composeEmptyNode, "composeEmptyNode");
-function composeAlias({ options }, { offset, source, end }, onError) {
+function composeAlias({ options }, { offset: offset2, source, end }, onError) {
   const alias = new Alias(source.substring(1));
   if (alias.source === "")
-    onError(offset, "BAD_ALIAS", "Alias cannot be an empty string");
+    onError(offset2, "BAD_ALIAS", "Alias cannot be an empty string");
   if (alias.source.endsWith(":"))
-    onError(offset + source.length - 1, "BAD_ALIAS", "Alias ending in : is ambiguous", true);
-  const valueEnd = offset + source.length;
+    onError(offset2 + source.length - 1, "BAD_ALIAS", "Alias ending in : is ambiguous", true);
+  const valueEnd = offset2 + source.length;
   const re = resolveEnd(end, valueEnd, options.strict, onError);
-  alias.range = [offset, valueEnd, re.offset];
+  alias.range = [offset2, valueEnd, re.offset];
   if (re.comment)
     alias.comment = re.comment;
   return alias;
@@ -8714,7 +13920,7 @@ function composeAlias({ options }, { offset, source, end }, onError) {
 __name(composeAlias, "composeAlias");
 
 // ../node_modules/.bun/yaml@2.7.1/node_modules/yaml/browser/dist/compose/compose-doc.js
-function composeDoc(options, directives, { offset, start, value, end }, onError) {
+function composeDoc(options, directives, { offset: offset2, start, value, end }, onError) {
   const opts = Object.assign({ _directives: directives }, options);
   const doc = new Document(void 0, opts);
   const ctx = {
@@ -8727,7 +13933,7 @@ function composeDoc(options, directives, { offset, start, value, end }, onError)
   const props = resolveProps(start, {
     indicator: "doc-start",
     next: value ?? end?.[0],
-    offset,
+    offset: offset2,
     onError,
     parentIndent: 0,
     startOnNewline: true
@@ -8742,7 +13948,7 @@ function composeDoc(options, directives, { offset, start, value, end }, onError)
   const re = resolveEnd(end, contentEnd, false, onError);
   if (re.comment)
     doc.comment = re.comment;
-  doc.range = [offset, contentEnd, re.offset];
+  doc.range = [offset2, contentEnd, re.offset];
   return doc;
 }
 __name(composeDoc, "composeDoc");
@@ -8753,8 +13959,8 @@ function getErrorPos(src) {
     return [src, src + 1];
   if (Array.isArray(src))
     return src.length === 2 ? src : [src[0], src[1]];
-  const { offset, source } = src;
-  return [offset, offset + (typeof source === "string" ? source.length : 1)];
+  const { offset: offset2, source } = src;
+  return [offset2, offset2 + (typeof source === "string" ? source.length : 1)];
 }
 __name(getErrorPos, "getErrorPos");
 function parsePrelude(prelude) {
@@ -8864,9 +14070,9 @@ ${cb}` : comment;
   *next(token) {
     switch (token.type) {
       case "directive":
-        this.directives.add(token.source, (offset, message, warning) => {
+        this.directives.add(token.source, (offset2, message, warning) => {
           const pos = getErrorPos(token);
-          pos[0] += offset;
+          pos[0] += offset2;
           this.onError(pos, "BAD_DIRECTIVE", message, warning);
         });
         this.prelude.push(token.source);
@@ -9135,25 +14341,25 @@ var Lexer = class {
   charAt(n) {
     return this.buffer[this.pos + n];
   }
-  continueScalar(offset) {
-    let ch = this.buffer[offset];
+  continueScalar(offset2) {
+    let ch = this.buffer[offset2];
     if (this.indentNext > 0) {
       let indent = 0;
       while (ch === " ")
-        ch = this.buffer[++indent + offset];
+        ch = this.buffer[++indent + offset2];
       if (ch === "\r") {
-        const next = this.buffer[indent + offset + 1];
+        const next = this.buffer[indent + offset2 + 1];
         if (next === "\n" || !next && !this.atEnd)
-          return offset + indent + 1;
+          return offset2 + indent + 1;
       }
-      return ch === "\n" || indent >= this.indentNext || !ch && !this.atEnd ? offset + indent : -1;
+      return ch === "\n" || indent >= this.indentNext || !ch && !this.atEnd ? offset2 + indent : -1;
     }
     if (ch === "-" || ch === ".") {
-      const dt = this.buffer.substr(offset, 3);
-      if ((dt === "---" || dt === "...") && isEmpty(this.buffer[offset + 3]))
+      const dt = this.buffer.substr(offset2, 3);
+      if ((dt === "---" || dt === "...") && isEmpty(this.buffer[offset2 + 3]))
         return -1;
     }
-    return offset;
+    return offset2;
   }
   getLine() {
     let end = this.lineEndPos;
@@ -9650,23 +14856,23 @@ var LineCounter = class {
   }
   constructor() {
     this.lineStarts = [];
-    this.addNewLine = (offset) => this.lineStarts.push(offset);
-    this.linePos = (offset) => {
+    this.addNewLine = (offset2) => this.lineStarts.push(offset2);
+    this.linePos = (offset2) => {
       let low = 0;
       let high = this.lineStarts.length;
       while (low < high) {
         const mid = low + high >> 1;
-        if (this.lineStarts[mid] < offset)
+        if (this.lineStarts[mid] < offset2)
           low = mid + 1;
         else
           high = mid;
       }
-      if (this.lineStarts[low] === offset)
+      if (this.lineStarts[low] === offset2)
         return { line: low + 1, col: 1 };
       if (low === 0)
-        return { line: 0, col: offset };
+        return { line: 0, col: offset2 };
       const start = this.lineStarts[low - 1];
-      return { line: low, col: offset - start + 1 };
+      return { line: low, col: offset2 - start + 1 };
     };
   }
 };
@@ -9761,7 +14967,7 @@ function fixFlowSeqItems(fc) {
   }
 }
 __name(fixFlowSeqItems, "fixFlowSeqItems");
-var Parser = class {
+var Parser2 = class {
   static {
     __name(this, "Parser");
   }
@@ -9960,12 +15166,12 @@ var Parser = class {
           yield* this.pop(token);
       }
       if ((top.type === "document" || top.type === "block-map" || top.type === "block-seq") && (token.type === "block-map" || token.type === "block-seq")) {
-        const last = token.items[token.items.length - 1];
-        if (last && !last.sep && !last.value && last.start.length > 0 && findNonEmptyIndex(last.start) === -1 && (token.indent === 0 || last.start.every((st) => st.type !== "comment" || st.indent < token.indent))) {
+        const last2 = token.items[token.items.length - 1];
+        if (last2 && !last2.sep && !last2.value && last2.start.length > 0 && findNonEmptyIndex(last2.start) === -1 && (token.indent === 0 || last2.start.every((st) => st.type !== "comment" || st.indent < token.indent))) {
           if (top.type === "document")
-            top.end = last.start;
+            top.end = last2.start;
           else
-            top.items.push({ start: last.start });
+            top.items.push({ start: last2.start });
           token.items.splice(-1, 1);
         }
       }
@@ -10038,21 +15244,21 @@ var Parser = class {
     if (this.type === "map-value-ind") {
       const prev = getPrevProps(this.peek(2));
       const start = getFirstKeyStartProps(prev);
-      let sep;
+      let sep2;
       if (scalar.end) {
-        sep = scalar.end;
-        sep.push(this.sourceToken);
+        sep2 = scalar.end;
+        sep2.push(this.sourceToken);
         delete scalar.end;
       } else
-        sep = [this.sourceToken];
-      const map2 = {
+        sep2 = [this.sourceToken];
+      const map3 = {
         type: "block-map",
         offset: scalar.offset,
         indent: scalar.indent,
-        items: [{ start, key: scalar, sep }]
+        items: [{ start, key: scalar, sep: sep2 }]
       };
       this.onKeyLine = true;
-      this.stack[this.stack.length - 1] = map2;
+      this.stack[this.stack.length - 1] = map3;
     } else
       yield* this.lineEnd(scalar);
   }
@@ -10082,18 +15288,18 @@ var Parser = class {
         yield* this.step();
     }
   }
-  *blockMap(map2) {
-    const it = map2.items[map2.items.length - 1];
+  *blockMap(map3) {
+    const it = map3.items[map3.items.length - 1];
     switch (this.type) {
       case "newline":
         this.onKeyLine = false;
         if (it.value) {
           const end = "end" in it.value ? it.value.end : void 0;
-          const last = Array.isArray(end) ? end[end.length - 1] : void 0;
-          if (last?.type === "comment")
+          const last2 = Array.isArray(end) ? end[end.length - 1] : void 0;
+          if (last2?.type === "comment")
             end?.push(this.sourceToken);
           else
-            map2.items.push({ start: [this.sourceToken] });
+            map3.items.push({ start: [this.sourceToken] });
         } else if (it.sep) {
           it.sep.push(this.sourceToken);
         } else {
@@ -10103,17 +15309,17 @@ var Parser = class {
       case "space":
       case "comment":
         if (it.value) {
-          map2.items.push({ start: [this.sourceToken] });
+          map3.items.push({ start: [this.sourceToken] });
         } else if (it.sep) {
           it.sep.push(this.sourceToken);
         } else {
-          if (this.atIndentedComment(it.start, map2.indent)) {
-            const prev = map2.items[map2.items.length - 2];
+          if (this.atIndentedComment(it.start, map3.indent)) {
+            const prev = map3.items[map3.items.length - 2];
             const end = prev?.value?.end;
             if (Array.isArray(end)) {
               Array.prototype.push.apply(end, it.start);
               end.push(this.sourceToken);
-              map2.items.pop();
+              map3.items.pop();
               return;
             }
           }
@@ -10121,8 +15327,8 @@ var Parser = class {
         }
         return;
     }
-    if (this.indent >= map2.indent) {
-      const atMapIndent = !this.onKeyLine && this.indent === map2.indent;
+    if (this.indent >= map3.indent) {
+      const atMapIndent = !this.onKeyLine && this.indent === map3.indent;
       const atNextItem = atMapIndent && (it.sep || it.explicitKey) && this.type !== "seq-item-ind";
       let start = [];
       if (atNextItem && it.sep && !it.value) {
@@ -10136,7 +15342,7 @@ var Parser = class {
             case "space":
               break;
             case "comment":
-              if (st.indent > map2.indent)
+              if (st.indent > map3.indent)
                 nl.length = 0;
               break;
             default:
@@ -10151,7 +15357,7 @@ var Parser = class {
         case "tag":
           if (atNextItem || it.value) {
             start.push(this.sourceToken);
-            map2.items.push({ start });
+            map3.items.push({ start });
             this.onKeyLine = true;
           } else if (it.sep) {
             it.sep.push(this.sourceToken);
@@ -10165,7 +15371,7 @@ var Parser = class {
             it.explicitKey = true;
           } else if (atNextItem || it.value) {
             start.push(this.sourceToken);
-            map2.items.push({ start, explicitKey: true });
+            map3.items.push({ start, explicitKey: true });
           } else {
             this.stack.push({
               type: "block-map",
@@ -10191,7 +15397,7 @@ var Parser = class {
                 });
               }
             } else if (it.value) {
-              map2.items.push({ start: [], key: null, sep: [this.sourceToken] });
+              map3.items.push({ start: [], key: null, sep: [this.sourceToken] });
             } else if (includesToken(it.sep, "map-value-ind")) {
               this.stack.push({
                 type: "block-map",
@@ -10202,15 +15408,15 @@ var Parser = class {
             } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
               const start2 = getFirstKeyStartProps(it.start);
               const key = it.key;
-              const sep = it.sep;
-              sep.push(this.sourceToken);
+              const sep2 = it.sep;
+              sep2.push(this.sourceToken);
               delete it.key;
               delete it.sep;
               this.stack.push({
                 type: "block-map",
                 offset: this.offset,
                 indent: this.indent,
-                items: [{ start: start2, key, sep }]
+                items: [{ start: start2, key, sep: sep2 }]
               });
             } else if (start.length > 0) {
               it.sep = it.sep.concat(start, this.sourceToken);
@@ -10221,7 +15427,7 @@ var Parser = class {
             if (!it.sep) {
               Object.assign(it, { key: null, sep: [this.sourceToken] });
             } else if (it.value || atNextItem) {
-              map2.items.push({ start, key: null, sep: [this.sourceToken] });
+              map3.items.push({ start, key: null, sep: [this.sourceToken] });
             } else if (includesToken(it.sep, "map-value-ind")) {
               this.stack.push({
                 type: "block-map",
@@ -10239,20 +15445,20 @@ var Parser = class {
         case "scalar":
         case "single-quoted-scalar":
         case "double-quoted-scalar": {
-          const fs = this.flowScalar(this.type);
+          const fs2 = this.flowScalar(this.type);
           if (atNextItem || it.value) {
-            map2.items.push({ start, key: fs, sep: [] });
+            map3.items.push({ start, key: fs2, sep: [] });
             this.onKeyLine = true;
           } else if (it.sep) {
-            this.stack.push(fs);
+            this.stack.push(fs2);
           } else {
-            Object.assign(it, { key: fs, sep: [] });
+            Object.assign(it, { key: fs2, sep: [] });
             this.onKeyLine = true;
           }
           return;
         }
         default: {
-          const bv = this.startBlockValue(map2);
+          const bv = this.startBlockValue(map3);
           if (bv) {
             if (bv.type === "block-seq") {
               if (!it.explicitKey && it.sep && !includesToken(it.sep, "newline")) {
@@ -10265,7 +15471,7 @@ var Parser = class {
                 return;
               }
             } else if (atMapIndent) {
-              map2.items.push({ start });
+              map3.items.push({ start });
             }
             this.stack.push(bv);
             return;
@@ -10282,8 +15488,8 @@ var Parser = class {
       case "newline":
         if (it.value) {
           const end = "end" in it.value ? it.value.end : void 0;
-          const last = Array.isArray(end) ? end[end.length - 1] : void 0;
-          if (last?.type === "comment")
+          const last2 = Array.isArray(end) ? end[end.length - 1] : void 0;
+          if (last2?.type === "comment")
             end?.push(this.sourceToken);
           else
             seq2.items.push({ start: [this.sourceToken] });
@@ -10374,13 +15580,13 @@ var Parser = class {
         case "scalar":
         case "single-quoted-scalar":
         case "double-quoted-scalar": {
-          const fs = this.flowScalar(this.type);
+          const fs2 = this.flowScalar(this.type);
           if (!it || it.value)
-            fc.items.push({ start: [], key: fs, sep: [] });
+            fc.items.push({ start: [], key: fs2, sep: [] });
           else if (it.sep)
-            this.stack.push(fs);
+            this.stack.push(fs2);
           else
-            Object.assign(it, { key: fs, sep: [] });
+            Object.assign(it, { key: fs2, sep: [] });
           return;
         }
         case "flow-map-end":
@@ -10404,16 +15610,16 @@ var Parser = class {
         const prev = getPrevProps(parent);
         const start = getFirstKeyStartProps(prev);
         fixFlowSeqItems(fc);
-        const sep = fc.end.splice(1, fc.end.length);
-        sep.push(this.sourceToken);
-        const map2 = {
+        const sep2 = fc.end.splice(1, fc.end.length);
+        sep2.push(this.sourceToken);
+        const map3 = {
           type: "block-map",
           offset: fc.offset,
           indent: fc.indent,
-          items: [{ start, key: fc, sep }]
+          items: [{ start, key: fc, sep: sep2 }]
         };
         this.onKeyLine = true;
-        this.stack[this.stack.length - 1] = map2;
+        this.stack[this.stack.length - 1] = map3;
       } else {
         yield* this.lineEnd(fc);
       }
@@ -10545,7 +15751,7 @@ function parseOptions(options) {
 __name(parseOptions, "parseOptions");
 function parseDocument(source, options = {}) {
   const { lineCounter, prettyErrors } = parseOptions(options);
-  const parser = new Parser(lineCounter?.addNewLine);
+  const parser = new Parser2(lineCounter?.addNewLine);
   const composer = new Composer(options);
   let doc = null;
   for (const _doc of composer.compose(parser.parse(source), true, source.length)) {
@@ -10569,34 +15775,52 @@ var ENV_REF_PATTERN = /^\$([A-Za-z_][A-Za-z0-9_]*)$/u;
 var ALLOWED_TRACKER_TYPES = /* @__PURE__ */ new Set(["", "internal", "local", "linear", "github"]);
 var ALLOWED_LINEAR_SYNC_MODES = /* @__PURE__ */ new Set(["", "reply_thread", "top_level"]);
 var ALLOWED_WORKER_MODES = /* @__PURE__ */ new Set(["", "tmux", "goroutine"]);
+var liquidEngine = new Liquid();
+var strictLiquidEngine = new Liquid({ strictVariables: true });
+var ISSUE_PLACEHOLDERS = {
+  title: "{{ issue.title }}",
+  description: "{{ issue.description }}",
+  url: "{{ issue.url }}"
+};
 function parseWorkflowConfig(content, options = {}) {
-  const split = splitFrontMatter(content);
-  const promptTemplate = split.prompt.trim();
-  if (!split.hasFrontMatter) {
-    return { promptTemplate, frontMatter: {} };
-  }
-  if (split.frontMatter.trim() === "") {
-    if (!split.terminated) {
-      throw configParseError([{ path: "$", message: "unterminated front matter" }]);
+  const split2 = splitFrontMatter(content);
+  const promptTemplate = split2.prompt.trim();
+  const liquidDetails = validateLiquidTemplates(promptTemplate);
+  if (!split2.hasFrontMatter) {
+    if (liquidDetails.length > 0) {
+      throw configParseError(liquidDetails);
     }
     return { promptTemplate, frontMatter: {} };
   }
-  const document = parseDocument(split.frontMatter, { prettyErrors: false });
-  if (document.errors.length > 0) {
-    throw configParseError(document.errors.map((error) => ({
+  if (split2.frontMatter.trim() === "") {
+    const details2 = [...liquidDetails];
+    if (!split2.terminated) {
+      details2.push({ path: "$", message: "unterminated front matter" });
+    }
+    if (details2.length > 0) {
+      throw configParseError(details2);
+    }
+    return { promptTemplate, frontMatter: {} };
+  }
+  const document2 = parseDocument(split2.frontMatter, { prettyErrors: false });
+  if (document2.errors.length > 0) {
+    throw configParseError(document2.errors.map((error) => ({
       path: "$",
       message: `invalid workflow yaml: ${error.message}`
     })));
   }
-  if (!isMap(document.contents)) {
+  if (!isMap(document2.contents)) {
     throw configParseError([{ path: "$", message: "workflow front matter must be a map" }]);
   }
-  const frontMatter = getRecord(document.toJSON());
+  const frontMatter = getRecord(document2.toJSON());
   if (frontMatter === void 0) {
     throw configParseError([{ path: "$", message: "workflow front matter must be a map" }]);
   }
-  const details = validateWorkflowConfig(frontMatter, options);
-  if (!split.terminated) {
+  const details = [
+    ...validateWorkflowConfig(frontMatter, options),
+    ...liquidDetails
+  ];
+  if (!split2.terminated) {
     details.push({ path: "$", message: "unterminated front matter" });
   }
   if (details.length > 0) {
@@ -10605,6 +15829,20 @@ function parseWorkflowConfig(content, options = {}) {
   return { promptTemplate, frontMatter };
 }
 __name(parseWorkflowConfig, "parseWorkflowConfig");
+function renderWorkflowConfig(content, options = {}) {
+  const split2 = splitFrontMatter(content);
+  const parsed = parseWorkflowConfig(content, options);
+  const renderedPrompt = renderPromptTemplate(parsed.promptTemplate, options);
+  if (renderedPrompt === parsed.promptTemplate) {
+    return content;
+  }
+  const promptSuffix = split2.prompt.endsWith("\n") || split2.prompt.endsWith("\r\n") ? "\n" : "";
+  if (!split2.hasFrontMatter) {
+    return `${renderedPrompt}${promptSuffix}`;
+  }
+  return `${content.slice(0, content.length - split2.prompt.length)}${renderedPrompt}${promptSuffix}`;
+}
+__name(renderWorkflowConfig, "renderWorkflowConfig");
 function configParseError(details) {
   const error = new Error("config_invalid");
   error.details = details;
@@ -10632,14 +15870,14 @@ function splitFrontMatter(content) {
   }
   const remainder = content.slice(startOffset);
   const lines = remainder.match(/[^\n]*\n|[^\n]+/gu) ?? [];
-  let offset = 0;
+  let offset2 = 0;
   let frontMatter = "";
   for (const line of lines) {
-    offset += line.length;
+    offset2 += line.length;
     if (line.replace(/[\r\n]+$/u, "") === "---") {
       return {
         frontMatter,
-        prompt: remainder.slice(offset),
+        prompt: remainder.slice(offset2),
         hasFrontMatter: true,
         terminated: true
       };
@@ -10676,6 +15914,32 @@ function validateWorkflowConfig(frontMatter, options) {
   return details;
 }
 __name(validateWorkflowConfig, "validateWorkflowConfig");
+function validateLiquidTemplates(promptTemplate) {
+  try {
+    const template = liquidEngine.parse(promptTemplate);
+    const hasSecretReference = liquidEngine.fullVariablesSync(template).some((variable) => {
+      return variable === "secrets" || variable.startsWith("secrets.");
+    });
+    if (hasSecretReference) {
+      return [{ path: "prompt", message: "secrets are not allowed in prompts" }];
+    }
+    return [];
+  } catch (error) {
+    return [{ path: "prompt", message: `invalid liquid template: ${getErrorMessage(error)}` }];
+  }
+}
+__name(validateLiquidTemplates, "validateLiquidTemplates");
+function renderPromptTemplate(promptTemplate, options) {
+  try {
+    return String(strictLiquidEngine.parseAndRenderSync(promptTemplate, {
+      ...options.liquidContext,
+      issue: ISSUE_PLACEHOLDERS
+    }));
+  } catch (error) {
+    throw configParseError([{ path: "prompt", message: `invalid liquid template: ${getErrorMessage(error)}` }]);
+  }
+}
+__name(renderPromptTemplate, "renderPromptTemplate");
 function getRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
 }
@@ -10684,6 +15948,10 @@ function getString(value) {
   return typeof value === "string" ? value : void 0;
 }
 __name(getString, "getString");
+function getErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+__name(getErrorMessage, "getErrorMessage");
 function getEnvReference(value) {
   if (value === void 0) {
     return void 0;
@@ -10713,8 +15981,11 @@ var PROTOCOL_VERSION_CURRENT = "1.0.0";
 
 // src/worker/index.ts
 var DASHBOARD_SESSION_COOKIE_NAME = "contrabass_session";
+var DASHBOARD_OAUTH_STATE_COOKIE_NAME = "contrabass_oauth_state";
 var SESSION_TOKEN_TTL_MS = 60 * 60 * 1e3;
 var REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1e3;
+var DASHBOARD_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1e3;
+var OAUTH_STATE_TTL_MS = 10 * 60 * 1e3;
 var HEARTBEAT_INTERVAL_SEC = 20;
 var LEASE_SEC = 60;
 var SUPPORTED_PROTOCOL_VERSIONS = [PROTOCOL_VERSION_CURRENT];
@@ -10722,11 +15993,16 @@ var API_VERSION_HEADER = "X-Contrabass-Api-Version";
 var workerRouter = new Hono2();
 workerRouter.use("*", apiVersionHeaderMiddleware());
 workerRouter.use("/v1/*", authMiddleware());
+workerRouter.get("/v1/auth/github/login", startGitHubOAuth);
+workerRouter.get("/v1/auth/github/callback", completeGitHubOAuth);
 workerRouter.get("/v1/teams/:teamId/board", (context) => {
   return forwardTeamCoordinatorRequest(context, "/board");
 });
 workerRouter.post("/v1/teams/:teamId/board/*", forwardTeamCoordinatorBoardPostRequest);
 workerRouter.post("/v1/teams/:teamId/config", createTeamConfig);
+workerRouter.post("/v1/teams/:teamId/config/:version/activate", activateTeamConfigVersion);
+workerRouter.get("/v1/teams/:teamId/config/diff", getTeamConfigDiff);
+workerRouter.get("/v1/teams/:teamId/config/:hash", getTeamConfigByHash);
 workerRouter.post("/v1/workers/register", registerWorker);
 workerRouter.post("/v1/workers/refresh", refreshWorkerSession);
 workerRouter.post("/v1/workers/enroll", enrollWorker);
@@ -10792,12 +16068,87 @@ async function validateAuthPrincipal(request, env) {
     return { kind: "bearer", token: bearerToken };
   }
   const sessionToken = extractDashboardSessionCookie(request.headers.get("cookie"));
-  if (sessionToken !== void 0 && isConfiguredToken(sessionToken, env.CONTRABASS_DASHBOARD_SESSION_TOKENS)) {
-    return { kind: "dashboard-session", token: sessionToken };
+  if (sessionToken !== void 0) {
+    const issuedDashboardSession = await validateDashboardSessionToken(sessionToken, env);
+    if (issuedDashboardSession !== void 0) {
+      return {
+        kind: "dashboard-session",
+        token: sessionToken,
+        githubId: issuedDashboardSession.githubId,
+        githubLogin: issuedDashboardSession.githubLogin,
+        issued: true
+      };
+    }
+    if (isConfiguredToken(sessionToken, env.CONTRABASS_DASHBOARD_SESSION_TOKENS)) {
+      return { kind: "dashboard-session", token: sessionToken };
+    }
   }
   return void 0;
 }
 __name(validateAuthPrincipal, "validateAuthPrincipal");
+async function startGitHubOAuth(context) {
+  const clientId = context.env.CONTRABASS_GITHUB_CLIENT_ID?.trim();
+  if (clientId === void 0 || clientId.length === 0 || dashboardSessionSigningSecret(context.env) === void 0) {
+    return jsonResponse3({ error: "oauth_config_missing" }, 500);
+  }
+  const requestUrl = new URL(context.req.raw.url);
+  const nonce = await randomTokenPart(24);
+  const next = dashboardRedirectTarget(context.env, requestUrl.searchParams.get("next"));
+  const state = await issueOAuthStateToken(context.env, nonce, next, Date.now() + OAUTH_STATE_TTL_MS);
+  const redirectUri = `${requestUrl.origin}/v1/auth/github/callback`;
+  const authorizeUrl = new URL(context.env.CONTRABASS_GITHUB_AUTHORIZE_URL ?? "https://github.com/login/oauth/authorize");
+  authorizeUrl.searchParams.set("client_id", clientId);
+  authorizeUrl.searchParams.set("redirect_uri", redirectUri);
+  authorizeUrl.searchParams.set("scope", "read:user");
+  authorizeUrl.searchParams.set("state", state);
+  return redirectResponse(authorizeUrl.toString(), 302, [
+    serializeCookie(DASHBOARD_OAUTH_STATE_COOKIE_NAME, nonce, {
+      httpOnly: true,
+      path: "/v1/auth/github/callback",
+      sameSite: "Lax",
+      secure: requestUrl.protocol === "https:",
+      maxAge: Math.floor(OAUTH_STATE_TTL_MS / 1e3)
+    })
+  ]);
+}
+__name(startGitHubOAuth, "startGitHubOAuth");
+async function completeGitHubOAuth(context) {
+  const requestUrl = new URL(context.req.raw.url);
+  const code = requestUrl.searchParams.get("code")?.trim();
+  const state = requestUrl.searchParams.get("state")?.trim();
+  if (code === void 0 || code.length === 0 || state === void 0 || state.length === 0) {
+    return jsonResponse3({ error: "oauth_invalid_callback" }, 400);
+  }
+  const statePayload = await validateOAuthStateToken(state, context.env);
+  const stateCookie = extractNamedCookie(context.req.raw.headers.get("cookie"), DASHBOARD_OAUTH_STATE_COOKIE_NAME);
+  if (statePayload === void 0 || stateCookie === void 0 || !timingSafeEqual(stateCookie, statePayload.nonce)) {
+    return jsonResponse3({ error: "oauth_state_invalid" }, 401);
+  }
+  const githubUser = await exchangeGitHubOAuthCode(context.env, code, `${requestUrl.origin}/v1/auth/github/callback`);
+  if (githubUser === void 0) {
+    return jsonResponse3({ error: "oauth_exchange_failed" }, 401);
+  }
+  const expiresAt = Date.now() + DASHBOARD_SESSION_TTL_MS;
+  const sessionToken = await issueDashboardSessionToken(context.env, githubUser, expiresAt);
+  const cookies = [
+    serializeCookie(DASHBOARD_SESSION_COOKIE_NAME, sessionToken, {
+      httpOnly: true,
+      path: "/",
+      sameSite: "Lax",
+      secure: requestUrl.protocol === "https:",
+      maxAge: Math.floor(DASHBOARD_SESSION_TTL_MS / 1e3)
+    }),
+    serializeCookie(DASHBOARD_OAUTH_STATE_COOKIE_NAME, "", {
+      httpOnly: true,
+      path: "/v1/auth/github/callback",
+      sameSite: "Lax",
+      secure: requestUrl.protocol === "https:",
+      maxAge: 0
+    })
+  ];
+  return redirectResponse(statePayload.next, 302, cookies);
+}
+__name(completeGitHubOAuth, "completeGitHubOAuth");
 async function registerWorker(context) {
   const body = await readObjectBody3(context.req.raw);
   const request = parseRegisterRequest(body);
@@ -10928,15 +16279,19 @@ async function createTeamConfig(context) {
   if (request === void 0) {
     return errorResponse("invalid_request", 400);
   }
+  let renderedContentYaml;
   try {
-    parseWorkflowConfig(request.contentYaml, { boundSecrets: parseConfiguredTokens(context.env.CONTRABASS_CONFIG_BOUND_SECRETS) });
+    renderedContentYaml = renderWorkflowConfig(request.contentYaml, {
+      boundSecrets: parseConfiguredTokens(context.env.CONTRABASS_CONFIG_BOUND_SECRETS),
+      liquidContext: configLiquidContext(teamId, context.env.CONTRABASS_CONFIG_LIQUID_CONTEXT)
+    });
   } catch (error) {
     if (isConfigParseError(error)) {
       return configInvalidResponse(error.details);
     }
     return configInvalidResponse([{ path: "$", message: "invalid workflow config" }]);
   }
-  const contentHash = await sha256Hex(request.contentYaml);
+  const contentHash = await sha256Hex(renderedContentYaml);
   const existing = await context.env.CONTROL_PLANE_DB.prepare(`
     SELECT version, content_hash
     FROM team_configs
@@ -10961,7 +16316,7 @@ async function createTeamConfig(context) {
   await context.env.CONTROL_PLANE_DB.prepare(`
     INSERT INTO team_configs (team_id, version, content_hash, content_yaml, created_by, created_at, notes)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).bind(teamId, version, contentHash, request.contentYaml, createdBy, createdAt, request.notes ?? "").run();
+  `).bind(teamId, version, contentHash, renderedContentYaml, createdBy, createdAt, request.notes ?? "").run();
   return jsonResponse3({
     teamId,
     version,
@@ -10971,6 +16326,136 @@ async function createTeamConfig(context) {
   }, 201);
 }
 __name(createTeamConfig, "createTeamConfig");
+async function getTeamConfigByHash(context) {
+  const teamId = (context.req.param("teamId") ?? "").trim();
+  const hash = (context.req.param("hash") ?? "").trim();
+  if (teamId === "") {
+    return errorResponse("invalid_team_id", 400);
+  }
+  if (!isContentHash(hash)) {
+    return errorResponse("invalid_config_hash", 400);
+  }
+  const principal = context.get("principal");
+  if ("issued" in principal && principal.teamId !== teamId) {
+    return errorResponse("team_forbidden", 403);
+  }
+  if (context.env.CONTROL_PLANE_DB === void 0) {
+    return errorResponse("config_store_unavailable", 500);
+  }
+  const config = await context.env.CONTROL_PLANE_DB.prepare(`
+    SELECT content_yaml
+    FROM team_configs
+    WHERE team_id = ? AND content_hash = ?
+    LIMIT 1
+  `).bind(teamId, hash).first();
+  if (config === null) {
+    return errorResponse("config_not_found", 404);
+  }
+  return new Response(config.content_yaml, {
+    status: 200,
+    headers: {
+      "Cache-Control": "public, max-age=86400, immutable",
+      "Content-Type": "text/yaml; charset=utf-8"
+    }
+  });
+}
+__name(getTeamConfigByHash, "getTeamConfigByHash");
+async function activateTeamConfigVersion(context) {
+  const teamId = (context.req.param("teamId") ?? "").trim();
+  const version = parsePositiveInteger(context.req.param("version") ?? "");
+  if (teamId === "") {
+    return errorResponse("invalid_team_id", 400);
+  }
+  if (version === void 0) {
+    return errorResponse("invalid_config_version", 400);
+  }
+  const principal = context.get("principal");
+  if ("issued" in principal && principal.teamId !== teamId) {
+    return errorResponse("team_forbidden", 403);
+  }
+  if (context.env.CONTROL_PLANE_DB === void 0) {
+    return errorResponse("config_store_unavailable", 500);
+  }
+  const body = await readOptionalObjectBody(context.req.raw);
+  if (body === false) {
+    return errorResponse("invalid_request", 400);
+  }
+  const config = await context.env.CONTROL_PLANE_DB.prepare(`
+    SELECT version, content_hash
+    FROM team_configs
+    WHERE team_id = ? AND version = ?
+    LIMIT 1
+  `).bind(teamId, version).first();
+  if (config === null) {
+    return errorResponse("config_not_found", 404);
+  }
+  const activatedAt = (/* @__PURE__ */ new Date()).toISOString();
+  const activatedBy = (body === void 0 ? void 0 : getStringField3(body, "activated_by") ?? getStringField3(body, "activatedBy")) ?? defaultConfigActor(principal);
+  await context.env.CONTROL_PLANE_DB.prepare(`
+    INSERT INTO team_configs_active (team_id, active_version, active_content_hash, activated_at, activated_by)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(team_id) DO UPDATE SET
+      active_version = excluded.active_version,
+      active_content_hash = excluded.active_content_hash,
+      activated_at = excluded.activated_at,
+      activated_by = excluded.activated_by
+  `).bind(teamId, config.version, config.content_hash, activatedAt, activatedBy).run();
+  const responseBody = {
+    teamId,
+    activeVersion: config.version,
+    activeContentHash: config.content_hash,
+    activatedAt,
+    activatedBy,
+    protocol_version: PROTOCOL_VERSION_CURRENT
+  };
+  const notificationResponse = await notifyTeamConfigChanged(context, responseBody);
+  if (!notificationResponse.ok) {
+    return normalizeForwardedErrorResponse(notificationResponse);
+  }
+  return jsonResponse3(responseBody, 200);
+}
+__name(activateTeamConfigVersion, "activateTeamConfigVersion");
+async function getTeamConfigDiff(context) {
+  const teamId = (context.req.param("teamId") ?? "").trim();
+  if (teamId === "") {
+    return errorResponse("invalid_team_id", 400);
+  }
+  const principal = context.get("principal");
+  if ("issued" in principal && principal.teamId !== teamId) {
+    return errorResponse("team_forbidden", 403);
+  }
+  if (context.env.CONTROL_PLANE_DB === void 0) {
+    return errorResponse("config_store_unavailable", 500);
+  }
+  const url = new URL(context.req.raw.url);
+  const fromVersion = parseConfigVersionRef(url.searchParams.get("from"));
+  const toVersion = parseConfigVersionRef(url.searchParams.get("to"));
+  if (fromVersion === void 0 || toVersion === void 0) {
+    return errorResponse("invalid_config_version", 400);
+  }
+  const [fromConfig, toConfig] = await Promise.all([
+    readConfigVersion(context.env.CONTROL_PLANE_DB, teamId, fromVersion),
+    readConfigVersion(context.env.CONTROL_PLANE_DB, teamId, toVersion)
+  ]);
+  if (fromConfig === void 0 || toConfig === void 0) {
+    return errorResponse("config_not_found", 404);
+  }
+  const diff = buildUnifiedDiff({
+    fromLabel: `v${fromConfig.version}`,
+    fromContent: fromConfig.content_yaml,
+    toLabel: `v${toConfig.version}`,
+    toContent: toConfig.content_yaml
+  });
+  return jsonResponse3({
+    teamId,
+    from: configDiffMetadata(fromConfig),
+    to: configDiffMetadata(toConfig),
+    changed: fromConfig.content_hash !== toConfig.content_hash,
+    diff,
+    protocol_version: PROTOCOL_VERSION_CURRENT
+  }, 200);
+}
+__name(getTeamConfigDiff, "getTeamConfigDiff");
 function extractBearerToken(authorization) {
   if (authorization === null) {
     return void 0;
@@ -10981,13 +16466,17 @@ function extractBearerToken(authorization) {
 }
 __name(extractBearerToken, "extractBearerToken");
 function extractDashboardSessionCookie(cookieHeader) {
+  return extractNamedCookie(cookieHeader, DASHBOARD_SESSION_COOKIE_NAME);
+}
+__name(extractDashboardSessionCookie, "extractDashboardSessionCookie");
+function extractNamedCookie(cookieHeader, cookieName) {
   if (cookieHeader === null) {
     return void 0;
   }
   for (const segment of cookieHeader.split(";")) {
     const [rawName, ...rawValueParts] = segment.trim().split("=");
     const value = rawValueParts.join("=").trim();
-    if (rawName === DASHBOARD_SESSION_COOKIE_NAME && value.length > 0) {
+    if (rawName === cookieName && value.length > 0) {
       try {
         return decodeURIComponent(value);
       } catch {
@@ -10997,19 +16486,19 @@ function extractDashboardSessionCookie(cookieHeader) {
   }
   return void 0;
 }
-__name(extractDashboardSessionCookie, "extractDashboardSessionCookie");
+__name(extractNamedCookie, "extractNamedCookie");
 function isConfiguredToken(token, configuredTokens) {
   return parseConfiguredTokens(configuredTokens).some((configuredToken) => timingSafeEqual(token, configuredToken));
 }
 __name(isConfiguredToken, "isConfiguredToken");
 function parseConfiguredTokens(configuredTokens) {
-  const raw2 = configuredTokens?.trim();
-  if (raw2 === void 0 || raw2.length === 0) {
+  const raw3 = configuredTokens?.trim();
+  if (raw3 === void 0 || raw3.length === 0) {
     return [];
   }
-  if (raw2.startsWith("[")) {
+  if (raw3.startsWith("[")) {
     try {
-      const parsed = JSON.parse(raw2);
+      const parsed = JSON.parse(raw3);
       if (Array.isArray(parsed) && parsed.every((token) => typeof token === "string")) {
         return parsed.map((token) => token.trim()).filter((token) => token.length > 0);
       }
@@ -11018,7 +16507,7 @@ function parseConfiguredTokens(configuredTokens) {
     }
     return [];
   }
-  return raw2.split(/[\s,]+/u).map((token) => token.trim()).filter((token) => token.length > 0);
+  return raw3.split(/[\s,]+/u).map((token) => token.trim()).filter((token) => token.length > 0);
 }
 __name(parseConfiguredTokens, "parseConfiguredTokens");
 function timingSafeEqual(actual, expected) {
@@ -11032,7 +16521,7 @@ function timingSafeEqual(actual, expected) {
 __name(timingSafeEqual, "timingSafeEqual");
 function isPublicWorkerAuthRoute(request) {
   const url = new URL(request.url);
-  return request.method === "POST" && (url.pathname === "/v1/workers/refresh" || url.pathname === "/v1/workers/enroll");
+  return request.method === "POST" && (url.pathname === "/v1/workers/refresh" || url.pathname === "/v1/workers/enroll") || request.method === "GET" && (url.pathname === "/v1/auth/github/login" || url.pathname === "/v1/auth/github/callback");
 }
 __name(isPublicWorkerAuthRoute, "isPublicWorkerAuthRoute");
 async function forwardWorkerRegistration(context, request) {
@@ -11154,6 +16643,24 @@ function parseCreateConfigRequest(body) {
   };
 }
 __name(parseCreateConfigRequest, "parseCreateConfigRequest");
+function configLiquidContext(teamId, rawContext) {
+  const defaultTeam = { id: teamId, name: teamId };
+  if (rawContext === void 0 || rawContext.trim() === "") {
+    return { team: defaultTeam };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(rawContext);
+  } catch {
+    throw configParseError([{ path: "prompt", message: "invalid liquid context" }]);
+  }
+  if (!isPlainRecord(parsed) || "secrets" in parsed) {
+    throw configParseError([{ path: "prompt", message: "invalid liquid context" }]);
+  }
+  const team = isPlainRecord(parsed.team) ? { ...defaultTeam, ...parsed.team } : defaultTeam;
+  return { ...parsed, team };
+}
+__name(configLiquidContext, "configLiquidContext");
 async function findEnrollmentByCode(env, code) {
   if (env.CONTROL_PLANE_DB === void 0) {
     return void 0;
@@ -11198,6 +16705,170 @@ function websocketOrigin(url) {
   return `${url.protocol === "https:" ? "wss:" : "ws:"}//${url.host}`;
 }
 __name(websocketOrigin, "websocketOrigin");
+async function exchangeGitHubOAuthCode(env, code, redirectUri) {
+  const clientId = env.CONTRABASS_GITHUB_CLIENT_ID?.trim();
+  const clientSecret = env.CONTRABASS_GITHUB_CLIENT_SECRET?.trim();
+  if (clientId === void 0 || clientId.length === 0 || clientSecret === void 0 || clientSecret.length === 0) {
+    return void 0;
+  }
+  const tokenResponse = await fetch(env.CONTRABASS_GITHUB_TOKEN_URL ?? "https://github.com/login/oauth/access_token", {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      "user-agent": "contrabass-cloud"
+    },
+    body: JSON.stringify({
+      client_id: clientId,
+      client_secret: clientSecret,
+      code,
+      redirect_uri: redirectUri
+    })
+  });
+  if (!tokenResponse.ok) {
+    return void 0;
+  }
+  const tokenBody = await readJsonObjectResponse(tokenResponse);
+  const accessToken = tokenBody === void 0 ? void 0 : getStringField3(tokenBody, "access_token");
+  if (accessToken === void 0) {
+    return void 0;
+  }
+  const userResponse = await fetch(env.CONTRABASS_GITHUB_USER_URL ?? "https://api.github.com/user", {
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${accessToken}`,
+      "user-agent": "contrabass-cloud"
+    }
+  });
+  if (!userResponse.ok) {
+    return void 0;
+  }
+  const userBody = await readJsonObjectResponse(userResponse);
+  if (userBody === void 0) {
+    return void 0;
+  }
+  const id = userBody.id;
+  const login = getStringField3(userBody, "login");
+  return typeof id === "number" && Number.isInteger(id) && login !== void 0 ? { id, login } : void 0;
+}
+__name(exchangeGitHubOAuthCode, "exchangeGitHubOAuthCode");
+async function readJsonObjectResponse(response) {
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    return void 0;
+  }
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return void 0;
+  }
+  return body;
+}
+__name(readJsonObjectResponse, "readJsonObjectResponse");
+function dashboardRedirectTarget(env, next) {
+  const dashboardOrigin = env.CONTRABASS_DASHBOARD_ORIGIN?.trim();
+  const fallback = dashboardOrigin === void 0 || dashboardOrigin.length === 0 ? "/" : dashboardOrigin;
+  if (next === null || next.trim() === "") {
+    return fallback;
+  }
+  const trimmedNext = next.trim();
+  if (trimmedNext.startsWith("/") && !trimmedNext.startsWith("//")) {
+    return dashboardOrigin === void 0 || dashboardOrigin.length === 0 ? trimmedNext : `${dashboardOrigin}${trimmedNext}`;
+  }
+  if (dashboardOrigin !== void 0 && dashboardOrigin.length > 0) {
+    try {
+      const nextUrl = new URL(trimmedNext);
+      return nextUrl.origin === dashboardOrigin ? nextUrl.toString() : dashboardOrigin;
+    } catch {
+      return dashboardOrigin;
+    }
+  }
+  return "/";
+}
+__name(dashboardRedirectTarget, "dashboardRedirectTarget");
+async function issueOAuthStateToken(env, nonce, next, expiresAt) {
+  const secret = dashboardSessionSigningSecret(env);
+  if (secret === void 0) {
+    throw new Error("CONTRABASS_DASHBOARD_SESSION_SECRET is required to issue OAuth state tokens");
+  }
+  const payload = base64UrlEncode(new TextEncoder().encode(JSON.stringify({ nonce, next, exp: expiresAt })));
+  const signature = await hmacSha256Base64Url(secret, payload);
+  return `cbo.${payload}.${signature}`;
+}
+__name(issueOAuthStateToken, "issueOAuthStateToken");
+async function validateOAuthStateToken(token, env) {
+  const secret = dashboardSessionSigningSecret(env);
+  if (secret === void 0) {
+    return void 0;
+  }
+  const [prefix, payload, signature] = token.split(".");
+  if (prefix !== "cbo" || payload === void 0 || signature === void 0) {
+    return void 0;
+  }
+  const expected = await hmacSha256Base64Url(secret, payload);
+  if (!timingSafeEqual(signature, expected)) {
+    return void 0;
+  }
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(base64UrlDecode(payload)));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return void 0;
+    }
+    const record = parsed;
+    return typeof record.nonce === "string" && typeof record.next === "string" && typeof record.exp === "number" && record.exp > Date.now() ? { nonce: record.nonce, next: record.next, exp: record.exp } : void 0;
+  } catch {
+    return void 0;
+  }
+}
+__name(validateOAuthStateToken, "validateOAuthStateToken");
+async function issueDashboardSessionToken(env, user, expiresAt) {
+  const secret = dashboardSessionSigningSecret(env);
+  if (secret === void 0) {
+    throw new Error("CONTRABASS_DASHBOARD_SESSION_SECRET is required to issue dashboard session tokens");
+  }
+  const payload = base64UrlEncode(new TextEncoder().encode(JSON.stringify({
+    githubId: user.id,
+    githubLogin: user.login,
+    exp: expiresAt
+  })));
+  const signature = await hmacSha256Base64Url(secret, payload);
+  return `cbd.${payload}.${signature}`;
+}
+__name(issueDashboardSessionToken, "issueDashboardSessionToken");
+async function validateDashboardSessionToken(token, env) {
+  const secret = dashboardSessionSigningSecret(env);
+  if (secret === void 0) {
+    return void 0;
+  }
+  const [prefix, payload, signature] = token.split(".");
+  if (prefix !== "cbd" || payload === void 0 || signature === void 0) {
+    return void 0;
+  }
+  const expected = await hmacSha256Base64Url(secret, payload);
+  if (!timingSafeEqual(signature, expected)) {
+    return void 0;
+  }
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(base64UrlDecode(payload)));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return void 0;
+    }
+    const record = parsed;
+    return typeof record.githubId === "number" && Number.isInteger(record.githubId) && typeof record.githubLogin === "string" && typeof record.exp === "number" && record.exp > Date.now() ? { githubId: record.githubId, githubLogin: record.githubLogin, exp: record.exp } : void 0;
+  } catch {
+    return void 0;
+  }
+}
+__name(validateDashboardSessionToken, "validateDashboardSessionToken");
+function dashboardSessionSigningSecret(env) {
+  const explicit = env.CONTRABASS_DASHBOARD_SESSION_SECRET?.trim();
+  if (explicit !== void 0 && explicit.length > 0) {
+    return explicit;
+  }
+  const configuredTokens = env.CONTRABASS_DASHBOARD_SESSION_TOKENS?.trim();
+  return configuredTokens === void 0 || configuredTokens.length === 0 ? void 0 : configuredTokens;
+}
+__name(dashboardSessionSigningSecret, "dashboardSessionSigningSecret");
 async function issueSessionToken(env, teamId, workerId, expiresAt) {
   const secret = workerTokenSigningSecret(env);
   if (secret === void 0) {
@@ -11246,6 +16917,87 @@ function workerTokenConfigErrorResponse() {
   }, 500);
 }
 __name(workerTokenConfigErrorResponse, "workerTokenConfigErrorResponse");
+function isContentHash(value) {
+  return /^[a-f0-9]{64}$/u.test(value);
+}
+__name(isContentHash, "isContentHash");
+function parseConfigVersionRef(value) {
+  if (value === null) {
+    return void 0;
+  }
+  const normalized = value.trim().replace(/^v/iu, "");
+  return parsePositiveInteger(normalized);
+}
+__name(parseConfigVersionRef, "parseConfigVersionRef");
+async function readConfigVersion(db, teamId, version) {
+  const row = await db.prepare(`
+    SELECT version, content_hash, content_yaml, created_by, created_at, notes
+    FROM team_configs
+    WHERE team_id = ? AND version = ?
+    LIMIT 1
+  `).bind(teamId, version).first();
+  return row ?? void 0;
+}
+__name(readConfigVersion, "readConfigVersion");
+function configDiffMetadata(row) {
+  return {
+    version: row.version,
+    contentHash: row.content_hash,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    notes: row.notes ?? ""
+  };
+}
+__name(configDiffMetadata, "configDiffMetadata");
+function buildUnifiedDiff(options) {
+  const fromLines = splitDiffLines(options.fromContent);
+  const toLines = splitDiffLines(options.toContent);
+  const operations = diffLineOperations(fromLines, toLines);
+  const body = operations.filter((operation) => operation.kind !== "equal").map((operation) => `${operation.kind === "delete" ? "-" : "+"}${operation.line}`);
+  return [
+    `--- ${options.fromLabel}`,
+    `+++ ${options.toLabel}`,
+    ...body
+  ].join("\n");
+}
+__name(buildUnifiedDiff, "buildUnifiedDiff");
+function splitDiffLines(content) {
+  const lines = content.split("\n");
+  return lines.at(-1) === "" ? lines.slice(0, -1) : lines;
+}
+__name(splitDiffLines, "splitDiffLines");
+function diffLineOperations(fromLines, toLines) {
+  const lcsLengths = Array.from({ length: fromLines.length + 1 }, () => Array(toLines.length + 1).fill(0));
+  for (let fromIndex2 = fromLines.length - 1; fromIndex2 >= 0; fromIndex2 -= 1) {
+    for (let toIndex2 = toLines.length - 1; toIndex2 >= 0; toIndex2 -= 1) {
+      lcsLengths[fromIndex2][toIndex2] = fromLines[fromIndex2] === toLines[toIndex2] ? lcsLengths[fromIndex2 + 1][toIndex2 + 1] + 1 : Math.max(lcsLengths[fromIndex2 + 1][toIndex2], lcsLengths[fromIndex2][toIndex2 + 1]);
+    }
+  }
+  const operations = [];
+  let fromIndex = 0;
+  let toIndex = 0;
+  while (fromIndex < fromLines.length && toIndex < toLines.length) {
+    if (fromLines[fromIndex] === toLines[toIndex]) {
+      operations.push({ kind: "equal", line: fromLines[fromIndex] });
+      fromIndex += 1;
+      toIndex += 1;
+    } else if (lcsLengths[fromIndex + 1][toIndex] >= lcsLengths[fromIndex][toIndex + 1]) {
+      operations.push({ kind: "delete", line: fromLines[fromIndex] });
+      fromIndex += 1;
+    } else {
+      operations.push({ kind: "insert", line: toLines[toIndex] });
+      toIndex += 1;
+    }
+  }
+  for (; fromIndex < fromLines.length; fromIndex += 1) {
+    operations.push({ kind: "delete", line: fromLines[fromIndex] });
+  }
+  for (; toIndex < toLines.length; toIndex += 1) {
+    operations.push({ kind: "insert", line: toLines[toIndex] });
+  }
+  return operations;
+}
+__name(diffLineOperations, "diffLineOperations");
 function configInvalidResponse(details) {
   return errorResponse("config_invalid", 400, { details });
 }
@@ -11257,6 +17009,10 @@ function defaultConfigActor(principal) {
   return principal.kind === "dashboard-session" ? "dashboard" : "api";
 }
 __name(defaultConfigActor, "defaultConfigActor");
+function isIssuedWorkerPrincipal(principal) {
+  return principal.kind === "bearer" && "issued" in principal;
+}
+__name(isIssuedWorkerPrincipal, "isIssuedWorkerPrincipal");
 function parseSessionPayload(payload) {
   try {
     const parsed = JSON.parse(new TextDecoder().decode(base64UrlDecode(payload)));
@@ -11333,6 +17089,27 @@ async function readObjectBody3(request) {
   return body;
 }
 __name(readObjectBody3, "readObjectBody");
+async function readOptionalObjectBody(request) {
+  const text = await request.text();
+  if (text.trim() === "") {
+    return void 0;
+  }
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return false;
+  }
+  return body;
+}
+__name(readOptionalObjectBody, "readOptionalObjectBody");
+function isPlainRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+__name(isPlainRecord, "isPlainRecord");
 function getStringField3(body, key) {
   const value = body[key];
   return typeof value === "string" && value.trim() !== "" ? value : void 0;
@@ -11351,6 +17128,14 @@ function getPositiveIntegerField2(body, key) {
   return typeof value === "number" && Number.isInteger(value) && value >= 1 ? value : void 0;
 }
 __name(getPositiveIntegerField2, "getPositiveIntegerField");
+function parsePositiveInteger(value) {
+  if (!/^[1-9][0-9]*$/u.test(value)) {
+    return void 0;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : void 0;
+}
+__name(parsePositiveInteger, "parsePositiveInteger");
 function getWorkerKindField3(body) {
   const value = body.kind;
   return value === "local" || value === "container" ? value : void 0;
@@ -11362,7 +17147,7 @@ async function forwardTeamCoordinatorRequest(context, coordinatorPath) {
     return errorResponse("invalid_team_id", 400);
   }
   const principal = context.get("principal");
-  if ("issued" in principal && principal.teamId !== teamId) {
+  if (isIssuedWorkerPrincipal(principal) && principal.teamId !== teamId) {
     return errorResponse("team_forbidden", 403);
   }
   const id = context.env.TEAM_COORDINATOR.idFromName(teamId);
@@ -11398,6 +17183,22 @@ function teamCoordinatorBoardPostPath(request) {
   return `/board/${actionPath}`;
 }
 __name(teamCoordinatorBoardPostPath, "teamCoordinatorBoardPostPath");
+async function notifyTeamConfigChanged(context, payload) {
+  const id = context.env.TEAM_COORDINATOR.idFromName(String(payload.teamId));
+  const stub = context.env.TEAM_COORDINATOR.get(id);
+  const headers = new Headers(context.req.raw.headers);
+  headers.set("content-type", "application/json");
+  headers.set("x-contrabass-team-id", String(payload.teamId));
+  return stub.fetch(new Request("https://team-coordinator.internal/config-changed", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      type: "config-changed",
+      ...payload
+    })
+  }));
+}
+__name(notifyTeamConfigChanged, "notifyTeamConfigChanged");
 async function forwardIssueRunRequest(context, issueRunPath) {
   const runId = (context.req.param("runId") ?? "").trim();
   if (runId === "") {
@@ -11416,14 +17217,14 @@ async function forwardIssueRunRequest(context, issueRunPath) {
   headers.delete("content-length");
   headers.set("x-contrabass-team-id", teamId);
   headers.set("x-contrabass-run-id", runId);
-  if ("issued" in principal) {
+  if (isIssuedWorkerPrincipal(principal)) {
     headers.set("x-contrabass-worker-id", principal.workerId);
   }
   const issueRef = await lookupIssueRefForRun(context, teamId, runId);
   if (issueRef === void 0) {
     return errorResponse("run_not_found", 404);
   }
-  const body = issueRunPath === "/ack" && "issued" in principal ? await ackBodyWithWorkerId(request, principal.workerId) : await request.arrayBuffer();
+  const body = issueRunPath === "/ack" && isIssuedWorkerPrincipal(principal) ? await ackBodyWithWorkerId(request, principal.workerId) : await request.arrayBuffer();
   const id = context.env.ISSUE_RUN.idFromName(`${teamId}:${issueRef}`);
   const stub = context.env.ISSUE_RUN.get(id);
   return normalizeForwardedErrorResponse(await stub.fetch(new Request(`https://issue-run.internal${issueRunPath}`, {
@@ -11533,7 +17334,7 @@ __name(lookupIssueRefForRun, "lookupIssueRefForRun");
 function resolveRunForwardTeamId(context) {
   const principal = context.get("principal");
   const headerTeamId = context.req.raw.headers.get("x-contrabass-team-id")?.trim();
-  if ("issued" in principal) {
+  if (isIssuedWorkerPrincipal(principal)) {
     if (headerTeamId !== void 0 && headerTeamId.length > 0 && headerTeamId !== principal.teamId) {
       return false;
     }
@@ -11545,7 +17346,7 @@ __name(resolveRunForwardTeamId, "resolveRunForwardTeamId");
 function resolveWorkerScopedTeamId(context, workerId) {
   const principal = context.get("principal");
   const headerTeamId = context.req.raw.headers.get("x-contrabass-team-id")?.trim();
-  if ("issued" in principal) {
+  if (isIssuedWorkerPrincipal(principal)) {
     if (workerId !== principal.workerId) {
       return false;
     }
@@ -11565,6 +17366,30 @@ async function ackBodyWithWorkerId(request, workerId) {
   });
 }
 __name(ackBodyWithWorkerId, "ackBodyWithWorkerId");
+function redirectResponse(location, status, cookies) {
+  const headers = new Headers({ location });
+  for (const cookie of cookies) {
+    headers.append("set-cookie", cookie);
+  }
+  return new Response(null, { status, headers });
+}
+__name(redirectResponse, "redirectResponse");
+function serializeCookie(name, value, options) {
+  const segments = [
+    `${name}=${encodeURIComponent(value)}`,
+    `Max-Age=${options.maxAge}`,
+    `Path=${options.path}`,
+    `SameSite=${options.sameSite}`
+  ];
+  if (options.httpOnly) {
+    segments.push("HttpOnly");
+  }
+  if (options.secure) {
+    segments.push("Secure");
+  }
+  return segments.join("; ");
+}
+__name(serializeCookie, "serializeCookie");
 function jsonResponse3(body, status) {
   return Response.json(body, { status });
 }
