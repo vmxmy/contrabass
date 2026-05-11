@@ -29,7 +29,7 @@ import {
 import { resolveIdentity } from "./roles";
 import { parseUsageTimeseriesRequest, readUsageTimeseries } from "./timeseries";
 import { readUserDailyActivity } from "./usage";
-import { adminListUsers, adminListTeams, adminListAuditEvents, adminGlobalUsageTimeseries } from "./admin";
+import { adminListUsers, adminListTeams, adminListAuditEvents, adminGlobalUsageTimeseries, adminSummary } from "./admin";
 import type { JsonValue, LiteLLMKey, LiteLLMPortalEnv, LiteLLMTeam, PortalIdentity } from "./types";
 
 export type { LiteLLMPortalEnv } from "./types";
@@ -225,6 +225,9 @@ async function routeApiRequest(
     }
     if (url.pathname === "/api/admin/users") {
       return adminListUsers(request, env);
+    }
+    if (url.pathname === "/api/admin/summary") {
+      return adminSummary(request, env);
     }
     if (url.pathname === "/api/admin/teams") {
       return adminListTeams(request, env);

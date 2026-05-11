@@ -35,7 +35,7 @@ vi.mock("@cloudflare/kumo/components/chart", async () => {
   };
 });
 
-import { AdminSection, ApiKeysCard, CreateKeyButton, ModelAccessCard, PortalErrorBanner, UsagePanel } from "./app";
+import { AdminSection, ApiKeysCard, CreateKeyButton, ModelAccessCard, PortalErrorBanner, PortalTabs, readTabFromHash, UsagePanel } from "./app";
 import { UsageChart, type UsageTimeseries } from "./chart";
 
 const originalFetch = globalThis.fetch;
@@ -90,6 +90,23 @@ afterEach(() => {
   delete window.__litellmPortalModelAccess;
   delete window.__litellmPortalKeys;
   delete window.__litellmPortalError;
+});
+
+describe("PortalTabs", () => {
+  it("uses persona-oriented labels", () => {
+    render(<PortalTabs tab="user" onSelect={() => {}} />);
+    expect(screen.queryByText("个人视图")).not.toBeNull();
+    expect(screen.queryByText("全局管理")).not.toBeNull();
+  });
+
+  it("keeps admins on personal view unless #admin is explicit", () => {
+    window.history.replaceState(null, "", "/");
+    expect(readTabFromHash("admin")).toBe("user");
+    window.history.replaceState(null, "", "/#admin");
+    expect(readTabFromHash("admin")).toBe("admin");
+    window.history.replaceState(null, "", "/#user");
+    expect(readTabFromHash("admin")).toBe("user");
+  });
 });
 
 describe("ModelAccessCard", () => {
@@ -598,8 +615,8 @@ describe("AdminSection", () => {
 
     const auditCallsBefore = fetchCalls.filter((u) => u.includes("/api/admin/audit")).length;
 
-    // click next page button
-    const nextButtons = screen.getAllByText("下一页");
+    // click next page button (kumo Pagination renders a button with aria-label)
+    const nextButtons = screen.getAllByLabelText("下一页");
     // AdminAuditFeed is the last card; use the last next-page button
     fireEvent.click(nextButtons[nextButtons.length - 1]);
 
@@ -627,8 +644,10 @@ describe("AdminSection", () => {
       timezone: "Asia/Shanghai",
       limited: false,
       maxPages: null,
-      buckets: [],
-      totals: { totalTokens: 0, promptTokens: 0, completionTokens: 0, requests: 0, spend: 0 },
+      buckets: [
+        { start: "2024-01-01T00:00:00.000Z", end: "2024-01-02T00:00:00.000Z", label: "01-01", totalTokens: 120, promptTokens: 50, completionTokens: 70, requests: 3, spend: 0.2 },
+      ],
+      totals: { totalTokens: 120, promptTokens: 50, completionTokens: 70, requests: 3, spend: 0.2 },
       topModels: [],
     };
     globalThis.fetch = vi.fn(async (input) => {
@@ -670,6 +689,7 @@ describe("AdminSection", () => {
     await waitFor(() => {
       const hourCall = fetchUrls.find((u) => u.includes("/api/admin/usage/timeseries") && u.includes("grain=hour"));
       expect(hourCall).toBeDefined();
+      expect(screen.queryByText("01-01")).not.toBeNull();
     });
   });
 
@@ -683,7 +703,7 @@ describe("AdminSection", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("renders four admin cards when role is admin", async () => {
+  it("renders aligned admin dashboard sections when role is admin", async () => {
     installPortalConfig();
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
@@ -693,6 +713,23 @@ describe("AdminSection", () => {
           totalCount: 1,
           page: 1,
           size: 50,
+        });
+      }
+      if (url.includes("/api/admin/summary")) {
+        return Response.json({
+          userCount: 1,
+          sampledUserCount: 1,
+          limited: false,
+          teamCount: 1,
+          adminCount: 1,
+          unmanagedRoleCount: 0,
+          noTeamUserCount: 0,
+          overBudgetUserCount: 0,
+          overBudgetTeamCount: 0,
+          riskCount: 0,
+          totalSpend: 1.5,
+          teamSpend: 0.5,
+          totalBudget: 100,
         });
       }
       if (url.includes("/api/admin/teams")) {
@@ -730,11 +767,14 @@ describe("AdminSection", () => {
 
     render(<AdminSection role="admin" />);
 
-    expect(screen.queryByText("管理员视图（只读）")).not.toBeNull();
+    expect(screen.queryByText("全局管理（只读）")).not.toBeNull();
     await waitFor(() => {
+      expect(screen.queryByText("全局账户")).not.toBeNull();
       expect(screen.queryByText("全员账户")).not.toBeNull();
       expect(screen.queryByText("全部团队")).not.toBeNull();
       expect(screen.queryByText("全局用量趋势")).not.toBeNull();
+      expect(screen.queryByText("资源与权限")).not.toBeNull();
+      expect(screen.queryByText("审计与风险")).not.toBeNull();
       expect(screen.queryByText("审计日志")).not.toBeNull();
     });
   });

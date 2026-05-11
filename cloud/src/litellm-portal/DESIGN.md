@@ -544,7 +544,7 @@ Bundle 实测：`pnpm run analyze:litellm-portal-bundle` 显示 portal app bundl
 
 ### 触发条件
 
-当 LiteLLM 返回的 `user_role` 字段值为 `proxy_admin` 或 `proxy_admin_viewer` 时，portal 在普通用户区块之外额外渲染管理员区（`AdminSection`）。其余角色仅显示自身 Key、用量和团队信息，看不到全局数据。
+当 LiteLLM 返回的 `user_role` 字段值为 `proxy_admin` 或 `proxy_admin_viewer` 时，portal 会显示顶部 tabs：`个人视图` 与 `全局管理`。管理员默认仍停留在个人视图，只有显式点击或通过 `#admin` 打开时才进入全局管理。其余角色仅显示自身 Key、用量和团队信息，看不到全局数据。
 
 ### Role 投影表
 
@@ -562,7 +562,7 @@ Worker 端的 `projectRole`（`roles.ts`）将 LiteLLM 原生角色映射为 por
 
 ### Trust 边界
 
-Role 解析**只在 Worker 端进行**（`roles.ts:resolveIdentity`），使用 `master_key` 调用 LiteLLM `/v2/user/info`；SPA 收到的只是已投影的 `PortalRole`，无法自行提升权限。`/api/admin/*` 系列路由在 `index.ts` 中由 `requireAdmin` 中间件统一守卫，任何未携带有效管理员身份的请求均返回 `403 admin_required`，后端不依赖前端的展示逻辑来保护数据。
+Role 解析**只在 Worker 端进行**（`roles.ts:resolveIdentity`），使用 `master_key` 调用 LiteLLM `/user/list?user_email=...` 并匹配当前 Access 邮箱；SPA 收到的只是已投影的 `PortalRole`，无法自行提升权限。`/api/admin/*` 系列路由在 `index.ts` 中由 `requireAdmin` 中间件统一守卫，任何未携带有效管理员身份的请求均返回 `403 admin_required`，后端不依赖前端的展示逻辑来保护数据。
 
 ### 5 分钟内存缓存
 
@@ -579,10 +579,11 @@ Role 解析**只在 Worker 端进行**（`roles.ts:resolveIdentity`），使用 
 
 ### /api/admin/* 路由清单
 
-以下路由均为只读，由 `admin.ts` 中的四个 handler 实现：
+以下路由均为只读，由 `admin.ts` 中的五个 handler 实现：
 
 | 路由 | Handler | 说明 |
 |---|---|---|
+| `GET /api/admin/summary` | `adminSummary` | 有界聚合全局用户、团队、花费、预算、角色和风险概览 |
 | `GET /api/admin/users` | `adminListUsers` | 分页列出所有用户（支持 `page` / `size` 查询参数） |
 | `GET /api/admin/teams` | `adminListTeams` | 列出所有团队（含脱敏后的公开字段） |
 | `GET /api/admin/audit` | `adminListAuditEvents` | 分页列出审计事件（支持 `page` / `size`） |
@@ -592,22 +593,25 @@ Role 解析**只在 Worker 端进行**（`roles.ts:resolveIdentity`），使用 
 
 ### 只读边界
 
-本期 portal 管理员视图**不提供任何写操作**。修改用户角色、删除 API Key、调整 budget、变更团队归属等操作均需通过 LiteLLM 原生管理 UI 完成。portal 管理员区的职责仅限于：
+本期 portal 管理员视图**不提供任何写操作**。修改用户角色、调整 budget、变更团队归属等操作均需通过 LiteLLM 原生管理 UI 完成；删除 API Key 只在个人视图中按当前用户所有权执行。portal 管理员区的职责仅限于：
 
+- 查看全局概览：用户数、管理员数、团队数、花费、预算和风险项
+- 查看全局 Token 用量时序图，交互方式与个人视图一致：preset rail、Auto grain、手动 grain chip、Kumo Chart brush、bucket table 和 top models
 - 查看全局用户列表与消费分布
 - 查看团队列表
 - 查看操作审计日志
-- 查看全局 Token 用量时序图
 
 ### 可参考代码位置
 
 | 文件 | 关键标识符 | 说明 |
 |---|---|---|
 | `roles.ts` | `resolveIdentity`, `projectRole` | Role 解析与缓存逻辑 |
-| `admin.ts` | `adminListUsers`, `adminListTeams`, `adminListAuditEvents`, `adminGlobalUsageTimeseries` | 4 个只读 handler |
+| `admin.ts` | `adminSummary`, `adminListUsers`, `adminListTeams`, `adminListAuditEvents`, `adminGlobalUsageTimeseries` | 5 个只读 handler |
 | `index.ts` | `requireAdmin` | 中间件守卫，统一 403 兜底 |
-| `app.tsx` | `AdminSection` + 4 个子组件 | 前端管理员区渲染入口 |
+| `app.tsx` | `AdminSection`, `AdminHeroStats`, `AdminGlobalUsage` | 前端管理员区渲染入口与全局 dashboard 叙事 |
 
 ---
 
 2026-05-12 `litellm-portal-admin-view` 新增管理员视图章节：role 投影表、trust 边界、5 分钟缓存策略、/api/admin/* 路由清单及只读边界说明。
+
+2026-05-12 `litellm-portal-admin-dashboard-alignment` 对齐管理员与个人 dashboard 心智模型：tabs 改为 `个人视图` / `全局管理`，管理员默认进入个人视图；全局管理按「概览 → 趋势 → 资源与权限 → 审计与风险」排序，并新增有界 `/api/admin/summary` 概览数据。

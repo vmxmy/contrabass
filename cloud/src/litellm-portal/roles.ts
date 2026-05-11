@@ -2,6 +2,13 @@ import { firstString, litellmFetch } from "./litellm";
 import type { IdentityResult, LiteLLMPortalEnv, PortalIdentity, PortalPrincipal, PortalRole } from "./types";
 import { isRecord, readJson } from "./utils";
 
+function extractUsers(body: unknown): Record<string, unknown>[] {
+  if (!isRecord(body)) return [];
+  const users = body.users;
+  if (!Array.isArray(users)) return [];
+  return users.filter(isRecord);
+}
+
 // ROLE_CACHE_MS 是 per-isolate 内存缓存的 TTL。
 // 这意味着:
 // 1) 同一 Worker isolate 内,同一用户 5 分钟内只会被解析一次。
@@ -31,10 +38,14 @@ export async function resolveIdentity(
   try {
     const response = await litellmFetch(
       env,
-      `/v2/user/info?user_id=${encodeURIComponent(principal.email)}`,
+      `/user/list?user_email=${encodeURIComponent(principal.email)}`,
     );
     const body = await readJson(response);
-    const record = isRecord(body) ? body : {};
+    const match = extractUsers(body).find((record) => {
+      const userEmail = firstString(record, ["user_email", "userEmail", "email"]);
+      return userEmail?.trim().toLowerCase() === principal.email;
+    });
+    const record = match ?? {};
     const rawRole = firstString(record, ["user_role", "userRole", "role"]);
     const role = projectRole(rawRole);
     const litellmUserId = firstString(record, ["user_id", "userId", "id"]) ?? principal.email;

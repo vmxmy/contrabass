@@ -4,10 +4,15 @@ import { Button } from "@cloudflare/kumo/components/button";
 import { ClipboardText } from "@cloudflare/kumo/components/clipboard-text";
 import { Collapsible } from "@cloudflare/kumo/components/collapsible";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
+import { Empty } from "@cloudflare/kumo/components/empty";
 import { Input } from "@cloudflare/kumo/components/input";
+import { LayerCard } from "@cloudflare/kumo/components/layer-card";
 import { Loader, SkeletonLine } from "@cloudflare/kumo/components/loader";
+import { Pagination } from "@cloudflare/kumo/components/pagination";
 import { Select } from "@cloudflare/kumo/components/select";
+import { Switch } from "@cloudflare/kumo/components/switch";
 import { Table } from "@cloudflare/kumo/components/table";
+import { Tabs } from "@cloudflare/kumo/components/tabs";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { UsageChart, type UsageTimeseries } from "./chart";
@@ -37,17 +42,46 @@ type PortalKey = {
   expiresAt?: string | null;
 };
 
+type PortalTeam = {
+  id?: string | null;
+  alias?: string | null;
+  models?: string[] | null;
+  spend?: number | null;
+  maxBudget?: number | null;
+  tpmLimit?: number | null;
+  rpmLimit?: number | null;
+};
+
+type PortalStats = {
+  email?: string | null;
+  litellmUserId?: string | null;
+  totalSpend?: number | null;
+  maxBudget?: number | null;
+  keyBudget?: string | number | null;
+  recentSpend?: number | null;
+  usageAvailable?: boolean;
+  requestCount?: number | null;
+  totalTokens?: number | null;
+  modelCount?: number | null;
+  keyCount?: number | null;
+  teamCount?: number | null;
+};
+
 declare global {
   interface Window {
     __PORTAL_CONFIG?: PortalConfig;
     __litellmPortalModelAccess?: Partial<ModelAccess>;
     __litellmPortalKeys?: PortalKey[];
+    __litellmPortalTeams?: PortalTeam[];
+    __litellmPortalStats?: PortalStats;
     __litellmPortalError?: string | null;
   }
 }
 
 const MODEL_EVENT = "litellm-portal:models";
 const KEYS_EVENT = "litellm-portal:keys";
+const TEAMS_EVENT = "litellm-portal:teams";
+const STATS_EVENT = "litellm-portal:stats";
 const ERROR_EVENT = "litellm-portal:error";
 const PREVIEW_LIMIT = 12;
 const MODEL_CELL_PREVIEW_LIMIT = 3;
@@ -123,6 +157,11 @@ function normalizeKeys(value: unknown): PortalKey[] {
   return value.filter((item): item is PortalKey => item !== null && typeof item === "object");
 }
 
+function normalizeTeams(value: unknown): PortalTeam[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is PortalTeam => item !== null && typeof item === "object");
+}
+
 function initialModelAccess(): ModelAccess {
   return normalizeModelAccess(window.__litellmPortalModelAccess);
 }
@@ -194,15 +233,11 @@ function budgetLabel(tone: "danger" | "warning" | "success"): string {
 function BudgetBadge({ spend, maxBudget }: { spend: unknown; maxBudget: unknown }) {
   const tone = statusTone(spend, maxBudget);
   if (!tone) return null;
-  const className = tone === "danger"
-    ? "bg-kumo-danger-tint text-kumo-danger"
-    : tone === "warning"
-      ? "bg-kumo-warning-tint text-kumo-warning"
-      : "bg-kumo-success-tint text-kumo-success";
+  const variant = tone === "danger" ? "error" : tone === "warning" ? "warning" : "success";
   return (
-    <span className={`ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${className}`}>
+    <Badge variant={variant} className="ml-2">
       {budgetLabel(tone)}
-    </span>
+    </Badge>
   );
 }
 
@@ -434,7 +469,13 @@ function controlPillClass(active: boolean, disabled = false): string {
 
 function UsageSummary({ data, loading }: { data: UsageTimeseries | null; loading: boolean }) {
   const totals = data?.totals;
-  const source = data?.source === "spend_logs_v2" ? "实时请求日志" : data ? "LiteLLM 日聚合" : "—";
+  const source = data?.source === "spend_logs_v2"
+    ? "实时请求日志"
+    : data?.source === "spend_logs_v2_global"
+      ? "全局请求日志"
+      : data
+        ? "LiteLLM 日聚合"
+        : "—";
   return (
     <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
       <MetricTile label="总 Tokens" value={fmtInt(totals?.totalTokens)} loading={loading} />
@@ -460,7 +501,7 @@ function UsageBucketsTable({ data, loading }: { data: UsageTimeseries | null; lo
 
   const buckets = data?.buckets?.slice(-10).reverse() ?? [];
   if (buckets.length === 0) {
-    return <p className="py-3 text-sm text-kumo-subtle">暂无用量数据。</p>;
+    return <Empty size="sm" title="暂无用量数据" />;
   }
 
   return (
@@ -721,6 +762,188 @@ export function UsagePanel() {
   );
 }
 
+export function HeaderActions() {
+  const readMode = (): "dark" | "light" => (typeof document !== "undefined" && document.documentElement.dataset.mode === "dark") ? "dark" : "light";
+  const [mode, setMode] = useState<"dark" | "light">(readMode);
+
+  useEffect(() => {
+    document.documentElement.dataset.mode = mode;
+    try {
+      localStorage.setItem("litellm-portal-mode", mode);
+    } catch {
+      // ignore — private mode etc.
+    }
+  }, [mode]);
+
+  const isDark = mode === "dark";
+  return (
+    <>
+      <Switch
+        variant="neutral"
+        controlFirst={false}
+        checked={isDark}
+        onCheckedChange={(next: boolean) => setMode(next ? "dark" : "light")}
+        aria-label={isDark ? "切换浅色模式" : "切换深色模式"}
+        label={isDark ? "深色" : "浅色"}
+      />
+      <Button
+        variant="outline"
+        type="button"
+        aria-label="退出登录"
+        onClick={() => { window.location.href = "/cdn-cgi/access/logout"; }}
+      >
+        退出登录
+      </Button>
+    </>
+  );
+}
+
+function StatTile({
+  accent,
+  label,
+  children,
+}: {
+  accent: "info" | "brand" | "success" | "warning";
+  label: string;
+  children: React.ReactNode;
+}) {
+  const dot = accent === "brand"
+    ? "bg-kumo-brand"
+    : accent === "success"
+      ? "bg-kumo-success"
+      : accent === "warning"
+        ? "bg-kumo-warning"
+        : "bg-kumo-info";
+  return (
+    <LayerCard className="p-6">
+      <div className="flex items-center gap-2">
+        <span className={`inline-block h-2 w-2 rounded-full ${dot}`} />
+        <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">{label}</p>
+      </div>
+      {children}
+    </LayerCard>
+  );
+}
+
+function normalizeStats(value: unknown): PortalStats {
+  if (!value || typeof value !== "object") return {};
+  return value as PortalStats;
+}
+
+export function HeroStats() {
+  const [stats, setStats] = useState<PortalStats>(normalizeStats(window.__litellmPortalStats));
+
+  useEffect(() => {
+    const update = (event: Event) => {
+      setStats(normalizeStats(event instanceof CustomEvent ? event.detail : window.__litellmPortalStats));
+    };
+    window.addEventListener(STATS_EVENT, update);
+    if (window.__litellmPortalStats) update(new Event(STATS_EVENT));
+    return () => window.removeEventListener(STATS_EVENT, update);
+  }, []);
+
+  const email = text(stats.email);
+  const recentDisplay = stats.usageAvailable ? fmt(stats.recentSpend) : "暂无数据";
+  const budgetText = stats.maxBudget == null
+    ? `预算 ${text(stats.keyBudget)}`
+    : `预算 ${fmt(stats.maxBudget)}`;
+
+  return (
+    <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
+      <StatTile accent="info" label="当前身份">
+        <p className="mt-4 truncate text-2xl font-semibold text-kumo-strong" title={email}>{email}</p>
+        <p className="mt-3 truncate font-mono text-sm text-kumo-subtle">
+          {stats.litellmUserId == null ? "—" : `LiteLLM: ${stats.litellmUserId}`}
+        </p>
+      </StatTile>
+      <StatTile accent="brand" label="累计花费">
+        <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">{fmt(stats.totalSpend)}</p>
+        <div className="mt-3 flex min-h-[20px] items-center gap-2 text-sm text-kumo-subtle">
+          {budgetText}
+          <BudgetBadge spend={stats.totalSpend} maxBudget={stats.maxBudget} />
+        </div>
+      </StatTile>
+      <StatTile accent="success" label="近 30 天">
+        <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">{recentDisplay}</p>
+        <p className="mt-3 text-sm text-kumo-subtle">
+          {fmtInt(stats.requestCount)} 次请求 · {fmtInt(stats.totalTokens)} tokens
+        </p>
+      </StatTile>
+      <StatTile accent="success" label="权限范围">
+        <p className="mt-4 text-3xl font-semibold leading-tight text-kumo-strong">
+          {fmtInt(stats.modelCount)} 模型
+        </p>
+        <p className="mt-3 text-sm text-kumo-subtle">
+          {fmtInt(stats.keyCount)} 个 Key · {fmtInt(stats.teamCount)} 个团队
+        </p>
+      </StatTile>
+    </section>
+  );
+}
+
+export function TeamsAccessCard() {
+  const [teams, setTeams] = useState<PortalTeam[]>(normalizeTeams(window.__litellmPortalTeams));
+  const [loaded, setLoaded] = useState(Array.isArray(window.__litellmPortalTeams));
+
+  useEffect(() => {
+    const update = (event: Event) => {
+      const next = normalizeTeams(event instanceof CustomEvent ? event.detail : window.__litellmPortalTeams);
+      setTeams(next);
+      setLoaded(true);
+    };
+    window.addEventListener(TEAMS_EVENT, update);
+    if (window.__litellmPortalTeams) update(new Event(TEAMS_EVENT));
+    return () => window.removeEventListener(TEAMS_EVENT, update);
+  }, []);
+
+  return (
+    <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
+      <div className="border-b border-kumo-line bg-kumo-elevated p-6">
+        <p className="text-lg font-semibold text-kumo-strong">团队权限</p>
+        <p className="text-sm text-kumo-subtle">只展示当前账号所属团队的信息。</p>
+      </div>
+      {!loaded ? (
+        <div className="p-6 text-sm text-kumo-subtle">Loading…</div>
+      ) : teams.length === 0 ? (
+        <Empty size="sm" title="当前 LiteLLM 用户未关联团队" />
+      ) : (
+        <div className="overflow-x-auto">
+          <Table className="w-full text-sm">
+            <Table.Header>
+              <Table.Row>
+                <Table.Head className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">团队</Table.Head>
+                <Table.Head className="text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">模型</Table.Head>
+                <Table.Head className="text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">花费</Table.Head>
+                <Table.Head className="text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">预算</Table.Head>
+                <Table.Head className="text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">RPM</Table.Head>
+                <Table.Head className="text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">TPM</Table.Head>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {teams.map((team, index) => {
+                const modelsCount = Array.isArray(team.models) ? team.models.length : 0;
+                return (
+                  <Table.Row key={team.id ?? team.alias ?? index}>
+                    <Table.Cell className="text-kumo-default">{text(team.alias ?? team.id)}</Table.Cell>
+                    <Table.Cell className="text-right font-mono text-kumo-default">{modelsCount || "未限制"}</Table.Cell>
+                    <Table.Cell className="text-right font-mono text-kumo-default">{team.spend == null ? "—" : fmt(team.spend)}</Table.Cell>
+                    <Table.Cell className="text-right font-mono text-kumo-default">
+                      {team.maxBudget == null ? "—" : fmt(team.maxBudget)}
+                      <BudgetBadge spend={team.spend} maxBudget={team.maxBudget} />
+                    </Table.Cell>
+                    <Table.Cell className="text-right font-mono text-kumo-default">{team.rpmLimit == null ? "—" : fmtInt(team.rpmLimit)}</Table.Cell>
+                    <Table.Cell className="text-right font-mono text-kumo-default">{team.tpmLimit == null ? "—" : fmtInt(team.tpmLimit)}</Table.Cell>
+                  </Table.Row>
+                );
+              })}
+            </Table.Body>
+          </Table>
+        </div>
+      )}
+    </article>
+  );
+}
+
 export function ModelAccessCard() {
   const initial = initialModelAccess();
   const [modelAccess, setModelAccess] = useState<ModelAccess>(initial);
@@ -834,7 +1057,7 @@ export function ApiKeysCard() {
             ))}
           </div>
         ) : keys.length === 0 ? (
-          <p className="p-5 text-sm text-kumo-subtle">暂无 API Key。</p>
+          <Empty size="sm" title="暂无 API Key" />
         ) : (
           <Table className="w-full text-left text-sm text-kumo-default">
             <Table.Header>
@@ -1228,6 +1451,22 @@ type AdminAuditResponse = {
   size: number;
 };
 
+type AdminSummary = {
+  userCount?: number | null;
+  sampledUserCount?: number | null;
+  limited?: boolean;
+  teamCount?: number | null;
+  adminCount?: number | null;
+  unmanagedRoleCount?: number | null;
+  noTeamUserCount?: number | null;
+  overBudgetUserCount?: number | null;
+  overBudgetTeamCount?: number | null;
+  riskCount?: number | null;
+  totalSpend?: number | null;
+  teamSpend?: number | null;
+  totalBudget?: number | null;
+};
+
 const ADMIN_PAGE_SIZE = 50;
 
 function AdminLoadingSkeleton() {
@@ -1250,32 +1489,144 @@ function AdminErrorBanner({ message }: { message: string }) {
 
 function AdminPager({
   page,
+  setPage,
   totalCount,
-  size,
-  onPrev,
-  onNext,
+  perPage,
 }: {
   page: number;
+  setPage: (next: number) => void;
   totalCount: number;
-  size: number;
-  onPrev: () => void;
-  onNext: () => void;
+  perPage: number;
 }) {
-  const totalPages = Math.max(1, Math.ceil(totalCount / size));
-  if (totalPages <= 1) return null;
+  if (totalCount <= perPage) return null;
   return (
-    <div className="flex items-center justify-between border-t border-kumo-line px-6 py-4">
-      <span className="text-xs text-kumo-subtle">
-        第 {page} / {totalPages} 页，共 {totalCount} 条
-      </span>
-      <div className="flex gap-2">
-        <Button variant="secondary" size="sm" disabled={page <= 1} onClick={onPrev}>
-          上一页
-        </Button>
-        <Button variant="secondary" size="sm" disabled={page >= totalPages} onClick={onNext}>
-          下一页
-        </Button>
-      </div>
+    <Pagination
+      className="border-t border-kumo-line px-6 py-4"
+      controls="simple"
+      page={page}
+      setPage={setPage}
+      perPage={perPage}
+      totalCount={totalCount}
+      labels={{
+        navigation: "分页",
+        firstPage: "首页",
+        previousPage: "上一页",
+        nextPage: "下一页",
+        lastPage: "末页",
+        pageNumber: "页码",
+        pageSize: "每页条数",
+      }}
+    />
+  );
+}
+
+function normalizeAdminSummary(value: unknown): AdminSummary {
+  return value && typeof value === "object" ? value as AdminSummary : {};
+}
+
+function AdminHeroStats() {
+  const [summary, setSummary] = useState<AdminSummary>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
+    fetch("/api/admin/summary", {
+      signal: controller.signal,
+      headers: { "content-type": "application/json" },
+    })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(typeof body.error === "string" ? body.error : "全局概览加载失败");
+        }
+        return normalizeAdminSummary(body);
+      })
+      .then((body) => {
+        setSummary(body);
+        setError(null);
+      })
+      .catch((fetchError: unknown) => {
+        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
+        setSummary({});
+        setError(fetchError instanceof Error ? fetchError.message : "全局概览加载失败");
+      })
+      .finally(() => setLoading(false));
+
+    return () => controller.abort();
+  }, []);
+
+  const sampledText = summary.limited
+    ? `已采样 ${fmtInt(summary.sampledUserCount)} / 共 ${fmtInt(summary.userCount)} 用户`
+    : `覆盖 ${fmtInt(summary.sampledUserCount ?? summary.userCount)} 个用户`;
+
+  return (
+    <div className="space-y-4">
+      {error ? (
+        <Banner variant="error" title="全局概览加载失败" description={error} />
+      ) : null}
+      <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4" aria-label="全局管理概览">
+        <StatTile accent="info" label="全局账户">
+          {loading ? (
+            <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
+          ) : (
+            <>
+              <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">
+                {fmtInt(summary.userCount)}
+              </p>
+              <p className="mt-3 text-sm text-kumo-subtle">
+                {fmtInt(summary.adminCount)} 个管理员 · {fmtInt(summary.unmanagedRoleCount)} 个未映射角色
+              </p>
+            </>
+          )}
+        </StatTile>
+        <StatTile accent="brand" label="全局花费">
+          {loading ? (
+            <SkeletonLine className="mt-4" minWidth={110} maxWidth={180} blockHeight={32} />
+          ) : (
+            <>
+              <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">{fmt(summary.totalSpend)}</p>
+              <p className="mt-3 text-sm text-kumo-subtle">
+                预算 {summary.totalBudget == null ? "—" : fmt(summary.totalBudget)} · 团队花费 {fmt(summary.teamSpend)}
+              </p>
+            </>
+          )}
+        </StatTile>
+        <StatTile accent="success" label="资源覆盖">
+          {loading ? (
+            <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
+          ) : (
+            <>
+              <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">
+                {fmtInt(summary.teamCount)}
+              </p>
+              <p className="mt-3 text-sm text-kumo-subtle">
+                {fmtInt(summary.noTeamUserCount)} 个用户未关联团队
+              </p>
+            </>
+          )}
+        </StatTile>
+        <StatTile accent="warning" label="风险雷达">
+          {loading ? (
+            <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
+          ) : (
+            <>
+              <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">
+                {fmtInt(summary.riskCount)}
+              </p>
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-kumo-subtle">
+                <span>{fmtInt(Number(summary.overBudgetUserCount || 0) + Number(summary.overBudgetTeamCount || 0))} 个超预算对象</span>
+                {summary.limited ? <Badge variant="warning">样本视图</Badge> : null}
+              </div>
+            </>
+          )}
+        </StatTile>
+      </section>
+      {!loading ? (
+        <p className="text-xs text-kumo-subtle">{sampledText}，风险项由预算、角色映射和团队覆盖情况计算。</p>
+      ) : null}
     </div>
   );
 }
@@ -1330,7 +1681,7 @@ function AdminUsersTable() {
       ) : error ? (
         <AdminErrorBanner message={error} />
       ) : !data || data.users.length === 0 ? (
-        <p className="p-6 text-sm text-kumo-subtle">暂无用户数据。</p>
+        <Empty size="sm" title="暂无用户数据" />
       ) : (
         <div className="overflow-x-auto">
           <Table className="w-full text-left text-sm text-kumo-default">
@@ -1360,10 +1711,9 @@ function AdminUsersTable() {
       {data ? (
         <AdminPager
           page={page}
+          setPage={setPage}
           totalCount={data.totalCount}
-          size={ADMIN_PAGE_SIZE}
-          onPrev={() => setPage((p) => Math.max(1, p - 1))}
-          onNext={() => setPage((p) => p + 1)}
+          perPage={ADMIN_PAGE_SIZE}
         />
       ) : null}
     </div>
@@ -1405,7 +1755,7 @@ function AdminTeamsTable() {
       ) : error ? (
         <AdminErrorBanner message={error} />
       ) : !data || data.teams.length === 0 ? (
-        <p className="p-6 text-sm text-kumo-subtle">暂无团队数据。</p>
+        <Empty size="sm" title="暂无团队数据" />
       ) : (
         <div className="overflow-x-auto">
           <Table className="w-full text-left text-sm text-kumo-default">
@@ -1447,17 +1797,67 @@ function AdminGlobalUsage() {
     return presetForWindow(defaultDayWindow, config) ?? presets.find((p) => p.grain === "day") ?? presets[0];
   }, [config, presets]);
 
+  const [grainMode, setGrainMode] = useState<GrainMode>("auto");
   const [grain, setGrain] = useState(defaultPreset?.grain ?? "day");
   const [windowKey, setWindowKey] = useState(defaultPreset?.windowKey ?? defaultWindowFor("day", config));
   const [data, setData] = useState<UsageTimeseries | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [rangeHint, setRangeHint] = useState<string | null>(null);
   const requestIdRef = useRef(0);
 
   const activePreset = useMemo(
     () => presets.find((p) => p.windowKey === windowKey) ?? defaultPreset,
     [defaultPreset, presets, windowKey],
   );
+  const selectedWindowLabel = activePreset?.label ?? "当前窗口";
+  const grainStatus = `${grainMode === "auto" ? "自动粒度" : "手动粒度"}：${usageGrainLabels[grain] ?? grain}`;
+
+  const applyPreset = useCallback((preset: UsageWindowSelection, source: "click" | "brush" = "click") => {
+    const manualGrain = grainMode !== "auto" ? grainMode : null;
+    const canKeepManual = manualGrain ? supportsWindowForGrain(manualGrain, preset.windowKey, config) : false;
+    const nextGrain = canKeepManual && manualGrain ? manualGrain : preset.grain;
+    const nextMode: GrainMode = canKeepManual && manualGrain ? manualGrain : "auto";
+
+    setGrainMode(nextMode);
+    setGrain(nextGrain);
+    setWindowKey(preset.windowKey);
+
+    const nextStatus = `${nextMode === "auto" ? "自动粒度" : "手动粒度"}：${usageGrainLabels[nextGrain] ?? nextGrain}`;
+    if (source === "brush") {
+      setRangeHint(`已按图表选择切换到 ${preset.label} · ${nextStatus}`);
+      return;
+    }
+    if (manualGrain && !canKeepManual) {
+      setRangeHint(`${preset.label} 不支持手动粒度「${usageGrainLabels[manualGrain] ?? manualGrain}」，已切回 ${nextStatus}`);
+      return;
+    }
+    setRangeHint(null);
+  }, [config, grainMode]);
+
+  const handleAutoGrainClick = useCallback(() => {
+    const preset = activePreset;
+    if (!preset) return;
+    setGrainMode("auto");
+    setGrain(preset.grain);
+    setRangeHint(null);
+  }, [activePreset]);
+
+  const handleManualGrainClick = useCallback((nextGrain: string) => {
+    if (!supportsWindowForGrain(nextGrain, windowKey, config)) return;
+    setGrainMode(nextGrain);
+    setGrain(nextGrain);
+    setRangeHint(null);
+  }, [config, windowKey]);
+
+  const handleChartRangeChange = useCallback((from: number, to: number) => {
+    const selection = selectionForRange(from, to, config);
+    if (!selection) {
+      setRangeHint("图表选择已捕获；请选择更接近预设的范围以自动取数。");
+      return;
+    }
+    applyPreset(selection, "brush");
+  }, [applyPreset, config]);
 
   useEffect(() => {
     if (!grain || !windowKey) return;
@@ -1496,62 +1896,90 @@ function AdminGlobalUsage() {
     return () => controller.abort();
   }, [grain, windowKey]);
 
+  const windowText = data
+    ? `${data.windowLabel} · ${usageGrainLabels[data.grain] ?? data.grain} · ${text(data.start).slice(0, 10)} 至 ${text(data.end).slice(0, 10)}${data.limited ? " · 已达到分页上限" : ""}`
+    : `全局用量沿用个人视图的预设和粒度规则。当前：${selectedWindowLabel} · ${grainStatus}`;
+
   return (
-    <div>
-      <div className="border-b border-kumo-line p-6">
-        <div className="space-y-3">
-          <div className="flex flex-wrap gap-2" role="group" aria-label="时间范围预设">
-            {presets.map((preset) => (
-              <button
-                key={preset.windowKey}
-                type="button"
-                className={controlPillClass(preset.windowKey === windowKey)}
-                aria-pressed={preset.windowKey === windowKey}
-                onClick={() => {
-                  setWindowKey(preset.windowKey);
-                  setGrain(preset.grain);
-                }}
-              >
-                {preset.label}
-              </button>
-            ))}
+    <div aria-busy={loading}>
+      <div className="border-b border-kumo-line bg-kumo-elevated p-6">
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-base font-semibold text-kumo-strong">全局 Token 用量趋势</p>
+            <span className="rounded-full bg-kumo-info-tint px-2.5 py-1 text-xs font-semibold text-kumo-info">Brush native</span>
+            <span className="rounded-full bg-kumo-success-tint px-2.5 py-1 text-xs font-semibold text-kumo-success">{grainStatus}</span>
           </div>
-          <div className="flex flex-wrap gap-2" role="group" aria-label="时间粒度">
-            {grains.map((item) => {
-              const disabled = !supportsWindowForGrain(item, windowKey, config);
-              return (
+          <p className="text-sm leading-relaxed text-kumo-subtle">{windowText}</p>
+          {rangeHint ? (
+            <p className="text-xs font-medium text-kumo-brand" aria-live="polite">{rangeHint}</p>
+          ) : null}
+        </div>
+        <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_auto]" aria-label="全局用量筛选">
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">时间范围预设</p>
+            <div className="flex flex-wrap gap-2" role="group" aria-label="时间范围预设">
+              {presets.map((preset) => (
                 <button
-                  key={item}
+                  key={preset.windowKey}
                   type="button"
-                  className={controlPillClass(grain === item, disabled)}
-                  aria-pressed={grain === item}
-                  disabled={disabled}
-                  onClick={() => {
-                    if (!disabled) setGrain(item);
-                  }}
+                  className={controlPillClass(preset.windowKey === windowKey)}
+                  aria-pressed={preset.windowKey === windowKey}
+                  onClick={() => applyPreset(preset)}
                 >
-                  {usageGrainLabels[item] ?? item}
+                  {preset.label}
                 </button>
-              );
-            })}
+              ))}
+            </div>
+          </div>
+          <div className="space-y-2 xl:w-[380px]">
+            <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">时间粒度</p>
+            <div className="flex flex-wrap gap-2" role="group" aria-label="时间粒度">
+              <button
+                type="button"
+                className={controlPillClass(grainMode === "auto")}
+                aria-pressed={grainMode === "auto"}
+                onClick={handleAutoGrainClick}
+              >
+                自动
+              </button>
+              {grains.map((item) => {
+                const disabled = !supportsWindowForGrain(item, windowKey, config);
+                return (
+                  <button
+                    key={item}
+                    type="button"
+                    className={controlPillClass(grainMode === item, disabled)}
+                    aria-pressed={grainMode === item}
+                    disabled={disabled}
+                    title={disabled ? `${selectedWindowLabel} 不支持${usageGrainLabels[item] ?? item}粒度` : undefined}
+                    onClick={() => handleManualGrainClick(item)}
+                  >
+                    {usageGrainLabels[item] ?? item}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
       </div>
-      <div className="grid grid-cols-1 p-6 md:grid-cols-[2fr_1fr]">
-        <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr]">
+        <div className="space-y-8 p-8">
           {error ? (
             <Banner variant="error" title="全局用量加载失败" description={error} />
           ) : null}
           <UsageSummary data={data} loading={loading} />
-          <UsageChart data={data} error={error} loading={loading} />
+          <UsageChart data={data} error={error} loading={loading} onTimeRangeChange={handleChartRangeChange} />
+          <div className="overflow-x-auto">
+            <UsageBucketsTable data={data} loading={loading} />
+          </div>
         </div>
-        <div className="mt-6 md:ml-6 md:mt-0">
+        <div className="border-t border-kumo-line p-8 md:border-l md:border-t-0">
           <p className="mb-5 text-sm font-semibold text-kumo-default">高频模型</p>
           <TopModels data={data} loading={loading} />
         </div>
       </div>
       {activePreset ? (
-        <p className="px-6 pb-4 text-xs text-kumo-subtle">
+        <p className="px-8 pb-6 text-xs text-kumo-subtle">
           数据来源：/api/admin/usage/timeseries · {activePreset.label} · {usageGrainLabels[grain] ?? grain}粒度
         </p>
       ) : null}
@@ -1614,7 +2042,7 @@ function AdminAuditFeed() {
       ) : error ? (
         <AdminErrorBanner message={error} />
       ) : !data || data.events.length === 0 ? (
-        <p className="p-6 text-sm text-kumo-subtle">暂无审计日志。</p>
+        <Empty size="sm" title="暂无审计日志" />
       ) : (
         <div className="overflow-x-auto">
           <Table className="w-full text-left text-sm text-kumo-default">
@@ -1669,10 +2097,9 @@ function AdminAuditFeed() {
       {data ? (
         <AdminPager
           page={page}
+          setPage={setPage}
           totalCount={data.totalCount}
-          size={ADMIN_PAGE_SIZE}
-          onPrev={() => setPage((p) => Math.max(1, p - 1))}
-          onNext={() => setPage((p) => p + 1)}
+          perPage={ADMIN_PAGE_SIZE}
         />
       ) : null}
     </div>
@@ -1681,7 +2108,7 @@ function AdminAuditFeed() {
 
 function AdminCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
+    <LayerCard className="overflow-hidden p-0">
       <Collapsible.Root defaultOpen>
         <div className="flex items-center justify-between border-b border-kumo-line bg-kumo-elevated px-6 py-5">
           <p className="text-lg font-semibold text-kumo-strong">{title}</p>
@@ -1691,7 +2118,7 @@ function AdminCard({ title, children }: { title: string; children: React.ReactNo
           {children}
         </Collapsible.Panel>
       </Collapsible.Root>
-    </article>
+    </LayerCard>
   );
 }
 
@@ -1699,23 +2126,36 @@ export function AdminSection({ role }: { role: PortalRole }) {
   if (role !== "admin") return null;
 
   return (
-    <section className="space-y-8" aria-label="管理员视图（只读）">
-      <div className="flex items-center gap-3">
-        <h2 className="text-2xl font-semibold text-kumo-strong">管理员视图（只读）</h2>
+    <section className="space-y-8" aria-label="全局管理（只读）">
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 className="text-2xl font-semibold text-kumo-strong">全局管理（只读）</h2>
         <Badge variant="secondary" className="rounded-full bg-kumo-warning-tint text-kumo-warning">仅管理员可见</Badge>
       </div>
-      <AdminCard title="全员账户">
-        <AdminUsersTable />
-      </AdminCard>
-      <AdminCard title="全部团队">
-        <AdminTeamsTable />
-      </AdminCard>
+      <AdminHeroStats />
       <AdminCard title="全局用量趋势">
         <AdminGlobalUsage />
       </AdminCard>
-      <AdminCard title="审计日志">
+      <div className="space-y-4">
+        <div>
+          <p className="text-sm font-semibold uppercase tracking-wider text-kumo-subtle">资源与权限</p>
+          <p className="mt-1 text-sm text-kumo-subtle">账户、团队和模型范围保持和个人视图相同的数据语言。</p>
+        </div>
+        <AdminCard title="全员账户">
+          <AdminUsersTable />
+        </AdminCard>
+        <AdminCard title="全部团队">
+          <AdminTeamsTable />
+        </AdminCard>
+      </div>
+      <div className="space-y-4">
+        <div>
+          <p className="text-sm font-semibold uppercase tracking-wider text-kumo-subtle">审计与风险</p>
+          <p className="mt-1 text-sm text-kumo-subtle">用于核对近期变更和风险线索，当前保持只读。</p>
+        </div>
+        <AdminCard title="审计日志">
         <AdminAuditFeed />
-      </AdminCard>
+        </AdminCard>
+      </div>
     </section>
   );
 }
@@ -1755,11 +2195,12 @@ function usePortalRole(): { role: PortalRole; ready: boolean } {
   return { role, ready };
 }
 
-function readTabFromHash(role: PortalRole): TabKey {
+export function readTabFromHash(role: PortalRole): TabKey {
+  void role;
   const hash = typeof window !== "undefined" ? window.location.hash : "";
   if (hash === "#admin") return "admin";
   if (hash === "#user") return "user";
-  return role === "admin" ? "admin" : "user";
+  return "user";
 }
 
 function applyTabToDom(tab: TabKey) {
@@ -1780,35 +2221,17 @@ function AdminSectionLoader() {
 }
 
 export function PortalTabs({ tab, onSelect }: { tab: TabKey; onSelect: (next: TabKey) => void }) {
-  const baseBtn =
-    "flex h-10 cursor-pointer select-none items-center justify-center rounded-full px-5 text-sm font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-kumo-brand";
-  const activeBtn = "bg-kumo-base text-kumo-strong shadow-sm ring-1 ring-kumo-line";
-  const idleBtn = "text-kumo-subtle hover:text-kumo-strong";
   return (
-    <div
-      className="mb-10 flex w-fit items-center gap-1 rounded-full bg-kumo-fill p-1 ring-1 ring-kumo-line"
-      role="tablist"
-      aria-label="切换面板"
-    >
-      <button
-        type="button"
-        role="tab"
-        aria-selected={tab === "user"}
-        className={`${baseBtn} ${tab === "user" ? activeBtn : idleBtn}`}
-        onClick={() => onSelect("user")}
-      >
-        用户面板
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={tab === "admin"}
-        className={`${baseBtn} ${tab === "admin" ? activeBtn : idleBtn}`}
-        onClick={() => onSelect("admin")}
-      >
-        管理员
-      </button>
-    </div>
+    <Tabs
+      className="mb-10"
+      variant="segmented"
+      value={tab}
+      onValueChange={(next) => onSelect(next as TabKey)}
+      tabs={[
+        { value: "user", label: "个人视图" },
+        { value: "admin", label: "全局管理" },
+      ]}
+    />
   );
 }
 
@@ -1825,9 +2248,6 @@ function PortalTabsLoader() {
     const initial = readTabFromHash(role);
     setTab(initial);
     applyTabToDom(initial);
-    if (initial === "admin" && window.location.hash !== "#admin") {
-      history.replaceState(null, "", "#admin");
-    }
     const tabsRoot = document.getElementById("portal-tabs-root");
     tabsRoot?.removeAttribute("hidden");
   }, [ready, role]);
@@ -1851,6 +2271,21 @@ if (usageRoot) {
 const modelsRoot = document.getElementById("models-root");
 if (modelsRoot) {
   createRoot(modelsRoot).render(<ModelAccessCard />);
+}
+
+const teamsRoot = document.getElementById("teams-root");
+if (teamsRoot) {
+  createRoot(teamsRoot).render(<TeamsAccessCard />);
+}
+
+const heroStatsRoot = document.getElementById("hero-stats-root");
+if (heroStatsRoot) {
+  createRoot(heroStatsRoot).render(<HeroStats />);
+}
+
+const headerActionsRoot = document.getElementById("header-actions-root");
+if (headerActionsRoot) {
+  createRoot(headerActionsRoot).render(<HeaderActions />);
 }
 
 const keysRoot = document.getElementById("keys-root");

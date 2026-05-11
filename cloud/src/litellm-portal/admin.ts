@@ -1,12 +1,27 @@
 import type { LiteLLMPortalEnv } from "./types";
-import { jsonResponse } from "./utils";
+import { jsonResponse, roundCurrency, sumDefinedNumbers } from "./utils";
 import { listAllUsers, listAllTeams, listAuditEvents, publicTeam } from "./litellm";
 import { parseUsageTimeseriesRequest, readGlobalUsageTimeseries } from "./timeseries";
+
+const ADMIN_SUMMARY_PAGE_SIZE = 200;
 
 function sanitizeIntParam(value: string | null, fallback: number): number {
   if (value === null) return fallback;
   const n = Number(value);
   return Number.isFinite(n) && n >= 1 ? Math.floor(n) : fallback;
+}
+
+function isAdminRole(role: string | null): boolean {
+  return role === "proxy_admin" || role === "proxy_admin_viewer";
+}
+
+function isManagedRole(role: string | null): boolean {
+  return role === "proxy_admin"
+    || role === "proxy_admin_viewer"
+    || role === "internal_user"
+    || role === "internal_user_viewer"
+    || role === "team"
+    || role === "customer";
 }
 
 export async function adminListUsers(request: Request, env: LiteLLMPortalEnv): Promise<Response> {
@@ -27,6 +42,44 @@ export async function adminListUsers(request: Request, env: LiteLLMPortalEnv): P
       totalCount: result.totalCount,
       page: result.page,
       size: result.size,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "internal_error";
+    return jsonResponse({ error: message }, message === "litellm_config_missing" ? 500 : 502);
+  }
+}
+
+export async function adminSummary(request: Request, env: LiteLLMPortalEnv): Promise<Response> {
+  try {
+    const [userPage, teams] = await Promise.all([
+      listAllUsers(env, { page: 1, size: ADMIN_SUMMARY_PAGE_SIZE }),
+      listAllTeams(env),
+    ]);
+    const users = userPage.users;
+    const sampledUserCount = users.length;
+    const limited = userPage.totalCount > sampledUserCount;
+    const overBudgetUserCount = users.filter((user) => user.maxBudget != null && Number(user.spend || 0) >= user.maxBudget).length;
+    const overBudgetTeamCount = teams.filter((team) => team.maxBudget != null && Number(team.spend || 0) >= team.maxBudget).length;
+    const noTeamUserCount = users.filter((user) => user.teamIds.length === 0).length;
+    const unmanagedRoleCount = users.filter((user) => !isManagedRole(user.role)).length;
+
+    return jsonResponse({
+      userCount: userPage.totalCount,
+      sampledUserCount,
+      limited,
+      teamCount: teams.length,
+      adminCount: users.filter((user) => isAdminRole(user.role)).length,
+      unmanagedRoleCount,
+      noTeamUserCount,
+      overBudgetUserCount,
+      overBudgetTeamCount,
+      riskCount: overBudgetUserCount + overBudgetTeamCount + unmanagedRoleCount,
+      totalSpend: roundCurrency(users.reduce((sum, user) => sum + Number(user.spend || 0), 0)),
+      teamSpend: roundCurrency(teams.reduce((sum, team) => sum + Number(team.spend || 0), 0)),
+      totalBudget: sumDefinedNumbers([
+        ...users.map((user) => user.maxBudget),
+        ...teams.map((team) => team.maxBudget),
+      ]),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "internal_error";
