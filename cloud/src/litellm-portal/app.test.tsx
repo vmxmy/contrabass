@@ -413,6 +413,149 @@ describe("CreateKeyButton", () => {
 });
 
 describe("AdminSection", () => {
+  it("AdminUsersTable renders email for each user row", async () => {
+    // #given
+    installPortalConfig();
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/admin/users")) {
+        return Response.json({
+          users: [
+            { userId: "u1", email: "alice@gz-zhiyun.com", spend: 1.5, maxBudget: 100, teamIds: [], role: "internal_user" },
+            { userId: "u2", email: "bob@gz-zhiyun.com", spend: 2.0, maxBudget: null, teamIds: ["t1"], role: "proxy_admin" },
+          ],
+          totalCount: 2,
+          page: 1,
+          size: 50,
+        });
+      }
+      return Response.json({ teams: [], events: [], users: [], buckets: [], totals: {}, topModels: [] });
+    }) as typeof fetch;
+
+    // #when
+    render(<AdminSection role="admin" />);
+
+    // #then - both email addresses appear as table rows
+    await waitFor(() => {
+      expect(screen.queryByText("alice@gz-zhiyun.com")).not.toBeNull();
+      expect(screen.queryByText("bob@gz-zhiyun.com")).not.toBeNull();
+    });
+  });
+
+  it("AdminAuditFeed navigates to page 2 when next-page button is clicked", async () => {
+    // #given
+    installPortalConfig();
+    const fetchCalls: string[] = [];
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      fetchCalls.push(url);
+      if (url.includes("/api/admin/audit")) {
+        const page = new URL(url, "https://portal.test").searchParams.get("page") ?? "1";
+        return Response.json({
+          events: [
+            {
+              id: `evt-${page}-1`,
+              createdAt: "2026-05-10T10:00:00Z",
+              action: "key.create",
+              actorUserId: "admin-uid",
+              actorUserEmail: "admin@gz-zhiyun.com",
+              objectType: "key",
+              objectId: `key-p${page}`,
+            },
+          ],
+          totalCount: 100,
+          page: Number(page),
+          size: 50,
+        });
+      }
+      return Response.json({ teams: [], users: [], buckets: [], totals: {}, topModels: [] });
+    }) as typeof fetch;
+
+    // #when
+    render(<AdminSection role="admin" />);
+
+    // wait for initial load
+    await waitFor(() => {
+      expect(screen.queryByText("key.create")).not.toBeNull();
+    });
+
+    const auditCallsBefore = fetchCalls.filter((u) => u.includes("/api/admin/audit")).length;
+
+    // click next page button
+    const nextButtons = screen.getAllByText("下一页");
+    // AdminAuditFeed is the last card; use the last next-page button
+    fireEvent.click(nextButtons[nextButtons.length - 1]);
+
+    // #then - a second audit fetch is made with page=2
+    await waitFor(() => {
+      const auditCallsAfter = fetchCalls.filter((u) => u.includes("/api/admin/audit"));
+      expect(auditCallsAfter.length).toBeGreaterThan(auditCallsBefore);
+      const page2Call = auditCallsAfter.find((u) => u.includes("page=2"));
+      expect(page2Call).toBeDefined();
+    });
+  });
+
+  it("AdminGlobalUsage switches to hour grain and includes grain=hour in fetch URL", async () => {
+    // #given
+    installPortalConfig();
+    const fetchUrls: string[] = [];
+    const globalUsageData = {
+      available: true,
+      grain: "hour",
+      window: "48h",
+      windowLabel: "近 48 小时",
+      start: "2024-01-01T00:00:00.000Z",
+      end: "2024-01-03T00:00:00.000Z",
+      source: "spend_logs_v2_global",
+      timezone: "Asia/Shanghai",
+      limited: false,
+      maxPages: null,
+      buckets: [],
+      totals: { totalTokens: 0, promptTokens: 0, completionTokens: 0, requests: 0, spend: 0 },
+      topModels: [],
+    };
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      fetchUrls.push(url);
+      if (url.includes("/api/admin/usage/timeseries")) {
+        return Response.json(globalUsageData);
+      }
+      return Response.json({ teams: [], users: [], events: [], totalCount: 0, page: 1, size: 50, buckets: [], totals: {}, topModels: [] });
+    }) as typeof fetch;
+
+    // #when
+    render(<AdminSection role="admin" />);
+
+    // wait for initial render
+    await waitFor(() => {
+      expect(screen.queryByText("全局用量趋势")).not.toBeNull();
+    });
+
+    // First switch to the "近 7 天" window preset — this window supports hour grain
+    // (30d is the default but it only supports day grain, not hour)
+    const sevenDayButtons = screen.getAllByText("近 7 天");
+    fireEvent.click(sevenDayButtons[sevenDayButtons.length - 1]);
+
+    // wait for the 7d fetch to complete so hour button becomes enabled
+    await waitFor(() => {
+      expect(fetchUrls.some((u) => u.includes("/api/admin/usage/timeseries") && u.includes("window=7d"))).toBe(true);
+    });
+
+    // Now click the "小时" grain button (should be enabled for 7d window)
+    const hourButtons = screen.getAllByText("小时");
+    const enabledHourButton = hourButtons.find(
+      (el) => el.closest("button") && !(el.closest("button") as HTMLButtonElement).disabled,
+    );
+    expect(enabledHourButton).toBeDefined();
+    fireEvent.click(enabledHourButton!);
+
+    // #then - a fetch with grain=hour is made
+    await waitFor(() => {
+      const hourCall = fetchUrls.find((u) => u.includes("/api/admin/usage/timeseries") && u.includes("grain=hour"));
+      expect(hourCall).toBeDefined();
+    });
+  });
+
   it("renders nothing when role is not admin", () => {
     const { container } = render(<AdminSection role="user" />);
     expect(container.firstChild).toBeNull();

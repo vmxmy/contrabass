@@ -1339,6 +1339,156 @@ describe("litellm portal worker", () => {
       expect(response.status).toBe(400);
       await expect(response.json()).resolves.toMatchObject({ error: "unsupported_usage_grain" });
     });
+
+    it("cache hit ratio: 5 mixed admin requests hit /v2/user/info only once", async () => {
+      // #given
+      let v2UserInfoCalls = 0;
+      const litellmUrls: string[] = [];
+      globalThis.fetch = async (input) => {
+        const url = String(input);
+        litellmUrls.push(url);
+        if (url === "https://litellm.test/v2/user/info?user_id=admin%40gz-zhiyun.com") {
+          v2UserInfoCalls += 1;
+          return Response.json({ user_id: "admin-uid", user_role: "proxy_admin" });
+        }
+        if (url.startsWith("https://litellm.test/user/list?page=")) {
+          return Response.json({ users: [], total_count: 0 });
+        }
+        if (url.startsWith("https://litellm.test/audit?")) {
+          return Response.json({ data: [], total_count: 0 });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      // #when - 5 mixed requests: 3 /api/dashboard proxied through /api/admin/users and 2 /api/admin/users
+      const env = portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" });
+      for (let i = 0; i < 3; i++) {
+        await handleLiteLLMPortalRequest(
+          devRequest("https://portal.test/api/admin/users", "admin@gz-zhiyun.com"),
+          env,
+        );
+      }
+      for (let i = 0; i < 2; i++) {
+        await handleLiteLLMPortalRequest(
+          devRequest("https://portal.test/api/admin/audit", "admin@gz-zhiyun.com"),
+          env,
+        );
+      }
+
+      // #then - /v2/user/info called exactly once across all 5 requests
+      expect(v2UserInfoCalls).toBe(1);
+    });
+
+    it("audit pagination params: page=3&size=25 are forwarded to LiteLLM as page=3&page_size=25", async () => {
+      // #given
+      const litellmUrls: string[] = [];
+      globalThis.fetch = async (input) => {
+        const url = String(input);
+        litellmUrls.push(url);
+        if (url === "https://litellm.test/v2/user/info?user_id=admin%40gz-zhiyun.com") {
+          return Response.json({ user_id: "admin-uid", user_role: "proxy_admin" });
+        }
+        if (url.includes("https://litellm.test/audit?")) {
+          return Response.json({ data: [], total_count: 0 });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      // #when
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/audit?page=3&size=25", "admin@gz-zhiyun.com"),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      // #then
+      expect(response.status).toBe(200);
+      const auditUrl = litellmUrls.find((url) => url.includes("/audit?"));
+      expect(auditUrl).toBeDefined();
+      expect(auditUrl).toContain("page=3");
+      expect(auditUrl).toContain("page_size=25");
+    });
+
+    it("/v2/user/info 404 yields role=none and /api/me body contains no master key material", async () => {
+      // #given
+      globalThis.fetch = async (input) => {
+        if (String(input) === "https://litellm.test/v2/user/info?user_id=unknown%40gz-zhiyun.com") {
+          return new Response("not found", { status: 404 });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      // #when
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/me", "unknown@gz-zhiyun.com"),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      // #then
+      expect(response.status).toBe(200);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.role).toBe("none");
+      const serialized = JSON.stringify(body);
+      // must not leak master key prefix or the word 'master'
+      expect(serialized).not.toMatch(/sk-/u);
+      expect(serialized.toLowerCase()).not.toContain("master");
+    });
+
+    it("/api/admin/usage/timeseries with no grain defaults to day and returns source=spend_logs_v2_global", async () => {
+      // #given
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-05-10T12:00:00.000Z"));
+      globalThis.fetch = async (input) => {
+        if (String(input) === "https://litellm.test/v2/user/info?user_id=admin%40gz-zhiyun.com") {
+          return Response.json({ user_id: "admin-uid", user_role: "proxy_admin" });
+        }
+        if (new URL(String(input)).pathname === "/spend/logs/v2") {
+          return Response.json({ data: [], total_pages: 1 });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      // #when - no grain param
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/usage/timeseries?window=30d", "admin@gz-zhiyun.com"),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      // #then
+      expect(response.status).toBe(200);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.grain).toBe("day");
+      expect(body.source).toBe("spend_logs_v2_global");
+    });
+
+    it("/api/admin/users size=999 is clamped to ADMIN_PAGE_SIZE_MAX=200", async () => {
+      // #given
+      const litellmUrls: string[] = [];
+      globalThis.fetch = async (input) => {
+        const url = String(input);
+        litellmUrls.push(url);
+        if (url === "https://litellm.test/v2/user/info?user_id=admin%40gz-zhiyun.com") {
+          return Response.json({ user_id: "admin-uid", user_role: "proxy_admin" });
+        }
+        if (url.startsWith("https://litellm.test/user/list?")) {
+          return Response.json({ users: [], total_count: 0 });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      // #when
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/users?size=999", "admin@gz-zhiyun.com"),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      // #then
+      expect(response.status).toBe(200);
+      // The forwarded LiteLLM URL must have page_size clamped to 200 (ADMIN_PAGE_SIZE_MAX)
+      const listUrl = litellmUrls.find((url) => url.startsWith("https://litellm.test/user/list?page="));
+      expect(listUrl).toBeDefined();
+      const forwarded = new URL(listUrl ?? "");
+      expect(Number(forwarded.searchParams.get("page_size"))).toBeLessThanOrEqual(200);
+    });
   });
 
 });
