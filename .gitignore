@@ -52,3 +52,8 @@ Thumbs.db
 vendor/
 workspaces/
 .worktrees/
+
+# Cloud Worker local artifacts
+cloud/.playwright-cli/
+cloud/.wrangler/
+cloud/output/
