@@ -401,6 +401,14 @@ Pill for interactive; xl for containers; sm for embedded tiles. Sharp corners ab
 - SVG stroke: `text-kumo-chart-wave` (semantic chart color).
 - No decorative grid styling beyond hairline rules.
 
+### Time Preset Rail
+- Primary usage time control is a native `button` rail, not a Select.
+- Render only configured server windows; no arbitrary date ranges in the client.
+- Active preset uses `bg-kumo-brand text-kumo-inverse ring-kumo-brand`.
+- Secondary grain rail uses `自动` + manual grain chips; invalid manual grains stay disabled.
+- Status pill mirrors state as `自动粒度：天` or `手动粒度：小时`.
+- Desktop layout: preset rail and grain rail sit side-by-side with `lg:grid-cols-[1fr_auto]`; mobile wraps into stacked rails.
+
 ### Table
 - Full width, `text-sm text-kumo-default`.
 - Header: 12px uppercase `text-kumo-subtle` with `tracking-wider`, `border-b border-kumo-line`.
@@ -426,6 +434,7 @@ Pill for interactive; xl for containers; sm for embedded tiles. Sharp corners ab
 - Background `bg-kumo-elevated`, text `text-kumo-default`.
 - Rounded `rounded-md` (12px), height 40px.
 - Border `ring-1 ring-kumo-line`, focus `focus-visible:ring-2 focus-visible:ring-kumo-brand`.
+- Usage time controls intentionally avoid Select; reserve Select for create-key model/duration inputs.
 
 ## Do's and Don'ts
 
@@ -478,7 +487,7 @@ Portal 已安装 `@cloudflare/kumo@^2.1.0`，CSS token 体系全面对齐 DESIGN
 | 维度 | 当前使用 | Kumo 可提供 |
 |------|---------|------------|
 | CSS tokens | 全面覆盖（surface / text / semantic / hairline） | 已对齐，无需改动 |
-| React 组件 | `Badge`、`Banner`、`Button`、`Collapsible`、`Dialog`、`Input`、`Loader/SkeletonLine`、`Select`、`Table`、`TimeseriesChart` | Tooltip、Dropdown、Switch、Tabs、Accordion 等后续按需补齐 |
+| React 组件 | `Badge`、`Banner`、`Button`、`Collapsible`、`Dialog`、`Input`、`Loader/SkeletonLine`、`Select`、`Table`、`TimeseriesChart`；用量时间控件使用原生 button rail | Tooltip、Dropdown、Switch、Tabs、Accordion 等后续按需补齐 |
 | Base UI Primitives | 未使用 | 37 个无样式可访问原语（Popover、Dialog、Slider 等），可从 `@cloudflare/kumo/primitives/*` 导入做二次封装 |
 | 无障碍 | 关键 React 岛使用 Kumo 组件；图表提供 `ariaDescription`；Worker shell 仍保留少量 vanilla DOM 更新 | Kumo 组件开箱处理键盘导航、focus trap/return、ARIA 属性 |
 | 暗色模式 | 已通过 `data-mode` + localStorage 持久化；Kumo Chart 接收暗色状态 | 语义 token 天然支持，通过 `data-mode="dark"` 或 CSS `light-dark()` 切换 |
@@ -492,7 +501,7 @@ Portal 是 Cloudflare Worker，HTML 以模板字符串形式在 `html.ts` 中生
 
 按投入产出比排序：
 
-1. **已完成：用量 Select + Kumo Chart**：grain/window 选择器已迁入 React/Kumo，图表已替换为 Kumo `TimeseriesChart`，并支持横向 brush 映射到预设时间范围。
+1. **已完成：Preset Rail + Kumo Chart**：用量时间范围改为一键预设 rail，默认 Auto 粒度，手动粒度为芯片；图表已替换为 Kumo `TimeseriesChart`，并支持横向 brush 映射到同一套预设/粒度规则。
 2. **已完成：暗色模式**：通过 `data-mode` 持久化，图表随 `MutationObserver` 同步暗色状态。
 3. **已完成：加载态 / 错误 / Key 表格 / 创建 Key**：Loader、Skeleton、Banner、Table、Dialog、Button、Input 已覆盖核心交互。
 4. **后续：复制反馈 → Kumo Tooltip/Toast**：新建 Key 的完整密钥复制仍可加 Toast；已有 Key 仅展示 mask，不提供复制。
@@ -523,6 +532,8 @@ import { Popover } from "@cloudflare/kumo/primitives/popover";
 
 2026-05-10 `litellm-portal-kumo-chart-interactions` 已将 Token 用量图从 Recharts 替换为 Kumo `TimeseriesChart`，并移除 `recharts` 依赖。实现采用 granular import：`@cloudflare/kumo/components/chart` + `echarts/core`，仅注册 `LineChart`、`GridComponent`、`TooltipComponent`、`BrushComponent`、`ToolboxComponent`、`AriaComponent`、`SVGRenderer`。
 
-交互上不再把「时间范围 / 时间粒度」作为两个占满 header 的独立表单：桌面端使用 compact control rail（`sm:grid-cols-2`），图表区域提升到 300px 高，并开启 Kumo/ECharts brush。用户在图表中横向拖拽后，前端会把选中区间映射到最接近的服务端预设窗口（例如 7d / 30d / 48h），再重新请求 `/api/usage/timeseries`；无法匹配预设时只提示，不发起任意窗口查询，保持 Worker API 有界。
+交互上已移除「时间范围 / 时间粒度」两个下拉表单。桌面端使用一键 preset rail + grain chips（`lg:grid-cols-[1fr_auto]`），默认 `自动` 粒度会按配置窗口选择推荐 grain；用户只有在需要时单击手动粒度芯片。手动粒度不支持当前窗口时按钮禁用；若在手动模式切换到不兼容窗口，前端会自动回落到该预设的 Auto grain，并显示非阻断提示。
 
-Bundle 实测：迁移后 `pnpm run analyze:litellm-portal-bundle` 显示 portal app bundle 为 `1,090,483 bytes` minified；`pnpm run build:litellm-portal` dry-run 上传体积为 `1245.44 KiB / gzip 385.28 KiB`。相对上轮 Kumo UX 基线（约 `849.1KB` minified，dry-run `1009.64 KiB / gzip 289.37 KiB`），Kumo Chart/ECharts 原生交互增加约 `235KB` minified / `96KB` gzip。收益是移除 Recharts、统一 Kumo 视觉/ARIA/暗色行为，并获得 chart-native brush 交互；代价是 bundle 明显增大，后续若继续扩展图表应优先考虑 island 懒加载或独立 chunk。
+Kumo/ECharts brush 保持有界：用户在图表中横向拖拽后，前端会把选中区间映射到最接近的服务端预设窗口（例如 7d / 30d / 48h），再复用点击 preset 的 Auto/manual grain 规则请求 `/api/usage/timeseries`；无法匹配预设时只提示，不发起任意窗口查询。
+
+Bundle 实测：`pnpm run analyze:litellm-portal-bundle` 显示 portal app bundle 为 `1,092,618 bytes` minified；`pnpm run build:litellm-portal` dry-run 上传体积为 `1247.58 KiB / gzip 385.83 KiB`。相对上轮 Kumo UX 基线（约 `849.1KB` minified，dry-run `1009.64 KiB / gzip 289.37 KiB`），Kumo Chart/ECharts 原生交互增加约 `235KB` minified / `96KB` gzip。收益是移除 Recharts、统一 Kumo 视觉/ARIA/暗色行为，并获得 chart-native brush + 单次点击时间探索；代价是 bundle 明显增大，后续若继续扩展图表应优先考虑 island 懒加载或独立 chunk。

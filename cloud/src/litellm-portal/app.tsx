@@ -55,7 +55,6 @@ const fallbackUsageWindows: Record<string, UsageWindowOption[]> = {
   minute: [{ key: "6h", label: "近 6 小时" }],
   hour: [{ key: "48h", label: "近 48 小时" }],
   day: [{ key: "30d", label: "近 30 天" }],
-  week: [{ key: "12w", label: "近 12 周" }],
   month: [{ key: "12mo", label: "近 12 个月" }],
 };
 
@@ -63,7 +62,6 @@ const fallbackDefaultUsageWindows: Record<string, string> = {
   minute: "6h",
   hour: "48h",
   day: "30d",
-  week: "12w",
   month: "12mo",
 };
 
@@ -71,7 +69,6 @@ const usageGrainLabels: Record<string, string> = {
   minute: "分钟",
   hour: "小时",
   day: "天",
-  week: "周",
   month: "月",
 };
 
@@ -540,23 +537,21 @@ export function UsagePanel() {
   return (
     <article id="usage-panel" className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line" aria-busy={loading}>
       <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-lg font-semibold text-kumo-strong">Token 用量趋势</p>
-              <span className="rounded-full bg-kumo-info-tint px-2.5 py-1 text-xs font-semibold text-kumo-info">Brush native</span>
-              <span className="rounded-full bg-kumo-success-tint px-2.5 py-1 text-xs font-semibold text-kumo-success">{grainStatus}</span>
-            </div>
-            <p className="text-sm leading-relaxed text-kumo-subtle">{windowText}</p>
-            <p className="text-xs text-kumo-subtle">
-              在图表中横向拖拽会吸附到最接近的时间预设；预设和粒度芯片都支持键盘单次触发。
-            </p>
-            {rangeHint ? (
-              <p className="text-xs font-medium text-kumo-brand" aria-live="polite">{rangeHint}</p>
-            ) : null}
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-lg font-semibold text-kumo-strong">Token 用量趋势</p>
+            <span className="rounded-full bg-kumo-info-tint px-2.5 py-1 text-xs font-semibold text-kumo-info">Brush native</span>
+            <span className="rounded-full bg-kumo-success-tint px-2.5 py-1 text-xs font-semibold text-kumo-success">{grainStatus}</span>
           </div>
+          <p className="text-sm leading-relaxed text-kumo-subtle">{windowText}</p>
+          <p className="text-xs text-kumo-subtle">
+            在图表中横向拖拽会吸附到最接近的时间预设；预设和粒度芯片都支持键盘单次触发。
+          </p>
+          {rangeHint ? (
+            <p className="text-xs font-medium text-kumo-brand" aria-live="polite">{rangeHint}</p>
+          ) : null}
         </div>
-        <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start" aria-label="用量筛选">
+        <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_auto]" aria-label="用量筛选">
           <div className="space-y-2">
             <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">时间范围预设</p>
             <div className="flex flex-wrap gap-2" role="group" aria-label="时间范围预设">
@@ -573,7 +568,7 @@ export function UsagePanel() {
               ))}
             </div>
           </div>
-          <div className="space-y-2 xl:min-w-80">
+          <div className="space-y-2 xl:w-[380px]">
             <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">时间粒度</p>
             <div className="flex flex-wrap gap-2" role="group" aria-label="时间粒度">
               <button

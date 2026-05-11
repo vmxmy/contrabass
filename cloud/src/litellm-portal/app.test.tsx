@@ -75,10 +75,9 @@ function installPortalConfig() {
         { key: "7d", label: "近 7 天" },
         { key: "30d", label: "近 30 天" },
       ],
-      week: [{ key: "12w", label: "近 12 周" }],
       month: [{ key: "12mo", label: "近 12 个月" }],
     },
-    defaultUsageWindows: { minute: "6h", hour: "48h", day: "30d", week: "12w", month: "12mo" },
+    defaultUsageWindows: { minute: "6h", hour: "48h", day: "30d", month: "12mo" },
   };
 }
 

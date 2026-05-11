@@ -29,6 +29,10 @@ describe("litellm portal worker", () => {
     expect(html).toContain("面向智云团队的 AI 能力自助台");
     expect(html).toContain("团队可用模型");
     expect(html).toContain("Token 用量趋势");
+    expect(html).not.toContain("近 4 周");
+    expect(html).not.toContain("近 12 周");
+    expect(html).not.toContain("近 24 周");
+    expect(html).not.toContain("近 26 周");
     expect(html).toContain('id="usage-panel-root"');
     expect(html).toContain('id="usage-panel"');
     expect(html).toContain('id="keys-root"');
@@ -70,7 +74,7 @@ describe("litellm portal worker", () => {
     const css = await response.text();
     expect(css).toContain("tailwindcss");
     expect(css).toContain("bg-kumo-canvas");
-    expect(css).toContain(".xl\\:grid-cols-\\[minmax\\(0\\,1fr\\)_auto\\]");
+    expect(css).toContain(".lg\\:grid-cols-\\[1fr_auto\\]");
   });
 
   it("serves the React portal bundle with Kumo islands", async () => {
@@ -88,7 +92,7 @@ describe("litellm portal worker", () => {
     expect(js).toContain("litellm-portal:error");
     expect(js).toContain("usage-panel-root");
     expect(js).toContain("aria-pressed");
-    expect(js).toContain("xl:grid-cols-[minmax(0,1fr)_auto]");
+    expect(js).toContain("lg:grid-cols-[1fr_auto]");
     expect(js).toContain("Brush native");
     expect(js).not.toContain("ClipboardText");
     expect(js).toContain("Select");
@@ -679,14 +683,14 @@ describe("litellm portal worker", () => {
     };
 
     const response = await handleLiteLLMPortalRequest(
-      devRequest("https://portal.test/api/usage/timeseries?grain=second", "liqingying@gz-zhiyun.com"),
+      devRequest("https://portal.test/api/usage/timeseries?grain=week", "liqingying@gz-zhiyun.com"),
       portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
     );
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
       error: "unsupported_usage_grain",
-      allowedGrains: ["minute", "hour", "day", "week", "month"],
+      allowedGrains: ["minute", "hour", "day", "month"],
     });
     expect(called).toBe(false);
   });
@@ -728,7 +732,7 @@ describe("litellm portal worker", () => {
     expect(body.totals).toMatchObject({ totalTokens: 1000, requests: 1000, spend: 1 });
   });
 
-  it("rolls daily activity into day, week, and month usage buckets", async () => {
+  it("rolls daily activity into day and month usage buckets", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-10T12:00:00.000Z"));
     const dailyUrls: string[] = [];
@@ -774,7 +778,6 @@ describe("litellm portal worker", () => {
     };
 
     const day = await read("grain=day&window=7d");
-    const week = await read("grain=week&window=4w");
     const month = await read("grain=month&window=6mo");
 
     expect(day.source).toBe("user_daily_activity");
@@ -784,13 +787,6 @@ describe("litellm portal worker", () => {
       completionTokens: 50,
       requests: 2,
       spend: 0.15,
-    });
-    expect(week.buckets.find((bucket) => bucket.start === "2026-05-04T00:00:00.000+08:00")).toMatchObject({
-      totalTokens: 650,
-      promptTokens: 400,
-      completionTokens: 250,
-      requests: 10,
-      spend: 0.65,
     });
     expect(month.buckets.find((bucket) => bucket.start === "2026-05-01T00:00:00.000+08:00")).toMatchObject({
       totalTokens: 650,
