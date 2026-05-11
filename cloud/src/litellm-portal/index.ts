@@ -16,6 +16,7 @@ import { portalCompanyName, renderPortalHtml } from "./html";
 import {
   configuredAllowedModels,
   createKey,
+  KeyAliasConflictError,
   listUserKeys,
   publicKey,
   publicTeam,
@@ -141,8 +142,19 @@ async function routeApiRequest(
     const duration = typeof body.duration === "string" && body.duration.length > 0
       ? body.duration
       : null;
-    const result = await createKey(env, user.userId, { keyAlias, models, maxBudget, duration });
-    return jsonResponse(result, 201);
+    try {
+      const result = await createKey(env, user.userId, { keyAlias, models, maxBudget, duration });
+      return jsonResponse(result, 201);
+    } catch (error) {
+      if (error instanceof KeyAliasConflictError) {
+        return jsonResponse({
+          error: "key_alias_conflict",
+          keyAlias: error.keyAlias,
+          message: "API Key name already exists",
+        }, 409);
+      }
+      throw error;
+    }
   }
 
   if (request.method === "GET" && url.pathname === "/api/usage") {

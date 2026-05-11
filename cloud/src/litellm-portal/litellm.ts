@@ -1,6 +1,23 @@
 import type { JsonValue, LiteLLMAuditEvent, LiteLLMKey, LiteLLMKeyList, LiteLLMTeam, LiteLLMUser, LiteLLMPortalEnv } from "./types";
 import { isRecord, nullableRoundCurrency, readJson, roundCurrency, uniqueSorted } from "./utils";
 
+export class LiteLLMRequestError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: unknown,
+  ) {
+    super(`litellm_request_failed_${status}`);
+    this.name = "LiteLLMRequestError";
+  }
+}
+
+export class KeyAliasConflictError extends Error {
+  constructor(readonly keyAlias: string) {
+    super("key_alias_conflict");
+    this.name = "KeyAliasConflictError";
+  }
+}
+
 export async function litellmFetch(env: LiteLLMPortalEnv, path: string, init: RequestInit = {}): Promise<Response> {
   const baseUrl = env.LITELLM_BASE_URL?.trim().replace(/\/+$/u, "");
   const masterKey = env.LITELLM_MASTER_KEY?.trim();
@@ -16,7 +33,7 @@ export async function litellmFetch(env: LiteLLMPortalEnv, path: string, init: Re
 
   const response = await fetch(`${baseUrl}${path}`, { ...init, headers });
   if (!response.ok) {
-    throw new Error(`litellm_request_failed_${response.status}`);
+    throw new LiteLLMRequestError(response.status, await readJson(response));
   }
   return response;
 }
@@ -366,10 +383,18 @@ export async function createKey(
   if (params.maxBudget != null) body.max_budget = params.maxBudget;
   if (params.duration) body.duration = params.duration;
 
-  const response = await litellmFetch(env, "/key/generate", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    response = await litellmFetch(env, "/key/generate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    if (isKeyAliasConflictError(error, params.keyAlias)) {
+      throw new KeyAliasConflictError(params.keyAlias);
+    }
+    throw error;
+  }
   const result = await readJson(response);
   if (!isRecord(result)) {
     throw new Error("LiteLLM did not return a key");
@@ -382,6 +407,35 @@ export async function createKey(
     expires: firstString(result, ["expires"]) ?? null,
     keyId: firstString(result, ["token_id", "key_hash"]) ?? "",
   };
+}
+
+function isKeyAliasConflictError(error: unknown, keyAlias: string): boolean {
+  if (!(error instanceof LiteLLMRequestError)) return false;
+  return isKeyAliasConflictResponse(error.status, error.body, keyAlias);
+}
+
+function isKeyAliasConflictResponse(status: number, body: unknown, keyAlias: string): boolean {
+  const text = errorText(body).toLowerCase();
+  const normalizedAlias = keyAlias.trim().toLowerCase();
+  const mentionsAlias = /\bkey[_\s-]?alias(?:es)?\b|\balias\b|\bkey\s+name\b/u.test(text)
+    || (normalizedAlias.length > 0 && text.includes(normalizedAlias));
+  const mentionsConflict = /already\s+(?:exists?|in\s+use)|duplicate|unique|conflict|same\s+name|\bexists?\b/u.test(text);
+  return (status === 409 && (text.length === 0 || mentionsAlias || mentionsConflict))
+    || (status === 400 && mentionsAlias && mentionsConflict);
+}
+
+function errorText(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(errorText).join(" ");
+  }
+  if (!isRecord(value)) return "";
+  return Object.entries(value)
+    .map(([key, nested]) => `${key} ${errorText(nested)}`)
+    .join(" ");
 }
 
 export function maskKey(key: string): string {

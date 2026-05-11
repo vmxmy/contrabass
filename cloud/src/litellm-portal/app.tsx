@@ -819,6 +819,23 @@ function selectedModelsFromValue(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string");
 }
 
+function createKeyErrorMessage(value: unknown): string {
+  const record = value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const code = typeof record.error === "string" ? record.error : "";
+  if (code === "key_alias_conflict") {
+    const keyAlias = typeof record.keyAlias === "string" && record.keyAlias.length > 0 ? record.keyAlias : "";
+    return keyAlias ? `名称「${keyAlias}」已存在，请换一个名称。` : "Key 名称已存在，请换一个名称。";
+  }
+  if (code === "key_alias_required") return "请输入 Key 名称";
+  if (code === "user_not_found") return "当前登录用户尚未在 LiteLLM 注册，请联系管理员。";
+  if (code.startsWith("litellm_request_failed_")) return "LiteLLM 创建 Key 失败，请稍后重试。";
+  return typeof record.message === "string" && record.message.length > 0
+    ? record.message
+    : code || "创建失败";
+}
+
 type CreateKeyResult = {
   rawKey: string;
   keyAlias: string | null;
@@ -881,9 +898,9 @@ export function CreateKeyButton() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(typeof data.error === "string" ? data.error : "创建失败");
+        setError(createKeyErrorMessage(data));
         return;
       }
       setResult(data as CreateKeyResult);

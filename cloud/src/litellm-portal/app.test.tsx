@@ -370,6 +370,41 @@ describe("CreateKeyButton", () => {
     });
   });
 
+  it("shows a precise duplicate-name error when key alias already exists", async () => {
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/models")) return Response.json({ models: [] });
+      if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
+        return Response.json({
+          error: "key_alias_conflict",
+          keyAlias: "test-key",
+          message: "API Key name already exists",
+        }, { status: 409 });
+      }
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<CreateKeyButton />);
+    fireEvent.click(screen.getByText("创建 Key"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    const aliasInput = document.getElementById("create-key-alias");
+    if (aliasInput) {
+      fireEvent.change(aliasInput, { target: { value: "test-key" } });
+    }
+
+    const submitButtons = screen.getAllByText("创建");
+    const submitBtn = submitButtons.find((el) => el.closest("button"));
+    if (submitBtn) fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByText("名称「test-key」已存在，请换一个名称。")).not.toBeNull();
+    });
+  });
+
   it("copies the newly created full key with Kumo ClipboardText", async () => {
     const writeText = vi.fn(async () => {});
     Object.defineProperty(navigator, "clipboard", {

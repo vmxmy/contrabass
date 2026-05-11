@@ -96,7 +96,7 @@ describe("litellm portal worker", () => {
     expect(js).toContain("aria-pressed");
     expect(js).toContain("lg:grid-cols-[1fr_auto]");
     expect(js).toContain("Brush native");
-    expect(js).not.toContain("ClipboardText");
+    expect(js).toContain("ClipboardText");
     expect(js).toContain("Select");
     expect(js).toContain("Collapsible");
     expect(js).toContain("DefaultTrigger");
@@ -896,6 +896,40 @@ describe("litellm portal worker", () => {
 
       expect(response.status).toBe(400);
       await expect(response.json()).resolves.toEqual({ error: "key_alias_required" });
+    });
+
+    it("returns 409 when LiteLLM reports a duplicate key name", async () => {
+      globalThis.fetch = async (input) => {
+        const url = String(input);
+        if (url.includes("/user/list")) {
+          return Response.json({
+            users: [{
+              user_id: "liqingying",
+              user_email: "liqingying@gz-zhiyun.com",
+              teams: [],
+            }],
+          });
+        }
+        if (url.includes("/key/generate")) {
+          return Response.json({ detail: "API key name my-key already exists" }, { status: 400 });
+        }
+        return Response.json({});
+      };
+
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/keys", "liqingying@gz-zhiyun.com", {
+          method: "POST",
+          body: JSON.stringify({ keyAlias: "my-key" }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({
+        error: "key_alias_conflict",
+        keyAlias: "my-key",
+        message: "API Key name already exists",
+      });
     });
 
     it("rejects creation for unregistered user", async () => {
