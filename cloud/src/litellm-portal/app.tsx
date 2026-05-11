@@ -1,6 +1,7 @@
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Banner } from "@cloudflare/kumo/components/banner";
 import { Button } from "@cloudflare/kumo/components/button";
+import { ClipboardText } from "@cloudflare/kumo/components/clipboard-text";
 import { Collapsible } from "@cloudflare/kumo/components/collapsible";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
 import { Input } from "@cloudflare/kumo/components/input";
@@ -904,22 +905,6 @@ export function CreateKeyButton() {
     }
   }, [result, resetForm]);
 
-  const handleCopy = useCallback(async () => {
-    if (!result?.rawKey) return;
-    try {
-      await navigator.clipboard.writeText(result.rawKey);
-    } catch {
-      const textarea = document.createElement("textarea");
-      textarea.value = result.rawKey;
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand("copy");
-      document.body.removeChild(textarea);
-    }
-  }, [result]);
-
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
       <Dialog.Trigger
@@ -954,14 +939,12 @@ export function CreateKeyButton() {
               </div>
               <div className="mt-4 space-y-1">
                 <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">完整 Key</p>
-                <div className="flex items-center gap-3">
-                  <code className="flex-1 overflow-hidden rounded-md bg-kumo-base px-3 py-2 font-mono text-sm text-kumo-brand ring-1 ring-kumo-line">
-                    {result.rawKey}
-                  </code>
-                  <Button variant="secondary" size="sm" onClick={handleCopy}>
-                    复制
-                  </Button>
-                </div>
+                <ClipboardText
+                  className="w-full min-w-0 text-kumo-brand"
+                  labels={{ copyAction: "复制完整 Key" }}
+                  size="lg"
+                  text={result.rawKey}
+                />
               </div>
               {result.expires ? (
                 <div className="mt-4 space-y-1">
