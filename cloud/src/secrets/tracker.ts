@@ -1,6 +1,6 @@
 export const TRACKER_SECRETS_STORE_NAME = "default_secrets_store";
 
-export const TRACKER_SECRET_PROVIDERS = ["linear", "github"] as const;
+export const TRACKER_SECRET_PROVIDERS = ["linear", "github", "plane"] as const;
 
 export type TrackerSecretProvider = (typeof TRACKER_SECRET_PROVIDERS)[number];
 

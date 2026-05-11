@@ -349,7 +349,10 @@ describe("enabledTrackersFromConfig", () => {
     { name: "disabled tracker", yaml: "tracker:\n  enabled: false\n  type: linear\n", want: [] },
     { name: "typed linear tracker", yaml: "tracker:\n  enabled: true\n  type: linear\n", want: ["linear"] },
     { name: "inline github tracker", yaml: "tracker: github\n", want: ["github"] },
+    { name: "typed plane tracker", yaml: "tracker:\n  type: plane\n", want: ["plane"] },
+    { name: "nested plane tracker", yaml: "tracker:\n  plane:\n    workspace_slug: acme\n    project_id: proj-1\n", want: ["plane"] },
     { name: "nested adapters", yaml: "tracker:\n  github:\n    repos: []\n  internal_board:\n    enabled: true\n", want: ["github", "internal-board"] },
+    { name: "plane combined with linear", yaml: "tracker:\n  type: linear\n  plane:\n    workspace_slug: acme\n", want: ["linear", "plane"] },
     { name: "no tracker config", yaml: "team:\n  name: acme\n", want: [] },
   ];
 

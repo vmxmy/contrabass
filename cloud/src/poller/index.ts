@@ -1,6 +1,7 @@
 import { githubAdapter } from "./github";
 import { internalBoardAdapter } from "./internal-board";
 import { linearAdapter } from "./linear";
+import { planeAdapter } from "./plane";
 
 export type PollerEnv = {
   CONTROL_PLANE_DB?: D1Database;
@@ -10,7 +11,7 @@ export type PollerEnv = {
   [binding: string]: unknown;
 };
 
-export type PollerAdapterName = "linear" | "github" | "internal-board";
+export type PollerAdapterName = "linear" | "github" | "internal-board" | "plane";
 
 export type PollerTeamConfig = {
   teamId: string;
@@ -82,6 +83,7 @@ const DEFAULT_ADAPTERS: PollerAdapters = {
   github: githubAdapter,
   "internal-board": internalBoardAdapter,
   linear: linearAdapter,
+  plane: planeAdapter,
 };
 
 const worker: ExportedHandler<PollerEnv> = {
@@ -461,7 +463,7 @@ function adapterNameFromValue(value: string | undefined): PollerAdapterName | un
 
 function adapterNameFromKey(key: string): PollerAdapterName | undefined {
   const normalized = key.trim().replace(/_/gu, "-");
-  if (normalized === "linear" || normalized === "github" || normalized === "internal-board") {
+  if (normalized === "linear" || normalized === "github" || normalized === "internal-board" || normalized === "plane") {
     return normalized;
   }
   return undefined;
