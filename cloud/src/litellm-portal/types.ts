@@ -159,11 +159,23 @@ export type UsageTimeseries = {
   windowLabel: string;
   start: string;
   end: string;
-  source: "spend_logs_v2" | "user_daily_activity";
+  source: "spend_logs_v2" | "spend_logs_v2_global" | "user_daily_activity";
   timezone: string;
   limited: boolean;
   maxPages: number | null;
   buckets: UsageBucket[];
   totals: UsageTotals;
   topModels: LiteLLMModelUsage[];
+};
+
+export type LiteLLMAuditEvent = {
+  id: string;
+  createdAt: string | null;
+  action: string;
+  actorUserId: string | null;
+  actorUserEmail: string | null;
+  objectType: string | null;
+  objectId: string | null;
+  updatedValues: unknown;
+  previousValues: unknown;
 };

@@ -1,4 +1,4 @@
-import type { JsonValue, LiteLLMKey, LiteLLMKeyList, LiteLLMTeam, LiteLLMUser, LiteLLMPortalEnv } from "./types";
+import type { JsonValue, LiteLLMAuditEvent, LiteLLMKey, LiteLLMKeyList, LiteLLMTeam, LiteLLMUser, LiteLLMPortalEnv } from "./types";
 import { isRecord, nullableRoundCurrency, readJson, roundCurrency, uniqueSorted } from "./utils";
 
 export async function litellmFetch(env: LiteLLMPortalEnv, path: string, init: RequestInit = {}): Promise<Response> {
@@ -400,4 +400,93 @@ function csv(value: string | undefined): string[] {
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+}
+
+const ADMIN_PAGE_SIZE_MAX = 200;
+const ADMIN_PAGE_SIZE_DEFAULT = 50;
+
+function clampAdminPageSize(size: number | undefined): number {
+  const n = typeof size === "number" && Number.isFinite(size) ? Math.floor(size) : ADMIN_PAGE_SIZE_DEFAULT;
+  return Math.min(Math.max(n, 1), ADMIN_PAGE_SIZE_MAX);
+}
+
+export async function listAllUsers(
+  env: LiteLLMPortalEnv,
+  opts?: { page?: number; size?: number },
+): Promise<{ users: LiteLLMUser[]; totalCount: number; page: number; size: number }> {
+  const page = typeof opts?.page === "number" && opts.page >= 1 ? Math.floor(opts.page) : 1;
+  const size = clampAdminPageSize(opts?.size);
+  const params = new URLSearchParams({
+    page: String(page),
+    page_size: String(size),
+  });
+  const response = await litellmFetch(env, `/user/list?${params.toString()}`);
+  const body = await readJson(response);
+  const records = extractRecords(body);
+  const totalCount = isRecord(body)
+    ? numberField(body, "total_count") ?? numberField(body, "totalCount") ?? records.length
+    : records.length;
+  const users: LiteLLMUser[] = records.map((record) => {
+    const userId = firstString(record, ["user_id", "userId", "id"]) ?? "";
+    const email = firstString(record, ["user_email", "userEmail", "email"]) ?? userId;
+    return {
+      userId,
+      email,
+      spend: roundCurrency(numberField(record, "spend") ?? numberField(record, "total_spend") ?? 0),
+      maxBudget: numberField(record, "max_budget") ?? numberField(record, "maxBudget") ?? null,
+      teamIds: stringArrayField(record, "teams"),
+      role: firstString(record, ["user_role", "userRole", "role"]) ?? null,
+      found: true,
+      raw: record,
+    };
+  });
+  return { users, totalCount, page, size };
+}
+
+export async function listAllTeams(env: LiteLLMPortalEnv): Promise<LiteLLMTeam[]> {
+  const response = await litellmFetch(env, "/team/list");
+  const body = await readJson(response);
+  const records = extractRecords(body);
+  return records.map((record) => {
+    const teamId = firstString(record, ["team_id", "teamId", "id"]) ?? "";
+    return normalizeTeam(record, teamId);
+  });
+}
+
+function normalizeAuditEvent(record: Record<string, unknown>): LiteLLMAuditEvent {
+  return {
+    id: firstString(record, ["id", "audit_id", "auditId"]) ?? "",
+    createdAt: firstString(record, ["created_at", "createdAt", "timestamp"]) ?? null,
+    action: firstString(record, ["action", "event", "event_type", "eventType"]) ?? "",
+    actorUserId: firstString(record, ["actor_user_id", "actorUserId", "user_id", "userId"]) ?? null,
+    actorUserEmail: firstString(record, ["actor_user_email", "actorUserEmail", "user_email", "userEmail"]) ?? null,
+    objectType: firstString(record, ["object_type", "objectType", "resource_type", "resourceType"]) ?? null,
+    objectId: firstString(record, ["object_id", "objectId", "resource_id", "resourceId"]) ?? null,
+    updatedValues: isRecord(record.updated_values) ? record.updated_values
+      : isRecord(record.updatedValues) ? record.updatedValues
+      : null,
+    previousValues: isRecord(record.previous_values) ? record.previous_values
+      : isRecord(record.previousValues) ? record.previousValues
+      : null,
+  };
+}
+
+export async function listAuditEvents(
+  env: LiteLLMPortalEnv,
+  opts?: { page?: number; size?: number },
+): Promise<{ events: LiteLLMAuditEvent[]; totalCount: number; page: number; size: number }> {
+  const page = typeof opts?.page === "number" && opts.page >= 1 ? Math.floor(opts.page) : 1;
+  const size = clampAdminPageSize(opts?.size);
+  const params = new URLSearchParams({
+    page: String(page),
+    page_size: String(size),
+  });
+  const response = await litellmFetch(env, `/audit?${params.toString()}`);
+  const body = await readJson(response);
+  const records = extractRecords(body);
+  const totalCount = isRecord(body)
+    ? numberField(body, "total_count") ?? numberField(body, "totalCount") ?? records.length
+    : records.length;
+  const events = records.map(normalizeAuditEvent);
+  return { events, totalCount, page, size };
 }

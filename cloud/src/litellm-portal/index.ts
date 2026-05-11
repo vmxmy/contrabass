@@ -27,6 +27,7 @@ import {
 import { resolveIdentity } from "./roles";
 import { parseUsageTimeseriesRequest, readUsageTimeseries } from "./timeseries";
 import { readUserDailyActivity } from "./usage";
+import { adminListUsers, adminListTeams, adminListAuditEvents, adminGlobalUsageTimeseries } from "./admin";
 import type { JsonValue, LiteLLMKey, LiteLLMPortalEnv, LiteLLMTeam, PortalIdentity } from "./types";
 
 export type { LiteLLMPortalEnv } from "./types";
@@ -73,6 +74,13 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
     const message = error instanceof Error ? error.message : "internal_error";
     return jsonResponse({ error: message }, message === "litellm_config_missing" ? 500 : 502);
   }
+}
+
+function requireAdmin(identity: PortalIdentity): Response | null {
+  if (identity.role !== "admin") {
+    return jsonResponse({ error: "admin_required" }, 403);
+  }
+  return null;
 }
 
 async function routeApiRequest(
@@ -168,6 +176,26 @@ async function routeApiRequest(
     }
     const user = await resolveLiteLLMUser(env, identity.email);
     return jsonResponse(await readUsageTimeseries(env, user.userId, requestParams.grain, requestParams.window));
+  }
+
+  if (request.method === "GET" && url.pathname.startsWith("/api/admin/")) {
+    const gate = requireAdmin(identity);
+    if (gate !== null) {
+      return gate;
+    }
+    if (url.pathname === "/api/admin/users") {
+      return adminListUsers(request, env);
+    }
+    if (url.pathname === "/api/admin/teams") {
+      return adminListTeams(request, env);
+    }
+    if (url.pathname === "/api/admin/audit") {
+      return adminListAuditEvents(request, env);
+    }
+    if (url.pathname === "/api/admin/usage/timeseries") {
+      return adminGlobalUsageTimeseries(request, env);
+    }
+    return jsonResponse({ error: "not_found" }, 404);
   }
 
   return jsonResponse({ error: "not_found" }, 404);

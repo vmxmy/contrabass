@@ -88,6 +88,95 @@ export async function readUsageTimeseries(
   };
 }
 
+export async function readGlobalUsageTimeseries(
+  env: LiteLLMPortalEnv,
+  grain: UsageGrain,
+  window: UsageWindowOption,
+): Promise<Record<string, JsonValue>> {
+  const timeseries = await readGlobalSpendLogsTimeseries(env, grain, window);
+  return {
+    ...timeseries,
+    totals: publicUsageTotals(timeseries.totals),
+    buckets: timeseries.buckets.map(publicUsageBucket),
+    topModels: timeseries.topModels.map(publicUsageModel),
+  };
+}
+
+async function readGlobalSpendLogsTimeseries(
+  env: LiteLLMPortalEnv,
+  grain: UsageGrain,
+  window: UsageWindowOption,
+): Promise<UsageTimeseries> {
+  const now = new Date();
+  const end = new Date(now.getTime());
+  const start = alignBucketStart(new Date(end.getTime() - windowToMilliseconds(window)), grain);
+  const bucketMap = createBucketMap(grain, start, end);
+  const modelTotals = new Map<string, { spend: number; totalTokens: number; requests: number }>();
+  let limited = false;
+
+  for (let page = 1; page <= SPEND_LOGS_MAX_PAGES; page += 1) {
+    const params = new URLSearchParams({
+      start_date: litellmDateTime(start),
+      end_date: litellmDateTime(end),
+      page: String(page),
+      page_size: String(SPEND_LOGS_PAGE_SIZE),
+      sort_by: "startTime",
+      sort_order: "asc",
+    });
+    const response = await litellmFetch(env, `/spend/logs/v2?${params.toString()}`);
+    const body = await readJson(response);
+    const records = extractSpendLogRecords(body);
+
+    for (const record of records) {
+      const startedAt = spendLogDateField(record, ["startTime", "start_time", "timestamp", "created_at", "createdAt"]);
+      if (startedAt === undefined || startedAt < start || startedAt > end) {
+        continue;
+      }
+      const bucket = bucketMap.get(alignBucketStart(startedAt, grain).toISOString());
+      if (bucket !== undefined) {
+        addSpendLogRecordToBucket(bucket, record);
+        addSpendLogRecordToModelTotals(modelTotals, record);
+      }
+    }
+
+    const totalPages = isRecord(body)
+      ? numberLikeField(body, "total_pages") ?? numberLikeField(body, "totalPages") ?? numberLikeField(body, "pages")
+      : undefined;
+    if (totalPages !== undefined) {
+      if (page >= totalPages) {
+        break;
+      }
+      if (page === SPEND_LOGS_MAX_PAGES && totalPages > SPEND_LOGS_MAX_PAGES) {
+        limited = true;
+      }
+      continue;
+    }
+    if (records.length < SPEND_LOGS_PAGE_SIZE) {
+      break;
+    }
+    if (page === SPEND_LOGS_MAX_PAGES) {
+      limited = true;
+    }
+  }
+
+  const buckets = finalizeUsageBuckets([...bucketMap.values()]);
+  return {
+    available: true,
+    grain,
+    window: window.key,
+    windowLabel: window.label,
+    start: formatUsageDateTime(start),
+    end: formatUsageDateTime(end),
+    source: "spend_logs_v2_global",
+    timezone: USAGE_TIMEZONE,
+    limited,
+    maxPages: SPEND_LOGS_MAX_PAGES,
+    buckets,
+    totals: usageTotals(buckets),
+    topModels: topModelsFromTotals(modelTotals),
+  };
+}
+
 async function readSpendLogsTimeseries(
   env: LiteLLMPortalEnv,
   userId: string,

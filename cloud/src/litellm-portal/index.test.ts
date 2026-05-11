@@ -1145,6 +1145,202 @@ describe("litellm portal worker", () => {
     });
   });
 
+  describe("/api/admin/* role gate", () => {
+    it("rejects non-admin user calling /api/admin/users with 403", async () => {
+      // #given
+      globalThis.fetch = async (input) => {
+        if (String(input) === "https://litellm.test/v2/user/info?user_id=member%40gz-zhiyun.com") {
+          return Response.json({ user_id: "member-uid", user_role: "internal_user" });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      // #when
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/users", "member@gz-zhiyun.com"),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      // #then
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toEqual({ error: "admin_required" });
+    });
+
+    it("rejects non-admin user on all /api/admin/* paths", async () => {
+      // #given
+      globalThis.fetch = async (input) => {
+        if (String(input) === "https://litellm.test/v2/user/info?user_id=member%40gz-zhiyun.com") {
+          return Response.json({ user_id: "member-uid", user_role: "internal_user" });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      const paths = ["/api/admin/users", "/api/admin/teams", "/api/admin/audit", "/api/admin/usage/timeseries"];
+
+      for (const path of paths) {
+        // #when
+        const response = await handleLiteLLMPortalRequest(
+          devRequest(`https://portal.test${path}`, "member@gz-zhiyun.com"),
+          portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        );
+
+        // #then
+        expect(response.status).toBe(403);
+        await expect(response.json()).resolves.toEqual({ error: "admin_required" });
+      }
+    });
+
+    it("admin user calling /api/admin/users receives 200 with users array and totalCount", async () => {
+      // #given
+      globalThis.fetch = async (input) => {
+        if (String(input) === "https://litellm.test/v2/user/info?user_id=admin%40gz-zhiyun.com") {
+          return Response.json({ user_id: "admin-uid", user_role: "proxy_admin" });
+        }
+        if (String(input).startsWith("https://litellm.test/user/list?")) {
+          return Response.json({
+            users: [
+              { user_id: "u1", user_email: "alice@gz-zhiyun.com", spend: 1.5, user_role: "internal_user" },
+              { user_id: "u2", user_email: "bob@gz-zhiyun.com", spend: 2.0, user_role: "proxy_admin" },
+            ],
+            total_count: 2,
+          });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      // #when
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/users", "admin@gz-zhiyun.com"),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      // #then
+      expect(response.status).toBe(200);
+      const body = await response.json() as { users: unknown[]; totalCount: number };
+      expect(Array.isArray(body.users)).toBe(true);
+      expect(body.totalCount).toBe(2);
+      expect(body.users).toHaveLength(2);
+    });
+
+    it("admin user calling /api/admin/teams receives 200 with teams array", async () => {
+      // #given
+      globalThis.fetch = async (input) => {
+        if (String(input) === "https://litellm.test/v2/user/info?user_id=admin%40gz-zhiyun.com") {
+          return Response.json({ user_id: "admin-uid", user_role: "proxy_admin" });
+        }
+        if (String(input) === "https://litellm.test/team/list") {
+          return Response.json([
+            { team_id: "team-a", team_alias: "Alpha", models: ["gpt-4o-mini"], spend: 10.0 },
+            { team_id: "team-b", team_alias: "Beta", models: ["deepseek-v3"], spend: 5.5 },
+          ]);
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      // #when
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/teams", "admin@gz-zhiyun.com"),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      // #then
+      expect(response.status).toBe(200);
+      const body = await response.json() as { teams: unknown[] };
+      expect(Array.isArray(body.teams)).toBe(true);
+      expect(body.teams).toHaveLength(2);
+    });
+
+    it("admin user calling /api/admin/audit receives 200 with events, totalCount, page, size", async () => {
+      // #given
+      globalThis.fetch = async (input) => {
+        if (String(input) === "https://litellm.test/v2/user/info?user_id=admin%40gz-zhiyun.com") {
+          return Response.json({ user_id: "admin-uid", user_role: "proxy_admin" });
+        }
+        if (String(input).startsWith("https://litellm.test/audit?")) {
+          return Response.json({
+            data: [
+              {
+                id: "evt-1",
+                created_at: "2026-05-10T10:00:00Z",
+                action: "key.create",
+                actor_user_id: "admin-uid",
+                actor_user_email: "admin@gz-zhiyun.com",
+                object_type: "key",
+                object_id: "key-123",
+              },
+            ],
+            total_count: 1,
+          });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      // #when
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/audit", "admin@gz-zhiyun.com"),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      // #then
+      expect(response.status).toBe(200);
+      const body = await response.json() as { events: unknown[]; totalCount: number; page: number; size: number };
+      expect(Array.isArray(body.events)).toBe(true);
+      expect(body.totalCount).toBe(1);
+      expect(body.page).toBe(1);
+      expect(typeof body.size).toBe("number");
+    });
+
+    it("admin user calling /api/admin/usage/timeseries?grain=day&window=30d receives 200 with UsageTimeseries shape", async () => {
+      // #given
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-05-10T12:00:00.000Z"));
+      globalThis.fetch = async (input) => {
+        if (String(input) === "https://litellm.test/v2/user/info?user_id=admin%40gz-zhiyun.com") {
+          return Response.json({ user_id: "admin-uid", user_role: "proxy_admin" });
+        }
+        if (new URL(String(input)).pathname === "/spend/logs/v2") {
+          return Response.json({ data: [], total_pages: 1 });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      // #when
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/usage/timeseries?grain=day&window=30d", "admin@gz-zhiyun.com"),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      // #then
+      expect(response.status).toBe(200);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.source).toBe("spend_logs_v2_global");
+      expect(body.grain).toBe("day");
+      expect(body.window).toBe("30d");
+      expect(Array.isArray(body.buckets)).toBe(true);
+      expect(typeof body.totals).toBe("object");
+    });
+
+    it("admin calling /api/admin/usage/timeseries?grain=invalid receives 400", async () => {
+      // #given
+      globalThis.fetch = async (input) => {
+        if (String(input) === "https://litellm.test/v2/user/info?user_id=admin%40gz-zhiyun.com") {
+          return Response.json({ user_id: "admin-uid", user_role: "proxy_admin" });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      // #when
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/usage/timeseries?grain=invalid", "admin@gz-zhiyun.com"),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      // #then
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ error: "unsupported_usage_grain" });
+    });
+  });
+
 });
 
 function portalEnv(overrides: Partial<LiteLLMPortalEnv> = {}): LiteLLMPortalEnv {
