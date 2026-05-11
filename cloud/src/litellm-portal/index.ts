@@ -24,9 +24,10 @@ import {
   readUserTeams,
   resolveLiteLLMUser,
 } from "./litellm";
+import { resolveIdentity } from "./roles";
 import { parseUsageTimeseriesRequest, readUsageTimeseries } from "./timeseries";
 import { readUserDailyActivity } from "./usage";
-import type { JsonValue, LiteLLMKey, LiteLLMPortalEnv, LiteLLMTeam, PortalPrincipal } from "./types";
+import type { JsonValue, LiteLLMKey, LiteLLMPortalEnv, LiteLLMTeam, PortalIdentity } from "./types";
 
 export type { LiteLLMPortalEnv } from "./types";
 
@@ -63,7 +64,11 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
   }
 
   try {
-    return await routeApiRequest(request, env, auth.principal);
+    const identityResult = await resolveIdentity(env, auth.principal);
+    if (!identityResult.ok) {
+      return jsonResponse({ error: identityResult.error }, identityResult.status);
+    }
+    return await routeApiRequest(request, env, identityResult.identity);
   } catch (error) {
     const message = error instanceof Error ? error.message : "internal_error";
     return jsonResponse({ error: message }, message === "litellm_config_missing" ? 500 : 502);
@@ -73,30 +78,31 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
 async function routeApiRequest(
   request: Request,
   env: LiteLLMPortalEnv,
-  principal: PortalPrincipal,
+  identity: PortalIdentity,
 ): Promise<Response> {
   const url = new URL(request.url);
 
   if (request.method === "GET" && url.pathname === "/api/me") {
     return jsonResponse({
-      email: principal.email,
-      userId: principal.userId,
+      email: identity.email,
+      userId: identity.litellmUserId,
       company: portalCompanyName(env),
-      domain: principal.domain,
+      domain: identity.domain,
+      role: identity.role,
     });
   }
 
   if (request.method === "GET" && url.pathname === "/api/dashboard") {
-    return jsonResponse(await readDashboard(env, principal));
+    return jsonResponse(await readDashboard(env, identity));
   }
 
   if (request.method === "GET" && url.pathname === "/api/models") {
-    const user = await resolveLiteLLMUser(env, principal.email);
+    const user = await resolveLiteLLMUser(env, identity.email);
     return jsonResponse(await readAvailableModels(env, user));
   }
 
   if (request.method === "GET" && url.pathname === "/api/keys") {
-    const user = await resolveLiteLLMUser(env, principal.email);
+    const user = await resolveLiteLLMUser(env, identity.email);
     const keyList = await listUserKeys(env, user.userId);
     const teamIds = keyAwareTeamIds(user.teamIds, keyList.keys);
     const teams = await readUserTeams(env, teamIds);
@@ -109,7 +115,7 @@ async function routeApiRequest(
   }
 
   if (request.method === "POST" && url.pathname === "/api/keys") {
-    const user = await resolveLiteLLMUser(env, principal.email);
+    const user = await resolveLiteLLMUser(env, identity.email);
     if (!user.found) {
       return jsonResponse({ error: "user_not_found" }, 400);
     }
@@ -132,7 +138,7 @@ async function routeApiRequest(
   }
 
   if (request.method === "GET" && url.pathname === "/api/usage") {
-    const user = await resolveLiteLLMUser(env, principal.email);
+    const user = await resolveLiteLLMUser(env, identity.email);
     const keyList = await listUserKeys(env, user.userId);
     const teamIds = keyAwareTeamIds(user.teamIds, keyList.keys);
     const teams = await readUserTeams(env, teamIds);
@@ -140,7 +146,7 @@ async function routeApiRequest(
     const keySpend = roundCurrency(keyList.keys.reduce((sum, key) => sum + key.spend, 0));
     return jsonResponse({
       userId: user.userId,
-      email: principal.email,
+      email: identity.email,
       litellmUserFound: user.found,
       totalSpend: user.spend ?? keySpend,
       maxBudget: user.maxBudget,
@@ -160,7 +166,7 @@ async function routeApiRequest(
     if (!requestParams.ok) {
       return jsonResponse(requestParams.body, 400);
     }
-    const user = await resolveLiteLLMUser(env, principal.email);
+    const user = await resolveLiteLLMUser(env, identity.email);
     return jsonResponse(await readUsageTimeseries(env, user.userId, requestParams.grain, requestParams.window));
   }
 
@@ -169,9 +175,9 @@ async function routeApiRequest(
 
 async function readDashboard(
   env: LiteLLMPortalEnv,
-  principal: PortalPrincipal,
+  identity: PortalIdentity,
 ): Promise<Record<string, JsonValue>> {
-  const user = await resolveLiteLLMUser(env, principal.email);
+  const user = await resolveLiteLLMUser(env, identity.email);
   const [keyList, activity] = await Promise.all([
     listUserKeys(env, user.userId),
     readUserDailyActivity(env, user.userId),
@@ -185,8 +191,8 @@ async function readDashboard(
 
   return {
     me: {
-      email: principal.email,
-      domain: principal.domain,
+      email: identity.email,
+      domain: identity.domain,
       company: portalCompanyName(env),
     },
     user: {

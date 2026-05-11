@@ -39,6 +39,17 @@ export type AuthResult =
   | { ok: true; principal: PortalPrincipal }
   | { ok: false; status: 401 | 403 | 500; error: string };
 
+export type PortalRole = "admin" | "user" | "none";
+
+export type PortalIdentity = PortalPrincipal & {
+  litellmUserId: string;
+  role: PortalRole;
+};
+
+export type IdentityResult =
+  | { ok: true; identity: PortalIdentity }
+  | { ok: false; status: 401 | 403 | 500 | 502; error: string };
+
 export type LiteLLMKey = {
   id: string;
   alias: string | null;
@@ -65,6 +76,7 @@ export type LiteLLMUser = {
   spend: number | null;
   maxBudget: number | null;
   teamIds: string[];
+  role: string | null;
   found: boolean;
   raw: Record<string, unknown> | null;
 };

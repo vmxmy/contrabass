@@ -66,6 +66,7 @@ export async function resolveLiteLLMUser(env: LiteLLMPortalEnv, email: string): 
         spend: roundCurrency(numberField(match, "spend") ?? numberField(match, "total_spend") ?? 0),
         maxBudget: numberField(match, "max_budget") ?? numberField(match, "maxBudget") ?? null,
         teamIds: stringArrayField(match, "teams"),
+        role: firstString(match, ["user_role", "userRole", "role"]) ?? null,
         found: true,
         raw: match,
       };
@@ -80,6 +81,7 @@ export async function resolveLiteLLMUser(env: LiteLLMPortalEnv, email: string): 
     spend: null,
     maxBudget: null,
     teamIds: [],
+    role: null,
     found: false,
     raw: null,
   };
