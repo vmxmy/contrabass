@@ -1,4 +1,4 @@
 schema: spec-driven
 created: 2026-05-12
 priority: P1
-depends_on: [p0-01-unify-ssr-react]
+depends_on: [p0-02-typed-rpc-data-layer]
