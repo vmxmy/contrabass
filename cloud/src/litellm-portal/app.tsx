@@ -893,10 +893,13 @@ export function CreateKeyButton() {
     }
   }, [alias, selectedModels, budget, duration]);
 
-  const handleClose = useCallback(() => {
-    setOpen(false);
+  const handleOpenChange = useCallback((nextOpen: boolean) => {
+    setOpen(nextOpen);
+    if (nextOpen) return;
+
+    const shouldRefresh = result !== null;
     resetForm();
-    if (result) {
+    if (shouldRefresh) {
       window.dispatchEvent(new CustomEvent("litellm-portal:refresh"));
     }
   }, [result, resetForm]);
@@ -918,7 +921,7 @@ export function CreateKeyButton() {
   }, [result]);
 
   return (
-    <Dialog.Root>
+    <Dialog.Root open={open} onOpenChange={handleOpenChange}>
       <Dialog.Trigger
         render={(props) => (
           <Button {...props} variant="primary" size="sm">
@@ -971,7 +974,7 @@ export function CreateKeyButton() {
             <div className="flex justify-end">
               <Dialog.Close
                 render={(props) => (
-                  <Button {...props} variant="primary" onClick={handleClose}>
+                  <Button {...props} variant="primary" size="lg">
                     已复制，关闭
                   </Button>
                 )}
@@ -1053,12 +1056,12 @@ export function CreateKeyButton() {
             <div className="flex justify-end gap-3 pt-2">
               <Dialog.Close
                 render={(props) => (
-                  <Button {...props} variant="secondary" onClick={handleClose}>
+                  <Button {...props} variant="secondary" size="lg">
                     取消
                   </Button>
                 )}
               />
-              <Button variant="primary" loading={submitting} onClick={handleSubmit}>
+              <Button variant="primary" size="lg" loading={submitting} onClick={handleSubmit}>
                 创建
               </Button>
             </div>
@@ -1226,7 +1229,7 @@ function AdminUsersTable() {
                 <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">邮箱</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">角色</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">累计消费</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">Key 数</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">团队数</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">最大预算</Table.Head>
               </Table.Row>
             </Table.Header>

@@ -1489,6 +1489,38 @@ describe("litellm portal worker", () => {
       const forwarded = new URL(listUrl ?? "");
       expect(Number(forwarded.searchParams.get("page_size"))).toBeLessThanOrEqual(200);
     });
+
+    it("LiteLLM 500 on all admin routes returns 502 and leaks no master key material", async () => {
+      // #given
+      _clearRoleCacheForTests();
+      globalThis.fetch = async (input) => {
+        if (String(input) === "https://litellm.test/v2/user/info?user_id=admin%40gz-zhiyun.com") {
+          return Response.json({ user_id: "admin-uid", user_role: "proxy_admin" });
+        }
+        return new Response(JSON.stringify({ error: "internal", key: "sk-secret", master: "litellm-master" }), { status: 500 });
+      };
+
+      const adminPaths = [
+        "/api/admin/users",
+        "/api/admin/teams",
+        "/api/admin/audit",
+        "/api/admin/usage/timeseries?grain=day&window=7d",
+      ];
+
+      for (const path of adminPaths) {
+        // #when
+        const response = await handleLiteLLMPortalRequest(
+          devRequest(`https://portal.test${path}`, "admin@gz-zhiyun.com"),
+          portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        );
+
+        // #then
+        expect(response.status, `${path} should return 502`).toBe(502);
+        const serialized = JSON.stringify(await response.json());
+        expect(serialized, `${path} must not leak sk- prefix`).not.toMatch(/sk-/u);
+        expect(serialized.toLowerCase(), `${path} must not leak 'master'`).not.toContain("master");
+      }
+    });
   });
 
 });
