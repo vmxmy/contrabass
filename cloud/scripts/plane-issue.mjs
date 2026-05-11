@@ -36,15 +36,16 @@ const CLOUD_ROOT = resolve(SCRIPT_DIR, "..");
 const CHANGES_DIR = resolve(CLOUD_ROOT, "src/litellm-portal/openspec/changes");
 const ARCHIVE_DIR = resolve(CHANGES_DIR, "archive");
 
-const API_KEY = process.env.PLANE_API_KEY;
-const BASE = (process.env.PLANE_BASE_URL || "https://plane.ziikoo.com").replace(/\/$/, "");
-
-if (!API_KEY) {
-  fail("PLANE_API_KEY env var is not set. Source ~/.zshrc or export it manually.");
-}
+// Host allowlist for PLANE_BASE_URL — refuse non-HTTPS or unknown hosts unless --allow-host is passed.
+// Override at runtime via `--allow-host=<hostname>` (e.g. for self-hosted dev plane instances).
+const DEFAULT_ALLOWED_HOSTS = new Set(["plane.ziikoo.com"]);
 
 const args = process.argv.slice(2);
 const cmd = args[0];
+const flagSet = new Set(args.slice(1).filter((a) => a.startsWith("--")));
+const allowedHostsExtra = args
+  .filter((a) => a.startsWith("--allow-host="))
+  .map((a) => a.slice("--allow-host=".length));
 
 const dispatch = {
   list: cmdList,
@@ -54,15 +55,45 @@ const dispatch = {
   done: cmdDone,
 };
 
+const NEEDS_API_KEY = new Set(["list", "info", "blocked", "start", "done"]);
+
 if (!cmd || !dispatch[cmd]) {
   printUsage();
   process.exit(cmd ? 1 : 0);
+}
+
+let API_KEY;
+let BASE;
+if (NEEDS_API_KEY.has(cmd)) {
+  ({ API_KEY, BASE } = resolveCredentials());
 }
 
 try {
   await dispatch[cmd](args.slice(1));
 } catch (err) {
   fail(err.message);
+}
+
+function resolveCredentials() {
+  const apiKey = process.env.PLANE_API_KEY;
+  if (!apiKey) {
+    fail("PLANE_API_KEY env var is not set. Source ~/.zshrc or export it manually. (Run `plane-issue` with no args for usage.)");
+  }
+  const rawBase = (process.env.PLANE_BASE_URL || "https://plane.ziikoo.com").replace(/\/$/, "");
+  let url;
+  try {
+    url = new URL(rawBase);
+  } catch {
+    fail(`PLANE_BASE_URL is not a valid URL: ${rawBase}`);
+  }
+  if (url.protocol !== "https:") {
+    fail(`PLANE_BASE_URL must use https:// (got ${url.protocol}//) — refusing to send API key over insecure transport.`);
+  }
+  const allowedHosts = new Set([...DEFAULT_ALLOWED_HOSTS, ...allowedHostsExtra]);
+  if (!allowedHosts.has(url.hostname)) {
+    fail(`PLANE_BASE_URL host ${url.hostname} is not in the allowlist (${[...allowedHosts].join(", ")}). Override with --allow-host=${url.hostname} if intentional.`);
+  }
+  return { API_KEY: apiKey, BASE: rawBase };
 }
 
 // ---------- commands ----------
@@ -157,34 +188,45 @@ async function cmdStart([key]) {
     const di = bySlug.get(d);
     return !di || STATE_ID_TO_NAME[di.state] !== "Done";
   });
-  if (blockers.length && !process.argv.includes("--force")) {
+  if (blockers.length && !flagSet.has("--force")) {
     console.error(`\nBlocked by: ${blockers.join(", ")}`);
     fail("Pass --force to start anyway.");
   }
 
-  // 1. Plane state → In Progress
-  await patchIssue(issue.id, { state: STATES["In Progress"] });
-  console.log(`✓ Plane: CONTRABASS-${issue.sequence_id} → In Progress`);
-
-  // 2. git branch
+  const apply = flagSet.has("--apply") || flagSet.has("--execute");
   const branch = `feat/CONTRABASS-${issue.sequence_id}-${change.slug.replace(/^p\d-\d+-/, "")}`;
   const repoRoot = git("rev-parse --show-toplevel").trim();
+
+  if (!apply) {
+    console.log(`\n[dry-run] Would set CONTRABASS-${issue.sequence_id} → In Progress on Plane.`);
+    console.log(`[dry-run] Re-run with --apply to actually change Plane state.\n`);
+  } else {
+    await patchIssue(issue.id, { state: STATES["In Progress"] });
+    console.log(`✓ Plane: CONTRABASS-${issue.sequence_id} → In Progress`);
+  }
+
   console.log(`\nNext git steps from ${repoRoot}:`);
   console.log(`  git fetch origin main`);
   console.log(`  git switch -c ${branch} origin/main`);
   console.log(`\nOpenSpec:`);
   console.log(`  $EDITOR ${changeRelPath(change.slug)}/tasks.md`);
   console.log(`\nWhen done:`);
-  console.log(`  plane-issue done CONTRABASS-${issue.sequence_id}`);
+  console.log(`  plane-issue done CONTRABASS-${issue.sequence_id} --apply`);
   console.log();
 }
 
 async function cmdDone([key]) {
   const issue = await resolveIssue(key);
   const change = changeFromIssueName(issue.name);
+  const apply = flagSet.has("--apply") || flagSet.has("--execute");
 
-  await patchIssue(issue.id, { state: STATES.Done });
-  console.log(`✓ Plane: CONTRABASS-${issue.sequence_id} → Done`);
+  if (!apply) {
+    console.log(`\n[dry-run] Would set CONTRABASS-${issue.sequence_id} → Done on Plane.`);
+    console.log(`[dry-run] Re-run with --apply to actually change Plane state.\n`);
+  } else {
+    await patchIssue(issue.id, { state: STATES.Done });
+    console.log(`✓ Plane: CONTRABASS-${issue.sequence_id} → Done`);
+  }
 
   if (change) {
     const today = new Date().toISOString().slice(0, 10);
@@ -312,14 +354,19 @@ function printUsage() {
   console.log(`plane-issue — helper for the litellm-portal Plane roadmap
 
 usage:
-  plane-issue list                          list all issues grouped by state
-  plane-issue info    CONTRABASS-N          show issue summary + openspec deps
-  plane-issue blocked CONTRABASS-N          show dependency state
-  plane-issue start   CONTRABASS-N [--force] flip to In Progress, print git steps
-  plane-issue done    CONTRABASS-N          flip to Done, print archive cmd
+  plane-issue list                                          list issues grouped by state
+  plane-issue info    CONTRABASS-N                          show issue + openspec deps
+  plane-issue blocked CONTRABASS-N                          show dependency state
+  plane-issue start   CONTRABASS-N [--apply] [--force]      print plan; --apply flips Plane state to In Progress
+  plane-issue done    CONTRABASS-N [--apply]                print plan; --apply flips Plane state to Done
+
+flags:
+  --apply        actually change Plane state (default is dry-run)
+  --force        bypass unmet-dependency gate on start
+  --allow-host=<hostname>   extend PLANE_BASE_URL host allowlist (default: plane.ziikoo.com)
 
 env:
-  PLANE_API_KEY   required
-  PLANE_BASE_URL  default https://plane.ziikoo.com
+  PLANE_API_KEY   required for commands that hit the API
+  PLANE_BASE_URL  default https://plane.ziikoo.com (must be https + allowlisted host)
 `);
 }
