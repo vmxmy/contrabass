@@ -3,13 +3,7 @@ import { jsonResponse } from "./utils";
 import { listAllUsers, listAllTeams, listAuditEvents, publicTeam } from "./litellm";
 import { parseUsageTimeseriesRequest, readGlobalUsageTimeseries } from "./timeseries";
 
-function sanitizePageParam(value: string | null, fallback: number): number {
-  if (value === null) return fallback;
-  const n = Number(value);
-  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : fallback;
-}
-
-function sanitizeSizeParam(value: string | null, fallback: number): number {
+function sanitizeIntParam(value: string | null, fallback: number): number {
   if (value === null) return fallback;
   const n = Number(value);
   return Number.isFinite(n) && n >= 1 ? Math.floor(n) : fallback;
@@ -17,8 +11,8 @@ function sanitizeSizeParam(value: string | null, fallback: number): number {
 
 export async function adminListUsers(request: Request, env: LiteLLMPortalEnv): Promise<Response> {
   const url = new URL(request.url);
-  const page = sanitizePageParam(url.searchParams.get("page"), 1);
-  const size = sanitizeSizeParam(url.searchParams.get("size"), 50);
+  const page = sanitizeIntParam(url.searchParams.get("page"), 1);
+  const size = sanitizeIntParam(url.searchParams.get("size"), 50);
   try {
     const result = await listAllUsers(env, { page, size });
     return jsonResponse({
@@ -52,11 +46,10 @@ export async function adminListTeams(request: Request, env: LiteLLMPortalEnv): P
 
 export async function adminListAuditEvents(request: Request, env: LiteLLMPortalEnv): Promise<Response> {
   const url = new URL(request.url);
-  const page = sanitizePageParam(url.searchParams.get("page"), 1);
-  const size = sanitizeSizeParam(url.searchParams.get("size"), 50);
+  const page = sanitizeIntParam(url.searchParams.get("page"), 1);
+  const size = sanitizeIntParam(url.searchParams.get("size"), 50);
   try {
     const result = await listAuditEvents(env, { page, size });
-    // Audit diff details (updated/previous values) are not forwarded to the portal SPA.
     return jsonResponse({
       events: result.events.map((event) => ({
         id: event.id,
