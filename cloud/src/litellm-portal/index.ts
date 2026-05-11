@@ -16,6 +16,7 @@ import { portalCompanyName, renderPortalHtml } from "./html";
 import {
   configuredAllowedModels,
   createKey,
+  deleteKey,
   KeyAliasConflictError,
   listUserKeys,
   publicKey,
@@ -155,6 +156,33 @@ async function routeApiRequest(
       }
       throw error;
     }
+  }
+
+  if (request.method === "DELETE" && url.pathname.startsWith("/api/keys/")) {
+    const encodedKeyId = url.pathname.slice("/api/keys/".length);
+    let keyId = "";
+    try {
+      keyId = decodeURIComponent(encodedKeyId).trim();
+    } catch {
+      return jsonResponse({ error: "key_id_required" }, 400);
+    }
+    if (!keyId) {
+      return jsonResponse({ error: "key_id_required" }, 400);
+    }
+
+    const user = await resolveLiteLLMUser(env, identity.email);
+    if (!user.found) {
+      return jsonResponse({ error: "user_not_found" }, 400);
+    }
+
+    const keyList = await listUserKeys(env, user.userId);
+    const key = keyList.keys.find((item) => item.id === keyId);
+    if (key === undefined) {
+      return jsonResponse({ error: "key_not_found" }, 404);
+    }
+
+    await deleteKey(env, key, identity.email);
+    return new Response(null, { status: 204, headers: securityHeaders() });
   }
 
   if (request.method === "GET" && url.pathname === "/api/usage") {

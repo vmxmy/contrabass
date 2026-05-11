@@ -986,6 +986,130 @@ describe("litellm portal worker", () => {
     });
   });
 
+  describe("DELETE /api/keys/:id", () => {
+    it("deletes an owned key by hashed token and records the actor", async () => {
+      let deleteBody: Record<string, unknown> | undefined;
+      let changedBy: string | null = null;
+      globalThis.fetch = async (input, init) => {
+        const url = String(input);
+        if (url.includes("/user/list")) {
+          return Response.json({
+            users: [{
+              user_id: "liqingying",
+              user_email: "liqingying@gz-zhiyun.com",
+              teams: [],
+            }],
+          });
+        }
+        if (url === "https://litellm.test/user/info?user_id=liqingying") {
+          return Response.json({
+            keys: [{
+              token: "hash-owned",
+              key_alias: "primary",
+              user_id: "liqingying",
+            }],
+          });
+        }
+        if (url.includes("/key/delete")) {
+          deleteBody = JSON.parse(String((init as RequestInit).body));
+          changedBy = new Headers(init?.headers).get("litellm-changed-by");
+          return Response.json({ deleted_keys: ["hash-owned"] });
+        }
+        return Response.json({});
+      };
+
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/keys/hash-owned", "liqingying@gz-zhiyun.com", {
+          method: "DELETE",
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      expect(response.status).toBe(204);
+      expect(deleteBody).toEqual({ keys: ["hash-owned"] });
+      expect(changedBy).toBe("liqingying@gz-zhiyun.com");
+    });
+
+    it("deletes an owned key by alias when LiteLLM only returns an alias", async () => {
+      let deleteBody: Record<string, unknown> | undefined;
+      globalThis.fetch = async (input, init) => {
+        const url = String(input);
+        if (url.includes("/user/list")) {
+          return Response.json({
+            users: [{
+              user_id: "liqingying",
+              user_email: "liqingying@gz-zhiyun.com",
+              teams: [],
+            }],
+          });
+        }
+        if (url === "https://litellm.test/user/info?user_id=liqingying") {
+          return Response.json({
+            keys: [{
+              key_alias: "primary",
+              user_id: "liqingying",
+            }],
+          });
+        }
+        if (url.includes("/key/delete")) {
+          deleteBody = JSON.parse(String((init as RequestInit).body));
+          return Response.json({ deleted_keys: ["primary"] });
+        }
+        return Response.json({});
+      };
+
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/keys/primary", "liqingying@gz-zhiyun.com", {
+          method: "DELETE",
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      expect(response.status).toBe(204);
+      expect(deleteBody).toEqual({ key_aliases: ["primary"] });
+    });
+
+    it("does not delete keys that are not owned by the signed-in user", async () => {
+      let deleteCalled = false;
+      globalThis.fetch = async (input) => {
+        const url = String(input);
+        if (url.includes("/user/list")) {
+          return Response.json({
+            users: [{
+              user_id: "liqingying",
+              user_email: "liqingying@gz-zhiyun.com",
+              teams: [],
+            }],
+          });
+        }
+        if (url === "https://litellm.test/user/info?user_id=liqingying") {
+          return Response.json({
+            keys: [{
+              token: "hash-owned",
+              key_alias: "primary",
+              user_id: "liqingying",
+            }],
+          });
+        }
+        if (url.includes("/key/delete")) {
+          deleteCalled = true;
+        }
+        return Response.json({});
+      };
+
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/keys/hash-other", "liqingying@gz-zhiyun.com", {
+          method: "DELETE",
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      expect(response.status).toBe(404);
+      await expect(response.json()).resolves.toEqual({ error: "key_not_found" });
+      expect(deleteCalled).toBe(false);
+    });
+  });
+
   it("resolves LiteLLM user_id by signed-in email before reading usage", async () => {
     const seen: string[] = [];
     globalThis.fetch = async (input) => {

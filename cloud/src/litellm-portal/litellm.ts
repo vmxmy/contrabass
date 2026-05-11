@@ -18,6 +18,10 @@ export class KeyAliasConflictError extends Error {
   }
 }
 
+type DeleteKeyRequestBody =
+  | { keys: string[] }
+  | { key_aliases: string[] };
+
 export async function litellmFetch(env: LiteLLMPortalEnv, path: string, init: RequestInit = {}): Promise<Response> {
   const baseUrl = env.LITELLM_BASE_URL?.trim().replace(/\/+$/u, "");
   const masterKey = env.LITELLM_MASTER_KEY?.trim();
@@ -173,8 +177,7 @@ export async function readUserTeams(env: LiteLLMPortalEnv, teamIds: string[]): P
 }
 
 export function normalizeKey(record: Record<string, unknown>, fallbackUserId: string): LiteLLMKey {
-  const keyInfo = isRecord(record.key_info) ? record.key_info : {};
-  const merged = { ...keyInfo, ...record };
+  const merged = mergedKeyRecord(record);
   const rawKey = firstString(merged, ["key", "token", "api_key"]);
   const id = firstString(merged, ["key_hash", "keyHash", "token", "token_id", "id", "key_alias"])
     ?? rawKey
@@ -246,8 +249,7 @@ export function publicTeam(team: LiteLLMTeam): Record<string, JsonValue> {
 
 export function keyBelongsToUser(record: Record<string, unknown>, userId: string): boolean {
   const normalizedUserId = userId.trim().toLowerCase();
-  const keyInfo = isRecord(record.key_info) ? record.key_info : {};
-  const merged = { ...keyInfo, ...record };
+  const merged = mergedKeyRecord(record);
   const explicitUser = firstString(merged, ["user_id", "userId", "user_email", "userEmail"]);
   if (explicitUser !== undefined) {
     return explicitUser.trim().toLowerCase() === normalizedUserId;
@@ -262,6 +264,11 @@ export function keyBelongsToUser(record: Record<string, unknown>, userId: string
   }
 
   return false;
+}
+
+function mergedKeyRecord(record: Record<string, unknown>): Record<string, unknown> {
+  const keyInfo = isRecord(record.key_info) ? record.key_info : {};
+  return { ...keyInfo, ...record };
 }
 
 export function extractRecords(value: unknown): Array<Record<string, unknown>> {
@@ -407,6 +414,39 @@ export async function createKey(
     expires: firstString(result, ["expires"]) ?? null,
     keyId: firstString(result, ["token_id", "key_hash"]) ?? "",
   };
+}
+
+export async function deleteKey(
+  env: LiteLLMPortalEnv,
+  key: LiteLLMKey,
+  changedBy?: string,
+): Promise<void> {
+  const headers = new Headers();
+  if (changedBy && changedBy.trim().length > 0) {
+    headers.set("litellm-changed-by", changedBy.trim());
+  }
+
+  await litellmFetch(env, "/key/delete", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(deleteKeyRequestBody(key)),
+  });
+}
+
+function deleteKeyRequestBody(key: LiteLLMKey): DeleteKeyRequestBody {
+  const merged = mergedKeyRecord(key.raw);
+  const keyIdentifier = firstString(merged, ["key_hash", "keyHash", "token", "key", "api_key"]);
+  if (keyIdentifier !== undefined && keyIdentifier !== key.alias) {
+    return { keys: [keyIdentifier] };
+  }
+  if (key.alias !== null && key.alias.trim().length > 0) {
+    return { key_aliases: [key.alias] };
+  }
+  const fallbackIdentifier = firstString(merged, ["token_id", "id"]) ?? (key.id === "unknown" ? undefined : key.id);
+  if (fallbackIdentifier !== undefined) {
+    return { keys: [fallbackIdentifier] };
+  }
+  throw new Error("key_delete_identifier_missing");
 }
 
 function isKeyAliasConflictError(error: unknown, keyAlias: string): boolean {

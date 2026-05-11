@@ -331,6 +331,41 @@ describe("ApiKeysCard", () => {
       expect(screen.queryByText("event-key")).not.toBeNull();
     });
   });
+
+  it("deletes an API key after confirmation", async () => {
+    window.__litellmPortalKeys = [
+      {
+        id: "key-1",
+        alias: "primary",
+        displayKey: "sk-lit...cret",
+        models: ["gpt-5.5"],
+        spend: 1,
+        maxBudget: 20,
+        expiresAt: null,
+      },
+    ];
+    const refreshListener = vi.fn();
+    window.addEventListener("litellm-portal:refresh", refreshListener);
+    globalThis.fetch = vi.fn(async () => new Response(null, { status: 204 })) as typeof fetch;
+
+    render(<ApiKeysCard />);
+    fireEvent.click(screen.getByText("删除"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("删除 API Key？")).not.toBeNull();
+    });
+    fireEvent.click(screen.getByText("确认删除"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("primary")).toBeNull();
+    });
+    expect(globalThis.fetch).toHaveBeenCalledWith("/api/keys/key-1", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+    });
+    expect(refreshListener).toHaveBeenCalledTimes(1);
+    window.removeEventListener("litellm-portal:refresh", refreshListener);
+  });
 });
 
 describe("PortalErrorBanner", () => {

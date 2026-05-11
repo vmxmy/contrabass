@@ -58,6 +58,9 @@ export function renderPortalHtml(env: LiteLLMPortalEnv): string {
       </div>
     </header>
 
+    <nav id="portal-tabs-root" hidden></nav>
+
+    <div id="user-panel">
     <section class="mb-14 grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
       <article class="overflow-hidden rounded-xl bg-kumo-base p-6 ring-1 ring-kumo-line">
         <div class="flex items-center gap-2">
@@ -149,8 +152,9 @@ export function renderPortalHtml(env: LiteLLMPortalEnv): string {
         <div class="p-6 text-sm text-kumo-subtle">Loading…</div>
       </section>
     </div>
+    </div>
 
-    <div id="admin-root" class="mt-14"></div>
+    <div id="admin-root" hidden></div>
 
     <div id="portal-error-root"></div>
   </main>

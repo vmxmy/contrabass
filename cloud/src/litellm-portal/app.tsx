@@ -135,6 +135,10 @@ function text(value: unknown): string {
   return value == null || value === "" ? "—" : String(value);
 }
 
+function keyLabel(key: PortalKey): string {
+  return text(key.alias ?? key.displayKey ?? key.id);
+}
+
 function fmt(value: unknown): string {
   return "$" + Number(value || 0).toFixed(2);
 }
@@ -246,6 +250,103 @@ function ModelsCell({ models }: { models: string[] }) {
         </Collapsible.Root>
       ) : null}
     </div>
+  );
+}
+
+function deleteKeyErrorMessage(value: unknown): string {
+  const record = value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const code = typeof record.error === "string" ? record.error : "";
+  if (code === "key_not_found") return "Key 不存在或不属于当前用户。";
+  if (code === "key_id_required") return "缺少要删除的 Key ID。";
+  if (code === "user_not_found") return "当前登录用户尚未在 LiteLLM 注册，请联系管理员。";
+  if (code.startsWith("litellm_request_failed_")) return "LiteLLM 删除 Key 失败，请稍后重试。";
+  return typeof record.message === "string" && record.message.length > 0
+    ? record.message
+    : code || "删除失败";
+}
+
+function DeleteKeyButton({
+  apiKey,
+  onDeleted,
+}: {
+  apiKey: PortalKey;
+  onDeleted: (keyId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const keyId = typeof apiKey.id === "string" ? apiKey.id : "";
+  const label = keyLabel(apiKey);
+
+  const handleOpenChange = useCallback((nextOpen: boolean) => {
+    setOpen(nextOpen);
+    if (!nextOpen) {
+      setError(null);
+      setDeleting(false);
+    }
+  }, []);
+
+  const handleDelete = useCallback(async () => {
+    if (!keyId) {
+      setError("缺少要删除的 Key ID。");
+      return;
+    }
+    setDeleting(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/keys/${encodeURIComponent(keyId)}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+      });
+      const body = response.status === 204 ? {} : await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setError(deleteKeyErrorMessage(body));
+        return;
+      }
+      onDeleted(keyId);
+      setOpen(false);
+    } catch {
+      setError("网络请求失败");
+    } finally {
+      setDeleting(false);
+    }
+  }, [keyId, onDeleted]);
+
+  return (
+    <Dialog.Root role="alertdialog" open={open} onOpenChange={handleOpenChange}>
+      <Dialog.Trigger
+        render={(props) => (
+          <Button {...props} variant="secondary-destructive" size="xs" disabled={!keyId}>
+            删除
+          </Button>
+        )}
+      />
+      <Dialog size="sm" className="space-y-5 p-6">
+        <Dialog.Title className="text-lg font-semibold text-kumo-strong">
+          删除 API Key？
+        </Dialog.Title>
+        <Dialog.Description className="text-sm text-kumo-subtle">
+          将删除「{label}」。删除后该 Key 会立即失效，此操作不可撤销。
+        </Dialog.Description>
+        {error ? (
+          <Banner variant="error" title="删除失败" description={error} />
+        ) : null}
+        <div className="flex justify-end gap-2">
+          <Dialog.Close
+            render={(props) => (
+              <Button {...props} variant="secondary" size="sm" disabled={deleting}>
+                取消
+              </Button>
+            )}
+          />
+          <Button variant="destructive" size="sm" loading={deleting} onClick={handleDelete}>
+            确认删除
+          </Button>
+        </div>
+      </Dialog>
+    </Dialog.Root>
   );
 }
 
@@ -696,6 +797,11 @@ export function ApiKeysCard() {
   const [keys, setKeys] = useState<PortalKey[]>(normalizeKeys(window.__litellmPortalKeys));
   const [loaded, setLoaded] = useState(Array.isArray(window.__litellmPortalKeys));
 
+  const handleDeleted = useCallback((keyId: string) => {
+    setKeys((current) => current.filter((key) => key.id !== keyId));
+    window.dispatchEvent(new CustomEvent("litellm-portal:refresh"));
+  }, []);
+
   useEffect(() => {
     const updateKeys = (event: Event) => {
       const next = normalizeKeys(event instanceof CustomEvent ? event.detail : window.__litellmPortalKeys);
@@ -739,6 +845,7 @@ export function ApiKeysCard() {
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">花费</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">预算</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">过期时间</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">操作</Table.Head>
               </Table.Row>
             </Table.Header>
             <Table.Body>
@@ -762,6 +869,9 @@ export function ApiKeysCard() {
                       <BudgetBadge spend={key.spend} maxBudget={key.maxBudget} />
                     </Table.Cell>
                     <Table.Cell className="py-3 pr-5 text-kumo-default">{text(key.expiresAt)}</Table.Cell>
+                    <Table.Cell className="py-3 pr-5 text-right">
+                      <DeleteKeyButton apiKey={key} onDeleted={handleDeleted} />
+                    </Table.Cell>
                   </Table.Row>
                 );
               })}
@@ -1610,22 +1720,127 @@ export function AdminSection({ role }: { role: PortalRole }) {
   );
 }
 
-function AdminSectionLoader() {
+type TabKey = "user" | "admin";
+
+let portalRolePromise: Promise<PortalRole> | null = null;
+function fetchPortalRoleOnce(): Promise<PortalRole> {
+  if (portalRolePromise) return portalRolePromise;
+  portalRolePromise = fetch("/api/me", { headers: { "content-type": "application/json" } })
+    .then(async (response): Promise<PortalRole> => {
+      if (!response.ok) return "none";
+      const body = await response.json().catch(() => ({}));
+      if (body && (body.role === "admin" || body.role === "user" || body.role === "none")) {
+        return body.role as PortalRole;
+      }
+      return "none";
+    })
+    .catch((): PortalRole => "none");
+  return portalRolePromise;
+}
+
+function usePortalRole(): { role: PortalRole; ready: boolean } {
   const [role, setRole] = useState<PortalRole>("none");
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetchPortalRoleOnce().then((next) => {
+      if (cancelled) return;
+      setRole(next);
+      setReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return { role, ready };
+}
+
+function readTabFromHash(role: PortalRole): TabKey {
+  const hash = typeof window !== "undefined" ? window.location.hash : "";
+  if (hash === "#admin") return "admin";
+  if (hash === "#user") return "user";
+  return role === "admin" ? "admin" : "user";
+}
+
+function applyTabToDom(tab: TabKey) {
+  const userPanel = document.getElementById("user-panel");
+  const adminPanel = document.getElementById("admin-root");
+  if (tab === "admin") {
+    userPanel?.setAttribute("hidden", "");
+    adminPanel?.removeAttribute("hidden");
+  } else {
+    adminPanel?.setAttribute("hidden", "");
+    userPanel?.removeAttribute("hidden");
+  }
+}
+
+function AdminSectionLoader() {
+  const { role } = usePortalRole();
+  return <AdminSection role={role} />;
+}
+
+export function PortalTabs({ tab, onSelect }: { tab: TabKey; onSelect: (next: TabKey) => void }) {
+  const baseBtn =
+    "flex h-10 cursor-pointer select-none items-center justify-center rounded-full px-5 text-sm font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-kumo-brand";
+  const activeBtn = "bg-kumo-base text-kumo-strong shadow-sm ring-1 ring-kumo-line";
+  const idleBtn = "text-kumo-subtle hover:text-kumo-strong";
+  return (
+    <div
+      className="mb-10 flex w-fit items-center gap-1 rounded-full bg-kumo-fill p-1 ring-1 ring-kumo-line"
+      role="tablist"
+      aria-label="切换面板"
+    >
+      <button
+        type="button"
+        role="tab"
+        aria-selected={tab === "user"}
+        className={`${baseBtn} ${tab === "user" ? activeBtn : idleBtn}`}
+        onClick={() => onSelect("user")}
+      >
+        用户面板
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={tab === "admin"}
+        className={`${baseBtn} ${tab === "admin" ? activeBtn : idleBtn}`}
+        onClick={() => onSelect("admin")}
+      >
+        管理员
+      </button>
+    </div>
+  );
+}
+
+function PortalTabsLoader() {
+  const { role, ready } = usePortalRole();
+  const [tab, setTab] = useState<TabKey>("user");
 
   useEffect(() => {
-    fetch("/api/me", { headers: { "content-type": "application/json" } })
-      .then(async (response) => {
-        if (!response.ok) return;
-        const body = await response.json().catch(() => ({}));
-        if (body && (body.role === "admin" || body.role === "user" || body.role === "none")) {
-          setRole(body.role as PortalRole);
-        }
-      })
-      .catch(() => {});
-  }, []);
+    if (!ready) return;
+    if (role !== "admin") {
+      applyTabToDom("user");
+      return;
+    }
+    const initial = readTabFromHash(role);
+    setTab(initial);
+    applyTabToDom(initial);
+    if (initial === "admin" && window.location.hash !== "#admin") {
+      history.replaceState(null, "", "#admin");
+    }
+    const tabsRoot = document.getElementById("portal-tabs-root");
+    tabsRoot?.removeAttribute("hidden");
+  }, [ready, role]);
 
-  return <AdminSection role={role} />;
+  if (!ready || role !== "admin") return null;
+
+  const select = (next: TabKey) => {
+    setTab(next);
+    applyTabToDom(next);
+    history.replaceState(null, "", "#" + next);
+  };
+
+  return <PortalTabs tab={tab} onSelect={select} />;
 }
 
 const usageRoot = document.getElementById("usage-panel-root");
@@ -1651,4 +1866,9 @@ if (errorRoot) {
 const adminRoot = document.getElementById("admin-root");
 if (adminRoot) {
   createRoot(adminRoot).render(<AdminSectionLoader />);
+}
+
+const portalTabsRoot = document.getElementById("portal-tabs-root");
+if (portalTabsRoot) {
+  createRoot(portalTabsRoot).render(<PortalTabsLoader />);
 }
