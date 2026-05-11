@@ -798,13 +798,25 @@ export function PortalErrorBanner() {
   );
 }
 
+const NEVER_EXPIRES_VALUE = "never";
+
 const DURATION_OPTIONS = [
-  { value: "", label: "永不过期" },
+  { value: NEVER_EXPIRES_VALUE, label: "永不过期" },
   { value: "7d", label: "7 天" },
   { value: "30d", label: "30 天" },
   { value: "90d", label: "90 天" },
   { value: "365d", label: "365 天" },
 ];
+
+function durationFromSelectValue(value: unknown): string {
+  const selected = typeof value === "string" ? value : NEVER_EXPIRES_VALUE;
+  return selected === NEVER_EXPIRES_VALUE ? "" : selected;
+}
+
+function selectedModelsFromValue(value: unknown): string[] {
+  if (!Array.isArray(value)) return typeof value === "string" ? [value] : [];
+  return value.filter((item): item is string => typeof item === "string");
+}
 
 type CreateKeyResult = {
   rawKey: string;
@@ -823,6 +835,7 @@ export function CreateKeyButton() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CreateKeyResult | null>(null);
+  const durationSelectValue = duration || NEVER_EXPIRES_VALUE;
 
   useEffect(() => {
     if (!open) return;
@@ -983,13 +996,20 @@ export function CreateKeyButton() {
 
             {models.length > 0 ? (
               <div className="space-y-1.5">
-                <label className="text-sm font-medium text-kumo-default">允许模型</label>
                 <Select
                   label="允许模型"
+                  className="w-full"
                   size="lg"
                   multiple
+                  placeholder="继承当前用户可用模型"
+                  renderValue={(value) => {
+                    const selected = selectedModelsFromValue(value);
+                    if (selected.length === 0) return "继承当前用户可用模型";
+                    if (selected.length > 3) return `${selected.slice(0, 2).join(", ")} 等 ${selected.length} 个模型`;
+                    return selected.join(", ");
+                  }}
                   value={selectedModels}
-                  onValueChange={(value) => setSelectedModels(Array.isArray(value) ? value.map(String) : [String(value)])}
+                  onValueChange={(value) => setSelectedModels(selectedModelsFromValue(value))}
                 >
                   {models.map((model) => (
                     <Select.Option key={model} value={model}>
@@ -1015,12 +1035,12 @@ export function CreateKeyButton() {
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-kumo-default">有效期</label>
               <Select
                 label="有效期"
+                className="w-full"
                 size="lg"
-                value={duration || ""}
-                onValueChange={(value) => setDuration(String(value))}
+                value={durationSelectValue}
+                onValueChange={(value) => setDuration(durationFromSelectValue(value))}
               >
                 {DURATION_OPTIONS.map((opt) => (
                   <Select.Option key={opt.value} value={opt.value}>
@@ -1049,6 +1069,562 @@ export function CreateKeyButton() {
   );
 }
 
+type PortalRole = "admin" | "user" | "none";
+
+type AdminUsersResponse = {
+  users: Array<{
+    userId: string;
+    email: string;
+    spend: number | null;
+    maxBudget: number | null;
+    teamIds: string[];
+    role: string | null;
+  }>;
+  totalCount: number;
+  page: number;
+  size: number;
+};
+
+type AdminTeam = {
+  id: string;
+  alias: string | null;
+  models: string[];
+  spend: number | null;
+  tpmLimit: number | null;
+  rpmLimit: number | null;
+};
+
+type AdminTeamsResponse = {
+  teams: AdminTeam[];
+};
+
+type AdminAuditEvent = {
+  id: string;
+  createdAt: string | null;
+  action: string;
+  actorUserId: string | null;
+  actorUserEmail: string | null;
+  objectType: string | null;
+  objectId: string | null;
+};
+
+type AdminAuditResponse = {
+  events: AdminAuditEvent[];
+  totalCount: number;
+  page: number;
+  size: number;
+};
+
+const ADMIN_PAGE_SIZE = 50;
+
+function AdminLoadingSkeleton() {
+  return (
+    <div className="space-y-3 p-6" aria-live="polite">
+      {Array.from({ length: 4 }, (_, index) => (
+        <SkeletonLine key={index} minWidth={260} maxWidth={760} blockHeight={20} />
+      ))}
+    </div>
+  );
+}
+
+function AdminErrorBanner({ message }: { message: string }) {
+  return (
+    <div className="p-6">
+      <Banner variant="error" title="数据加载失败" description={message} />
+    </div>
+  );
+}
+
+function AdminPager({
+  page,
+  totalCount,
+  size,
+  onPrev,
+  onNext,
+}: {
+  page: number;
+  totalCount: number;
+  size: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  const totalPages = Math.max(1, Math.ceil(totalCount / size));
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-between border-t border-kumo-line px-6 py-4">
+      <span className="text-xs text-kumo-subtle">
+        第 {page} / {totalPages} 页，共 {totalCount} 条
+      </span>
+      <div className="flex gap-2">
+        <Button variant="secondary" size="sm" disabled={page <= 1} onClick={onPrev}>
+          上一页
+        </Button>
+        <Button variant="secondary" size="sm" disabled={page >= totalPages} onClick={onNext}>
+          下一页
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function AdminUsersTable() {
+  const [data, setData] = useState<AdminUsersResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const requestIdRef = useRef(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const requestId = ++requestIdRef.current;
+    setLoading(true);
+    setError(null);
+
+    const params = new URLSearchParams({ page: String(page), size: String(ADMIN_PAGE_SIZE) });
+    fetch(`/api/admin/users?${params.toString()}`, {
+      signal: controller.signal,
+      headers: { "content-type": "application/json" },
+    })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(typeof body.error === "string" ? body.error : "全员账户加载失败");
+        }
+        return body as AdminUsersResponse;
+      })
+      .then((body) => {
+        if (requestId !== requestIdRef.current) return;
+        setData(body);
+        setError(null);
+      })
+      .catch((fetchError: unknown) => {
+        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
+        if (requestId !== requestIdRef.current) return;
+        setData(null);
+        setError(fetchError instanceof Error ? fetchError.message : "全员账户加载失败");
+      })
+      .finally(() => {
+        if (requestId === requestIdRef.current) setLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [page]);
+
+  return (
+    <div>
+      {loading ? (
+        <AdminLoadingSkeleton />
+      ) : error ? (
+        <AdminErrorBanner message={error} />
+      ) : !data || data.users.length === 0 ? (
+        <p className="p-6 text-sm text-kumo-subtle">暂无用户数据。</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <Table className="w-full text-left text-sm text-kumo-default">
+            <Table.Header>
+              <Table.Row className="border-b border-kumo-line">
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">邮箱</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">角色</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">累计消费</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">Key 数</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">最大预算</Table.Head>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {data.users.map((user) => (
+                <Table.Row key={user.userId} className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
+                  <Table.Cell className="py-3 pl-5 pr-3 font-mono text-kumo-default">{text(user.email)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-kumo-subtle">{text(user.role)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmt(user.spend)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmtInt(user.teamIds.length)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-5 text-right font-mono text-kumo-default">{user.maxBudget == null ? "—" : fmt(user.maxBudget)}</Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table>
+        </div>
+      )}
+      {data ? (
+        <AdminPager
+          page={page}
+          totalCount={data.totalCount}
+          size={ADMIN_PAGE_SIZE}
+          onPrev={() => setPage((p) => Math.max(1, p - 1))}
+          onNext={() => setPage((p) => p + 1)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function AdminTeamsTable() {
+  const [data, setData] = useState<AdminTeamsResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/admin/teams", {
+      signal: controller.signal,
+      headers: { "content-type": "application/json" },
+    })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(typeof body.error === "string" ? body.error : "全部团队加载失败");
+        }
+        return body as AdminTeamsResponse;
+      })
+      .then((body) => setData(body))
+      .catch((fetchError: unknown) => {
+        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
+        setError(fetchError instanceof Error ? fetchError.message : "全部团队加载失败");
+      })
+      .finally(() => setLoading(false));
+
+    return () => controller.abort();
+  }, []);
+
+  return (
+    <div>
+      {loading ? (
+        <AdminLoadingSkeleton />
+      ) : error ? (
+        <AdminErrorBanner message={error} />
+      ) : !data || data.teams.length === 0 ? (
+        <p className="p-6 text-sm text-kumo-subtle">暂无团队数据。</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <Table className="w-full text-left text-sm text-kumo-default">
+            <Table.Header>
+              <Table.Row className="border-b border-kumo-line">
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">ID</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">别名</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">可用模型</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">消费</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">TPM</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">RPM</Table.Head>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {data.teams.map((team) => (
+                <Table.Row key={team.id} className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
+                  <Table.Cell className="py-3 pl-5 pr-3 font-mono text-xs text-kumo-subtle">{text(team.id)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-kumo-default">{text(team.alias)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-kumo-subtle">{team.models.length > 0 ? team.models.join(", ") : "—"}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmt(team.spend)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{team.tpmLimit == null ? "—" : fmtInt(team.tpmLimit)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-5 text-right font-mono text-kumo-default">{team.rpmLimit == null ? "—" : fmtInt(team.rpmLimit)}</Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdminGlobalUsage() {
+  const config = useMemo(() => portalConfig(), []);
+  const grains = useMemo(() => Object.keys(config.usageWindows), [config]);
+  const presets = useMemo(() => usageWindowPresets(config), [config]);
+  const defaultPreset = useMemo(() => {
+    const defaultDayWindow = defaultWindowFor("day", config);
+    return presetForWindow(defaultDayWindow, config) ?? presets.find((p) => p.grain === "day") ?? presets[0];
+  }, [config, presets]);
+
+  const [grain, setGrain] = useState(defaultPreset?.grain ?? "day");
+  const [windowKey, setWindowKey] = useState(defaultPreset?.windowKey ?? defaultWindowFor("day", config));
+  const [data, setData] = useState<UsageTimeseries | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const requestIdRef = useRef(0);
+
+  const activePreset = useMemo(
+    () => presets.find((p) => p.windowKey === windowKey) ?? defaultPreset,
+    [defaultPreset, presets, windowKey],
+  );
+
+  useEffect(() => {
+    if (!grain || !windowKey) return;
+    const controller = new AbortController();
+    const requestId = ++requestIdRef.current;
+    setLoading(true);
+    setError(null);
+
+    const params = new URLSearchParams({ grain, window: windowKey });
+    fetch(`/api/admin/usage/timeseries?${params.toString()}`, {
+      signal: controller.signal,
+      headers: { "content-type": "application/json" },
+    })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(typeof body.error === "string" ? body.error : "全局用量加载失败");
+        }
+        return body as UsageTimeseries;
+      })
+      .then((body) => {
+        if (requestId !== requestIdRef.current) return;
+        setData(body);
+        setError(null);
+      })
+      .catch((fetchError: unknown) => {
+        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
+        if (requestId !== requestIdRef.current) return;
+        setData(null);
+        setError(fetchError instanceof Error ? fetchError.message : "全局用量加载失败");
+      })
+      .finally(() => {
+        if (requestId === requestIdRef.current) setLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [grain, windowKey]);
+
+  return (
+    <div>
+      <div className="border-b border-kumo-line p-6">
+        <div className="space-y-3">
+          <div className="flex flex-wrap gap-2" role="group" aria-label="时间范围预设">
+            {presets.map((preset) => (
+              <button
+                key={preset.windowKey}
+                type="button"
+                className={controlPillClass(preset.windowKey === windowKey)}
+                aria-pressed={preset.windowKey === windowKey}
+                onClick={() => {
+                  setWindowKey(preset.windowKey);
+                  setGrain(preset.grain);
+                }}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-2" role="group" aria-label="时间粒度">
+            {grains.map((item) => {
+              const disabled = !supportsWindowForGrain(item, windowKey, config);
+              return (
+                <button
+                  key={item}
+                  type="button"
+                  className={controlPillClass(grain === item, disabled)}
+                  aria-pressed={grain === item}
+                  disabled={disabled}
+                  onClick={() => {
+                    if (!disabled) setGrain(item);
+                  }}
+                >
+                  {usageGrainLabels[item] ?? item}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 p-6 md:grid-cols-[2fr_1fr]">
+        <div className="space-y-6">
+          {error ? (
+            <Banner variant="error" title="全局用量加载失败" description={error} />
+          ) : null}
+          <UsageSummary data={data} loading={loading} />
+          <UsageChart data={data} error={error} loading={loading} />
+        </div>
+        <div className="mt-6 md:ml-6 md:mt-0">
+          <p className="mb-5 text-sm font-semibold text-kumo-default">高频模型</p>
+          <TopModels data={data} loading={loading} />
+        </div>
+      </div>
+      {activePreset ? (
+        <p className="px-6 pb-4 text-xs text-kumo-subtle">
+          数据来源：/api/admin/usage/timeseries · {activePreset.label} · {usageGrainLabels[grain] ?? grain}粒度
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function AdminAuditFeed() {
+  const [data, setData] = useState<AdminAuditResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const requestIdRef = useRef(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const requestId = ++requestIdRef.current;
+    setLoading(true);
+    setError(null);
+
+    const params = new URLSearchParams({ page: String(page), size: String(ADMIN_PAGE_SIZE) });
+    fetch(`/api/admin/audit?${params.toString()}`, {
+      signal: controller.signal,
+      headers: { "content-type": "application/json" },
+    })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(typeof body.error === "string" ? body.error : "审计日志加载失败");
+        }
+        return body as AdminAuditResponse;
+      })
+      .then((body) => {
+        if (requestId !== requestIdRef.current) return;
+        setData(body);
+        setError(null);
+      })
+      .catch((fetchError: unknown) => {
+        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
+        if (requestId !== requestIdRef.current) return;
+        setData(null);
+        setError(fetchError instanceof Error ? fetchError.message : "审计日志加载失败");
+      })
+      .finally(() => {
+        if (requestId === requestIdRef.current) setLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [page]);
+
+  const toggleRow = useCallback((id: string) => {
+    setExpandedId((prev) => (prev === id ? null : id));
+  }, []);
+
+  return (
+    <div>
+      {loading ? (
+        <AdminLoadingSkeleton />
+      ) : error ? (
+        <AdminErrorBanner message={error} />
+      ) : !data || data.events.length === 0 ? (
+        <p className="p-6 text-sm text-kumo-subtle">暂无审计日志。</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <Table className="w-full text-left text-sm text-kumo-default">
+            <Table.Header>
+              <Table.Row className="border-b border-kumo-line">
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">创建时间</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">操作</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">操作者</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">对象类型</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">对象 ID</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">详情</Table.Head>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {data.events.map((event) => (
+                <React.Fragment key={event.id}>
+                  <Table.Row className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
+                    <Table.Cell className="py-3 pl-5 pr-3 font-mono text-xs text-kumo-subtle">{event.createdAt ? event.createdAt.slice(0, 19).replace("T", " ") : "—"}</Table.Cell>
+                    <Table.Cell className="py-3 pr-3 text-kumo-default">{text(event.action)}</Table.Cell>
+                    <Table.Cell className="py-3 pr-3 text-kumo-default">{text(event.actorUserEmail ?? event.actorUserId)}</Table.Cell>
+                    <Table.Cell className="py-3 pr-3 text-kumo-subtle">{text(event.objectType)}</Table.Cell>
+                    <Table.Cell className="py-3 pr-3 font-mono text-xs text-kumo-subtle">{text(event.objectId)}</Table.Cell>
+                    <Table.Cell className="py-3 pr-5">
+                      <button
+                        type="button"
+                        className="text-xs font-semibold text-kumo-brand hover:text-kumo-brand-hover"
+                        onClick={() => toggleRow(event.id)}
+                        aria-expanded={expandedId === event.id}
+                      >
+                        {expandedId === event.id ? "收起" : "展开"}
+                      </button>
+                    </Table.Cell>
+                  </Table.Row>
+                  {expandedId === event.id ? (
+                    <Table.Row className="border-b border-kumo-fill bg-kumo-recessed">
+                      <Table.Cell colSpan={6} className="px-5 py-4">
+                        <div className="space-y-3 text-xs">
+                          <div>
+                            <p className="mb-1 font-semibold uppercase tracking-wider text-kumo-subtle">变更后</p>
+                            <pre className="overflow-x-auto rounded-lg bg-kumo-base p-3 font-mono text-kumo-default ring-1 ring-kumo-line">{JSON.stringify(event, null, 2)}</pre>
+                          </div>
+                        </div>
+                      </Table.Cell>
+                    </Table.Row>
+                  ) : null}
+                </React.Fragment>
+              ))}
+            </Table.Body>
+          </Table>
+        </div>
+      )}
+      {data ? (
+        <AdminPager
+          page={page}
+          totalCount={data.totalCount}
+          size={ADMIN_PAGE_SIZE}
+          onPrev={() => setPage((p) => Math.max(1, p - 1))}
+          onNext={() => setPage((p) => p + 1)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function AdminCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
+      <Collapsible.Root defaultOpen>
+        <div className="flex items-center justify-between border-b border-kumo-line bg-kumo-elevated px-6 py-5">
+          <p className="text-lg font-semibold text-kumo-strong">{title}</p>
+          <Collapsible.DefaultTrigger className="text-sm font-medium text-kumo-brand hover:text-kumo-brand-hover" />
+        </div>
+        <Collapsible.Panel>
+          {children}
+        </Collapsible.Panel>
+      </Collapsible.Root>
+    </article>
+  );
+}
+
+export function AdminSection({ role }: { role: PortalRole }) {
+  if (role !== "admin") return null;
+
+  return (
+    <section className="space-y-8" aria-label="管理员视图（只读）">
+      <div className="flex items-center gap-3">
+        <h2 className="text-2xl font-semibold text-kumo-strong">管理员视图（只读）</h2>
+        <Badge variant="secondary" className="rounded-full bg-kumo-warning-tint text-kumo-warning">仅管理员可见</Badge>
+      </div>
+      <AdminCard title="全员账户">
+        <AdminUsersTable />
+      </AdminCard>
+      <AdminCard title="全部团队">
+        <AdminTeamsTable />
+      </AdminCard>
+      <AdminCard title="全局用量趋势">
+        <AdminGlobalUsage />
+      </AdminCard>
+      <AdminCard title="审计日志">
+        <AdminAuditFeed />
+      </AdminCard>
+    </section>
+  );
+}
+
+function AdminSectionLoader() {
+  const [role, setRole] = useState<PortalRole>("none");
+
+  useEffect(() => {
+    fetch("/api/me", { headers: { "content-type": "application/json" } })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const body = await response.json().catch(() => ({}));
+        if (body && (body.role === "admin" || body.role === "user" || body.role === "none")) {
+          setRole(body.role as PortalRole);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  return <AdminSection role={role} />;
+}
+
 const usageRoot = document.getElementById("usage-panel-root");
 if (usageRoot) {
   createRoot(usageRoot).render(<UsagePanel />);
@@ -1067,4 +1643,9 @@ if (keysRoot) {
 const errorRoot = document.getElementById("portal-error-root");
 if (errorRoot) {
   createRoot(errorRoot).render(<PortalErrorBanner />);
+}
+
+const adminRoot = document.getElementById("admin-root");
+if (adminRoot) {
+  createRoot(adminRoot).render(<AdminSectionLoader />);
 }

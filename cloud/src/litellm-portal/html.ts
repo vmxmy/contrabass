@@ -150,6 +150,8 @@ export function renderPortalHtml(env: LiteLLMPortalEnv): string {
       </section>
     </div>
 
+    <div id="admin-root" class="mt-14"></div>
+
     <div id="portal-error-root"></div>
   </main>
 ${devAuthWarning}${portalConfigScript}

@@ -35,7 +35,7 @@ vi.mock("@cloudflare/kumo/components/chart", async () => {
   };
 });
 
-import { ApiKeysCard, CreateKeyButton, ModelAccessCard, PortalErrorBanner, UsagePanel } from "./app";
+import { AdminSection, ApiKeysCard, CreateKeyButton, ModelAccessCard, PortalErrorBanner, UsagePanel } from "./app";
 import { UsageChart, type UsageTimeseries } from "./chart";
 
 const originalFetch = globalThis.fetch;
@@ -410,4 +410,72 @@ describe("CreateKeyButton", () => {
     });
   });
 });
+});
+
+describe("AdminSection", () => {
+  it("renders nothing when role is not admin", () => {
+    const { container } = render(<AdminSection role="user" />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("renders nothing when role is none", () => {
+    const { container } = render(<AdminSection role="none" />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("renders four admin cards when role is admin", async () => {
+    installPortalConfig();
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/admin/users")) {
+        return Response.json({
+          users: [{ userId: "u1", email: "admin@test.com", spend: 1.5, maxBudget: 100, teamIds: ["t1"], role: "proxy_admin" }],
+          totalCount: 1,
+          page: 1,
+          size: 50,
+        });
+      }
+      if (url.includes("/api/admin/teams")) {
+        return Response.json({
+          teams: [{ id: "t1", alias: "Test Team", models: ["gpt-4o"], spend: 0.5, tpmLimit: null, rpmLimit: null }],
+        });
+      }
+      if (url.includes("/api/admin/audit")) {
+        return Response.json({
+          events: [],
+          totalCount: 0,
+          page: 1,
+          size: 50,
+        });
+      }
+      if (url.includes("/api/admin/usage/timeseries")) {
+        return Response.json({
+          available: true,
+          grain: "day",
+          window: "30d",
+          windowLabel: "近 30 天",
+          start: "2024-01-01T00:00:00.000Z",
+          end: "2024-01-30T23:59:59.999Z",
+          source: "spend_logs_v2_global",
+          timezone: "Asia/Shanghai",
+          limited: false,
+          maxPages: null,
+          buckets: [],
+          totals: { totalTokens: 0, promptTokens: 0, completionTokens: 0, requests: 0, spend: 0 },
+          topModels: [],
+        });
+      }
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<AdminSection role="admin" />);
+
+    expect(screen.queryByText("管理员视图（只读）")).not.toBeNull();
+    await waitFor(() => {
+      expect(screen.queryByText("全员账户")).not.toBeNull();
+      expect(screen.queryByText("全部团队")).not.toBeNull();
+      expect(screen.queryByText("全局用量趋势")).not.toBeNull();
+      expect(screen.queryByText("审计日志")).not.toBeNull();
+    });
+  });
 });
