@@ -573,6 +573,10 @@ Role 解析**只在 Worker 端进行**（`roles.ts:resolveIdentity`），使用 
 - 缓存存活在 Worker isolate 私有内存中，不跨 isolate 共享，不写 KV / D1。
 - **fail-closed**：`resolveIdentity` 若捕获异常（LiteLLM 不可达等），返回 `role: "none"` 且**不写入缓存**，确保下次请求重新尝试鉴权，而非以失败结果放行。
 
+### Revocation 注意
+
+当用户从 admin 降级到普通角色时，已缓存该用户身份的 Worker isolate 在 5 分钟内仍会放行 /api/admin/* 请求。如需紧急吊销，应同时旋转 LITELLM_MASTER_KEY 或重启 Worker。
+
 ### /api/admin/* 路由清单
 
 以下路由均为只读，由 `admin.ts` 中的四个 handler 实现：

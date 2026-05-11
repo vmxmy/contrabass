@@ -56,6 +56,7 @@ export async function adminListAuditEvents(request: Request, env: LiteLLMPortalE
   const size = sanitizeSizeParam(url.searchParams.get("size"), 50);
   try {
     const result = await listAuditEvents(env, { page, size });
+    // Audit diff details (updated/previous values) are not forwarded to the portal SPA.
     return jsonResponse({
       events: result.events.map((event) => ({
         id: event.id,

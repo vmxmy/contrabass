@@ -462,12 +462,6 @@ function normalizeAuditEvent(record: Record<string, unknown>): LiteLLMAuditEvent
     actorUserEmail: firstString(record, ["actor_user_email", "actorUserEmail", "user_email", "userEmail"]) ?? null,
     objectType: firstString(record, ["object_type", "objectType", "resource_type", "resourceType"]) ?? null,
     objectId: firstString(record, ["object_id", "objectId", "resource_id", "resourceId"]) ?? null,
-    updatedValues: isRecord(record.updated_values) ? record.updated_values
-      : isRecord(record.updatedValues) ? record.updatedValues
-      : null,
-    previousValues: isRecord(record.previous_values) ? record.previous_values
-      : isRecord(record.previousValues) ? record.previousValues
-      : null,
   };
 }
 

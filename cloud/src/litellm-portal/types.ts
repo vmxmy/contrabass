@@ -176,6 +176,4 @@ export type LiteLLMAuditEvent = {
   actorUserEmail: string | null;
   objectType: string | null;
   objectId: string | null;
-  updatedValues: unknown;
-  previousValues: unknown;
 };

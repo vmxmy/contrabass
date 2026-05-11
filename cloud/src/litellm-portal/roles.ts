@@ -2,6 +2,12 @@ import { firstString, litellmFetch } from "./litellm";
 import type { IdentityResult, LiteLLMPortalEnv, PortalIdentity, PortalPrincipal, PortalRole } from "./types";
 import { isRecord, readJson } from "./utils";
 
+// ROLE_CACHE_MS 是 per-isolate 内存缓存的 TTL。
+// 这意味着:
+// 1) 同一 Worker isolate 内,同一用户 5 分钟内只会被解析一次。
+// 2) 多个 Worker isolate 之间不共享缓存,role 变更生效时间最长滞后 ROLE_CACHE_MS。
+// 3) 当用户被从 admin 降级时,已缓存该身份的 isolate 在 ROLE_CACHE_MS 内仍会放行 /api/admin/*。
+//    紧急吊销时应旋转 LITELLM_MASTER_KEY 或强制重启 Worker。
 const ROLE_CACHE_MS = 5 * 60 * 1000;
 const roleCache = new Map<string, { role: PortalRole; litellmUserId: string; expiresAt: number }>();
 
