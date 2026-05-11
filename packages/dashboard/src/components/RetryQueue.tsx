@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
+import { Badge, Empty, LayerCard, Table } from '@cloudflare/kumo'
 import type { BackoffEntry } from '../types'
 import { formatDuration } from '../i18n/format'
 import { zhCN } from '../i18n/messages'
-import './RetryQueue.css'
 
 interface RetryQueueProps {
   entries: BackoffEntry[]
@@ -42,48 +42,37 @@ export function RetryQueue({ entries }: RetryQueueProps) {
   }, [])
 
   if (entries.length === 0) {
-    return (
-      <section className="retry-queue retry-queue--empty" aria-live="polite">
-        <p className="retry-queue__empty-text">
-          <span className="retry-queue__empty-check" aria-hidden="true">
-            ✓
-          </span>{' '}
-          {zhCN.retryQueue.empty}
-        </p>
-      </section>
-    )
+    return <Empty size="sm" title={zhCN.retryQueue.empty} />
   }
 
   return (
-    <section className="retry-queue" aria-label={zhCN.retryQueue.ariaLabel}>
-      <table className="retry-queue__table">
-        <thead>
-          <tr>
-            <th>{zhCN.retryQueue.headers.issueID}</th>
-            <th>{zhCN.retryQueue.headers.attempt}</th>
-            <th>{zhCN.retryQueue.headers.retryIn}</th>
-            <th>{zhCN.retryQueue.headers.error}</th>
-          </tr>
-        </thead>
-        <tbody>
+    <LayerCard className="overflow-x-auto p-0">
+      <Table aria-label={zhCN.retryQueue.ariaLabel}>
+        <Table.Header>
+          <Table.Row>
+            <Table.Head>{zhCN.retryQueue.headers.issueID}</Table.Head>
+            <Table.Head>{zhCN.retryQueue.headers.attempt}</Table.Head>
+            <Table.Head>{zhCN.retryQueue.headers.retryIn}</Table.Head>
+            <Table.Head>{zhCN.retryQueue.headers.error}</Table.Head>
+          </Table.Row>
+        </Table.Header>
+        <Table.Body>
           {entries.map((entry) => {
             const retryIn = formatRetryIn(entry.retry_at, nowMs)
 
             return (
-              <tr key={`${entry.issue_id}-${entry.attempt}-${entry.retry_at}`}>
-                <td className="retry-queue__mono">{entry.issue_id}</td>
-                <td className="retry-queue__mono">{entry.attempt}</td>
-                <td className={`retry-queue__mono ${retryIn.ready ? 'retry-queue__ready' : ''}`}>
-                  {retryIn.text}
-                </td>
-                <td className="retry-queue__error" title={entry.error}>
-                  {truncateError(entry.error)}
-                </td>
-              </tr>
+              <Table.Row key={`${entry.issue_id}-${entry.attempt}-${entry.retry_at}`}>
+                <Table.Cell>{entry.issue_id}</Table.Cell>
+                <Table.Cell>{entry.attempt}</Table.Cell>
+                <Table.Cell>
+                  <Badge variant={retryIn.ready ? 'success' : 'secondary'}>{retryIn.text}</Badge>
+                </Table.Cell>
+                <Table.Cell title={entry.error}>{truncateError(entry.error)}</Table.Cell>
+              </Table.Row>
             )
           })}
-        </tbody>
-      </table>
-    </section>
+        </Table.Body>
+      </Table>
+    </LayerCard>
   )
 }

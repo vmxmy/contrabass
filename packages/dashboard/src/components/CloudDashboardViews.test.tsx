@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import type { StateSnapshot, TeamSnapshot } from '../types'
 import { CloudDashboardViews } from './CloudDashboardViews'
@@ -37,6 +37,29 @@ function teamSnapshot(): TeamSnapshot {
   }
 }
 
+async function openKumoSelect(label: string): Promise<HTMLElement> {
+  const trigger = screen.getByRole('combobox', { name: label })
+  fireEvent.click(trigger)
+  return await waitFor(() => {
+    const id = trigger.getAttribute('aria-controls')
+    const controlled = id ? document.getElementById(id) : null
+    if (!controlled) {
+      throw new Error(`Kumo select listbox for ${label} did not open`)
+    }
+    return controlled as HTMLElement
+  })
+}
+
+async function selectKumoOption(label: string, optionName: string | RegExp) {
+  const listbox = await openKumoSelect(label)
+  const option = within(listbox).getByRole('option', { name: optionName })
+  fireEvent.mouseMove(option)
+  fireEvent.mouseOver(option)
+  fireEvent.mouseDown(option)
+  fireEvent.mouseUp(option)
+  fireEvent.click(option)
+}
+
 afterEach(() => {
   globalThis.fetch = originalFetch
   cleanup()
@@ -69,10 +92,41 @@ describe('CloudDashboardViews', () => {
       />,
     )
 
-    await waitFor(() => expectInDocument(screen.getByRole('option', { name: 'Team B' })))
-    fireEvent.change(screen.getByLabelText('Team'), { target: { value: 'team-b' } })
+    await selectKumoOption('Team', 'Team B')
 
-    expect(changes).toEqual([{ teamId: 'team-b', view: 'board' }])
+    await waitFor(() => {
+      expect(changes).toEqual([{ teamId: 'team-b', view: 'board' }])
+    })
+  })
+
+  it('does not synthesize a smoke team when the team list is unavailable', async () => {
+    const requests: string[] = []
+
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL) => {
+        requests.push(String(input))
+        return new Response('unauthorized', { status: 401 })
+      },
+      { preconnect: originalFetch.preconnect },
+    )
+
+    render(
+      <CloudDashboardViews
+        teamId={null}
+        view="board"
+        state={emptyState()}
+        teamSnapshot={teamSnapshot()}
+        agentLogs={[]}
+        onTeamChange={() => undefined}
+        onViewChange={() => undefined}
+        onApplyBoardFrame={() => undefined}
+      />,
+    )
+
+    await waitFor(() => expect(requests).toContain('/v1/teams'))
+    await waitFor(() => expectInDocument(screen.getByText(/Team list unavailable: Request failed \(401\)/u)))
+    const listbox = await openKumoSelect('Team')
+    expect(within(listbox).queryByRole('option', { name: 'synthetic-smoke' })).toBeNull()
   })
 
   it('loads the active team board and forwards the snapshot into the SPA state', async () => {
@@ -127,9 +181,9 @@ describe('CloudDashboardViews', () => {
       />,
     )
 
-    await waitFor(() => expectInDocument(screen.getByText('CLOUD-7')))
-    expectInDocument(screen.getByText('Reconnect dashboard'))
-    expectInDocument(screen.getByText('run run-8'))
+    await waitFor(() => expectInDocument(screen.getByText(/CLOUD-7/u)))
+    expectInDocument(screen.getByText(/Reconnect dashboard/u))
+    expectInDocument(screen.getByText(/run run-8/u))
     expect(requests).toContain('/v1/teams/team-a/board')
     expect(boardFrames).toHaveLength(1)
 
@@ -179,12 +233,13 @@ describe('CloudDashboardViews', () => {
 
     await waitFor(() => expectInDocument(screen.getByLabelText('Config diff')))
 
-    fireEvent.change(screen.getByLabelText('Config from'), { target: { value: 'hash1' } })
-    fireEvent.change(screen.getByLabelText('Config to'), { target: { value: 'hash2' } })
+    await selectKumoOption('Config from', /v1 hash1/u)
+    await selectKumoOption('Config to', /v2 hash2/u)
 
     await waitFor(() => {
-      expectInDocument(screen.getByText('- max_workers: 2'))
-      expectInDocument(screen.getByText('+ max_workers: 4'))
+      const diff = screen.getByLabelText('Config diff')
+      expect(diff.textContent).toContain('- max_workers: 2')
+      expect(diff.textContent).toContain('+ max_workers: 4')
     })
     expect(requests).toContain('/v1/teams/team-a/config/hash1')
     expect(requests).toContain('/v1/teams/team-a/config/hash2')

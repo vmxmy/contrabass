@@ -1,7 +1,7 @@
+import { Badge, Empty, LayerCard, Table } from '@cloudflare/kumo'
 import type { WorkerState } from '../types'
 import { formatElapsedSince, formatWorkerStatus } from '../i18n/format'
 import { zhCN } from '../i18n/messages'
-import './WorkerTable.css'
 
 interface WorkerTableProps {
   workers: WorkerState[]
@@ -19,14 +19,14 @@ function truncate(value: string, limit: number): string {
   return `${value.slice(0, limit - 3)}...`
 }
 
-function getStatusClass(status: string): string {
+function statusVariant(status: string): 'success' | 'secondary' | 'warning' {
   switch (status.toLowerCase()) {
     case 'busy':
-      return 'worker-table__status worker-table__status--busy'
+      return 'success'
     case 'stopped':
-      return 'worker-table__status worker-table__status--stopped'
+      return 'warning'
     default:
-      return 'worker-table__status worker-table__status--idle'
+      return 'secondary'
   }
 }
 
@@ -43,7 +43,7 @@ function getStatusOrder(status: string): number {
 
 export function WorkerTable({ workers }: WorkerTableProps) {
   if (workers.length === 0) {
-    return <div className="worker-table__empty">{zhCN.workers.empty}</div>
+    return <Empty size="sm" title={zhCN.workers.empty} />
   }
 
   const sortedWorkers = [...workers].sort((a, b) => {
@@ -56,34 +56,32 @@ export function WorkerTable({ workers }: WorkerTableProps) {
   })
 
   return (
-    <div className="worker-table__wrapper">
-      <table className="worker-table" aria-label={zhCN.workers.ariaLabel}>
-        <thead>
-          <tr>
-            <th>{zhCN.workers.headers.workerID}</th>
-            <th>{zhCN.workers.headers.status}</th>
-            <th>{zhCN.workers.headers.currentTask}</th>
-            <th>{zhCN.workers.headers.pid}</th>
-            <th>{zhCN.workers.headers.age}</th>
-          </tr>
-        </thead>
-        <tbody>
+    <LayerCard className="overflow-x-auto p-0">
+      <Table aria-label={zhCN.workers.ariaLabel}>
+        <Table.Header>
+          <Table.Row>
+            <Table.Head>{zhCN.workers.headers.workerID}</Table.Head>
+            <Table.Head>{zhCN.workers.headers.status}</Table.Head>
+            <Table.Head>{zhCN.workers.headers.currentTask}</Table.Head>
+            <Table.Head>{zhCN.workers.headers.pid}</Table.Head>
+            <Table.Head>{zhCN.workers.headers.age}</Table.Head>
+          </Table.Row>
+        </Table.Header>
+        <Table.Body>
           {sortedWorkers.map((worker) => (
-            <tr key={worker.id}>
-              <td className="worker-table__mono" title={worker.id}>
-                {truncate(worker.id, 12)}
-              </td>
-              <td>
-                <span className={getStatusClass(worker.status)}>{formatWorkerStatus(worker.status)}</span>
-              </td>
-              <td title={worker.current_task ?? '-'}>{truncate(worker.current_task ?? '-', 20)}</td>
-              <td className="worker-table__mono">{worker.pid ?? '-'}</td>
-              <td>{formatAge(worker.started_at)}</td>
-            </tr>
+            <Table.Row key={worker.id}>
+              <Table.Cell title={worker.id}>{truncate(worker.id, 12)}</Table.Cell>
+              <Table.Cell>
+                <Badge variant={statusVariant(worker.status)}>{formatWorkerStatus(worker.status)}</Badge>
+              </Table.Cell>
+              <Table.Cell title={worker.current_task ?? '-'}>{truncate(worker.current_task ?? '-', 20)}</Table.Cell>
+              <Table.Cell>{worker.pid ?? '-'}</Table.Cell>
+              <Table.Cell>{formatAge(worker.started_at)}</Table.Cell>
+            </Table.Row>
           ))}
-        </tbody>
-      </table>
-    </div>
+        </Table.Body>
+      </Table>
+    </LayerCard>
   )
 }
 

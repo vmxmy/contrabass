@@ -1,10 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  SidebarInset,
-  SidebarProvider,
-  SidebarTrigger,
-} from "@/components/ui/sidebar";
-import { Separator } from "@/components/ui/separator";
+import { Badge, Grid, GridItem, LayerCard, Sidebar, Text } from "@cloudflare/kumo";
 import type {
   BackoffEntry,
   DetailSelection,
@@ -218,7 +213,7 @@ export function AppLayout({
   const doneTotal = (counts.recent_done ?? 0) + (counts.canceled ?? 0);
 
   return (
-    <SidebarProvider className="h-full min-h-0 bg-transparent">
+    <Sidebar.Provider className="flex h-full min-h-0 bg-kumo-canvas">
       <AppSidebar
         active={active}
         onSelect={(id) => {
@@ -229,54 +224,47 @@ export function AppLayout({
         connected={connected}
         runtimeLabel={runtimeLabel}
       />
-      <SidebarInset className="min-w-0 overflow-hidden">
-        <header className="flex min-h-16 shrink-0 flex-wrap items-center gap-3 border-b border-border/70 bg-background/90 px-3 py-3 shadow-sm backdrop-blur md:px-5">
-          <SidebarTrigger className="-ml-1 border border-border/70 bg-card/80 shadow-xs hover:bg-muted" />
-          <Separator
-            orientation="vertical"
-            className="mr-1 hidden h-5 bg-border/70 sm:block"
-          />
-          <div className="min-w-0">
-            <p className="text-[0.65rem] font-semibold uppercase tracking-[0.26em] text-primary/90">
-              Control Queue
-            </p>
-            <h2 className="truncate text-lg font-semibold leading-tight text-foreground">
-              {currentQueue.title}
-            </h2>
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <LayerCard className="m-3 flex shrink-0 flex-wrap items-center gap-3 p-3">
+          <Sidebar.Trigger />
+          <div className="min-w-0 flex-1">
+            <Text variant="secondary" size="sm">Control Queue</Text>
+            <Text variant="heading3" as="h2" truncate>{currentQueue.title}</Text>
           </div>
-          <span className="ml-auto rounded-full border border-border/70 bg-card px-3 py-1 text-xs font-medium text-muted-foreground shadow-xs">
-            {currentQueue.rows.length} 项
-          </span>
+          <Badge variant="secondary">{currentQueue.rows.length} 项</Badge>
           {state.build_info && state.build_info.commit ? (
-            <span
-              className="rounded-full border border-border/70 bg-card px-3 py-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground shadow-xs"
-              title={`built ${state.build_info.date}`}
-            >
+            <Badge variant="outline">
               {state.build_info.version}@{state.build_info.commit}
-            </span>
+            </Badge>
           ) : null}
-        </header>
-        <div className="min-h-0 flex-1 overflow-hidden p-3 sm:p-4 lg:p-6">
-          <div className="mx-auto flex h-full max-w-[1600px] min-w-0 flex-col gap-4">
-            <section
-              className="grid grid-cols-2 gap-3 lg:grid-cols-4"
-              aria-label="队列摘要"
-            >
-              <OverviewCard
-                label="连接"
-                value={connected ? "在线" : "离线"}
-                tone={connected ? "live" : "warn"}
-              />
-              <OverviewCard
-                label="运行负载"
-                value={`${state.stats.Running}/${state.stats.MaxAgents}`}
-              />
-              <OverviewCard label="待处理" value={queuedTotal} />
-              <OverviewCard
-                label="归档"
-                value={doneTotal}
-                subtle={runtimeLabel}
-              />
+        </LayerCard>
+        <div className="min-h-0 flex-1 overflow-hidden p-3 pt-0">
+          <div className="mx-auto flex h-full max-w-screen-2xl min-w-0 flex-col gap-4">
+            <section aria-label="队列摘要">
+              <Grid variant="4up" gap="sm">
+                <GridItem>
+                  <OverviewCard
+                    label="连接"
+                    value={connected ? "在线" : "离线"}
+                    tone={connected ? "live" : "warn"}
+                  />
+                </GridItem>
+                <GridItem>
+                  <OverviewCard
+                    label="运行负载"
+                    value={`${state.stats.Running}/${state.stats.MaxAgents}`}
+                  />
+                </GridItem>
+                <GridItem>
+                  <OverviewCard label="待处理" value={queuedTotal} />
+                </GridItem>
+                <GridItem>
+                  <OverviewCard
+                    label="归档"
+                    value={doneTotal}
+                  />
+                </GridItem>
+              </Grid>
             </section>
 
             <section className="min-h-0 flex-1 overflow-hidden">
@@ -294,7 +282,7 @@ export function AppLayout({
 
             <QueuePanel events={queueEvents} />
 
-            <section className="max-h-72 overflow-hidden rounded-2xl border border-border/70 bg-card/80 shadow-lg ring-1 ring-white/5">
+            <section className="max-h-72 overflow-hidden">
               <IssueDataTable
                 entries={currentQueue.rows}
                 emptyText={currentQueue.emptyText}
@@ -309,7 +297,7 @@ export function AppLayout({
             </section>
           </div>
         </div>
-      </SidebarInset>
+      </div>
       <IssueDetailSheet
         data={selection ? (sheetData ?? lastKnownSheetRef.current) : null}
         isStale={!!selection && !sheetData}
@@ -317,7 +305,7 @@ export function AppLayout({
           if (!open) setSelection(null);
         }}
       />
-    </SidebarProvider>
+    </Sidebar.Provider>
   );
 }
 
@@ -333,30 +321,19 @@ function OverviewCard({
   tone?: "live" | "warn";
 }) {
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-border/70 bg-card/80 px-4 py-3 shadow-sm">
-      <div
-        className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/70 to-transparent"
-        aria-hidden
-      />
-      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-        {label}
-      </p>
-      <div className="mt-2 flex items-end justify-between gap-2">
-        <p className="font-mono text-2xl font-semibold leading-none tabular-nums text-foreground">
-          {value}
-        </p>
+    <LayerCard className="p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <Text variant="secondary" size="sm">{label}</Text>
+          <Text variant="heading2" as="p">{value}</Text>
+        </div>
         {tone ? (
-          <span
-            className={`mb-1 h-2.5 w-2.5 rounded-full ${tone === "live" ? "bg-accent shadow-[0_0_18px_var(--accent)]" : "bg-destructive"}`}
-            aria-hidden
-          />
+          <Badge variant={tone === "live" ? "success" : "warning"}>
+            {tone === "live" ? "Live" : "Warn"}
+          </Badge>
         ) : null}
       </div>
-      {subtle ? (
-        <p className="mt-2 truncate font-mono text-xs text-muted-foreground">
-          {subtle}
-        </p>
-      ) : null}
-    </div>
+      {subtle ? <Text variant="mono-secondary" truncate>{subtle}</Text> : null}
+    </LayerCard>
   );
 }

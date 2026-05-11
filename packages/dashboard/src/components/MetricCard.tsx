@@ -1,4 +1,4 @@
-import './MetricCard.css'
+import { LayerCard, Text } from '@cloudflare/kumo'
 
 interface MetricCardProps {
   title: string
@@ -8,10 +8,10 @@ interface MetricCardProps {
 
 export function MetricCard({ title, value, subtitle }: MetricCardProps) {
   return (
-    <article className="metric-card">
-      <p className="metric-card__title">{title}</p>
-      <p className="metric-card__value">{value}</p>
-      {subtitle ? <p className="metric-card__subtitle">{subtitle}</p> : null}
-    </article>
+    <LayerCard className="p-4">
+      <Text variant="secondary" size="sm">{title}</Text>
+      <Text variant="heading2" as="p">{value}</Text>
+      {subtitle ? <Text variant="secondary" size="sm">{subtitle}</Text> : null}
+    </LayerCard>
   )
 }

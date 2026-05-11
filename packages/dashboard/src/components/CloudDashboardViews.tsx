@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Activity, GitBranch, History, LayoutDashboard, RefreshCw, ServerCog } from 'lucide-react'
+import { Pulse, GitBranch, ClockCounterClockwise, SquaresFour, ArrowsClockwise, Gear } from '@phosphor-icons/react'
+import { Badge, Banner, Button, CodeBlock, Empty, Grid, GridItem, LayerCard, Select, Table, Tabs, Text } from '@cloudflare/kumo'
 import type { AgentLogEvent, Issue, RunningEntry, StateSnapshot, TeamSnapshot } from '../types'
 import { apiFetch } from '../lib/api'
 import {
@@ -226,7 +227,7 @@ function useTeams(activeTeamId: string | null): LoadState<TeamSummary[]> {
         if (!cancelled) {
           setState({
             status: 'error',
-            data: activeTeamId ? [{ id: activeTeamId, name: activeTeamId }] : [{ id: 'synthetic-smoke', name: 'synthetic-smoke' }],
+            data: activeTeamId ? [{ id: activeTeamId, name: activeTeamId }] : [],
             error: error.message,
           })
         }
@@ -376,33 +377,33 @@ export function CloudDashboardViews({
 
   if (!teamId) {
     return (
-      <div className="rounded-3xl border border-border/70 bg-card/80 p-6 shadow-lg">
+      <LayerCard className="p-4">
         <TeamPicker teams={teams.data} activeTeamId={teamId} onTeamChange={(nextTeamId) => onTeamChange(nextTeamId, 'board')} />
-        <p className="mt-4 text-sm text-muted-foreground">Choose a team to open its cloud dashboard.</p>
-      </div>
+        {teams.error ? <Banner variant="alert" title={`Team list unavailable: ${teams.error}`} /> : null}
+        <Text variant="secondary" size="sm">Choose a team to open its cloud dashboard.</Text>
+      </LayerCard>
     )
   }
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
-      <section className="rounded-3xl border border-border/70 bg-card/80 p-4 shadow-lg">
-        <div className="flex flex-wrap items-center gap-3">
+      <LayerCard className="p-4">
+        <div className="flex flex-wrap items-end gap-3">
           <TeamPicker teams={teams.data} activeTeamId={teamId} onTeamChange={(nextTeamId) => onTeamChange(nextTeamId, 'board')} />
-          {teams.error ? <span className="text-xs text-muted-foreground">Team list fallback: {teams.error}</span> : null}
-          <div className="ml-auto flex flex-wrap gap-2">
-            {(Object.keys(VIEW_LABELS) as CloudDashboardView[]).map((item) => (
-              <button
-                key={item}
-                type="button"
-                onClick={() => onViewChange(item)}
-                className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${view === item ? 'border-primary bg-primary text-primary-foreground' : 'border-border/70 bg-background/50 text-muted-foreground hover:text-foreground'}`}
-              >
-                {VIEW_LABELS[item]}
-              </button>
-            ))}
+          {teams.error ? <Badge variant="warning">Team list fallback: {teams.error}</Badge> : null}
+          <div className="ml-auto">
+            <Tabs
+              variant="segmented"
+              tabs={(Object.keys(VIEW_LABELS) as CloudDashboardView[]).map((item) => ({
+                value: item,
+                label: VIEW_LABELS[item],
+              }))}
+              value={view}
+              onValueChange={(next) => onViewChange(next as CloudDashboardView)}
+            />
           </div>
         </div>
-      </section>
+      </LayerCard>
 
       {view === 'board' ? (
         <CloudBoardPanel board={board.data} boardStatus={board.status} boardError={board.error} onRefresh={board.refresh} onSelectRun={setSelectedRunId} />
@@ -418,21 +419,19 @@ function TeamPicker({ teams, activeTeamId, onTeamChange }: { teams: TeamSummary[
   const options = teams.length > 0 ? teams : activeTeamId ? [{ id: activeTeamId, name: activeTeamId }] : []
 
   return (
-    <label className="flex items-center gap-2 text-sm font-medium text-foreground">
-      Team
-      <select
-        value={activeTeamId ?? ''}
-        onChange={(event) => onTeamChange(event.target.value)}
-        className="rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm text-foreground shadow-xs"
-      >
-        {activeTeamId ? null : <option value="">Select a team</option>}
-        {options.map((team) => (
-          <option key={team.id} value={team.id}>
-            {team.name}
-          </option>
-        ))}
-      </select>
-    </label>
+    <Select
+      label="Team"
+      value={activeTeamId ?? ''}
+      onValueChange={(value) => onTeamChange(String(value))}
+      placeholder="Select a team"
+    >
+      {activeTeamId ? null : <Select.Option value="">Select a team</Select.Option>}
+      {options.map((team) => (
+        <Select.Option key={team.id} value={team.id}>
+          {team.name}
+        </Select.Option>
+      ))}
+    </Select>
   )
 }
 
@@ -450,46 +449,44 @@ function CloudBoardPanel({
   onSelectRun: (runId: string | null) => void
 }) {
   return (
-    <section className="min-h-0 flex-1 overflow-hidden rounded-3xl border border-border/70 bg-card/80 p-4 shadow-lg">
-      <div className="mb-4 flex items-center gap-3">
-        <LayoutDashboard className="h-5 w-5 text-primary" />
-        <div>
-          <h3 className="text-base font-semibold">Team board</h3>
-          <p className="text-xs text-muted-foreground">Open, claimed, running, and done issue runs from TeamCoordinator.</p>
+    <LayerCard className="min-h-0 flex-1 overflow-hidden p-4">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <SquaresFour />
+        <div className="min-w-0 flex-1">
+          <Text variant="heading3" as="h3">Team board</Text>
+          <Text variant="secondary" size="sm">Open, claimed, running, and done issue runs from TeamCoordinator.</Text>
         </div>
-        <button type="button" onClick={() => void onRefresh()} className="ml-auto inline-flex items-center gap-2 rounded-full border border-border/70 bg-background/50 px-3 py-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground">
-          <RefreshCw className="h-3.5 w-3.5" />
+        <Button type="button" size="sm" variant="secondary" icon={ArrowsClockwise} onClick={() => void onRefresh()}>
           Refresh
-        </button>
+        </Button>
       </div>
-      {boardStatus === 'error' && boardError ? <p className="mb-3 rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{boardError}</p> : null}
-      <div className="grid min-h-0 grid-cols-1 gap-3 overflow-auto xl:grid-cols-4">
+      {boardStatus === 'error' && boardError ? <Banner variant="error" title={boardError} /> : null}
+      <Grid variant="4up" gap="sm" className="min-h-0 overflow-auto">
         {(Object.keys(PHASE_LABELS) as CloudBoardPhase[]).map((phase) => (
-          <div key={phase} className="rounded-2xl border border-border/70 bg-background/35 p-3">
-            <div className="mb-3 flex items-center justify-between">
-              <h4 className="text-sm font-semibold">{PHASE_LABELS[phase]}</h4>
-              <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground">{board[phase].length}</span>
-            </div>
-            <div className="space-y-2">
-              {board[phase].length === 0 ? <p className="text-xs text-muted-foreground">No issues</p> : null}
-              {board[phase].map((entry) => (
-                <button
-                  key={`${phase}:${entry.issueRef}:${entry.runId ?? 'no-run'}`}
-                  type="button"
-                  onClick={() => onSelectRun(entry.runId ?? null)}
-                  className="w-full rounded-2xl border border-border/60 bg-card/70 p-3 text-left shadow-xs transition hover:-translate-y-0.5 hover:border-primary/70"
-                >
-                  <p className="font-mono text-xs text-primary">{entry.issueRef}</p>
-                  <p className="mt-1 line-clamp-2 text-sm font-semibold">{entry.title ?? entry.issueRef}</p>
-                  <p className="mt-2 text-xs text-muted-foreground">{entry.runId ? `run ${entry.runId}` : 'not dispatched'}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">{entry.assignedWorkerId ?? 'unassigned'} · {formatTimestamp(entry.lastUpdated)}</p>
-                </button>
-              ))}
-            </div>
-          </div>
+          <GridItem key={phase}>
+            <LayerCard className="h-full p-3">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <Text variant="heading3" as="h4">{PHASE_LABELS[phase]}</Text>
+                <Badge variant="secondary">{board[phase].length}</Badge>
+              </div>
+              <div className="grid gap-2">
+                {board[phase].length === 0 ? <Text variant="secondary" size="sm">No issues</Text> : null}
+                {board[phase].map((entry) => (
+                  <Button
+                    key={`${phase}:${entry.issueRef}:${entry.runId ?? 'no-run'}`}
+                    type="button"
+                    variant="secondary"
+                    onClick={() => onSelectRun(entry.runId ?? null)}
+                  >
+                    {entry.issueRef} · {entry.title ?? entry.issueRef} · {entry.runId ? `run ${entry.runId}` : 'not dispatched'}
+                  </Button>
+                ))}
+              </div>
+            </LayerCard>
+          </GridItem>
         ))}
-      </div>
-    </section>
+      </Grid>
+    </LayerCard>
   )
 }
 
@@ -511,63 +508,70 @@ function RunDetailPanel({
   const visibleLogs = selectedRun?.assignedWorkerId ? logs.filter((log) => log.worker_id === selectedRun.assignedWorkerId).slice(-12) : logs.slice(-12)
 
   return (
-    <section className="grid min-h-0 flex-1 gap-4 overflow-hidden lg:grid-cols-[20rem_minmax(0,1fr)]">
-      <div className="overflow-auto rounded-3xl border border-border/70 bg-card/80 p-4 shadow-lg">
+    <section className="grid min-h-0 flex-1 gap-4 overflow-hidden lg:grid-cols-2">
+      <LayerCard className="overflow-auto p-4">
         <div className="mb-3 flex items-center gap-2">
-          <GitBranch className="h-5 w-5 text-primary" />
-          <h3 className="text-base font-semibold">Runs</h3>
+          <GitBranch />
+          <Text variant="heading3" as="h3">Runs</Text>
         </div>
-        <div className="space-y-2">
-          {activeRuns.length === 0 ? <p className="text-sm text-muted-foreground">No active or historical run IDs on the board yet.</p> : null}
+        <div className="grid gap-2">
+          {activeRuns.length === 0 ? <Empty size="sm" title="No active or historical run IDs on the board yet." /> : null}
           {activeRuns.map((entry) => (
-            <button key={`${entry.issueRef}:${entry.runId}`} type="button" onClick={() => onSelectRun(entry.runId ?? null)} className={`w-full rounded-2xl border p-3 text-left text-sm transition ${selectedRun?.runId === entry.runId ? 'border-primary bg-primary/10' : 'border-border/70 bg-background/35 hover:border-primary/70'}`}>
-              <span className="font-mono text-xs text-primary">{entry.runId}</span>
-              <span className="mt-1 block font-semibold">{entry.issueRef}</span>
-              <span className="text-xs text-muted-foreground">{PHASE_LABELS[entry.phase]}</span>
-            </button>
+            <Button
+              key={`${entry.issueRef}:${entry.runId}`}
+              type="button"
+              variant={selectedRun?.runId === entry.runId ? 'primary' : 'secondary'}
+              onClick={() => onSelectRun(entry.runId ?? null)}
+            >
+              {entry.runId} · {entry.issueRef} · {PHASE_LABELS[entry.phase]}
+            </Button>
           ))}
         </div>
-      </div>
-      <div className="min-h-0 overflow-auto rounded-3xl border border-border/70 bg-card/80 p-5 shadow-lg">
-        <h3 className="text-base font-semibold">Run detail</h3>
-        {!selectedRun ? <p className="mt-3 text-sm text-muted-foreground">Select a run to inspect its worker, phase, and recent events.</p> : null}
+      </LayerCard>
+      <LayerCard className="min-h-0 overflow-auto p-5">
+        <Text variant="heading3" as="h3">Run detail</Text>
+        {!selectedRun ? <Text variant="secondary" size="sm">Select a run to inspect its worker, phase, and recent events.</Text> : null}
         {selectedRun ? (
-          <div className="mt-4 space-y-4">
-            <dl className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <DetailItem label="Issue" value={selectedRun.issueRef} />
-              <DetailItem label="Run" value={selectedRun.runId ?? 'not dispatched'} />
-              <DetailItem label="Worker" value={selectedRun.assignedWorkerId ?? 'unassigned'} />
-              <DetailItem label="Phase" value={PHASE_LABELS[selectedRun.phase]} />
-              <DetailItem label="Updated" value={formatTimestamp(selectedRun.lastUpdated)} />
-              <DetailItem label="Activity" value={runningRow?.last_activity_kind ?? 'no activity'} />
-              <DetailItem label="Tokens in" value={runningRow?.tokens_in ?? 0} />
-              <DetailItem label="Tokens out" value={runningRow?.tokens_out ?? 0} />
-            </dl>
-            <div className="rounded-2xl border border-border/70 bg-background/35 p-4">
-              <h4 className="mb-3 text-sm font-semibold">Recent worker events</h4>
-              {visibleLogs.length === 0 ? <p className="text-sm text-muted-foreground">No log, tool, or error events received yet.</p> : null}
-              <div className="space-y-2 font-mono text-xs">
+          <div className="mt-4 grid gap-4">
+            <Grid variant="4up" gap="sm">
+              <GridItem><DetailItem label="Issue" value={selectedRun.issueRef} /></GridItem>
+              <GridItem><DetailItem label="Run" value={selectedRun.runId ?? 'not dispatched'} /></GridItem>
+              <GridItem><DetailItem label="Worker" value={selectedRun.assignedWorkerId ?? 'unassigned'} /></GridItem>
+              <GridItem><DetailItem label="Phase" value={PHASE_LABELS[selectedRun.phase]} /></GridItem>
+              <GridItem><DetailItem label="Updated" value={formatTimestamp(selectedRun.lastUpdated)} /></GridItem>
+              <GridItem><DetailItem label="Activity" value={runningRow?.last_activity_kind ?? 'no activity'} /></GridItem>
+              <GridItem><DetailItem label="Tokens in" value={runningRow?.tokens_in ?? 0} /></GridItem>
+              <GridItem><DetailItem label="Tokens out" value={runningRow?.tokens_out ?? 0} /></GridItem>
+            </Grid>
+            <LayerCard className="p-4">
+              <Text variant="heading3" as="h4">Recent worker events</Text>
+              {visibleLogs.length === 0 ? <Text variant="secondary" size="sm">No log, tool, or error events received yet.</Text> : null}
+              <div className="grid gap-2">
                 {visibleLogs.map((log) => (
-                  <p key={`${log.timestamp}:${log.worker_id}:${log.line}`} className="rounded-xl bg-card/70 px-3 py-2 text-muted-foreground">
-                    <span className="text-primary">{formatTimestamp(log.timestamp)}</span> {log.worker_id} {log.stream}: {log.line}
-                  </p>
+                  <Text key={`${log.timestamp}:${log.worker_id}:${log.line}`} variant="mono-secondary">
+                    {formatTimestamp(log.timestamp)} {log.worker_id} {log.stream}: {log.line}
+                  </Text>
                 ))}
               </div>
-            </div>
+            </LayerCard>
           </div>
         ) : null}
-      </div>
+      </LayerCard>
     </section>
   )
 }
 
 function DetailItem({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="rounded-2xl border border-border/70 bg-background/35 p-3">
-      <dt className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">{label}</dt>
-      <dd className="mt-2 break-words font-mono text-sm text-foreground">{value}</dd>
-    </div>
+    <LayerCard className="p-3">
+      <Text variant="secondary" size="sm">{label}</Text>
+      <Text variant="mono" truncate>{value}</Text>
+    </LayerCard>
   )
+}
+
+function diffLinesToText(lines: DiffLine[]): string {
+  return lines.map((line) => `${line.kind === 'add' ? '+ ' : line.kind === 'remove' ? '- ' : '  '}${line.text || ' '}`).join('\n')
 }
 
 function ConfigHistoryPanel({ teamId, history, teamSnapshot }: { teamId: string; history: LoadState<ConfigVersion[]>; teamSnapshot: TeamSnapshot | null }) {
@@ -620,130 +624,118 @@ function ConfigHistoryPanel({ teamId, history, teamSnapshot }: { teamId: string;
   }, [teamId, fromHash, toHash])
 
   return (
-    <section className="min-h-0 flex-1 overflow-auto rounded-3xl border border-border/70 bg-card/80 p-5 shadow-lg">
+    <LayerCard className="min-h-0 flex-1 overflow-auto p-5">
       <div className="mb-4 flex items-center gap-3">
-        <History className="h-5 w-5 text-primary" />
+        <ClockCounterClockwise />
         <div>
-          <h3 className="text-base font-semibold">Config history</h3>
-          <p className="text-xs text-muted-foreground">Versions, authors, timestamps, notes, and active usage caps.</p>
+          <Text variant="heading3" as="h3">Config history</Text>
+          <Text variant="secondary" size="sm">Versions, authors, timestamps, notes, and active usage caps.</Text>
         </div>
       </div>
-      {history.status === 'error' && history.error ? <p className="mb-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">{history.error}</p> : null}
-      <div className="mb-4 grid gap-3 sm:grid-cols-3">
-        <DetailItem label="Max workers" value={teamSnapshot?.config.max_workers ?? 0} />
-        <DetailItem label="Lease seconds" value={teamSnapshot?.config.claim_lease_seconds ?? 0} />
-        <DetailItem label="Agent type" value={teamSnapshot?.config.agent_type || 'unknown'} />
-      </div>
-      <div className="mb-4 rounded-2xl border border-border/70 bg-background/35 p-4">
-        <div className="mb-3 flex flex-wrap items-center gap-3">
-          <label className="flex items-center gap-2 text-sm font-medium">
-            Config from
-            <select
-              value={fromHash ?? ''}
-              onChange={(event) => setFromHash(event.target.value || null)}
-              className="rounded-xl border border-border/70 bg-background/70 px-3 py-2 font-mono text-xs text-foreground shadow-xs"
-            >
-              {history.data.map((version) => (
-                <option key={`from:${version.contentHash}`} value={version.contentHash}>
-                  v{version.version} {shortHash(version.contentHash)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex items-center gap-2 text-sm font-medium">
-            Config to
-            <select
-              value={toHash ?? ''}
-              onChange={(event) => setToHash(event.target.value || null)}
-              className="rounded-xl border border-border/70 bg-background/70 px-3 py-2 font-mono text-xs text-foreground shadow-xs"
-            >
-              {history.data.map((version) => (
-                <option key={`to:${version.contentHash}`} value={version.contentHash}>
-                  v{version.version} {shortHash(version.contentHash)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <p className="text-xs text-muted-foreground">
-            {fromVersion && toVersion ? `Diff v${fromVersion.version} to v${toVersion.version}` : 'Select two versions to diff'}
-          </p>
-        </div>
-        {diffState.status === 'error' && diffState.error ? <p className="mb-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">{diffState.error}</p> : null}
-        {history.data.length < 2 ? <p className="text-sm text-muted-foreground">At least two config versions are required to render a diff.</p> : null}
-        {history.data.length >= 2 ? (
-          <pre aria-label="Config diff" className="max-h-96 overflow-auto rounded-xl bg-card/70 p-3 font-mono text-xs leading-6">
-            {diffState.status === 'loading' && diffState.data.length === 0 ? <span className="text-muted-foreground">Loading config diff…</span> : null}
-            {diffState.status !== 'loading' && diffState.data.length === 0 && !diffState.error ? <span className="text-muted-foreground">No changes between selected versions.</span> : null}
-            {diffState.data.map((line, index) => (
-              <span
-                key={`${index}:${line.kind}:${line.text}`}
-                className={`block whitespace-pre-wrap ${line.kind === 'add' ? 'text-emerald-300' : line.kind === 'remove' ? 'text-rose-300' : 'text-muted-foreground'}`}
-              >
-                {line.kind === 'add' ? '+ ' : line.kind === 'remove' ? '- ' : '  '}{line.text || ' '}
-              </span>
-            ))}
-          </pre>
-        ) : null}
-      </div>
-      {history.data.length === 0 ? <p className="text-sm text-muted-foreground">No config versions returned yet. Task 9 API endpoints can populate this panel later.</p> : null}
-      <div className="overflow-x-auto rounded-2xl border border-border/70">
-        <table className="w-full min-w-[760px] border-collapse text-sm">
-          <thead className="bg-background/50 text-left text-xs uppercase tracking-[0.16em] text-muted-foreground">
-            <tr>
-              <th className="px-3 py-2">Version</th>
-              <th className="px-3 py-2">Hash</th>
-              <th className="px-3 py-2">Author</th>
-              <th className="px-3 py-2">Created</th>
-              <th className="px-3 py-2">Notes</th>
-            </tr>
-          </thead>
-          <tbody>
+      {history.status === 'error' && history.error ? <Banner variant="alert" title={history.error} /> : null}
+      <Grid variant="3up" gap="sm" className="mb-4">
+        <GridItem><DetailItem label="Max workers" value={teamSnapshot?.config.max_workers ?? 0} /></GridItem>
+        <GridItem><DetailItem label="Lease seconds" value={teamSnapshot?.config.claim_lease_seconds ?? 0} /></GridItem>
+        <GridItem><DetailItem label="Agent type" value={teamSnapshot?.config.agent_type || 'unknown'} /></GridItem>
+      </Grid>
+      <LayerCard className="mb-4 p-4">
+        <div className="mb-3 flex flex-wrap items-end gap-3">
+          <Select label="Config from" value={fromHash ?? ''} onValueChange={(value) => setFromHash(String(value) || null)}>
             {history.data.map((version) => (
-              <tr key={`${version.version}:${version.contentHash}`} className="border-t border-border/70">
-                <td className="px-3 py-2 font-mono">v{version.version}{version.active ? ' · active' : ''}</td>
-                <td className="px-3 py-2 font-mono text-primary">{shortHash(version.contentHash)}</td>
-                <td className="px-3 py-2">{version.createdBy}</td>
-                <td className="px-3 py-2">{formatTimestamp(version.createdAt)}</td>
-                <td className="px-3 py-2 text-muted-foreground">{version.notes ?? '—'}</td>
-              </tr>
+              <Select.Option key={`from:${version.contentHash}`} value={version.contentHash}>
+                v{version.version} {shortHash(version.contentHash)}
+              </Select.Option>
             ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
+          </Select>
+          <Select label="Config to" value={toHash ?? ''} onValueChange={(value) => setToHash(String(value) || null)}>
+            {history.data.map((version) => (
+              <Select.Option key={`to:${version.contentHash}`} value={version.contentHash}>
+                v{version.version} {shortHash(version.contentHash)}
+              </Select.Option>
+            ))}
+          </Select>
+          <Text variant="secondary" size="sm">
+            {fromVersion && toVersion ? `Diff v${fromVersion.version} to v${toVersion.version}` : 'Select two versions to diff'}
+          </Text>
+        </div>
+        {diffState.status === 'error' && diffState.error ? <Banner variant="alert" title={diffState.error} /> : null}
+        {history.data.length < 2 ? <Text variant="secondary" size="sm">At least two config versions are required to render a diff.</Text> : null}
+        {history.data.length >= 2 ? (
+          <div aria-label="Config diff">
+            <CodeBlock
+              lang="bash"
+              code={
+                diffState.status === 'loading' && diffState.data.length === 0
+                  ? 'Loading config diff…'
+                  : diffState.status !== 'loading' && diffState.data.length === 0 && !diffState.error
+                    ? 'No changes between selected versions.'
+                    : diffLinesToText(diffState.data)
+              }
+            />
+          </div>
+        ) : null}
+      </LayerCard>
+      {history.data.length === 0 ? <Text variant="secondary" size="sm">No config versions returned yet. Task 9 API endpoints can populate this panel later.</Text> : null}
+      <LayerCard className="overflow-x-auto p-0">
+        <Table>
+          <Table.Header>
+            <Table.Row>
+              <Table.Head>Version</Table.Head>
+              <Table.Head>Hash</Table.Head>
+              <Table.Head>Author</Table.Head>
+              <Table.Head>Created</Table.Head>
+              <Table.Head>Notes</Table.Head>
+            </Table.Row>
+          </Table.Header>
+          <Table.Body>
+            {history.data.map((version) => (
+              <Table.Row key={`${version.version}:${version.contentHash}`}>
+                <Table.Cell>v{version.version}{version.active ? ' · active' : ''}</Table.Cell>
+                <Table.Cell>{shortHash(version.contentHash)}</Table.Cell>
+                <Table.Cell>{version.createdBy}</Table.Cell>
+                <Table.Cell>{formatTimestamp(version.createdAt)}</Table.Cell>
+                <Table.Cell>{version.notes ?? '—'}</Table.Cell>
+              </Table.Row>
+            ))}
+          </Table.Body>
+        </Table>
+      </LayerCard>
+    </LayerCard>
   )
 }
 
 function TrackerHealthPanel({ health }: { health: LoadState<TrackerAdapterHealth[]> }) {
   return (
-    <section className="min-h-0 flex-1 overflow-auto rounded-3xl border border-border/70 bg-card/80 p-5 shadow-lg">
+    <LayerCard className="min-h-0 flex-1 overflow-auto p-5">
       <div className="mb-4 flex items-center gap-3">
-        <Activity className="h-5 w-5 text-primary" />
+        <Pulse />
         <div>
-          <h3 className="text-base font-semibold">Tracker health</h3>
-          <p className="text-xs text-muted-foreground">Last 24h adapter duration, success rate, issue counts, and errors.</p>
+          <Text variant="heading3" as="h3">Tracker health</Text>
+          <Text variant="secondary" size="sm">Last 24h adapter duration, success rate, issue counts, and errors.</Text>
         </div>
       </div>
-      {health.status === 'error' && health.error ? <p className="mb-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">{health.error}</p> : null}
-      {health.data.length === 0 ? <p className="text-sm text-muted-foreground">No tracker metrics returned yet. Task 10 observability can populate this panel later.</p> : null}
-      <div className="grid gap-3 lg:grid-cols-3">
+      {health.status === 'error' && health.error ? <Banner variant="alert" title={health.error} /> : null}
+      {health.data.length === 0 ? <Text variant="secondary" size="sm">No tracker metrics returned yet. Task 10 observability can populate this panel later.</Text> : null}
+      <Grid variant="3up" gap="sm">
         {health.data.map((adapter) => (
-          <article key={adapter.adapter} className="rounded-2xl border border-border/70 bg-background/35 p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <ServerCog className="h-4 w-4 text-primary" />
-              <h4 className="font-semibold">{adapter.adapter}</h4>
-            </div>
-            <dl className="grid grid-cols-2 gap-3 text-sm">
-              <DetailItem label="Success" value={`${Math.round(adapter.successRate * 100)}%`} />
-              <DetailItem label="Avg ms" value={adapter.avgDurationMs} />
-              <DetailItem label="Seen" value={adapter.issuesSeen} />
-              <DetailItem label="Updated" value={adapter.issuesUpdated} />
-            </dl>
-            <p className="mt-3 text-xs text-muted-foreground">Last poll: {formatTimestamp(adapter.lastPollAt)}</p>
-            {adapter.lastError ? <p className="mt-2 rounded-xl bg-destructive/10 px-3 py-2 text-xs text-destructive">{adapter.lastError}</p> : null}
-          </article>
+          <GridItem key={adapter.adapter}>
+            <LayerCard className="p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <Gear />
+                <Text variant="heading3" as="h4">{adapter.adapter}</Text>
+              </div>
+              <Grid variant="2up" gap="sm">
+                <GridItem><DetailItem label="Success" value={`${Math.round(adapter.successRate * 100)}%`} /></GridItem>
+                <GridItem><DetailItem label="Avg ms" value={adapter.avgDurationMs} /></GridItem>
+                <GridItem><DetailItem label="Seen" value={adapter.issuesSeen} /></GridItem>
+                <GridItem><DetailItem label="Updated" value={adapter.issuesUpdated} /></GridItem>
+              </Grid>
+              <Text variant="secondary" size="sm">Last poll: {formatTimestamp(adapter.lastPollAt)}</Text>
+              {adapter.lastError ? <Banner variant="error" title={adapter.lastError} /> : null}
+            </LayerCard>
+          </GridItem>
         ))}
-      </div>
-    </section>
+      </Grid>
+    </LayerCard>
   )
 }

@@ -8,10 +8,6 @@ function expectInDocument(value: unknown) {
   ;(expect(value) as any).toBeInTheDocument()
 }
 
-function expectHasClass(value: unknown, className: string) {
-  ;(expect(value) as any).toHaveClass(className)
-}
-
 afterEach(() => {
   cleanup()
 })
@@ -101,20 +97,20 @@ describe('TeamTable', () => {
     expectInDocument(screen.getByText('1/2/1'))
   })
 
-  it('applies phase badge classes for phase color variants', () => {
+  it('renders Kumo phase badge labels for each phase variant', () => {
     const { rerender } = render(<TeamTable snapshot={makeSnapshot('team-plan')} />)
-    expectHasClass(screen.getByText('规划'), 'team-table__phase-badge--plan')
+    expectInDocument(screen.getByText('规划'))
 
     rerender(<TeamTable snapshot={makeSnapshot('team-exec')} />)
-    expectHasClass(screen.getByText('执行'), 'team-table__phase-badge--exec')
+    expectInDocument(screen.getByText('执行'))
 
     rerender(<TeamTable snapshot={makeSnapshot('team-verify')} />)
-    expectHasClass(screen.getByText('验证'), 'team-table__phase-badge--verify')
+    expectInDocument(screen.getByText('验证'))
 
     rerender(<TeamTable snapshot={makeSnapshot('team-fix')} />)
-    expectHasClass(screen.getByText('修复'), 'team-table__phase-badge--fix')
+    expectInDocument(screen.getByText('修复'))
 
     rerender(<TeamTable snapshot={makeSnapshot('failed')} />)
-    expectHasClass(screen.getByText('失败'), 'team-table__phase-badge--failed')
+    expectInDocument(screen.getByText('失败'))
   })
 })

@@ -3,7 +3,7 @@ import { AppLayout } from "./components/AppLayout";
 import { VersionSkewBanner } from "./components/VersionSkewBanner";
 import type { CloudDashboardView } from "./components/CloudDashboardViews";
 import type { CloudBoardSnapshot } from "./cloudModels";
-import { TooltipProvider } from "./components/ui/tooltip";
+import { Banner, LayerCard, Loader, Text, TooltipProvider } from "@cloudflare/kumo";
 import { useSSE } from "./hooks/useSSE";
 import { useTeamSubscription } from "./hooks/useTeamSubscription";
 import { formatDuration } from "./i18n/format";
@@ -115,36 +115,29 @@ function App() {
 
   if (!state) {
     return (
-      <div className="flex min-h-dvh items-center justify-center bg-background px-6 text-muted-foreground">
-        <div className="rounded-2xl border border-border/70 bg-card/80 px-6 py-5 text-center shadow-lg">
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-primary">
-            Contrabass
-          </p>
-          <p className="mt-2 text-sm">{zhCN.app.sections.runningSessions}…</p>
-        </div>
+      <div className="flex min-h-dvh items-center justify-center bg-kumo-canvas p-6">
+        <LayerCard className="grid justify-items-center gap-3 p-6">
+          <Text variant="heading3" as="p">Contrabass</Text>
+          <Loader aria-label={zhCN.app.sections.runningSessions} />
+          <Text variant="secondary" size="sm">{zhCN.app.sections.runningSessions}…</Text>
+        </LayerCard>
       </div>
     );
   }
 
   return (
     <TooltipProvider>
-      <div className="flex h-dvh w-full flex-col overflow-hidden bg-background text-foreground">
+      <div className="flex h-dvh w-full flex-col overflow-hidden bg-kumo-canvas text-kumo-default">
         <VersionSkewBanner />
         {teamSubscription.reconnecting ? (
-          <div
-            className="border-b border-amber-500/40 bg-amber-500/15 px-4 py-2 text-xs font-medium text-amber-700"
-            role="status"
-          >
-            Reconnecting to live team updates…
-          </div>
+          <Banner variant="alert" title="Reconnecting to live team updates…" />
         ) : null}
         {error || teamSubscription.error ? (
-          <div
-            className="border-b border-destructive/40 bg-destructive/15 px-4 py-2 text-xs font-medium text-destructive"
-            role="alert"
-          >
-            {zhCN.app.connectionError}: {error ?? teamSubscription.error}
-          </div>
+          <Banner
+            variant="error"
+            title={zhCN.app.connectionError}
+            description={error ?? teamSubscription.error}
+          />
         ) : null}
         <div className="flex-1 overflow-hidden">
           <AppLayout

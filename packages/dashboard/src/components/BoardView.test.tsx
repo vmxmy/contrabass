@@ -12,10 +12,6 @@ function expectValue(value: unknown, expected: string) {
   ;(expect(value) as any).toHaveValue(expected)
 }
 
-function expectClass(value: unknown, expected: string) {
-  ;(expect(value) as any).toHaveClass(expected)
-}
-
 function makeIssue(partial: Partial<BoardIssue>): BoardIssue {
   return {
     id: partial.id ?? 'issue-1',
@@ -107,7 +103,7 @@ describe('BoardView', () => {
     globalThis.fetch = originalFetch
   })
 
-  it('state badges show correct colors', () => {
+  it('state badges render localized state labels', () => {
     const issues: BoardIssue[] = [
       makeIssue({ id: 'a', identifier: 'BOARD-1', state: 'open' }),
       makeIssue({ id: 'b', identifier: 'BOARD-2', state: 'in_progress' }),
@@ -119,10 +115,6 @@ describe('BoardView', () => {
     expectInDocument(screen.getByText('待处理'))
     expectInDocument(screen.getByText('进行中'))
     expectInDocument(screen.getByText('已完成'))
-
-    expectClass(screen.getByText('待处理'), 'board-view__state-badge--open')
-    expectClass(screen.getByText('进行中'), 'board-view__state-badge--in-progress')
-    expectClass(screen.getByText('已完成'), 'board-view__state-badge--done')
   })
 
   it('sorts issues by updated_at descending', () => {

@@ -1,7 +1,7 @@
+import { Badge, Empty, LayerCard, Table } from '@cloudflare/kumo'
 import type { RunningEntry } from '../types'
 import { formatElapsedSince, formatNumber, formatPhase, formatRelativeTime } from '../i18n/format'
 import { zhCN } from '../i18n/messages'
-import './SessionsTable.css'
 
 interface SessionsTableProps {
   entries: RunningEntry[]
@@ -44,47 +44,27 @@ function activityTone(lastActivityAt: string | undefined): 'none' | 'fresh' | 'w
   return 'stale'
 }
 
-function activityDotColor(tone: ReturnType<typeof activityTone>): string {
+function activityVariant(tone: ReturnType<typeof activityTone>): 'success' | 'warning' | 'error' | 'secondary' {
   switch (tone) {
     case 'fresh':
-      return 'oklch(70% 0.18 145)'
+      return 'success'
     case 'warm':
-      return 'oklch(76% 0.15 80)'
+      return 'warning'
     case 'stale':
-      return 'oklch(63% 0.2 28)'
+      return 'error'
     default:
-      return 'oklch(62% 0.02 250)'
+      return 'secondary'
   }
 }
 
 function renderLastActivity(entry: RunningEntry) {
   const tone = activityTone(entry.last_activity_at)
   const relative = entry.last_activity_at ? formatRelativeTime(entry.last_activity_at) : zhCN.sessions.relative.unknown
+  const label = entry.last_activity_kind ? `${relative} ${entry.last_activity_kind}` : relative
 
   return (
-    <span
-      className="sessions-table__activity"
-      data-activity-tone={tone}
-      title={entry.last_heartbeat_at ? `heartbeat ${formatRelativeTime(entry.last_heartbeat_at)}` : undefined}
-    >
-      <span
-        aria-hidden="true"
-        className="sessions-table__activity-dot"
-        style={{
-          backgroundColor: activityDotColor(tone),
-          borderRadius: '999px',
-          display: 'inline-block',
-          height: '0.55rem',
-          marginRight: '0.35rem',
-          width: '0.55rem',
-        }}
-      />
-      <span>{relative}</span>
-      {entry.last_activity_kind ? (
-        <span className="sessions-table__activity-kind" style={{ color: 'var(--text-secondary)', marginLeft: '0.35rem' }}>
-          {entry.last_activity_kind}
-        </span>
-      ) : null}
+    <span title={entry.last_heartbeat_at ? `heartbeat ${formatRelativeTime(entry.last_heartbeat_at)}` : undefined}>
+      <Badge variant={activityVariant(tone)}>{label}</Badge>
     </span>
   )
 }
@@ -111,22 +91,10 @@ function renderIteration(entry: RunningEntry) {
     return null
   }
 
-  return (
-    <span
-      className="sessions-table__iter-badge"
-      style={{
-        border: '1px solid var(--border-color)',
-        borderRadius: '999px',
-        padding: '0.1rem 0.45rem',
-      }}
-    >
-      iter {entry.iteration ?? 0}/{max}
-    </span>
-  )
+  return <Badge variant="secondary">iter {entry.iteration ?? 0}/{max}</Badge>
 }
 
-// StagePill renders a 5-step pill showing the current agent stage.
-// When agent_stage is empty/step is 0, falls back to the phase_label text.
+// StagePill renders a compact Kumo badge instead of custom progress styling.
 function StagePill({ entry }: { entry: RunningEntry }) {
   const stage = entry.agent_stage ?? ''
   const step = entry.agent_stage_step ?? 0
@@ -138,43 +106,8 @@ function StagePill({ entry }: { entry: RunningEntry }) {
   const stageLabel = zhCN.sessions.stages[step - 1] ?? stage
 
   return (
-    <span className="sessions-table__stage-pill" aria-label={stage}>
-      <span
-        className="sessions-table__stage-name"
-        style={{ color: 'var(--text-secondary)', display: 'block', fontSize: '0.7rem', marginBottom: '0.2rem' }}
-      >
-        {stageLabel}
-      </span>
-      <span style={{ display: 'flex', gap: '0.2rem' }}>
-        {[1, 2, 3, 4, 5].map((s) => {
-          let bg: string
-          let border: string
-          if (s < step) {
-            bg = 'var(--accent-color, oklch(55% 0.18 250))'
-            border = 'var(--accent-color, oklch(55% 0.18 250))'
-          } else if (s === step) {
-            bg = 'var(--accent-active, oklch(45% 0.22 250))'
-            border = 'var(--accent-active, oklch(45% 0.22 250))'
-          } else {
-            bg = 'transparent'
-            border = 'var(--border-color, oklch(70% 0.02 250))'
-          }
-          return (
-            <span
-              key={s}
-              aria-hidden="true"
-              style={{
-                background: bg,
-                border: `1.5px solid ${border}`,
-                borderRadius: '2px',
-                display: 'inline-block',
-                height: '0.55rem',
-                width: '1rem',
-              }}
-            />
-          )
-        })}
-      </span>
+    <span aria-label={stage}>
+      <Badge variant="info">{stageLabel} {step}/5</Badge>
     </span>
   )
 }
@@ -210,7 +143,7 @@ function renderDoneBy(entry: RunningEntry): string {
 
 export function SessionsTable({ entries }: SessionsTableProps) {
   if (entries.length === 0) {
-    return <div className="sessions-table__empty">{zhCN.sessions.empty}</div>
+    return <Empty size="sm" title={zhCN.sessions.empty} />
   }
 
   const sortedEntries = [...entries].sort(
@@ -218,50 +151,48 @@ export function SessionsTable({ entries }: SessionsTableProps) {
   )
 
   return (
-    <div className="sessions-table__wrapper">
-      <table className="sessions-table" aria-label={zhCN.sessions.ariaLabel}>
-        <thead>
-          <tr>
-            <th>{zhCN.sessions.headers.issueID}</th>
-            <th>{zhCN.sessions.headers.phase}</th>
-            <th>{zhCN.sessions.headers.lastActivity}</th>
-            <th>{zhCN.sessions.headers.diff}</th>
-            <th>{zhCN.sessions.headers.doneBy}</th>
-            <th>{zhCN.sessions.headers.iter}</th>
-            <th>{zhCN.sessions.headers.pid}</th>
-            <th>{zhCN.sessions.headers.age}</th>
-            <th>{zhCN.sessions.headers.turns}</th>
-            <th>{zhCN.sessions.headers.tokensIn}</th>
-            <th>{zhCN.sessions.headers.tokensOut}</th>
-            <th>{zhCN.sessions.headers.sessionID}</th>
-            <th>{zhCN.sessions.headers.lastEvent}</th>
-          </tr>
-        </thead>
-        <tbody>
+    <LayerCard className="overflow-x-auto p-0">
+      <Table aria-label={zhCN.sessions.ariaLabel}>
+        <Table.Header>
+          <Table.Row>
+            <Table.Head>{zhCN.sessions.headers.issueID}</Table.Head>
+            <Table.Head>{zhCN.sessions.headers.phase}</Table.Head>
+            <Table.Head>{zhCN.sessions.headers.lastActivity}</Table.Head>
+            <Table.Head>{zhCN.sessions.headers.diff}</Table.Head>
+            <Table.Head>{zhCN.sessions.headers.doneBy}</Table.Head>
+            <Table.Head>{zhCN.sessions.headers.iter}</Table.Head>
+            <Table.Head>{zhCN.sessions.headers.pid}</Table.Head>
+            <Table.Head>{zhCN.sessions.headers.age}</Table.Head>
+            <Table.Head>{zhCN.sessions.headers.turns}</Table.Head>
+            <Table.Head>{zhCN.sessions.headers.tokensIn}</Table.Head>
+            <Table.Head>{zhCN.sessions.headers.tokensOut}</Table.Head>
+            <Table.Head>{zhCN.sessions.headers.sessionID}</Table.Head>
+            <Table.Head>{zhCN.sessions.headers.lastEvent}</Table.Head>
+          </Table.Row>
+        </Table.Header>
+        <Table.Body>
           {sortedEntries.map((entry) => (
-            <tr key={`${entry.issue_id}-${entry.pid}-${entry.started_at}`}>
-              <td>{entry.issue_id}</td>
-              <td><StagePill entry={entry} /></td>
-              <td>{renderLastActivity(entry)}</td>
-              <td className="sessions-table__mono" title={entry.diff_status && entry.diff_status !== 'ok' ? entry.diff_status : undefined}>
+            <Table.Row key={`${entry.issue_id}-${entry.pid}-${entry.started_at}`}>
+              <Table.Cell>{entry.issue_id}</Table.Cell>
+              <Table.Cell><StagePill entry={entry} /></Table.Cell>
+              <Table.Cell>{renderLastActivity(entry)}</Table.Cell>
+              <Table.Cell title={entry.diff_status && entry.diff_status !== 'ok' ? entry.diff_status : undefined}>
                 {renderDiff(entry)}
-              </td>
-              <td className="sessions-table__mono">{renderDoneBy(entry)}</td>
-              <td>{renderIteration(entry)}</td>
-              <td className="sessions-table__mono">{entry.pid}</td>
-              <td>{formatAge(entry.started_at)}</td>
-              <td className="sessions-table__mono">{entry.attempt}</td>
-              <td className="sessions-table__mono">{formatNumber(entry.tokens_in)}</td>
-              <td className="sessions-table__mono">{formatNumber(entry.tokens_out)}</td>
-              <td className="sessions-table__mono" title={entry.session_id}>
-                {truncateSessionID(entry.session_id)}
-              </td>
-              <td className="sessions-table__last-event">-</td>
-            </tr>
+              </Table.Cell>
+              <Table.Cell>{renderDoneBy(entry)}</Table.Cell>
+              <Table.Cell>{renderIteration(entry)}</Table.Cell>
+              <Table.Cell>{entry.pid}</Table.Cell>
+              <Table.Cell>{formatAge(entry.started_at)}</Table.Cell>
+              <Table.Cell>{entry.attempt}</Table.Cell>
+              <Table.Cell>{formatNumber(entry.tokens_in)}</Table.Cell>
+              <Table.Cell>{formatNumber(entry.tokens_out)}</Table.Cell>
+              <Table.Cell title={entry.session_id}>{truncateSessionID(entry.session_id)}</Table.Cell>
+              <Table.Cell>-</Table.Cell>
+            </Table.Row>
           ))}
-        </tbody>
-      </table>
-    </div>
+        </Table.Body>
+      </Table>
+    </LayerCard>
   )
 }
 

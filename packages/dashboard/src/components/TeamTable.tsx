@@ -1,7 +1,7 @@
+import { Badge, Empty, LayerCard, Table, Text } from '@cloudflare/kumo'
 import type { TeamSnapshot, TeamTask } from '../types'
 import { formatElapsedSince, formatTeamPhase } from '../i18n/format'
 import { zhCN } from '../i18n/messages'
-import './TeamTable.css'
 
 interface TeamTableProps {
   snapshot: TeamSnapshot | null
@@ -11,23 +11,23 @@ function formatAge(createdAt: string): string {
   return formatElapsedSince(createdAt)
 }
 
-function getPhaseBadgeClass(phase: string): string {
+function phaseVariant(phase: string): 'info' | 'success' | 'warning' | 'error' | 'secondary' {
   switch (phase) {
     case 'team-plan':
     case 'team-prd':
-      return 'team-table__phase-badge--plan'
+      return 'info'
     case 'team-exec':
-      return 'team-table__phase-badge--exec'
+      return 'success'
     case 'team-verify':
     case 'complete':
-      return 'team-table__phase-badge--verify'
+      return 'success'
     case 'team-fix':
-      return 'team-table__phase-badge--fix'
+      return 'warning'
     case 'failed':
     case 'cancelled':
-      return 'team-table__phase-badge--failed'
+      return 'error'
     default:
-      return 'team-table__phase-badge--unknown'
+      return 'secondary'
   }
 }
 
@@ -43,7 +43,7 @@ function isTaskFailed(task: TeamTask): boolean {
 
 export function TeamTable({ snapshot }: TeamTableProps) {
   if (snapshot === null) {
-    return <div className="team-table__empty">{zhCN.team.empty}</div>
+    return <Empty size="sm" title={zhCN.team.empty} />
   }
 
   const activeWorkers = snapshot.workers.filter((worker) => worker.status.toLowerCase() === 'busy').length
@@ -51,48 +51,41 @@ export function TeamTable({ snapshot }: TeamTableProps) {
   const failedTasks = snapshot.tasks.filter(isTaskFailed).length
 
   return (
-    <section className="team-table__section" aria-label={zhCN.team.ariaLabel}>
-      <header className="team-table__header">
-        <h3 className="team-table__name">{snapshot.name}</h3>
-        <p className="team-table__config">
+    <section aria-label={zhCN.team.ariaLabel}>
+      <LayerCard className="p-4">
+        <Text variant="heading3" as="h3">{snapshot.name}</Text>
+        <Text variant="secondary" size="sm">
           {zhCN.team.config(
             snapshot.config.agent_type,
             snapshot.config.max_workers,
             snapshot.config.max_fix_loops,
           )}
-        </p>
-      </header>
-
-      <div className="team-table__wrapper">
-        <table className="team-table" aria-label={zhCN.team.tableAriaLabel}>
-          <thead>
-            <tr>
-              <th>{zhCN.team.headers.phase}</th>
-              <th>{zhCN.team.headers.workers}</th>
-              <th>{zhCN.team.headers.tasks}</th>
-              <th>{zhCN.team.headers.fixLoops}</th>
-              <th>{zhCN.team.headers.age}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>
-                <span className={`team-table__phase-badge ${getPhaseBadgeClass(snapshot.phase.phase)}`}>
-                  {formatTeamPhase(snapshot.phase.phase)}
-                </span>
-              </td>
-              <td className="team-table__mono">
-                {activeWorkers}/{snapshot.workers.length}
-              </td>
-              <td className="team-table__mono">
-                {completedTasks}/{snapshot.tasks.length}/{failedTasks}
-              </td>
-              <td className="team-table__mono">{snapshot.phase.fix_loop_count}</td>
-              <td>{formatAge(snapshot.created_at)}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+        </Text>
+      </LayerCard>
+      <LayerCard className="mt-3 overflow-x-auto p-0">
+        <Table aria-label={zhCN.team.tableAriaLabel}>
+          <Table.Header>
+            <Table.Row>
+              <Table.Head>{zhCN.team.headers.phase}</Table.Head>
+              <Table.Head>{zhCN.team.headers.workers}</Table.Head>
+              <Table.Head>{zhCN.team.headers.tasks}</Table.Head>
+              <Table.Head>{zhCN.team.headers.fixLoops}</Table.Head>
+              <Table.Head>{zhCN.team.headers.age}</Table.Head>
+            </Table.Row>
+          </Table.Header>
+          <Table.Body>
+            <Table.Row>
+              <Table.Cell>
+                <Badge variant={phaseVariant(snapshot.phase.phase)}>{formatTeamPhase(snapshot.phase.phase)}</Badge>
+              </Table.Cell>
+              <Table.Cell>{activeWorkers}/{snapshot.workers.length}</Table.Cell>
+              <Table.Cell>{completedTasks}/{snapshot.tasks.length}/{failedTasks}</Table.Cell>
+              <Table.Cell>{snapshot.phase.fix_loop_count}</Table.Cell>
+              <Table.Cell>{formatAge(snapshot.created_at)}</Table.Cell>
+            </Table.Row>
+          </Table.Body>
+        </Table>
+      </LayerCard>
     </section>
   )
 }
