@@ -70,7 +70,7 @@ describe("litellm portal worker", () => {
     const css = await response.text();
     expect(css).toContain("tailwindcss");
     expect(css).toContain("bg-kumo-canvas");
-    expect(css).toContain(".md\\:grid-cols-2");
+    expect(css).toContain(".xl\\:grid-cols-\\[minmax\\(0\\,1fr\\)_auto\\]");
   });
 
   it("serves the React portal bundle with Kumo islands", async () => {
@@ -87,7 +87,8 @@ describe("litellm portal worker", () => {
     expect(js).toContain("litellm-portal:keys");
     expect(js).toContain("litellm-portal:error");
     expect(js).toContain("usage-panel-root");
-    expect(js).toContain("sm:grid-cols-2");
+    expect(js).toContain("aria-pressed");
+    expect(js).toContain("xl:grid-cols-[minmax(0,1fr)_auto]");
     expect(js).toContain("Brush native");
     expect(js).not.toContain("ClipboardText");
     expect(js).toContain("Select");
