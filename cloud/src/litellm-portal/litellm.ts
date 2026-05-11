@@ -1,5 +1,26 @@
-import type { JsonValue, LiteLLMKey, LiteLLMKeyList, LiteLLMTeam, LiteLLMUser, LiteLLMPortalEnv } from "./types";
+import type { JsonValue, LiteLLMAuditEvent, LiteLLMKey, LiteLLMKeyList, LiteLLMTeam, LiteLLMUser, LiteLLMPortalEnv } from "./types";
 import { isRecord, nullableRoundCurrency, readJson, roundCurrency, uniqueSorted } from "./utils";
+
+export class LiteLLMRequestError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: unknown,
+  ) {
+    super(`litellm_request_failed_${status}`);
+    this.name = "LiteLLMRequestError";
+  }
+}
+
+export class KeyAliasConflictError extends Error {
+  constructor(readonly keyAlias: string) {
+    super("key_alias_conflict");
+    this.name = "KeyAliasConflictError";
+  }
+}
+
+type DeleteKeyRequestBody =
+  | { keys: string[] }
+  | { key_aliases: string[] };
 
 export async function litellmFetch(env: LiteLLMPortalEnv, path: string, init: RequestInit = {}): Promise<Response> {
   const baseUrl = env.LITELLM_BASE_URL?.trim().replace(/\/+$/u, "");
@@ -16,7 +37,7 @@ export async function litellmFetch(env: LiteLLMPortalEnv, path: string, init: Re
 
   const response = await fetch(`${baseUrl}${path}`, { ...init, headers });
   if (!response.ok) {
-    throw new Error(`litellm_request_failed_${response.status}`);
+    throw new LiteLLMRequestError(response.status, await readJson(response));
   }
   return response;
 }
@@ -66,6 +87,7 @@ export async function resolveLiteLLMUser(env: LiteLLMPortalEnv, email: string): 
         spend: roundCurrency(numberField(match, "spend") ?? numberField(match, "total_spend") ?? 0),
         maxBudget: numberField(match, "max_budget") ?? numberField(match, "maxBudget") ?? null,
         teamIds: stringArrayField(match, "teams"),
+        role: firstString(match, ["user_role", "userRole", "role"]) ?? null,
         found: true,
         raw: match,
       };
@@ -80,6 +102,7 @@ export async function resolveLiteLLMUser(env: LiteLLMPortalEnv, email: string): 
     spend: null,
     maxBudget: null,
     teamIds: [],
+    role: null,
     found: false,
     raw: null,
   };
@@ -154,8 +177,7 @@ export async function readUserTeams(env: LiteLLMPortalEnv, teamIds: string[]): P
 }
 
 export function normalizeKey(record: Record<string, unknown>, fallbackUserId: string): LiteLLMKey {
-  const keyInfo = isRecord(record.key_info) ? record.key_info : {};
-  const merged = { ...keyInfo, ...record };
+  const merged = mergedKeyRecord(record);
   const rawKey = firstString(merged, ["key", "token", "api_key"]);
   const id = firstString(merged, ["key_hash", "keyHash", "token", "token_id", "id", "key_alias"])
     ?? rawKey
@@ -227,8 +249,7 @@ export function publicTeam(team: LiteLLMTeam): Record<string, JsonValue> {
 
 export function keyBelongsToUser(record: Record<string, unknown>, userId: string): boolean {
   const normalizedUserId = userId.trim().toLowerCase();
-  const keyInfo = isRecord(record.key_info) ? record.key_info : {};
-  const merged = { ...keyInfo, ...record };
+  const merged = mergedKeyRecord(record);
   const explicitUser = firstString(merged, ["user_id", "userId", "user_email", "userEmail"]);
   if (explicitUser !== undefined) {
     return explicitUser.trim().toLowerCase() === normalizedUserId;
@@ -243,6 +264,11 @@ export function keyBelongsToUser(record: Record<string, unknown>, userId: string
   }
 
   return false;
+}
+
+function mergedKeyRecord(record: Record<string, unknown>): Record<string, unknown> {
+  const keyInfo = isRecord(record.key_info) ? record.key_info : {};
+  return { ...keyInfo, ...record };
 }
 
 export function extractRecords(value: unknown): Array<Record<string, unknown>> {
@@ -364,10 +390,18 @@ export async function createKey(
   if (params.maxBudget != null) body.max_budget = params.maxBudget;
   if (params.duration) body.duration = params.duration;
 
-  const response = await litellmFetch(env, "/key/generate", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    response = await litellmFetch(env, "/key/generate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    if (isKeyAliasConflictError(error, params.keyAlias)) {
+      throw new KeyAliasConflictError(params.keyAlias);
+    }
+    throw error;
+  }
   const result = await readJson(response);
   if (!isRecord(result)) {
     throw new Error("LiteLLM did not return a key");
@@ -380,6 +414,68 @@ export async function createKey(
     expires: firstString(result, ["expires"]) ?? null,
     keyId: firstString(result, ["token_id", "key_hash"]) ?? "",
   };
+}
+
+export async function deleteKey(
+  env: LiteLLMPortalEnv,
+  key: LiteLLMKey,
+  changedBy?: string,
+): Promise<void> {
+  const headers = new Headers();
+  if (changedBy && changedBy.trim().length > 0) {
+    headers.set("litellm-changed-by", changedBy.trim());
+  }
+
+  await litellmFetch(env, "/key/delete", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(deleteKeyRequestBody(key)),
+  });
+}
+
+function deleteKeyRequestBody(key: LiteLLMKey): DeleteKeyRequestBody {
+  const merged = mergedKeyRecord(key.raw);
+  const keyIdentifier = firstString(merged, ["key_hash", "keyHash", "token", "key", "api_key"]);
+  if (keyIdentifier !== undefined && keyIdentifier !== key.alias) {
+    return { keys: [keyIdentifier] };
+  }
+  if (key.alias !== null && key.alias.trim().length > 0) {
+    return { key_aliases: [key.alias] };
+  }
+  const fallbackIdentifier = firstString(merged, ["token_id", "id"]) ?? (key.id === "unknown" ? undefined : key.id);
+  if (fallbackIdentifier !== undefined) {
+    return { keys: [fallbackIdentifier] };
+  }
+  throw new Error("key_delete_identifier_missing");
+}
+
+function isKeyAliasConflictError(error: unknown, keyAlias: string): boolean {
+  if (!(error instanceof LiteLLMRequestError)) return false;
+  return isKeyAliasConflictResponse(error.status, error.body, keyAlias);
+}
+
+function isKeyAliasConflictResponse(status: number, body: unknown, keyAlias: string): boolean {
+  const text = errorText(body).toLowerCase();
+  const normalizedAlias = keyAlias.trim().toLowerCase();
+  const mentionsAlias = /\bkey[_\s-]?alias(?:es)?\b|\balias\b|\bkey\s+name\b/u.test(text)
+    || (normalizedAlias.length > 0 && text.includes(normalizedAlias));
+  const mentionsConflict = /already\s+(?:exists?|in\s+use)|duplicate|unique|conflict|same\s+name|\bexists?\b/u.test(text);
+  return (status === 409 && (text.length === 0 || mentionsAlias || mentionsConflict))
+    || (status === 400 && mentionsAlias && mentionsConflict);
+}
+
+function errorText(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(errorText).join(" ");
+  }
+  if (!isRecord(value)) return "";
+  return Object.entries(value)
+    .map(([key, nested]) => `${key} ${errorText(nested)}`)
+    .join(" ");
 }
 
 export function maskKey(key: string): string {
@@ -398,4 +494,87 @@ function csv(value: string | undefined): string[] {
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+}
+
+const ADMIN_PAGE_SIZE_MAX = 200;
+const ADMIN_PAGE_SIZE_DEFAULT = 50;
+
+function clampAdminPageSize(size: number | undefined): number {
+  const n = typeof size === "number" && Number.isFinite(size) ? Math.floor(size) : ADMIN_PAGE_SIZE_DEFAULT;
+  return Math.min(Math.max(n, 1), ADMIN_PAGE_SIZE_MAX);
+}
+
+export async function listAllUsers(
+  env: LiteLLMPortalEnv,
+  opts?: { page?: number; size?: number },
+): Promise<{ users: LiteLLMUser[]; totalCount: number; page: number; size: number }> {
+  const page = typeof opts?.page === "number" && opts.page >= 1 ? Math.floor(opts.page) : 1;
+  const size = clampAdminPageSize(opts?.size);
+  const params = new URLSearchParams({
+    page: String(page),
+    page_size: String(size),
+  });
+  const response = await litellmFetch(env, `/user/list?${params.toString()}`);
+  const body = await readJson(response);
+  const records = extractRecords(body);
+  const totalCount = isRecord(body)
+    ? numberField(body, "total_count") ?? numberField(body, "totalCount") ?? records.length
+    : records.length;
+  const users: LiteLLMUser[] = records.map((record) => {
+    const userId = firstString(record, ["user_id", "userId", "id"]) ?? "";
+    const email = firstString(record, ["user_email", "userEmail", "email"]) ?? userId;
+    return {
+      userId,
+      email,
+      spend: roundCurrency(numberField(record, "spend") ?? numberField(record, "total_spend") ?? 0),
+      maxBudget: numberField(record, "max_budget") ?? numberField(record, "maxBudget") ?? null,
+      teamIds: stringArrayField(record, "teams"),
+      role: firstString(record, ["user_role", "userRole", "role"]) ?? null,
+      found: true,
+      raw: record,
+    };
+  });
+  return { users, totalCount, page, size };
+}
+
+export async function listAllTeams(env: LiteLLMPortalEnv): Promise<LiteLLMTeam[]> {
+  const response = await litellmFetch(env, "/team/list");
+  const body = await readJson(response);
+  const records = extractRecords(body);
+  return records.map((record) => {
+    const teamId = firstString(record, ["team_id", "teamId", "id"]) ?? "";
+    return normalizeTeam(record, teamId);
+  });
+}
+
+function normalizeAuditEvent(record: Record<string, unknown>): LiteLLMAuditEvent {
+  return {
+    id: firstString(record, ["id", "audit_id", "auditId"]) ?? "",
+    createdAt: firstString(record, ["created_at", "createdAt", "timestamp"]) ?? null,
+    action: firstString(record, ["action", "event", "event_type", "eventType"]) ?? "",
+    actorUserId: firstString(record, ["actor_user_id", "actorUserId", "user_id", "userId"]) ?? null,
+    actorUserEmail: firstString(record, ["actor_user_email", "actorUserEmail", "user_email", "userEmail"]) ?? null,
+    objectType: firstString(record, ["object_type", "objectType", "resource_type", "resourceType"]) ?? null,
+    objectId: firstString(record, ["object_id", "objectId", "resource_id", "resourceId"]) ?? null,
+  };
+}
+
+export async function listAuditEvents(
+  env: LiteLLMPortalEnv,
+  opts?: { page?: number; size?: number },
+): Promise<{ events: LiteLLMAuditEvent[]; totalCount: number; page: number; size: number }> {
+  const page = typeof opts?.page === "number" && opts.page >= 1 ? Math.floor(opts.page) : 1;
+  const size = clampAdminPageSize(opts?.size);
+  const params = new URLSearchParams({
+    page: String(page),
+    page_size: String(size),
+  });
+  const response = await litellmFetch(env, `/audit?${params.toString()}`);
+  const body = await readJson(response);
+  const records = extractRecords(body);
+  const totalCount = isRecord(body)
+    ? numberField(body, "total_count") ?? numberField(body, "totalCount") ?? records.length
+    : records.length;
+  const events = records.map(normalizeAuditEvent);
+  return { events, totalCount, page, size };
 }

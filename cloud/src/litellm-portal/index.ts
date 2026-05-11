@@ -16,6 +16,8 @@ import { portalCompanyName, renderPortalHtml } from "./html";
 import {
   configuredAllowedModels,
   createKey,
+  deleteKey,
+  KeyAliasConflictError,
   listUserKeys,
   publicKey,
   publicTeam,
@@ -24,9 +26,11 @@ import {
   readUserTeams,
   resolveLiteLLMUser,
 } from "./litellm";
+import { resolveIdentity } from "./roles";
 import { parseUsageTimeseriesRequest, readUsageTimeseries } from "./timeseries";
 import { readUserDailyActivity } from "./usage";
-import type { JsonValue, LiteLLMKey, LiteLLMPortalEnv, LiteLLMTeam, PortalPrincipal } from "./types";
+import { adminListUsers, adminListTeams, adminListAuditEvents, adminGlobalUsageTimeseries, adminSummary } from "./admin";
+import type { JsonValue, LiteLLMKey, LiteLLMPortalEnv, LiteLLMTeam, PortalIdentity } from "./types";
 
 export type { LiteLLMPortalEnv } from "./types";
 
@@ -63,40 +67,52 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
   }
 
   try {
-    return await routeApiRequest(request, env, auth.principal);
+    const identityResult = await resolveIdentity(env, auth.principal);
+    if (!identityResult.ok) {
+      return jsonResponse({ error: identityResult.error }, identityResult.status);
+    }
+    return await routeApiRequest(request, env, identityResult.identity);
   } catch (error) {
     const message = error instanceof Error ? error.message : "internal_error";
     return jsonResponse({ error: message }, message === "litellm_config_missing" ? 500 : 502);
   }
 }
 
+function requireAdmin(identity: PortalIdentity): Response | null {
+  if (identity.role !== "admin") {
+    return jsonResponse({ error: "admin_required" }, 403);
+  }
+  return null;
+}
+
 async function routeApiRequest(
   request: Request,
   env: LiteLLMPortalEnv,
-  principal: PortalPrincipal,
+  identity: PortalIdentity,
 ): Promise<Response> {
   const url = new URL(request.url);
 
   if (request.method === "GET" && url.pathname === "/api/me") {
     return jsonResponse({
-      email: principal.email,
-      userId: principal.userId,
+      email: identity.email,
+      userId: identity.litellmUserId,
       company: portalCompanyName(env),
-      domain: principal.domain,
+      domain: identity.domain,
+      role: identity.role,
     });
   }
 
   if (request.method === "GET" && url.pathname === "/api/dashboard") {
-    return jsonResponse(await readDashboard(env, principal));
+    return jsonResponse(await readDashboard(env, identity));
   }
 
   if (request.method === "GET" && url.pathname === "/api/models") {
-    const user = await resolveLiteLLMUser(env, principal.email);
+    const user = await resolveLiteLLMUser(env, identity.email);
     return jsonResponse(await readAvailableModels(env, user));
   }
 
   if (request.method === "GET" && url.pathname === "/api/keys") {
-    const user = await resolveLiteLLMUser(env, principal.email);
+    const user = await resolveLiteLLMUser(env, identity.email);
     const keyList = await listUserKeys(env, user.userId);
     const teamIds = keyAwareTeamIds(user.teamIds, keyList.keys);
     const teams = await readUserTeams(env, teamIds);
@@ -109,7 +125,7 @@ async function routeApiRequest(
   }
 
   if (request.method === "POST" && url.pathname === "/api/keys") {
-    const user = await resolveLiteLLMUser(env, principal.email);
+    const user = await resolveLiteLLMUser(env, identity.email);
     if (!user.found) {
       return jsonResponse({ error: "user_not_found" }, 400);
     }
@@ -127,12 +143,50 @@ async function routeApiRequest(
     const duration = typeof body.duration === "string" && body.duration.length > 0
       ? body.duration
       : null;
-    const result = await createKey(env, user.userId, { keyAlias, models, maxBudget, duration });
-    return jsonResponse(result, 201);
+    try {
+      const result = await createKey(env, user.userId, { keyAlias, models, maxBudget, duration });
+      return jsonResponse(result, 201);
+    } catch (error) {
+      if (error instanceof KeyAliasConflictError) {
+        return jsonResponse({
+          error: "key_alias_conflict",
+          keyAlias: error.keyAlias,
+          message: "API Key name already exists",
+        }, 409);
+      }
+      throw error;
+    }
+  }
+
+  if (request.method === "DELETE" && url.pathname.startsWith("/api/keys/")) {
+    const encodedKeyId = url.pathname.slice("/api/keys/".length);
+    let keyId = "";
+    try {
+      keyId = decodeURIComponent(encodedKeyId).trim();
+    } catch {
+      return jsonResponse({ error: "key_id_required" }, 400);
+    }
+    if (!keyId) {
+      return jsonResponse({ error: "key_id_required" }, 400);
+    }
+
+    const user = await resolveLiteLLMUser(env, identity.email);
+    if (!user.found) {
+      return jsonResponse({ error: "user_not_found" }, 400);
+    }
+
+    const keyList = await listUserKeys(env, user.userId);
+    const key = keyList.keys.find((item) => item.id === keyId);
+    if (key === undefined) {
+      return jsonResponse({ error: "key_not_found" }, 404);
+    }
+
+    await deleteKey(env, key, identity.email);
+    return new Response(null, { status: 204, headers: securityHeaders() });
   }
 
   if (request.method === "GET" && url.pathname === "/api/usage") {
-    const user = await resolveLiteLLMUser(env, principal.email);
+    const user = await resolveLiteLLMUser(env, identity.email);
     const keyList = await listUserKeys(env, user.userId);
     const teamIds = keyAwareTeamIds(user.teamIds, keyList.keys);
     const teams = await readUserTeams(env, teamIds);
@@ -140,7 +194,7 @@ async function routeApiRequest(
     const keySpend = roundCurrency(keyList.keys.reduce((sum, key) => sum + key.spend, 0));
     return jsonResponse({
       userId: user.userId,
-      email: principal.email,
+      email: identity.email,
       litellmUserFound: user.found,
       totalSpend: user.spend ?? keySpend,
       maxBudget: user.maxBudget,
@@ -160,8 +214,31 @@ async function routeApiRequest(
     if (!requestParams.ok) {
       return jsonResponse(requestParams.body, 400);
     }
-    const user = await resolveLiteLLMUser(env, principal.email);
+    const user = await resolveLiteLLMUser(env, identity.email);
     return jsonResponse(await readUsageTimeseries(env, user.userId, requestParams.grain, requestParams.window));
+  }
+
+  if (request.method === "GET" && url.pathname.startsWith("/api/admin/")) {
+    const gate = requireAdmin(identity);
+    if (gate !== null) {
+      return gate;
+    }
+    if (url.pathname === "/api/admin/users") {
+      return adminListUsers(request, env);
+    }
+    if (url.pathname === "/api/admin/summary") {
+      return adminSummary(request, env);
+    }
+    if (url.pathname === "/api/admin/teams") {
+      return adminListTeams(request, env);
+    }
+    if (url.pathname === "/api/admin/audit") {
+      return adminListAuditEvents(request, env);
+    }
+    if (url.pathname === "/api/admin/usage/timeseries") {
+      return adminGlobalUsageTimeseries(request, env);
+    }
+    return jsonResponse({ error: "not_found" }, 404);
   }
 
   return jsonResponse({ error: "not_found" }, 404);
@@ -169,9 +246,9 @@ async function routeApiRequest(
 
 async function readDashboard(
   env: LiteLLMPortalEnv,
-  principal: PortalPrincipal,
+  identity: PortalIdentity,
 ): Promise<Record<string, JsonValue>> {
-  const user = await resolveLiteLLMUser(env, principal.email);
+  const user = await resolveLiteLLMUser(env, identity.email);
   const [keyList, activity] = await Promise.all([
     listUserKeys(env, user.userId),
     readUserDailyActivity(env, user.userId),
@@ -185,8 +262,8 @@ async function readDashboard(
 
   return {
     me: {
-      email: principal.email,
-      domain: principal.domain,
+      email: identity.email,
+      domain: identity.domain,
       company: portalCompanyName(env),
     },
     user: {

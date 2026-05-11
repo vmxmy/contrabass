@@ -537,3 +537,81 @@ import { Popover } from "@cloudflare/kumo/primitives/popover";
 Kumo/ECharts brush 保持有界：用户在图表中横向拖拽后，前端会把选中区间映射到最接近的服务端预设窗口（例如 7d / 30d / 48h），再复用点击 preset 的 Auto/manual grain 规则请求 `/api/usage/timeseries`；无法匹配预设时只提示，不发起任意窗口查询。
 
 Bundle 实测：`pnpm run analyze:litellm-portal-bundle` 显示 portal app bundle 为 `1,092,618 bytes` minified；`pnpm run build:litellm-portal` dry-run 上传体积为 `1247.58 KiB / gzip 385.83 KiB`。相对上轮 Kumo UX 基线（约 `849.1KB` minified，dry-run `1009.64 KiB / gzip 289.37 KiB`），Kumo Chart/ECharts 原生交互增加约 `235KB` minified / `96KB` gzip。收益是移除 Recharts、统一 Kumo 视觉/ARIA/暗色行为，并获得 chart-native brush + 单次点击时间探索；代价是 bundle 明显增大，后续若继续扩展图表应优先考虑 island 懒加载或独立 chunk。
+
+---
+
+## 管理员视图（只读）
+
+### 触发条件
+
+当 LiteLLM 返回的 `user_role` 字段值为 `proxy_admin` 或 `proxy_admin_viewer` 时，portal 会显示顶部 tabs：`个人视图` 与 `全局管理`。管理员默认仍停留在个人视图，只有显式点击或通过 `#admin` 打开时才进入全局管理。其余角色仅显示自身 Key、用量和团队信息，看不到全局数据。
+
+### Role 投影表
+
+Worker 端的 `projectRole`（`roles.ts`）将 LiteLLM 原生角色映射为 portal 内部三级角色：
+
+| LiteLLM `user_role` | Portal `PortalRole` | 说明 |
+|---|---|---|
+| `proxy_admin` | `admin` | 完整管理员权限 |
+| `proxy_admin_viewer` | `admin` | 只读管理员，与 proxy_admin 在 portal 侧行为一致 |
+| `internal_user` | `user` | 普通内部用户 |
+| `internal_user_viewer` | `user` | 只读内部用户 |
+| `team` | `user` | 团队成员 |
+| `customer` | `user` | 外部客户 |
+| 未注册 / LiteLLM 返回错误 | `none` | 拒绝展示任何敏感数据 |
+
+### Trust 边界
+
+Role 解析**只在 Worker 端进行**（`roles.ts:resolveIdentity`），使用 `master_key` 调用 LiteLLM `/user/list?user_email=...` 并匹配当前 Access 邮箱；SPA 收到的只是已投影的 `PortalRole`，无法自行提升权限。`/api/admin/*` 系列路由在 `index.ts` 中由 `requireAdmin` 中间件统一守卫，任何未携带有效管理员身份的请求均返回 `403 admin_required`，后端不依赖前端的展示逻辑来保护数据。
+
+### 5 分钟内存缓存
+
+`roles.ts` 顶层维护一个模块级 `Map`（`roleCache`），TTL 为 5 分钟（`ROLE_CACHE_MS = 5 * 60 * 1000`）。缓存键为用户 email，值包含 `role`、`litellmUserId` 和过期时间戳。
+
+关键设计决策：
+
+- 缓存存活在 Worker isolate 私有内存中，不跨 isolate 共享，不写 KV / D1。
+- **fail-closed**：`resolveIdentity` 若捕获异常（LiteLLM 不可达等），返回 `role: "none"` 且**不写入缓存**，确保下次请求重新尝试鉴权，而非以失败结果放行。
+
+### Revocation 注意
+
+当用户从 admin 降级到普通角色时，已缓存该用户身份的 Worker isolate 在 5 分钟内仍会放行 /api/admin/* 请求。如需紧急吊销，应同时旋转 LITELLM_MASTER_KEY 或重启 Worker。
+
+### /api/admin/* 路由清单
+
+以下路由均为只读，由 `admin.ts` 中的五个 handler 实现：
+
+| 路由 | Handler | 说明 |
+|---|---|---|
+| `GET /api/admin/summary` | `adminSummary` | 有界聚合全局用户、团队、花费、预算、角色和风险概览 |
+| `GET /api/admin/users` | `adminListUsers` | 分页列出所有用户（支持 `page` / `size` 查询参数） |
+| `GET /api/admin/teams` | `adminListTeams` | 列出所有团队（含脱敏后的公开字段） |
+| `GET /api/admin/audit` | `adminListAuditEvents` | 分页列出审计事件（支持 `page` / `size`） |
+| `GET /api/admin/usage/timeseries` | `adminGlobalUsageTimeseries` | 全局 Token 用量时序数据（复用 `parseUsageTimeseriesRequest` 参数规范） |
+
+未匹配路径或角色不足时，`requireAdmin` 中间件统一返回 `403 { error: "admin_required" }`。
+
+### 只读边界
+
+本期 portal 管理员视图**不提供任何写操作**。修改用户角色、调整 budget、变更团队归属等操作均需通过 LiteLLM 原生管理 UI 完成；删除 API Key 只在个人视图中按当前用户所有权执行。portal 管理员区的职责仅限于：
+
+- 查看全局概览：用户数、管理员数、团队数、花费、预算和风险项
+- 查看全局 Token 用量时序图，交互方式与个人视图一致：preset rail、Auto grain、手动 grain chip、Kumo Chart brush、bucket table 和 top models
+- 查看全局用户列表与消费分布
+- 查看团队列表
+- 查看操作审计日志
+
+### 可参考代码位置
+
+| 文件 | 关键标识符 | 说明 |
+|---|---|---|
+| `roles.ts` | `resolveIdentity`, `projectRole` | Role 解析与缓存逻辑 |
+| `admin.ts` | `adminSummary`, `adminListUsers`, `adminListTeams`, `adminListAuditEvents`, `adminGlobalUsageTimeseries` | 5 个只读 handler |
+| `index.ts` | `requireAdmin` | 中间件守卫，统一 403 兜底 |
+| `app.tsx` | `AdminSection`, `AdminHeroStats`, `AdminGlobalUsage` | 前端管理员区渲染入口与全局 dashboard 叙事 |
+
+---
+
+2026-05-12 `litellm-portal-admin-view` 新增管理员视图章节：role 投影表、trust 边界、5 分钟缓存策略、/api/admin/* 路由清单及只读边界说明。
+
+2026-05-12 `litellm-portal-admin-dashboard-alignment` 对齐管理员与个人 dashboard 心智模型：tabs 改为 `个人视图` / `全局管理`，管理员默认进入个人视图；全局管理按「概览 → 趋势 → 资源与权限 → 审计与风险」排序，并新增有界 `/api/admin/summary` 概览数据。

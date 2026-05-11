@@ -35,7 +35,7 @@ vi.mock("@cloudflare/kumo/components/chart", async () => {
   };
 });
 
-import { ApiKeysCard, CreateKeyButton, ModelAccessCard, PortalErrorBanner, UsagePanel } from "./app";
+import { AdminSection, ApiKeysCard, CreateKeyButton, ModelAccessCard, PortalErrorBanner, PortalTabs, readTabFromHash, UsagePanel } from "./app";
 import { UsageChart, type UsageTimeseries } from "./chart";
 
 const originalFetch = globalThis.fetch;
@@ -90,6 +90,23 @@ afterEach(() => {
   delete window.__litellmPortalModelAccess;
   delete window.__litellmPortalKeys;
   delete window.__litellmPortalError;
+});
+
+describe("PortalTabs", () => {
+  it("uses persona-oriented labels", () => {
+    render(<PortalTabs tab="user" onSelect={() => {}} />);
+    expect(screen.queryByText("个人视图")).not.toBeNull();
+    expect(screen.queryByText("全局管理")).not.toBeNull();
+  });
+
+  it("keeps admins on personal view unless #admin is explicit", () => {
+    window.history.replaceState(null, "", "/");
+    expect(readTabFromHash("admin")).toBe("user");
+    window.history.replaceState(null, "", "/#admin");
+    expect(readTabFromHash("admin")).toBe("admin");
+    window.history.replaceState(null, "", "/#user");
+    expect(readTabFromHash("admin")).toBe("user");
+  });
 });
 
 describe("ModelAccessCard", () => {
@@ -331,6 +348,41 @@ describe("ApiKeysCard", () => {
       expect(screen.queryByText("event-key")).not.toBeNull();
     });
   });
+
+  it("deletes an API key after confirmation", async () => {
+    window.__litellmPortalKeys = [
+      {
+        id: "key-1",
+        alias: "primary",
+        displayKey: "sk-lit...cret",
+        models: ["gpt-5.5"],
+        spend: 1,
+        maxBudget: 20,
+        expiresAt: null,
+      },
+    ];
+    const refreshListener = vi.fn();
+    window.addEventListener("litellm-portal:refresh", refreshListener);
+    globalThis.fetch = vi.fn(async () => new Response(null, { status: 204 })) as typeof fetch;
+
+    render(<ApiKeysCard />);
+    fireEvent.click(screen.getByText("删除"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("删除 API Key？")).not.toBeNull();
+    });
+    fireEvent.click(screen.getByText("确认删除"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("primary")).toBeNull();
+    });
+    expect(globalThis.fetch).toHaveBeenCalledWith("/api/keys/key-1", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+    });
+    expect(refreshListener).toHaveBeenCalledTimes(1);
+    window.removeEventListener("litellm-portal:refresh", refreshListener);
+  });
 });
 
 describe("PortalErrorBanner", () => {
@@ -367,6 +419,88 @@ describe("CreateKeyButton", () => {
 
     await waitFor(() => {
       expect(screen.queryByText("请输入 Key 名称")).not.toBeNull();
+    });
+  });
+
+  it("shows a precise duplicate-name error when key alias already exists", async () => {
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/models")) return Response.json({ models: [] });
+      if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
+        return Response.json({
+          error: "key_alias_conflict",
+          keyAlias: "test-key",
+          message: "API Key name already exists",
+        }, { status: 409 });
+      }
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<CreateKeyButton />);
+    fireEvent.click(screen.getByText("创建 Key"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    const aliasInput = document.getElementById("create-key-alias");
+    if (aliasInput) {
+      fireEvent.change(aliasInput, { target: { value: "test-key" } });
+    }
+
+    const submitButtons = screen.getAllByText("创建");
+    const submitBtn = submitButtons.find((el) => el.closest("button"));
+    if (submitBtn) fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByText("名称「test-key」已存在，请换一个名称。")).not.toBeNull();
+    });
+  });
+
+  it("copies the newly created full key with Kumo ClipboardText", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/models")) return Response.json({ models: ["gpt-4o-mini"] });
+      if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
+        return Response.json({
+          rawKey: "sk-new-key-123",
+          keyAlias: "test-key",
+          expires: null,
+          keyId: "tok-new",
+        }, { status: 201 });
+      }
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<CreateKeyButton />);
+    fireEvent.click(screen.getByText("创建 Key"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    const aliasInput = document.getElementById("create-key-alias");
+    if (aliasInput) {
+      fireEvent.change(aliasInput, { target: { value: "test-key" } });
+    }
+
+    const submitButtons = screen.getAllByText("创建");
+    const submitBtn = submitButtons.find((el) => el.closest("button"));
+    if (submitBtn) fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByText("Key 已创建")).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "复制完整 Key" }));
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("sk-new-key-123");
     });
   });
 
@@ -410,4 +544,238 @@ describe("CreateKeyButton", () => {
     });
   });
 });
+});
+
+describe("AdminSection", () => {
+  it("AdminUsersTable renders email for each user row", async () => {
+    // #given
+    installPortalConfig();
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/admin/users")) {
+        return Response.json({
+          users: [
+            { userId: "u1", email: "alice@gz-zhiyun.com", spend: 1.5, maxBudget: 100, teamIds: [], role: "internal_user" },
+            { userId: "u2", email: "bob@gz-zhiyun.com", spend: 2.0, maxBudget: null, teamIds: ["t1"], role: "proxy_admin" },
+          ],
+          totalCount: 2,
+          page: 1,
+          size: 50,
+        });
+      }
+      return Response.json({ teams: [], events: [], users: [], buckets: [], totals: {}, topModels: [] });
+    }) as typeof fetch;
+
+    // #when
+    render(<AdminSection role="admin" />);
+
+    // #then - both email addresses appear as table rows
+    await waitFor(() => {
+      expect(screen.queryByText("alice@gz-zhiyun.com")).not.toBeNull();
+      expect(screen.queryByText("bob@gz-zhiyun.com")).not.toBeNull();
+    });
+  });
+
+  it("AdminAuditFeed navigates to page 2 when next-page button is clicked", async () => {
+    // #given
+    installPortalConfig();
+    const fetchCalls: string[] = [];
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      fetchCalls.push(url);
+      if (url.includes("/api/admin/audit")) {
+        const page = new URL(url, "https://portal.test").searchParams.get("page") ?? "1";
+        return Response.json({
+          events: [
+            {
+              id: `evt-${page}-1`,
+              createdAt: "2026-05-10T10:00:00Z",
+              action: "key.create",
+              actorUserId: "admin-uid",
+              actorUserEmail: "admin@gz-zhiyun.com",
+              objectType: "key",
+              objectId: `key-p${page}`,
+            },
+          ],
+          totalCount: 100,
+          page: Number(page),
+          size: 50,
+        });
+      }
+      return Response.json({ teams: [], users: [], buckets: [], totals: {}, topModels: [] });
+    }) as typeof fetch;
+
+    // #when
+    render(<AdminSection role="admin" />);
+
+    // wait for initial load
+    await waitFor(() => {
+      expect(screen.queryByText("key.create")).not.toBeNull();
+    });
+
+    const auditCallsBefore = fetchCalls.filter((u) => u.includes("/api/admin/audit")).length;
+
+    // click next page button (kumo Pagination renders a button with aria-label)
+    const nextButtons = screen.getAllByLabelText("下一页");
+    // AdminAuditFeed is the last card; use the last next-page button
+    fireEvent.click(nextButtons[nextButtons.length - 1]);
+
+    // #then - a second audit fetch is made with page=2
+    await waitFor(() => {
+      const auditCallsAfter = fetchCalls.filter((u) => u.includes("/api/admin/audit"));
+      expect(auditCallsAfter.length).toBeGreaterThan(auditCallsBefore);
+      const page2Call = auditCallsAfter.find((u) => u.includes("page=2"));
+      expect(page2Call).toBeDefined();
+    });
+  });
+
+  it("AdminGlobalUsage switches to hour grain and includes grain=hour in fetch URL", async () => {
+    // #given
+    installPortalConfig();
+    const fetchUrls: string[] = [];
+    const globalUsageData = {
+      available: true,
+      grain: "hour",
+      window: "48h",
+      windowLabel: "近 48 小时",
+      start: "2024-01-01T00:00:00.000Z",
+      end: "2024-01-03T00:00:00.000Z",
+      source: "spend_logs_v2_global",
+      timezone: "Asia/Shanghai",
+      limited: false,
+      maxPages: null,
+      buckets: [
+        { start: "2024-01-01T00:00:00.000Z", end: "2024-01-02T00:00:00.000Z", label: "01-01", totalTokens: 120, promptTokens: 50, completionTokens: 70, requests: 3, spend: 0.2 },
+      ],
+      totals: { totalTokens: 120, promptTokens: 50, completionTokens: 70, requests: 3, spend: 0.2 },
+      topModels: [],
+    };
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      fetchUrls.push(url);
+      if (url.includes("/api/admin/usage/timeseries")) {
+        return Response.json(globalUsageData);
+      }
+      return Response.json({ teams: [], users: [], events: [], totalCount: 0, page: 1, size: 50, buckets: [], totals: {}, topModels: [] });
+    }) as typeof fetch;
+
+    // #when
+    render(<AdminSection role="admin" />);
+
+    // wait for initial render
+    await waitFor(() => {
+      expect(screen.queryByText("全局用量趋势")).not.toBeNull();
+    });
+
+    // First switch to the "近 7 天" window preset — this window supports hour grain
+    // (30d is the default but it only supports day grain, not hour)
+    const sevenDayButtons = screen.getAllByText("近 7 天");
+    fireEvent.click(sevenDayButtons[sevenDayButtons.length - 1]);
+
+    // wait for the 7d fetch to complete so hour button becomes enabled
+    await waitFor(() => {
+      expect(fetchUrls.some((u) => u.includes("/api/admin/usage/timeseries") && u.includes("window=7d"))).toBe(true);
+    });
+
+    // Now click the "小时" grain button (should be enabled for 7d window)
+    const hourButtons = screen.getAllByText("小时");
+    const enabledHourButton = hourButtons.find(
+      (el) => el.closest("button") && !(el.closest("button") as HTMLButtonElement).disabled,
+    );
+    expect(enabledHourButton).toBeDefined();
+    fireEvent.click(enabledHourButton!);
+
+    // #then - a fetch with grain=hour is made
+    await waitFor(() => {
+      const hourCall = fetchUrls.find((u) => u.includes("/api/admin/usage/timeseries") && u.includes("grain=hour"));
+      expect(hourCall).toBeDefined();
+      expect(screen.queryByText("01-01")).not.toBeNull();
+    });
+  });
+
+  it("renders nothing when role is not admin", () => {
+    const { container } = render(<AdminSection role="user" />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("renders nothing when role is none", () => {
+    const { container } = render(<AdminSection role="none" />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("renders aligned admin dashboard sections when role is admin", async () => {
+    installPortalConfig();
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/admin/users")) {
+        return Response.json({
+          users: [{ userId: "u1", email: "admin@test.com", spend: 1.5, maxBudget: 100, teamIds: ["t1"], role: "proxy_admin" }],
+          totalCount: 1,
+          page: 1,
+          size: 50,
+        });
+      }
+      if (url.includes("/api/admin/summary")) {
+        return Response.json({
+          userCount: 1,
+          sampledUserCount: 1,
+          limited: false,
+          teamCount: 1,
+          adminCount: 1,
+          unmanagedRoleCount: 0,
+          noTeamUserCount: 0,
+          overBudgetUserCount: 0,
+          overBudgetTeamCount: 0,
+          riskCount: 0,
+          totalSpend: 1.5,
+          teamSpend: 0.5,
+          totalBudget: 100,
+        });
+      }
+      if (url.includes("/api/admin/teams")) {
+        return Response.json({
+          teams: [{ id: "t1", alias: "Test Team", models: ["gpt-4o"], spend: 0.5, tpmLimit: null, rpmLimit: null }],
+        });
+      }
+      if (url.includes("/api/admin/audit")) {
+        return Response.json({
+          events: [],
+          totalCount: 0,
+          page: 1,
+          size: 50,
+        });
+      }
+      if (url.includes("/api/admin/usage/timeseries")) {
+        return Response.json({
+          available: true,
+          grain: "day",
+          window: "30d",
+          windowLabel: "近 30 天",
+          start: "2024-01-01T00:00:00.000Z",
+          end: "2024-01-30T23:59:59.999Z",
+          source: "spend_logs_v2_global",
+          timezone: "Asia/Shanghai",
+          limited: false,
+          maxPages: null,
+          buckets: [],
+          totals: { totalTokens: 0, promptTokens: 0, completionTokens: 0, requests: 0, spend: 0 },
+          topModels: [],
+        });
+      }
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<AdminSection role="admin" />);
+
+    expect(screen.queryByText("全局管理（只读）")).not.toBeNull();
+    await waitFor(() => {
+      expect(screen.queryByText("全局账户")).not.toBeNull();
+      expect(screen.queryByText("全员账户")).not.toBeNull();
+      expect(screen.queryByText("全部团队")).not.toBeNull();
+      expect(screen.queryByText("全局用量趋势")).not.toBeNull();
+      expect(screen.queryByText("资源与权限")).not.toBeNull();
+      expect(screen.queryByText("审计与风险")).not.toBeNull();
+      expect(screen.queryByText("审计日志")).not.toBeNull();
+    });
+  });
 });

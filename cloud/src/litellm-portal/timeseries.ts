@@ -88,11 +88,25 @@ export async function readUsageTimeseries(
   };
 }
 
-async function readSpendLogsTimeseries(
+export async function readGlobalUsageTimeseries(
   env: LiteLLMPortalEnv,
-  userId: string,
-  grain: "minute" | "hour",
+  grain: UsageGrain,
   window: UsageWindowOption,
+): Promise<Record<string, JsonValue>> {
+  const timeseries = await readGlobalSpendLogsTimeseries(env, grain, window);
+  return {
+    ...timeseries,
+    totals: publicUsageTotals(timeseries.totals),
+    buckets: timeseries.buckets.map(publicUsageBucket),
+    topModels: timeseries.topModels.map(publicUsageModel),
+  };
+}
+
+async function readSpendLogsTimeseriesInternal(
+  env: LiteLLMPortalEnv,
+  grain: UsageGrain,
+  window: UsageWindowOption,
+  opts: { userId?: string; source: "spend_logs_v2" | "spend_logs_v2_global" },
 ): Promise<UsageTimeseries> {
   const now = new Date();
   const end = new Date(now.getTime());
@@ -102,15 +116,18 @@ async function readSpendLogsTimeseries(
   let limited = false;
 
   for (let page = 1; page <= SPEND_LOGS_MAX_PAGES; page += 1) {
-    const params = new URLSearchParams({
-      user_id: userId,
+    const queryParams: Record<string, string> = {
       start_date: litellmDateTime(start),
       end_date: litellmDateTime(end),
       page: String(page),
       page_size: String(SPEND_LOGS_PAGE_SIZE),
       sort_by: "startTime",
       sort_order: "asc",
-    });
+    };
+    if (opts.userId !== undefined) {
+      queryParams.user_id = opts.userId;
+    }
+    const params = new URLSearchParams(queryParams);
     const response = await litellmFetch(env, `/spend/logs/v2?${params.toString()}`);
     const body = await readJson(response);
     const records = extractSpendLogRecords(body);
@@ -155,7 +172,7 @@ async function readSpendLogsTimeseries(
     windowLabel: window.label,
     start: formatUsageDateTime(start),
     end: formatUsageDateTime(end),
-    source: "spend_logs_v2",
+    source: opts.source,
     timezone: USAGE_TIMEZONE,
     limited,
     maxPages: SPEND_LOGS_MAX_PAGES,
@@ -163,6 +180,23 @@ async function readSpendLogsTimeseries(
     totals: usageTotals(buckets),
     topModels: topModelsFromTotals(modelTotals),
   };
+}
+
+async function readGlobalSpendLogsTimeseries(
+  env: LiteLLMPortalEnv,
+  grain: UsageGrain,
+  window: UsageWindowOption,
+): Promise<UsageTimeseries> {
+  return readSpendLogsTimeseriesInternal(env, grain, window, { source: "spend_logs_v2_global" });
+}
+
+async function readSpendLogsTimeseries(
+  env: LiteLLMPortalEnv,
+  userId: string,
+  grain: "minute" | "hour",
+  window: UsageWindowOption,
+): Promise<UsageTimeseries> {
+  return readSpendLogsTimeseriesInternal(env, grain, window, { userId, source: "spend_logs_v2" });
 }
 
 async function readDailyActivityTimeseries(

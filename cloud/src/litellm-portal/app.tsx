@@ -1,12 +1,18 @@
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Banner } from "@cloudflare/kumo/components/banner";
 import { Button } from "@cloudflare/kumo/components/button";
+import { ClipboardText } from "@cloudflare/kumo/components/clipboard-text";
 import { Collapsible } from "@cloudflare/kumo/components/collapsible";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
+import { Empty } from "@cloudflare/kumo/components/empty";
 import { Input } from "@cloudflare/kumo/components/input";
+import { LayerCard } from "@cloudflare/kumo/components/layer-card";
 import { Loader, SkeletonLine } from "@cloudflare/kumo/components/loader";
+import { Pagination } from "@cloudflare/kumo/components/pagination";
 import { Select } from "@cloudflare/kumo/components/select";
+import { Switch } from "@cloudflare/kumo/components/switch";
 import { Table } from "@cloudflare/kumo/components/table";
+import { Tabs } from "@cloudflare/kumo/components/tabs";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { UsageChart, type UsageTimeseries } from "./chart";
@@ -36,17 +42,46 @@ type PortalKey = {
   expiresAt?: string | null;
 };
 
+type PortalTeam = {
+  id?: string | null;
+  alias?: string | null;
+  models?: string[] | null;
+  spend?: number | null;
+  maxBudget?: number | null;
+  tpmLimit?: number | null;
+  rpmLimit?: number | null;
+};
+
+type PortalStats = {
+  email?: string | null;
+  litellmUserId?: string | null;
+  totalSpend?: number | null;
+  maxBudget?: number | null;
+  keyBudget?: string | number | null;
+  recentSpend?: number | null;
+  usageAvailable?: boolean;
+  requestCount?: number | null;
+  totalTokens?: number | null;
+  modelCount?: number | null;
+  keyCount?: number | null;
+  teamCount?: number | null;
+};
+
 declare global {
   interface Window {
     __PORTAL_CONFIG?: PortalConfig;
     __litellmPortalModelAccess?: Partial<ModelAccess>;
     __litellmPortalKeys?: PortalKey[];
+    __litellmPortalTeams?: PortalTeam[];
+    __litellmPortalStats?: PortalStats;
     __litellmPortalError?: string | null;
   }
 }
 
 const MODEL_EVENT = "litellm-portal:models";
 const KEYS_EVENT = "litellm-portal:keys";
+const TEAMS_EVENT = "litellm-portal:teams";
+const STATS_EVENT = "litellm-portal:stats";
 const ERROR_EVENT = "litellm-portal:error";
 const PREVIEW_LIMIT = 12;
 const MODEL_CELL_PREVIEW_LIMIT = 3;
@@ -122,6 +157,11 @@ function normalizeKeys(value: unknown): PortalKey[] {
   return value.filter((item): item is PortalKey => item !== null && typeof item === "object");
 }
 
+function normalizeTeams(value: unknown): PortalTeam[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is PortalTeam => item !== null && typeof item === "object");
+}
+
 function initialModelAccess(): ModelAccess {
   return normalizeModelAccess(window.__litellmPortalModelAccess);
 }
@@ -132,6 +172,10 @@ function sourceLabel(source: string): string {
 
 function text(value: unknown): string {
   return value == null || value === "" ? "—" : String(value);
+}
+
+function keyLabel(key: PortalKey): string {
+  return text(key.alias ?? key.displayKey ?? key.id);
 }
 
 function fmt(value: unknown): string {
@@ -189,15 +233,11 @@ function budgetLabel(tone: "danger" | "warning" | "success"): string {
 function BudgetBadge({ spend, maxBudget }: { spend: unknown; maxBudget: unknown }) {
   const tone = statusTone(spend, maxBudget);
   if (!tone) return null;
-  const className = tone === "danger"
-    ? "bg-kumo-danger-tint text-kumo-danger"
-    : tone === "warning"
-      ? "bg-kumo-warning-tint text-kumo-warning"
-      : "bg-kumo-success-tint text-kumo-success";
+  const variant = tone === "danger" ? "error" : tone === "warning" ? "warning" : "success";
   return (
-    <span className={`ml-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${className}`}>
+    <Badge variant={variant} className="ml-2">
       {budgetLabel(tone)}
-    </span>
+    </Badge>
   );
 }
 
@@ -245,6 +285,103 @@ function ModelsCell({ models }: { models: string[] }) {
         </Collapsible.Root>
       ) : null}
     </div>
+  );
+}
+
+function deleteKeyErrorMessage(value: unknown): string {
+  const record = value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const code = typeof record.error === "string" ? record.error : "";
+  if (code === "key_not_found") return "Key 不存在或不属于当前用户。";
+  if (code === "key_id_required") return "缺少要删除的 Key ID。";
+  if (code === "user_not_found") return "当前登录用户尚未在 LiteLLM 注册，请联系管理员。";
+  if (code.startsWith("litellm_request_failed_")) return "LiteLLM 删除 Key 失败，请稍后重试。";
+  return typeof record.message === "string" && record.message.length > 0
+    ? record.message
+    : code || "删除失败";
+}
+
+function DeleteKeyButton({
+  apiKey,
+  onDeleted,
+}: {
+  apiKey: PortalKey;
+  onDeleted: (keyId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const keyId = typeof apiKey.id === "string" ? apiKey.id : "";
+  const label = keyLabel(apiKey);
+
+  const handleOpenChange = useCallback((nextOpen: boolean) => {
+    setOpen(nextOpen);
+    if (!nextOpen) {
+      setError(null);
+      setDeleting(false);
+    }
+  }, []);
+
+  const handleDelete = useCallback(async () => {
+    if (!keyId) {
+      setError("缺少要删除的 Key ID。");
+      return;
+    }
+    setDeleting(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/keys/${encodeURIComponent(keyId)}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+      });
+      const body = response.status === 204 ? {} : await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setError(deleteKeyErrorMessage(body));
+        return;
+      }
+      onDeleted(keyId);
+      setOpen(false);
+    } catch {
+      setError("网络请求失败");
+    } finally {
+      setDeleting(false);
+    }
+  }, [keyId, onDeleted]);
+
+  return (
+    <Dialog.Root role="alertdialog" open={open} onOpenChange={handleOpenChange}>
+      <Dialog.Trigger
+        render={(props) => (
+          <Button {...props} variant="secondary-destructive" size="xs" disabled={!keyId}>
+            删除
+          </Button>
+        )}
+      />
+      <Dialog size="sm" className="space-y-5 p-6">
+        <Dialog.Title className="text-lg font-semibold text-kumo-strong">
+          删除 API Key？
+        </Dialog.Title>
+        <Dialog.Description className="text-sm text-kumo-subtle">
+          将删除「{label}」。删除后该 Key 会立即失效，此操作不可撤销。
+        </Dialog.Description>
+        {error ? (
+          <Banner variant="error" title="删除失败" description={error} />
+        ) : null}
+        <div className="flex justify-end gap-2">
+          <Dialog.Close
+            render={(props) => (
+              <Button {...props} variant="secondary" size="sm" disabled={deleting}>
+                取消
+              </Button>
+            )}
+          />
+          <Button variant="destructive" size="sm" loading={deleting} onClick={handleDelete}>
+            确认删除
+          </Button>
+        </div>
+      </Dialog>
+    </Dialog.Root>
   );
 }
 
@@ -332,7 +469,13 @@ function controlPillClass(active: boolean, disabled = false): string {
 
 function UsageSummary({ data, loading }: { data: UsageTimeseries | null; loading: boolean }) {
   const totals = data?.totals;
-  const source = data?.source === "spend_logs_v2" ? "实时请求日志" : data ? "LiteLLM 日聚合" : "—";
+  const source = data?.source === "spend_logs_v2"
+    ? "实时请求日志"
+    : data?.source === "spend_logs_v2_global"
+      ? "全局请求日志"
+      : data
+        ? "LiteLLM 日聚合"
+        : "—";
   return (
     <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
       <MetricTile label="总 Tokens" value={fmtInt(totals?.totalTokens)} loading={loading} />
@@ -358,7 +501,7 @@ function UsageBucketsTable({ data, loading }: { data: UsageTimeseries | null; lo
 
   const buckets = data?.buckets?.slice(-10).reverse() ?? [];
   if (buckets.length === 0) {
-    return <p className="py-3 text-sm text-kumo-subtle">暂无用量数据。</p>;
+    return <Empty size="sm" title="暂无用量数据" />;
   }
 
   return (
@@ -619,6 +762,188 @@ export function UsagePanel() {
   );
 }
 
+export function HeaderActions() {
+  const readMode = (): "dark" | "light" => (typeof document !== "undefined" && document.documentElement.dataset.mode === "dark") ? "dark" : "light";
+  const [mode, setMode] = useState<"dark" | "light">(readMode);
+
+  useEffect(() => {
+    document.documentElement.dataset.mode = mode;
+    try {
+      localStorage.setItem("litellm-portal-mode", mode);
+    } catch {
+      // ignore — private mode etc.
+    }
+  }, [mode]);
+
+  const isDark = mode === "dark";
+  return (
+    <>
+      <Switch
+        variant="neutral"
+        controlFirst={false}
+        checked={isDark}
+        onCheckedChange={(next: boolean) => setMode(next ? "dark" : "light")}
+        aria-label={isDark ? "切换浅色模式" : "切换深色模式"}
+        label={isDark ? "深色" : "浅色"}
+      />
+      <Button
+        variant="outline"
+        type="button"
+        aria-label="退出登录"
+        onClick={() => { window.location.href = "/cdn-cgi/access/logout"; }}
+      >
+        退出登录
+      </Button>
+    </>
+  );
+}
+
+function StatTile({
+  accent,
+  label,
+  children,
+}: {
+  accent: "info" | "brand" | "success" | "warning";
+  label: string;
+  children: React.ReactNode;
+}) {
+  const dot = accent === "brand"
+    ? "bg-kumo-brand"
+    : accent === "success"
+      ? "bg-kumo-success"
+      : accent === "warning"
+        ? "bg-kumo-warning"
+        : "bg-kumo-info";
+  return (
+    <LayerCard className="p-6">
+      <div className="flex items-center gap-2">
+        <span className={`inline-block h-2 w-2 rounded-full ${dot}`} />
+        <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">{label}</p>
+      </div>
+      {children}
+    </LayerCard>
+  );
+}
+
+function normalizeStats(value: unknown): PortalStats {
+  if (!value || typeof value !== "object") return {};
+  return value as PortalStats;
+}
+
+export function HeroStats() {
+  const [stats, setStats] = useState<PortalStats>(normalizeStats(window.__litellmPortalStats));
+
+  useEffect(() => {
+    const update = (event: Event) => {
+      setStats(normalizeStats(event instanceof CustomEvent ? event.detail : window.__litellmPortalStats));
+    };
+    window.addEventListener(STATS_EVENT, update);
+    if (window.__litellmPortalStats) update(new Event(STATS_EVENT));
+    return () => window.removeEventListener(STATS_EVENT, update);
+  }, []);
+
+  const email = text(stats.email);
+  const recentDisplay = stats.usageAvailable ? fmt(stats.recentSpend) : "暂无数据";
+  const budgetText = stats.maxBudget == null
+    ? `预算 ${text(stats.keyBudget)}`
+    : `预算 ${fmt(stats.maxBudget)}`;
+
+  return (
+    <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
+      <StatTile accent="info" label="当前身份">
+        <p className="mt-4 truncate text-2xl font-semibold text-kumo-strong" title={email}>{email}</p>
+        <p className="mt-3 truncate font-mono text-sm text-kumo-subtle">
+          {stats.litellmUserId == null ? "—" : `LiteLLM: ${stats.litellmUserId}`}
+        </p>
+      </StatTile>
+      <StatTile accent="brand" label="累计花费">
+        <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">{fmt(stats.totalSpend)}</p>
+        <div className="mt-3 flex min-h-[20px] items-center gap-2 text-sm text-kumo-subtle">
+          {budgetText}
+          <BudgetBadge spend={stats.totalSpend} maxBudget={stats.maxBudget} />
+        </div>
+      </StatTile>
+      <StatTile accent="success" label="近 30 天">
+        <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">{recentDisplay}</p>
+        <p className="mt-3 text-sm text-kumo-subtle">
+          {fmtInt(stats.requestCount)} 次请求 · {fmtInt(stats.totalTokens)} tokens
+        </p>
+      </StatTile>
+      <StatTile accent="success" label="权限范围">
+        <p className="mt-4 text-3xl font-semibold leading-tight text-kumo-strong">
+          {fmtInt(stats.modelCount)} 模型
+        </p>
+        <p className="mt-3 text-sm text-kumo-subtle">
+          {fmtInt(stats.keyCount)} 个 Key · {fmtInt(stats.teamCount)} 个团队
+        </p>
+      </StatTile>
+    </section>
+  );
+}
+
+export function TeamsAccessCard() {
+  const [teams, setTeams] = useState<PortalTeam[]>(normalizeTeams(window.__litellmPortalTeams));
+  const [loaded, setLoaded] = useState(Array.isArray(window.__litellmPortalTeams));
+
+  useEffect(() => {
+    const update = (event: Event) => {
+      const next = normalizeTeams(event instanceof CustomEvent ? event.detail : window.__litellmPortalTeams);
+      setTeams(next);
+      setLoaded(true);
+    };
+    window.addEventListener(TEAMS_EVENT, update);
+    if (window.__litellmPortalTeams) update(new Event(TEAMS_EVENT));
+    return () => window.removeEventListener(TEAMS_EVENT, update);
+  }, []);
+
+  return (
+    <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
+      <div className="border-b border-kumo-line bg-kumo-elevated p-6">
+        <p className="text-lg font-semibold text-kumo-strong">团队权限</p>
+        <p className="text-sm text-kumo-subtle">只展示当前账号所属团队的信息。</p>
+      </div>
+      {!loaded ? (
+        <div className="p-6 text-sm text-kumo-subtle">Loading…</div>
+      ) : teams.length === 0 ? (
+        <Empty size="sm" title="当前 LiteLLM 用户未关联团队" />
+      ) : (
+        <div className="overflow-x-auto">
+          <Table className="w-full text-sm">
+            <Table.Header>
+              <Table.Row>
+                <Table.Head className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">团队</Table.Head>
+                <Table.Head className="text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">模型</Table.Head>
+                <Table.Head className="text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">花费</Table.Head>
+                <Table.Head className="text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">预算</Table.Head>
+                <Table.Head className="text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">RPM</Table.Head>
+                <Table.Head className="text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">TPM</Table.Head>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {teams.map((team, index) => {
+                const modelsCount = Array.isArray(team.models) ? team.models.length : 0;
+                return (
+                  <Table.Row key={team.id ?? team.alias ?? index}>
+                    <Table.Cell className="text-kumo-default">{text(team.alias ?? team.id)}</Table.Cell>
+                    <Table.Cell className="text-right font-mono text-kumo-default">{modelsCount || "未限制"}</Table.Cell>
+                    <Table.Cell className="text-right font-mono text-kumo-default">{team.spend == null ? "—" : fmt(team.spend)}</Table.Cell>
+                    <Table.Cell className="text-right font-mono text-kumo-default">
+                      {team.maxBudget == null ? "—" : fmt(team.maxBudget)}
+                      <BudgetBadge spend={team.spend} maxBudget={team.maxBudget} />
+                    </Table.Cell>
+                    <Table.Cell className="text-right font-mono text-kumo-default">{team.rpmLimit == null ? "—" : fmtInt(team.rpmLimit)}</Table.Cell>
+                    <Table.Cell className="text-right font-mono text-kumo-default">{team.tpmLimit == null ? "—" : fmtInt(team.tpmLimit)}</Table.Cell>
+                  </Table.Row>
+                );
+              })}
+            </Table.Body>
+          </Table>
+        </div>
+      )}
+    </article>
+  );
+}
+
 export function ModelAccessCard() {
   const initial = initialModelAccess();
   const [modelAccess, setModelAccess] = useState<ModelAccess>(initial);
@@ -695,6 +1020,11 @@ export function ApiKeysCard() {
   const [keys, setKeys] = useState<PortalKey[]>(normalizeKeys(window.__litellmPortalKeys));
   const [loaded, setLoaded] = useState(Array.isArray(window.__litellmPortalKeys));
 
+  const handleDeleted = useCallback((keyId: string) => {
+    setKeys((current) => current.filter((key) => key.id !== keyId));
+    window.dispatchEvent(new CustomEvent("litellm-portal:refresh"));
+  }, []);
+
   useEffect(() => {
     const updateKeys = (event: Event) => {
       const next = normalizeKeys(event instanceof CustomEvent ? event.detail : window.__litellmPortalKeys);
@@ -727,7 +1057,7 @@ export function ApiKeysCard() {
             ))}
           </div>
         ) : keys.length === 0 ? (
-          <p className="p-5 text-sm text-kumo-subtle">暂无 API Key。</p>
+          <Empty size="sm" title="暂无 API Key" />
         ) : (
           <Table className="w-full text-left text-sm text-kumo-default">
             <Table.Header>
@@ -738,6 +1068,7 @@ export function ApiKeysCard() {
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">花费</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">预算</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">过期时间</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">操作</Table.Head>
               </Table.Row>
             </Table.Header>
             <Table.Body>
@@ -761,6 +1092,9 @@ export function ApiKeysCard() {
                       <BudgetBadge spend={key.spend} maxBudget={key.maxBudget} />
                     </Table.Cell>
                     <Table.Cell className="py-3 pr-5 text-kumo-default">{text(key.expiresAt)}</Table.Cell>
+                    <Table.Cell className="py-3 pr-5 text-right">
+                      <DeleteKeyButton apiKey={key} onDeleted={handleDeleted} />
+                    </Table.Cell>
                   </Table.Row>
                 );
               })}
@@ -798,13 +1132,42 @@ export function PortalErrorBanner() {
   );
 }
 
+const NEVER_EXPIRES_VALUE = "never";
+
 const DURATION_OPTIONS = [
-  { value: "", label: "永不过期" },
+  { value: NEVER_EXPIRES_VALUE, label: "永不过期" },
   { value: "7d", label: "7 天" },
   { value: "30d", label: "30 天" },
   { value: "90d", label: "90 天" },
   { value: "365d", label: "365 天" },
 ];
+
+function durationFromSelectValue(value: unknown): string {
+  const selected = typeof value === "string" ? value : NEVER_EXPIRES_VALUE;
+  return selected === NEVER_EXPIRES_VALUE ? "" : selected;
+}
+
+function selectedModelsFromValue(value: unknown): string[] {
+  if (!Array.isArray(value)) return typeof value === "string" ? [value] : [];
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function createKeyErrorMessage(value: unknown): string {
+  const record = value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const code = typeof record.error === "string" ? record.error : "";
+  if (code === "key_alias_conflict") {
+    const keyAlias = typeof record.keyAlias === "string" && record.keyAlias.length > 0 ? record.keyAlias : "";
+    return keyAlias ? `名称「${keyAlias}」已存在，请换一个名称。` : "Key 名称已存在，请换一个名称。";
+  }
+  if (code === "key_alias_required") return "请输入 Key 名称";
+  if (code === "user_not_found") return "当前登录用户尚未在 LiteLLM 注册，请联系管理员。";
+  if (code.startsWith("litellm_request_failed_")) return "LiteLLM 创建 Key 失败，请稍后重试。";
+  return typeof record.message === "string" && record.message.length > 0
+    ? record.message
+    : code || "创建失败";
+}
 
 type CreateKeyResult = {
   rawKey: string;
@@ -823,6 +1186,7 @@ export function CreateKeyButton() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CreateKeyResult | null>(null);
+  const durationSelectValue = duration || NEVER_EXPIRES_VALUE;
 
   useEffect(() => {
     if (!open) return;
@@ -867,9 +1231,9 @@ export function CreateKeyButton() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(typeof data.error === "string" ? data.error : "创建失败");
+        setError(createKeyErrorMessage(data));
         return;
       }
       setResult(data as CreateKeyResult);
@@ -880,32 +1244,19 @@ export function CreateKeyButton() {
     }
   }, [alias, selectedModels, budget, duration]);
 
-  const handleClose = useCallback(() => {
-    setOpen(false);
+  const handleOpenChange = useCallback((nextOpen: boolean) => {
+    setOpen(nextOpen);
+    if (nextOpen) return;
+
+    const shouldRefresh = result !== null;
     resetForm();
-    if (result) {
+    if (shouldRefresh) {
       window.dispatchEvent(new CustomEvent("litellm-portal:refresh"));
     }
   }, [result, resetForm]);
 
-  const handleCopy = useCallback(async () => {
-    if (!result?.rawKey) return;
-    try {
-      await navigator.clipboard.writeText(result.rawKey);
-    } catch {
-      const textarea = document.createElement("textarea");
-      textarea.value = result.rawKey;
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand("copy");
-      document.body.removeChild(textarea);
-    }
-  }, [result]);
-
   return (
-    <Dialog.Root>
+    <Dialog.Root open={open} onOpenChange={handleOpenChange}>
       <Dialog.Trigger
         render={(props) => (
           <Button {...props} variant="primary" size="sm">
@@ -938,14 +1289,12 @@ export function CreateKeyButton() {
               </div>
               <div className="mt-4 space-y-1">
                 <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">完整 Key</p>
-                <div className="flex items-center gap-3">
-                  <code className="flex-1 overflow-hidden rounded-md bg-kumo-base px-3 py-2 font-mono text-sm text-kumo-brand ring-1 ring-kumo-line">
-                    {result.rawKey}
-                  </code>
-                  <Button variant="secondary" size="sm" onClick={handleCopy}>
-                    复制
-                  </Button>
-                </div>
+                <ClipboardText
+                  className="w-full min-w-0 text-kumo-brand"
+                  labels={{ copyAction: "复制完整 Key" }}
+                  size="lg"
+                  text={result.rawKey}
+                />
               </div>
               {result.expires ? (
                 <div className="mt-4 space-y-1">
@@ -958,7 +1307,7 @@ export function CreateKeyButton() {
             <div className="flex justify-end">
               <Dialog.Close
                 render={(props) => (
-                  <Button {...props} variant="primary" onClick={handleClose}>
+                  <Button {...props} variant="primary" size="lg">
                     已复制，关闭
                   </Button>
                 )}
@@ -983,13 +1332,20 @@ export function CreateKeyButton() {
 
             {models.length > 0 ? (
               <div className="space-y-1.5">
-                <label className="text-sm font-medium text-kumo-default">允许模型</label>
                 <Select
                   label="允许模型"
+                  className="w-full"
                   size="lg"
                   multiple
+                  placeholder="继承当前用户可用模型"
+                  renderValue={(value) => {
+                    const selected = selectedModelsFromValue(value);
+                    if (selected.length === 0) return "继承当前用户可用模型";
+                    if (selected.length > 3) return `${selected.slice(0, 2).join(", ")} 等 ${selected.length} 个模型`;
+                    return selected.join(", ");
+                  }}
                   value={selectedModels}
-                  onValueChange={(value) => setSelectedModels(Array.isArray(value) ? value.map(String) : [String(value)])}
+                  onValueChange={(value) => setSelectedModels(selectedModelsFromValue(value))}
                 >
                   {models.map((model) => (
                     <Select.Option key={model} value={model}>
@@ -1015,12 +1371,12 @@ export function CreateKeyButton() {
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-kumo-default">有效期</label>
               <Select
                 label="有效期"
+                className="w-full"
                 size="lg"
-                value={duration || ""}
-                onValueChange={(value) => setDuration(String(value))}
+                value={durationSelectValue}
+                onValueChange={(value) => setDuration(durationFromSelectValue(value))}
               >
                 {DURATION_OPTIONS.map((opt) => (
                   <Select.Option key={opt.value} value={opt.value}>
@@ -1033,12 +1389,12 @@ export function CreateKeyButton() {
             <div className="flex justify-end gap-3 pt-2">
               <Dialog.Close
                 render={(props) => (
-                  <Button {...props} variant="secondary" onClick={handleClose}>
+                  <Button {...props} variant="secondary" size="lg">
                     取消
                   </Button>
                 )}
               />
-              <Button variant="primary" loading={submitting} onClick={handleSubmit}>
+              <Button variant="primary" size="lg" loading={submitting} onClick={handleSubmit}>
                 创建
               </Button>
             </div>
@@ -1047,6 +1403,864 @@ export function CreateKeyButton() {
       </Dialog>
     </Dialog.Root>
   );
+}
+
+type PortalRole = "admin" | "user" | "none";
+
+type AdminUsersResponse = {
+  users: Array<{
+    userId: string;
+    email: string;
+    spend: number | null;
+    maxBudget: number | null;
+    teamIds: string[];
+    role: string | null;
+  }>;
+  totalCount: number;
+  page: number;
+  size: number;
+};
+
+type AdminTeam = {
+  id: string;
+  alias: string | null;
+  models: string[];
+  spend: number | null;
+  tpmLimit: number | null;
+  rpmLimit: number | null;
+};
+
+type AdminTeamsResponse = {
+  teams: AdminTeam[];
+};
+
+type AdminAuditEvent = {
+  id: string;
+  createdAt: string | null;
+  action: string;
+  actorUserId: string | null;
+  actorUserEmail: string | null;
+  objectType: string | null;
+  objectId: string | null;
+};
+
+type AdminAuditResponse = {
+  events: AdminAuditEvent[];
+  totalCount: number;
+  page: number;
+  size: number;
+};
+
+type AdminSummary = {
+  userCount?: number | null;
+  sampledUserCount?: number | null;
+  limited?: boolean;
+  teamCount?: number | null;
+  adminCount?: number | null;
+  unmanagedRoleCount?: number | null;
+  noTeamUserCount?: number | null;
+  overBudgetUserCount?: number | null;
+  overBudgetTeamCount?: number | null;
+  riskCount?: number | null;
+  totalSpend?: number | null;
+  teamSpend?: number | null;
+  totalBudget?: number | null;
+};
+
+const ADMIN_PAGE_SIZE = 50;
+
+function AdminLoadingSkeleton() {
+  return (
+    <div className="space-y-3 p-6" aria-live="polite">
+      {Array.from({ length: 4 }, (_, index) => (
+        <SkeletonLine key={index} minWidth={260} maxWidth={760} blockHeight={20} />
+      ))}
+    </div>
+  );
+}
+
+function AdminErrorBanner({ message }: { message: string }) {
+  return (
+    <div className="p-6">
+      <Banner variant="error" title="数据加载失败" description={message} />
+    </div>
+  );
+}
+
+function AdminPager({
+  page,
+  setPage,
+  totalCount,
+  perPage,
+}: {
+  page: number;
+  setPage: (next: number) => void;
+  totalCount: number;
+  perPage: number;
+}) {
+  if (totalCount <= perPage) return null;
+  return (
+    <Pagination
+      className="border-t border-kumo-line px-6 py-4"
+      controls="simple"
+      page={page}
+      setPage={setPage}
+      perPage={perPage}
+      totalCount={totalCount}
+      labels={{
+        navigation: "分页",
+        firstPage: "首页",
+        previousPage: "上一页",
+        nextPage: "下一页",
+        lastPage: "末页",
+        pageNumber: "页码",
+        pageSize: "每页条数",
+      }}
+    />
+  );
+}
+
+function normalizeAdminSummary(value: unknown): AdminSummary {
+  return value && typeof value === "object" ? value as AdminSummary : {};
+}
+
+function AdminHeroStats() {
+  const [summary, setSummary] = useState<AdminSummary>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
+    fetch("/api/admin/summary", {
+      signal: controller.signal,
+      headers: { "content-type": "application/json" },
+    })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(typeof body.error === "string" ? body.error : "全局概览加载失败");
+        }
+        return normalizeAdminSummary(body);
+      })
+      .then((body) => {
+        setSummary(body);
+        setError(null);
+      })
+      .catch((fetchError: unknown) => {
+        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
+        setSummary({});
+        setError(fetchError instanceof Error ? fetchError.message : "全局概览加载失败");
+      })
+      .finally(() => setLoading(false));
+
+    return () => controller.abort();
+  }, []);
+
+  const sampledText = summary.limited
+    ? `已采样 ${fmtInt(summary.sampledUserCount)} / 共 ${fmtInt(summary.userCount)} 用户`
+    : `覆盖 ${fmtInt(summary.sampledUserCount ?? summary.userCount)} 个用户`;
+
+  return (
+    <div className="space-y-4">
+      {error ? (
+        <Banner variant="error" title="全局概览加载失败" description={error} />
+      ) : null}
+      <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4" aria-label="全局管理概览">
+        <StatTile accent="info" label="全局账户">
+          {loading ? (
+            <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
+          ) : (
+            <>
+              <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">
+                {fmtInt(summary.userCount)}
+              </p>
+              <p className="mt-3 text-sm text-kumo-subtle">
+                {fmtInt(summary.adminCount)} 个管理员 · {fmtInt(summary.unmanagedRoleCount)} 个未映射角色
+              </p>
+            </>
+          )}
+        </StatTile>
+        <StatTile accent="brand" label="全局花费">
+          {loading ? (
+            <SkeletonLine className="mt-4" minWidth={110} maxWidth={180} blockHeight={32} />
+          ) : (
+            <>
+              <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">{fmt(summary.totalSpend)}</p>
+              <p className="mt-3 text-sm text-kumo-subtle">
+                预算 {summary.totalBudget == null ? "—" : fmt(summary.totalBudget)} · 团队花费 {fmt(summary.teamSpend)}
+              </p>
+            </>
+          )}
+        </StatTile>
+        <StatTile accent="success" label="资源覆盖">
+          {loading ? (
+            <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
+          ) : (
+            <>
+              <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">
+                {fmtInt(summary.teamCount)}
+              </p>
+              <p className="mt-3 text-sm text-kumo-subtle">
+                {fmtInt(summary.noTeamUserCount)} 个用户未关联团队
+              </p>
+            </>
+          )}
+        </StatTile>
+        <StatTile accent="warning" label="风险雷达">
+          {loading ? (
+            <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
+          ) : (
+            <>
+              <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">
+                {fmtInt(summary.riskCount)}
+              </p>
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-kumo-subtle">
+                <span>{fmtInt(Number(summary.overBudgetUserCount || 0) + Number(summary.overBudgetTeamCount || 0))} 个超预算对象</span>
+                {summary.limited ? <Badge variant="warning">样本视图</Badge> : null}
+              </div>
+            </>
+          )}
+        </StatTile>
+      </section>
+      {!loading ? (
+        <p className="text-xs text-kumo-subtle">{sampledText}，风险项由预算、角色映射和团队覆盖情况计算。</p>
+      ) : null}
+    </div>
+  );
+}
+
+function AdminUsersTable() {
+  const [data, setData] = useState<AdminUsersResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const requestIdRef = useRef(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const requestId = ++requestIdRef.current;
+    setLoading(true);
+    setError(null);
+
+    const params = new URLSearchParams({ page: String(page), size: String(ADMIN_PAGE_SIZE) });
+    fetch(`/api/admin/users?${params.toString()}`, {
+      signal: controller.signal,
+      headers: { "content-type": "application/json" },
+    })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(typeof body.error === "string" ? body.error : "全员账户加载失败");
+        }
+        return body as AdminUsersResponse;
+      })
+      .then((body) => {
+        if (requestId !== requestIdRef.current) return;
+        setData(body);
+        setError(null);
+      })
+      .catch((fetchError: unknown) => {
+        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
+        if (requestId !== requestIdRef.current) return;
+        setData(null);
+        setError(fetchError instanceof Error ? fetchError.message : "全员账户加载失败");
+      })
+      .finally(() => {
+        if (requestId === requestIdRef.current) setLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [page]);
+
+  return (
+    <div>
+      {loading ? (
+        <AdminLoadingSkeleton />
+      ) : error ? (
+        <AdminErrorBanner message={error} />
+      ) : !data || data.users.length === 0 ? (
+        <Empty size="sm" title="暂无用户数据" />
+      ) : (
+        <div className="overflow-x-auto">
+          <Table className="w-full text-left text-sm text-kumo-default">
+            <Table.Header>
+              <Table.Row className="border-b border-kumo-line">
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">邮箱</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">角色</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">累计消费</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">团队数</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">最大预算</Table.Head>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {data.users.map((user) => (
+                <Table.Row key={user.userId} className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
+                  <Table.Cell className="py-3 pl-5 pr-3 font-mono text-kumo-default">{text(user.email)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-kumo-subtle">{text(user.role)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmt(user.spend)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmtInt(user.teamIds.length)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-5 text-right font-mono text-kumo-default">{user.maxBudget == null ? "—" : fmt(user.maxBudget)}</Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table>
+        </div>
+      )}
+      {data ? (
+        <AdminPager
+          page={page}
+          setPage={setPage}
+          totalCount={data.totalCount}
+          perPage={ADMIN_PAGE_SIZE}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function AdminTeamsTable() {
+  const [data, setData] = useState<AdminTeamsResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/admin/teams", {
+      signal: controller.signal,
+      headers: { "content-type": "application/json" },
+    })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(typeof body.error === "string" ? body.error : "全部团队加载失败");
+        }
+        return body as AdminTeamsResponse;
+      })
+      .then((body) => setData(body))
+      .catch((fetchError: unknown) => {
+        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
+        setError(fetchError instanceof Error ? fetchError.message : "全部团队加载失败");
+      })
+      .finally(() => setLoading(false));
+
+    return () => controller.abort();
+  }, []);
+
+  return (
+    <div>
+      {loading ? (
+        <AdminLoadingSkeleton />
+      ) : error ? (
+        <AdminErrorBanner message={error} />
+      ) : !data || data.teams.length === 0 ? (
+        <Empty size="sm" title="暂无团队数据" />
+      ) : (
+        <div className="overflow-x-auto">
+          <Table className="w-full text-left text-sm text-kumo-default">
+            <Table.Header>
+              <Table.Row className="border-b border-kumo-line">
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">ID</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">别名</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">可用模型</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">消费</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">TPM</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">RPM</Table.Head>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {data.teams.map((team) => (
+                <Table.Row key={team.id} className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
+                  <Table.Cell className="py-3 pl-5 pr-3 font-mono text-xs text-kumo-subtle">{text(team.id)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-kumo-default">{text(team.alias)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-kumo-subtle">{team.models.length > 0 ? team.models.join(", ") : "—"}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmt(team.spend)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{team.tpmLimit == null ? "—" : fmtInt(team.tpmLimit)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-5 text-right font-mono text-kumo-default">{team.rpmLimit == null ? "—" : fmtInt(team.rpmLimit)}</Table.Cell>
+                </Table.Row>
+              ))}
+            </Table.Body>
+          </Table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdminGlobalUsage() {
+  const config = useMemo(() => portalConfig(), []);
+  const grains = useMemo(() => Object.keys(config.usageWindows), [config]);
+  const presets = useMemo(() => usageWindowPresets(config), [config]);
+  const defaultPreset = useMemo(() => {
+    const defaultDayWindow = defaultWindowFor("day", config);
+    return presetForWindow(defaultDayWindow, config) ?? presets.find((p) => p.grain === "day") ?? presets[0];
+  }, [config, presets]);
+
+  const [grainMode, setGrainMode] = useState<GrainMode>("auto");
+  const [grain, setGrain] = useState(defaultPreset?.grain ?? "day");
+  const [windowKey, setWindowKey] = useState(defaultPreset?.windowKey ?? defaultWindowFor("day", config));
+  const [data, setData] = useState<UsageTimeseries | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [rangeHint, setRangeHint] = useState<string | null>(null);
+  const requestIdRef = useRef(0);
+
+  const activePreset = useMemo(
+    () => presets.find((p) => p.windowKey === windowKey) ?? defaultPreset,
+    [defaultPreset, presets, windowKey],
+  );
+  const selectedWindowLabel = activePreset?.label ?? "当前窗口";
+  const grainStatus = `${grainMode === "auto" ? "自动粒度" : "手动粒度"}：${usageGrainLabels[grain] ?? grain}`;
+
+  const applyPreset = useCallback((preset: UsageWindowSelection, source: "click" | "brush" = "click") => {
+    const manualGrain = grainMode !== "auto" ? grainMode : null;
+    const canKeepManual = manualGrain ? supportsWindowForGrain(manualGrain, preset.windowKey, config) : false;
+    const nextGrain = canKeepManual && manualGrain ? manualGrain : preset.grain;
+    const nextMode: GrainMode = canKeepManual && manualGrain ? manualGrain : "auto";
+
+    setGrainMode(nextMode);
+    setGrain(nextGrain);
+    setWindowKey(preset.windowKey);
+
+    const nextStatus = `${nextMode === "auto" ? "自动粒度" : "手动粒度"}：${usageGrainLabels[nextGrain] ?? nextGrain}`;
+    if (source === "brush") {
+      setRangeHint(`已按图表选择切换到 ${preset.label} · ${nextStatus}`);
+      return;
+    }
+    if (manualGrain && !canKeepManual) {
+      setRangeHint(`${preset.label} 不支持手动粒度「${usageGrainLabels[manualGrain] ?? manualGrain}」，已切回 ${nextStatus}`);
+      return;
+    }
+    setRangeHint(null);
+  }, [config, grainMode]);
+
+  const handleAutoGrainClick = useCallback(() => {
+    const preset = activePreset;
+    if (!preset) return;
+    setGrainMode("auto");
+    setGrain(preset.grain);
+    setRangeHint(null);
+  }, [activePreset]);
+
+  const handleManualGrainClick = useCallback((nextGrain: string) => {
+    if (!supportsWindowForGrain(nextGrain, windowKey, config)) return;
+    setGrainMode(nextGrain);
+    setGrain(nextGrain);
+    setRangeHint(null);
+  }, [config, windowKey]);
+
+  const handleChartRangeChange = useCallback((from: number, to: number) => {
+    const selection = selectionForRange(from, to, config);
+    if (!selection) {
+      setRangeHint("图表选择已捕获；请选择更接近预设的范围以自动取数。");
+      return;
+    }
+    applyPreset(selection, "brush");
+  }, [applyPreset, config]);
+
+  useEffect(() => {
+    if (!grain || !windowKey) return;
+    const controller = new AbortController();
+    const requestId = ++requestIdRef.current;
+    setLoading(true);
+    setError(null);
+
+    const params = new URLSearchParams({ grain, window: windowKey });
+    fetch(`/api/admin/usage/timeseries?${params.toString()}`, {
+      signal: controller.signal,
+      headers: { "content-type": "application/json" },
+    })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(typeof body.error === "string" ? body.error : "全局用量加载失败");
+        }
+        return body as UsageTimeseries;
+      })
+      .then((body) => {
+        if (requestId !== requestIdRef.current) return;
+        setData(body);
+        setError(null);
+      })
+      .catch((fetchError: unknown) => {
+        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
+        if (requestId !== requestIdRef.current) return;
+        setData(null);
+        setError(fetchError instanceof Error ? fetchError.message : "全局用量加载失败");
+      })
+      .finally(() => {
+        if (requestId === requestIdRef.current) setLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [grain, windowKey]);
+
+  const windowText = data
+    ? `${data.windowLabel} · ${usageGrainLabels[data.grain] ?? data.grain} · ${text(data.start).slice(0, 10)} 至 ${text(data.end).slice(0, 10)}${data.limited ? " · 已达到分页上限" : ""}`
+    : `全局用量沿用个人视图的预设和粒度规则。当前：${selectedWindowLabel} · ${grainStatus}`;
+
+  return (
+    <div aria-busy={loading}>
+      <div className="border-b border-kumo-line bg-kumo-elevated p-6">
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-base font-semibold text-kumo-strong">全局 Token 用量趋势</p>
+            <span className="rounded-full bg-kumo-info-tint px-2.5 py-1 text-xs font-semibold text-kumo-info">Brush native</span>
+            <span className="rounded-full bg-kumo-success-tint px-2.5 py-1 text-xs font-semibold text-kumo-success">{grainStatus}</span>
+          </div>
+          <p className="text-sm leading-relaxed text-kumo-subtle">{windowText}</p>
+          {rangeHint ? (
+            <p className="text-xs font-medium text-kumo-brand" aria-live="polite">{rangeHint}</p>
+          ) : null}
+        </div>
+        <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_auto]" aria-label="全局用量筛选">
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">时间范围预设</p>
+            <div className="flex flex-wrap gap-2" role="group" aria-label="时间范围预设">
+              {presets.map((preset) => (
+                <button
+                  key={preset.windowKey}
+                  type="button"
+                  className={controlPillClass(preset.windowKey === windowKey)}
+                  aria-pressed={preset.windowKey === windowKey}
+                  onClick={() => applyPreset(preset)}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-2 xl:w-[380px]">
+            <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">时间粒度</p>
+            <div className="flex flex-wrap gap-2" role="group" aria-label="时间粒度">
+              <button
+                type="button"
+                className={controlPillClass(grainMode === "auto")}
+                aria-pressed={grainMode === "auto"}
+                onClick={handleAutoGrainClick}
+              >
+                自动
+              </button>
+              {grains.map((item) => {
+                const disabled = !supportsWindowForGrain(item, windowKey, config);
+                return (
+                  <button
+                    key={item}
+                    type="button"
+                    className={controlPillClass(grainMode === item, disabled)}
+                    aria-pressed={grainMode === item}
+                    disabled={disabled}
+                    title={disabled ? `${selectedWindowLabel} 不支持${usageGrainLabels[item] ?? item}粒度` : undefined}
+                    onClick={() => handleManualGrainClick(item)}
+                  >
+                    {usageGrainLabels[item] ?? item}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr]">
+        <div className="space-y-8 p-8">
+          {error ? (
+            <Banner variant="error" title="全局用量加载失败" description={error} />
+          ) : null}
+          <UsageSummary data={data} loading={loading} />
+          <UsageChart data={data} error={error} loading={loading} onTimeRangeChange={handleChartRangeChange} />
+          <div className="overflow-x-auto">
+            <UsageBucketsTable data={data} loading={loading} />
+          </div>
+        </div>
+        <div className="border-t border-kumo-line p-8 md:border-l md:border-t-0">
+          <p className="mb-5 text-sm font-semibold text-kumo-default">高频模型</p>
+          <TopModels data={data} loading={loading} />
+        </div>
+      </div>
+      {activePreset ? (
+        <p className="px-8 pb-6 text-xs text-kumo-subtle">
+          数据来源：/api/admin/usage/timeseries · {activePreset.label} · {usageGrainLabels[grain] ?? grain}粒度
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function AdminAuditFeed() {
+  const [data, setData] = useState<AdminAuditResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const requestIdRef = useRef(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const requestId = ++requestIdRef.current;
+    setLoading(true);
+    setError(null);
+
+    const params = new URLSearchParams({ page: String(page), size: String(ADMIN_PAGE_SIZE) });
+    fetch(`/api/admin/audit?${params.toString()}`, {
+      signal: controller.signal,
+      headers: { "content-type": "application/json" },
+    })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(typeof body.error === "string" ? body.error : "审计日志加载失败");
+        }
+        return body as AdminAuditResponse;
+      })
+      .then((body) => {
+        if (requestId !== requestIdRef.current) return;
+        setData(body);
+        setError(null);
+      })
+      .catch((fetchError: unknown) => {
+        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
+        if (requestId !== requestIdRef.current) return;
+        setData(null);
+        setError(fetchError instanceof Error ? fetchError.message : "审计日志加载失败");
+      })
+      .finally(() => {
+        if (requestId === requestIdRef.current) setLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [page]);
+
+  const toggleRow = useCallback((id: string) => {
+    setExpandedId((prev) => (prev === id ? null : id));
+  }, []);
+
+  return (
+    <div>
+      {loading ? (
+        <AdminLoadingSkeleton />
+      ) : error ? (
+        <AdminErrorBanner message={error} />
+      ) : !data || data.events.length === 0 ? (
+        <Empty size="sm" title="暂无审计日志" />
+      ) : (
+        <div className="overflow-x-auto">
+          <Table className="w-full text-left text-sm text-kumo-default">
+            <Table.Header>
+              <Table.Row className="border-b border-kumo-line">
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">创建时间</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">操作</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">操作者</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">对象类型</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">对象 ID</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">详情</Table.Head>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {data.events.map((event) => (
+                <React.Fragment key={event.id}>
+                  <Table.Row className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
+                    <Table.Cell className="py-3 pl-5 pr-3 font-mono text-xs text-kumo-subtle">{event.createdAt ? event.createdAt.slice(0, 19).replace("T", " ") : "—"}</Table.Cell>
+                    <Table.Cell className="py-3 pr-3 text-kumo-default">{text(event.action)}</Table.Cell>
+                    <Table.Cell className="py-3 pr-3 text-kumo-default">{text(event.actorUserEmail ?? event.actorUserId)}</Table.Cell>
+                    <Table.Cell className="py-3 pr-3 text-kumo-subtle">{text(event.objectType)}</Table.Cell>
+                    <Table.Cell className="py-3 pr-3 font-mono text-xs text-kumo-subtle">{text(event.objectId)}</Table.Cell>
+                    <Table.Cell className="py-3 pr-5">
+                      <button
+                        type="button"
+                        className="text-xs font-semibold text-kumo-brand hover:text-kumo-brand-hover"
+                        onClick={() => toggleRow(event.id)}
+                        aria-expanded={expandedId === event.id}
+                      >
+                        {expandedId === event.id ? "收起" : "展开"}
+                      </button>
+                    </Table.Cell>
+                  </Table.Row>
+                  {expandedId === event.id ? (
+                    <Table.Row className="border-b border-kumo-fill bg-kumo-recessed">
+                      <Table.Cell colSpan={6} className="px-5 py-4">
+                        <div className="space-y-3 text-xs">
+                          <div>
+                            <p className="mb-1 font-semibold uppercase tracking-wider text-kumo-subtle">变更后</p>
+                            <pre className="overflow-x-auto rounded-lg bg-kumo-base p-3 font-mono text-kumo-default ring-1 ring-kumo-line">{JSON.stringify(event, null, 2)}</pre>
+                          </div>
+                        </div>
+                      </Table.Cell>
+                    </Table.Row>
+                  ) : null}
+                </React.Fragment>
+              ))}
+            </Table.Body>
+          </Table>
+        </div>
+      )}
+      {data ? (
+        <AdminPager
+          page={page}
+          setPage={setPage}
+          totalCount={data.totalCount}
+          perPage={ADMIN_PAGE_SIZE}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function AdminCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <LayerCard className="overflow-hidden p-0">
+      <Collapsible.Root defaultOpen>
+        <div className="flex items-center justify-between border-b border-kumo-line bg-kumo-elevated px-6 py-5">
+          <p className="text-lg font-semibold text-kumo-strong">{title}</p>
+          <Collapsible.DefaultTrigger className="text-sm font-medium text-kumo-brand hover:text-kumo-brand-hover" />
+        </div>
+        <Collapsible.Panel>
+          {children}
+        </Collapsible.Panel>
+      </Collapsible.Root>
+    </LayerCard>
+  );
+}
+
+export function AdminSection({ role }: { role: PortalRole }) {
+  if (role !== "admin") return null;
+
+  return (
+    <section className="space-y-8" aria-label="全局管理（只读）">
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 className="text-2xl font-semibold text-kumo-strong">全局管理（只读）</h2>
+        <Badge variant="secondary" className="rounded-full bg-kumo-warning-tint text-kumo-warning">仅管理员可见</Badge>
+      </div>
+      <AdminHeroStats />
+      <AdminCard title="全局用量趋势">
+        <AdminGlobalUsage />
+      </AdminCard>
+      <div className="space-y-4">
+        <div>
+          <p className="text-sm font-semibold uppercase tracking-wider text-kumo-subtle">资源与权限</p>
+          <p className="mt-1 text-sm text-kumo-subtle">账户、团队和模型范围保持和个人视图相同的数据语言。</p>
+        </div>
+        <AdminCard title="全员账户">
+          <AdminUsersTable />
+        </AdminCard>
+        <AdminCard title="全部团队">
+          <AdminTeamsTable />
+        </AdminCard>
+      </div>
+      <div className="space-y-4">
+        <div>
+          <p className="text-sm font-semibold uppercase tracking-wider text-kumo-subtle">审计与风险</p>
+          <p className="mt-1 text-sm text-kumo-subtle">用于核对近期变更和风险线索，当前保持只读。</p>
+        </div>
+        <AdminCard title="审计日志">
+        <AdminAuditFeed />
+        </AdminCard>
+      </div>
+    </section>
+  );
+}
+
+type TabKey = "user" | "admin";
+
+let portalRolePromise: Promise<PortalRole> | null = null;
+function fetchPortalRoleOnce(): Promise<PortalRole> {
+  if (portalRolePromise) return portalRolePromise;
+  portalRolePromise = fetch("/api/me", { headers: { "content-type": "application/json" } })
+    .then(async (response): Promise<PortalRole> => {
+      if (!response.ok) return "none";
+      const body = await response.json().catch(() => ({}));
+      if (body && (body.role === "admin" || body.role === "user" || body.role === "none")) {
+        return body.role as PortalRole;
+      }
+      return "none";
+    })
+    .catch((): PortalRole => "none");
+  return portalRolePromise;
+}
+
+function usePortalRole(): { role: PortalRole; ready: boolean } {
+  const [role, setRole] = useState<PortalRole>("none");
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetchPortalRoleOnce().then((next) => {
+      if (cancelled) return;
+      setRole(next);
+      setReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return { role, ready };
+}
+
+export function readTabFromHash(role: PortalRole): TabKey {
+  void role;
+  const hash = typeof window !== "undefined" ? window.location.hash : "";
+  if (hash === "#admin") return "admin";
+  if (hash === "#user") return "user";
+  return "user";
+}
+
+function applyTabToDom(tab: TabKey) {
+  const userPanel = document.getElementById("user-panel");
+  const adminPanel = document.getElementById("admin-root");
+  if (tab === "admin") {
+    userPanel?.setAttribute("hidden", "");
+    adminPanel?.removeAttribute("hidden");
+  } else {
+    adminPanel?.setAttribute("hidden", "");
+    userPanel?.removeAttribute("hidden");
+  }
+}
+
+function AdminSectionLoader() {
+  const { role } = usePortalRole();
+  return <AdminSection role={role} />;
+}
+
+export function PortalTabs({ tab, onSelect }: { tab: TabKey; onSelect: (next: TabKey) => void }) {
+  return (
+    <Tabs
+      className="mb-10"
+      variant="segmented"
+      value={tab}
+      onValueChange={(next) => onSelect(next as TabKey)}
+      tabs={[
+        { value: "user", label: "个人视图" },
+        { value: "admin", label: "全局管理" },
+      ]}
+    />
+  );
+}
+
+function PortalTabsLoader() {
+  const { role, ready } = usePortalRole();
+  const [tab, setTab] = useState<TabKey>("user");
+
+  useEffect(() => {
+    if (!ready) return;
+    if (role !== "admin") {
+      applyTabToDom("user");
+      return;
+    }
+    const initial = readTabFromHash(role);
+    setTab(initial);
+    applyTabToDom(initial);
+    const tabsRoot = document.getElementById("portal-tabs-root");
+    tabsRoot?.removeAttribute("hidden");
+  }, [ready, role]);
+
+  if (!ready || role !== "admin") return null;
+
+  const select = (next: TabKey) => {
+    setTab(next);
+    applyTabToDom(next);
+    history.replaceState(null, "", "#" + next);
+  };
+
+  return <PortalTabs tab={tab} onSelect={select} />;
 }
 
 const usageRoot = document.getElementById("usage-panel-root");
@@ -1059,6 +2273,21 @@ if (modelsRoot) {
   createRoot(modelsRoot).render(<ModelAccessCard />);
 }
 
+const teamsRoot = document.getElementById("teams-root");
+if (teamsRoot) {
+  createRoot(teamsRoot).render(<TeamsAccessCard />);
+}
+
+const heroStatsRoot = document.getElementById("hero-stats-root");
+if (heroStatsRoot) {
+  createRoot(heroStatsRoot).render(<HeroStats />);
+}
+
+const headerActionsRoot = document.getElementById("header-actions-root");
+if (headerActionsRoot) {
+  createRoot(headerActionsRoot).render(<HeaderActions />);
+}
+
 const keysRoot = document.getElementById("keys-root");
 if (keysRoot) {
   createRoot(keysRoot).render(<ApiKeysCard />);
@@ -1067,4 +2296,14 @@ if (keysRoot) {
 const errorRoot = document.getElementById("portal-error-root");
 if (errorRoot) {
   createRoot(errorRoot).render(<PortalErrorBanner />);
+}
+
+const adminRoot = document.getElementById("admin-root");
+if (adminRoot) {
+  createRoot(adminRoot).render(<AdminSectionLoader />);
+}
+
+const portalTabsRoot = document.getElementById("portal-tabs-root");
+if (portalTabsRoot) {
+  createRoot(portalTabsRoot).render(<PortalTabsLoader />);
 }
