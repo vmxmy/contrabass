@@ -1,9 +1,20 @@
 import { portalAppJs } from "./app.generated";
 import { kumoStandaloneCss } from "./kumo-css.generated";
 import { authenticateRequest } from "./auth";
-import { cssResponse, htmlResponse, javascriptResponse, jsonResponse, securityHeaders } from "./utils";
-import { renderPortalHtml } from "./html";
 import {
+  csv,
+  cssResponse,
+  htmlResponse,
+  javascriptResponse,
+  jsonResponse,
+  roundCurrency,
+  securityHeaders,
+  sumDefinedNumbers,
+  uniqueSorted,
+} from "./utils";
+import { portalCompanyName, renderPortalHtml } from "./html";
+import {
+  configuredAllowedModels,
   createKey,
   listUserKeys,
   publicKey,
@@ -242,34 +253,6 @@ function publicKeyWithModels(
     ...publicKey(key),
     models: keyDisplayModels(key, teams, fallbackModels, env),
   };
-}
-
-function portalCompanyName(env: LiteLLMPortalEnv): string {
-  return env.LITELLM_PORTAL_COMPANY_NAME?.trim() || "gz-zhiyun";
-}
-
-function configuredAllowedModels(env: LiteLLMPortalEnv): string[] {
-  return csv(env.LITELLM_ALLOWED_MODELS);
-}
-
-function csv(value: string | undefined): string[] {
-  return (value ?? "")
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-}
-
-function roundCurrency(value: number): number {
-  return Math.round(value * 1_000_000) / 1_000_000;
-}
-
-function sumDefinedNumbers(values: Array<number | null | undefined>): number | null {
-  const numbers = values.filter((value): value is number => typeof value === "number");
-  return numbers.length === 0 ? null : roundCurrency(numbers.reduce((sum, value) => sum + value, 0));
-}
-
-function uniqueSorted(values: string[]): string[] {
-  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))].sort();
 }
 
 export default {
