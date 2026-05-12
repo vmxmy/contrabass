@@ -8,6 +8,9 @@ import { axe } from "vitest-axe";
 import { toHaveNoViolations } from "vitest-axe/matchers";
 import { I18nProvider } from "@lingui/react";
 import { setupI18n } from "./i18n/setup";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { DASHBOARD_QUERY_KEY } from "./hooks/use-dashboard";
+import type { Dashboard } from "./schemas";
 
 beforeAll(() => {
   expect.extend({ toHaveNoViolations });
@@ -15,14 +18,69 @@ beforeAll(() => {
 
 const i18n = setupI18n("zh-CN");
 
-function renderWithI18n(ui: React.ReactElement) {
-  return render(<I18nProvider i18n={i18n}>{ui}</I18nProvider>);
+function renderWithI18n(ui: React.ReactElement, dashboard?: Partial<Dashboard>) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (dashboard !== undefined) {
+    qc.setQueryData<Dashboard>(DASHBOARD_QUERY_KEY, dashboard as Dashboard);
+  }
+  return render(
+    <QueryClientProvider client={qc}>
+      <I18nProvider i18n={i18n}>{ui}</I18nProvider>
+    </QueryClientProvider>,
+  );
 }
 
 async function expectNoAxe(container: HTMLElement) {
   const results = await axe(container);
   expect(results).toHaveNoViolations();
 }
+
+const toastAddSpy = vi.fn();
+
+vi.mock("@cloudflare/kumo/components/toast", () => ({
+  Toasty: ({ children }: { children: React.ReactNode }) => children,
+  ToastProvider: ({ children }: { children: React.ReactNode }) => children,
+  useKumoToastManager: () => ({
+    toasts: [],
+    add: toastAddSpy,
+    remove: vi.fn(),
+    update: vi.fn(),
+    promise: vi.fn(),
+  }),
+}));
+
+vi.mock("@cloudflare/kumo/components/tooltip", () => ({
+  Tooltip: ({ children }: { children: React.ReactNode }) => children,
+  TooltipProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+
+vi.mock("@cloudflare/kumo/components/dropdown", async () => {
+  const ReactModule = await import("react");
+  const DropdownMenu = ({ children }: { children: React.ReactNode }) =>
+    ReactModule.createElement("div", { "data-testid": "dropdown-menu" }, children);
+  DropdownMenu.Trigger = ({ children, "aria-label": ariaLabel }: { children: React.ReactNode; "aria-label"?: string }) =>
+    ReactModule.createElement("div", { role: "button", "aria-label": ariaLabel }, children);
+  DropdownMenu.Content = ({ children }: { children: React.ReactNode }) =>
+    ReactModule.createElement("div", { role: "menu" }, children);
+  DropdownMenu.Item = ({ children, onClick }: { children: React.ReactNode; onClick?: () => void }) =>
+    ReactModule.createElement("div", { role: "menuitem", onClick }, children);
+  return { DropdownMenu };
+});
+
+vi.mock("@cloudflare/kumo/components/popover", async () => {
+  const ReactModule = await import("react");
+  const Popover = ({ children }: { children: React.ReactNode }) =>
+    ReactModule.createElement("div", { "data-testid": "popover" }, children);
+  Popover.Trigger = ({ render }: { render: React.ReactElement }) => render;
+  Popover.Content = ({ children }: { children: React.ReactNode }) =>
+    ReactModule.createElement("div", { "data-testid": "popover-content" }, children);
+  Popover.Title = ({ children }: { children: React.ReactNode }) =>
+    ReactModule.createElement("p", { className: "popover-title" }, children);
+  Popover.Description = ({ children }: { children: React.ReactNode }) =>
+    ReactModule.createElement("div", { className: "popover-description" }, children);
+  Popover.Close = ({ children }: { children: React.ReactNode }) => children;
+  return { Popover };
+});
 
 vi.mock("@cloudflare/kumo/components/chart", async () => {
   const ReactModule = await import("react");
@@ -58,7 +116,7 @@ vi.mock("@cloudflare/kumo/components/chart", async () => {
   };
 });
 
-import { AdminSection, ApiKeysCard, CreateKeyButton, ModelAccessCard, PortalErrorBanner, PortalTabs, readTabFromHash, UsagePanel } from "./app";
+import { AdminSection, ApiKeysCard, CreateKeyButton, HeroStats, ModelAccessCard, PortalErrorBanner, PortalTabs, readTabFromHash, UsagePanel } from "./app";
 import { UsageChart, type UsageTimeseries } from "./chart";
 
 const originalFetch = globalThis.fetch;
@@ -81,6 +139,16 @@ const usageData: UsageTimeseries = {
   totals: { totalTokens: 3000, promptTokens: 1200, completionTokens: 1800, requests: 30, spend: 1.5 },
   topModels: [{ model: "gpt-4o-mini", spend: 1.5, totalTokens: 3000, requests: 30 }],
 };
+
+function createWrapper(initialData?: Partial<Dashboard>) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (initialData !== undefined) {
+    qc.setQueryData<Dashboard>(DASHBOARD_QUERY_KEY, initialData as Dashboard);
+  }
+  return function Wrapper({ children }: { children: React.ReactNode }) {
+    return React.createElement(QueryClientProvider, { client: qc }, children);
+  };
+}
 
 function installPortalConfig() {
   window.__PORTAL_CONFIG = {
@@ -108,6 +176,7 @@ afterEach(() => {
   cleanup();
   globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
+  toastAddSpy.mockClear();
   delete window.__PORTAL_CONFIG;
 });
 
@@ -131,7 +200,8 @@ describe("PortalTabs", () => {
 
 describe("ModelAccessCard", () => {
   it("expands by default when model count is <= 12", async () => {
-    const { container } = renderWithI18n(<ModelAccessCard initialData={{ models: { models: ["gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet"], source: "team" } }} />);
+    const dashData = { models: { models: ["gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet"], source: "team" } };
+    const { container } = renderWithI18n(<ModelAccessCard initialData={dashData as never} />, dashData);
     expect(screen.queryByText("团队可用模型")).not.toBeNull();
     expect(screen.queryByText("gpt-4o")).not.toBeNull();
     await expectNoAxe(container);
@@ -139,14 +209,16 @@ describe("ModelAccessCard", () => {
 
   it("collapses by default and shows trigger when model count exceeds 12", () => {
     const models = Array.from({ length: 15 }, (_, i) => `model-${i + 1}`);
-    render(<ModelAccessCard initialData={{ models: { models, source: "team" } }} />);
+    const dashData = { models: { models, source: "team" } };
+    render(<ModelAccessCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
     expect(screen.queryByText("团队可用模型")).not.toBeNull();
     expect(screen.queryByText("model-13")).toBeNull();
     expect(screen.queryByText(/展开全部 15 个模型/)).not.toBeNull();
   });
 
   it("renders initial model list from initialData prop", () => {
-    render(<ModelAccessCard initialData={{ models: { models: ["gpt-4o", "deepseek-v3"], source: "configured" } }} />);
+    const dashData = { models: { models: ["gpt-4o", "deepseek-v3"], source: "configured" } };
+    render(<ModelAccessCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
     expect(screen.queryByText("gpt-4o")).not.toBeNull();
     expect(screen.queryByText("deepseek-v3")).not.toBeNull();
   });
@@ -293,7 +365,7 @@ describe("UsagePanel", () => {
 
 describe("ApiKeysCard", () => {
   it("renders API keys with clipboard text and collapsible model detail", async () => {
-    const { container } = renderWithI18n(<ApiKeysCard initialData={{ keys: { totalCount: 1, items: [
+    const dashData = { keys: { totalCount: 1, items: [
       {
         id: "key-1",
         alias: "primary",
@@ -303,7 +375,8 @@ describe("ApiKeysCard", () => {
         maxBudget: 20,
         expiresAt: "—",
       },
-    ] } }} />);
+    ] } };
+    const { container } = renderWithI18n(<ApiKeysCard initialData={dashData as never} />, dashData);
 
     expect(screen.queryByText("API Keys")).not.toBeNull();
     expect(screen.queryByText("创建 Key")).not.toBeNull();
@@ -314,7 +387,7 @@ describe("ApiKeysCard", () => {
   });
 
   it("renders model lists for multiple API keys", () => {
-    render(<ApiKeysCard initialData={{ keys: { totalCount: 2, items: [
+    const dashData = { keys: { totalCount: 2, items: [
       {
         id: "key-1",
         alias: "team-inherited",
@@ -333,7 +406,8 @@ describe("ApiKeysCard", () => {
         maxBudget: 20,
         expiresAt: null,
       },
-    ] } }} />);
+    ] } };
+    render(<ApiKeysCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
 
     expect(screen.queryByText("team-inherited")).not.toBeNull();
     expect(screen.queryByText("explicit")).not.toBeNull();
@@ -342,16 +416,17 @@ describe("ApiKeysCard", () => {
   });
 
   it("renders initial keys from initialData prop", () => {
-    render(<ApiKeysCard initialData={{ keys: { totalCount: 1, items: [
+    const dashData = { keys: { totalCount: 1, items: [
       { id: "k1", alias: "init-key", displayKey: "sk-lit...init", models: [], spend: 0, maxBudget: null, expiresAt: null },
-    ] } }} />);
+    ] } };
+    render(<ApiKeysCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
     expect(screen.queryByText("init-key")).not.toBeNull();
   });
 
   it("deletes an API key after confirmation", async () => {
     globalThis.fetch = vi.fn(async () => new Response(null, { status: 204 })) as typeof fetch;
 
-    render(<ApiKeysCard initialData={{ keys: { totalCount: 1, items: [
+    const dashData = { keys: { totalCount: 1, items: [
       {
         id: "key-1",
         alias: "primary",
@@ -361,7 +436,8 @@ describe("ApiKeysCard", () => {
         maxBudget: 20,
         expiresAt: null,
       },
-    ] } }} />);
+    ] } };
+    render(<ApiKeysCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
     fireEvent.click(screen.getByText("删除"));
 
     await waitFor(() => {
@@ -402,7 +478,7 @@ describe("CreateKeyButton", () => {
   it("shows validation error when submitting without alias", async () => {
     globalThis.fetch = vi.fn(async () => Response.json({ models: [] })) as typeof fetch;
 
-    render(<CreateKeyButton />);
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
     const trigger = screen.getByText("创建 Key");
     fireEvent.click(trigger);
 
@@ -433,7 +509,7 @@ describe("CreateKeyButton", () => {
       return Response.json({});
     }) as typeof fetch;
 
-    render(<CreateKeyButton />);
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByText("创建 Key"));
 
     await waitFor(() => {
@@ -454,7 +530,7 @@ describe("CreateKeyButton", () => {
     });
   });
 
-  it("copies the newly created full key with Kumo ClipboardText", async () => {
+  it("copies the newly created full key with kumo SensitiveInput", async () => {
     const writeText = vi.fn(async () => {});
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -474,7 +550,7 @@ describe("CreateKeyButton", () => {
       return Response.json({});
     }) as typeof fetch;
 
-    render(<CreateKeyButton />);
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByText("创建 Key"));
 
     await waitFor(() => {
@@ -494,7 +570,8 @@ describe("CreateKeyButton", () => {
       expect(screen.queryByText("Key 已创建")).not.toBeNull();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "复制完整 Key" }));
+    // SensitiveInput renders a "Copy to clipboard" button (aria-label from kumo)
+    fireEvent.click(screen.getByRole("button", { name: "Copy to clipboard" }));
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith("sk-new-key-123");
@@ -518,7 +595,7 @@ describe("CreateKeyButton", () => {
       return Response.json({});
     }) as typeof fetch;
 
-    render(<CreateKeyButton />);
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
     const trigger = screen.getByText("创建 Key");
     fireEvent.click(trigger);
 
@@ -536,9 +613,128 @@ describe("CreateKeyButton", () => {
     if (submitBtn) fireEvent.click(submitBtn);
 
     await waitFor(() => {
-      expect(screen.queryByText("sk-new-key-123")).not.toBeNull();
+      expect(screen.queryByText("Key 已创建")).not.toBeNull();
+      // SensitiveInput masks the value by default; check the underlying input element's value
+      const keyInput = document.querySelector<HTMLInputElement>("input[value='sk-new-key-123']");
+      expect(keyInput).not.toBeNull();
+    });
+  });
+
+  it("shows Field error on alias when submitting empty form (spec 6.2)", async () => {
+    globalThis.fetch = vi.fn(async () => Response.json({ models: [] })) as typeof fetch;
+
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText("创建 Key"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    // Submit without filling alias — Field should show error message
+    const submitButtons = screen.getAllByText("创建");
+    const submitBtn = submitButtons.find((el) => el.closest("button"));
+    if (submitBtn) fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByText("请输入 Key 名称")).not.toBeNull();
+    });
+  });
+
+  it("shows Field error for duplicate alias returned from backend (spec 6.2)", async () => {
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/models")) return Response.json({ models: [] });
+      if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
+        return Response.json(
+          { error: "key_alias_conflict", keyAlias: "my-key", message: "already exists" },
+          { status: 409 },
+        );
+      }
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText("创建 Key"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    const aliasInput = document.getElementById("create-key-alias");
+    if (aliasInput) fireEvent.change(aliasInput, { target: { value: "my-key" } });
+
+    const submitBtn = screen.getAllByText("创建").find((el) => el.closest("button"));
+    if (submitBtn) fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByText("名称「my-key」已存在，请换一个名称。")).not.toBeNull();
+    });
+  });
+
+  it("renders Combobox for model selection when models are available (spec 6.3)", async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/models")) return Response.json({ models: ["gpt-4o-mini", "claude-3-5-sonnet"] });
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText("创建 Key"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    // Combobox trigger input should be rendered with the model selection placeholder
+    await waitFor(() => {
+      const comboInput = document.querySelector<HTMLInputElement>("[placeholder='选择模型…']");
+      expect(comboInput).not.toBeNull();
+    });
+
+    // The "允许模型" label and "(optional)" indicator must be present
+    expect(screen.queryByText("允许模型")).not.toBeNull();
+    expect(document.querySelector("[placeholder='选择模型…']")).not.toBeNull();
+  });
+
+  it("SensitiveInput defaults to masked (spec 6.4)", async () => {
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/models")) return Response.json({ models: [] });
+      if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
+        return Response.json({
+          rawKey: "sk-secret-abc",
+          keyAlias: "my-key",
+          expires: null,
+          keyId: "tok-1",
+        }, { status: 201 });
+      }
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText("创建 Key"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    const aliasInput = document.getElementById("create-key-alias");
+    if (aliasInput) fireEvent.change(aliasInput, { target: { value: "my-key" } });
+
+    const submitBtn = screen.getAllByText("创建").find((el) => el.closest("button"));
+    if (submitBtn) fireEvent.click(submitBtn);
+
+    await waitFor(() => {
       expect(screen.queryByText("Key 已创建")).not.toBeNull();
     });
+
+    // SensitiveInput should render with type="password" (masked) by default
+    const keyInput = document.querySelector<HTMLInputElement>("input[value='sk-secret-abc']");
+    expect(keyInput).not.toBeNull();
+    expect(keyInput?.type).toBe("password");
+
+    // The "Reveal value" button must be present (eye icon)
+    expect(screen.getByRole("button", { name: "Reveal value" })).not.toBeNull();
   });
 });
 });
@@ -701,6 +897,43 @@ describe("AdminSection", () => {
     expect(container.firstChild).toBeNull();
   });
 
+  it("renders ⋯ action column and DropdownMenu in users table", async () => {
+    installPortalConfig();
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/admin/users")) {
+        return Response.json({
+          users: [{ userId: "u1", email: "admin@test.com", spend: 1.5, maxBudget: 100, teamIds: [], role: "proxy_admin" }],
+          totalCount: 1,
+          page: 1,
+          size: 50,
+        });
+      }
+      if (url.includes("/api/admin/summary")) return Response.json({ userCount: 1 });
+      if (url.includes("/api/admin/teams")) return Response.json({ teams: [] });
+      if (url.includes("/api/admin/audit")) return Response.json({ events: [], totalCount: 0, page: 1, size: 50 });
+      if (url.includes("/api/admin/usage/timeseries")) return Response.json({
+        available: true, grain: "day", window: "30d", windowLabel: "近 30 天",
+        start: "2024-01-01T00:00:00.000Z", end: "2024-01-30T23:59:59.999Z",
+        source: "spend_logs_v2_global", timezone: "Asia/Shanghai", limited: false, maxPages: null,
+        buckets: [], totals: { totalTokens: 0, promptTokens: 0, completionTokens: 0, requests: 0, spend: 0 },
+        topModels: [],
+      });
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<AdminSection role="admin" />);
+
+    await waitFor(() => {
+      expect(screen.queryAllByRole("button", { name: "更多操作" }).length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "更多操作" })[0]);
+    await waitFor(() => {
+      expect(screen.queryByText("查看详情")).not.toBeNull();
+    });
+  });
+
   it("renders aligned admin dashboard sections when role is admin", async () => {
     installPortalConfig();
     globalThis.fetch = vi.fn(async (input) => {
@@ -775,5 +1008,115 @@ describe("AdminSection", () => {
       expect(screen.queryByText("审计与风险")).not.toBeNull();
       expect(screen.queryByText("审计日志")).not.toBeNull();
     });
+  });
+});
+
+describe("useToast — CreateKeyButton integration", () => {
+  it("fires toast.add with success variant after successful key creation", async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/models")) return Response.json({ models: [] });
+      return Response.json({ rawKey: "sk-abc123", keyAlias: "my-key", expires: null, keyId: "kid-1" });
+    }) as typeof fetch;
+
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByRole("button", { name: "创建 Key" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    const aliasInput = screen.getByLabelText(/名称/) as HTMLInputElement;
+    fireEvent.change(aliasInput, { target: { value: "my-key" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    await waitFor(() => {
+      expect(toastAddSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ variant: "success" }),
+      );
+    });
+  });
+
+  it("fires toast.add with error variant when backend returns 409", async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/models")) return Response.json({ models: [] });
+      return new Response(
+        JSON.stringify({ error: "key_alias_conflict", keyAlias: "my-key" }),
+        { status: 409, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByRole("button", { name: "创建 Key" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    const aliasInput = screen.getByLabelText(/名称/) as HTMLInputElement;
+    fireEvent.change(aliasInput, { target: { value: "my-key" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    await waitFor(() => {
+      expect(toastAddSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ variant: "error" }),
+      );
+    });
+  });
+});
+
+describe("Tooltip — HeroStats truncated email", () => {
+  it("renders email text without title= attribute (Tooltip replaces it)", () => {
+    // HeroStats uses <Tooltip> instead of title= for truncated email.
+    // The mock passes children through transparently; verify no title attr.
+    const { container } = render(
+      <HeroStats initialData={{ me: { email: "truncated-long-email@example.com" } }} />,
+      { wrapper: createWrapper({ me: { email: "truncated-long-email@example.com" } }) },
+    );
+    const emailEl = container.querySelector("p.truncate");
+    expect(emailEl).not.toBeNull();
+    expect(emailEl?.getAttribute("title")).toBeNull();
+    expect(emailEl?.textContent).toBe("truncated-long-email@example.com");
+  });
+});
+
+describe("DropdownMenu — AdminUsersTable row actions", () => {
+  it("shows 查看详情 menu item after clicking ⋯ trigger", async () => {
+    installPortalConfig();
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/admin/users")) {
+        return Response.json({
+          users: [{ userId: "u2", email: "user@example.com", spend: 0, maxBudget: null, teamIds: [], role: "proxy_user" }],
+          totalCount: 1, page: 1, size: 50,
+        });
+      }
+      if (url.includes("/api/admin/summary")) return Response.json({ userCount: 1 });
+      if (url.includes("/api/admin/teams")) return Response.json({ teams: [] });
+      if (url.includes("/api/admin/audit")) return Response.json({ events: [], totalCount: 0, page: 1, size: 50 });
+      if (url.includes("/api/admin/usage/timeseries")) return Response.json({
+        available: true, grain: "day", window: "30d", windowLabel: "近 30 天",
+        start: "2024-01-01T00:00:00.000Z", end: "2024-01-30T23:59:59.999Z",
+        source: "spend_logs_v2_global", timezone: "Asia/Shanghai", limited: false, maxPages: null,
+        buckets: [], totals: { totalTokens: 0, promptTokens: 0, completionTokens: 0, requests: 0, spend: 0 },
+        topModels: [],
+      });
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<AdminSection role="admin" />);
+
+    await waitFor(() => {
+      expect(screen.queryAllByRole("button", { name: "更多操作" }).length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "更多操作" })[0]);
+
+    await waitFor(() => {
+      expect(screen.queryByText("查看详情")).not.toBeNull();
+    });
+
+    expect(screen.queryByRole("menuitem", { name: "查看详情" })).not.toBeNull();
   });
 });
