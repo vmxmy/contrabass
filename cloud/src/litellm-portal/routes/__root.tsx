@@ -15,6 +15,8 @@ import { createRootRouteWithContext, Outlet, useRouter, useRouterState } from "@
 import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { Switch } from "@cloudflare/kumo/components/switch";
 import { Button } from "@cloudflare/kumo/components/button";
+import { Toasty } from "@cloudflare/kumo/components/toast";
+import { TooltipProvider } from "@cloudflare/kumo/components/tooltip";
 import { QueryClient, QueryClientProvider, HydrationBoundary } from "@tanstack/react-query";
 import { PortalErrorBanner } from "../app";
 import { useMe } from "../hooks/use-me";
@@ -198,7 +200,13 @@ export function AppShell({ dehydratedState, children }: AppShellProps) {
   const queryClient = getQueryClient();
   return (
     <QueryClientProvider client={queryClient}>
-      <HydrationBoundary state={dehydratedState}>{children}</HydrationBoundary>
+      <HydrationBoundary state={dehydratedState}>
+        <Toasty>
+          <TooltipProvider delay={300}>
+            {children}
+          </TooltipProvider>
+        </Toasty>
+      </HydrationBoundary>
     </QueryClientProvider>
   );
 }

@@ -1,15 +1,16 @@
 import React from "react";
 import { renderToString } from "react-dom/server";
 import { RouterProvider } from "@tanstack/react-router";
+import { I18nProvider } from "@lingui/react";
 import { QueryClient, dehydrate } from "@tanstack/react-query";
 import type { JsonValue, LiteLLMPortalEnv, PortalIdentity } from "./types";
 import { Shell } from "./shell";
 import { AppShell } from "./routes/__root";
-import { portalDisplayName } from "./utils";
+import { portalDisplayName, portalCompanyName } from "./utils";
+import { setupI18n } from "./i18n/setup";
 import { DASHBOARD_QUERY_KEY } from "./hooks/use-dashboard";
 import { ME_QUERY_KEY } from "./hooks/use-me";
 import { DashboardSchema, MeSchema } from "./schemas";
-import { portalCompanyName } from "./utils";
 import { createPortalRouter, createMemoryHistory } from "./router";
 
 export async function renderPortalSSR(
@@ -20,6 +21,9 @@ export async function renderPortalSSR(
   requestUrl?: string,
 ): Promise<string> {
   const title = portalDisplayName(env);
+
+  // Default to zh-CN; client-side i18n re-initialises from navigator.languages.
+  const i18n = setupI18n("zh-CN");
 
   const dataWithIdentity: JsonValue | null = initialData !== null
     ? {
@@ -103,12 +107,16 @@ export async function renderPortalSSR(
 
   const markup = renderToString(
     React.createElement(
-      Shell,
-      { title, nonce, initialData: shellData },
+      I18nProvider,
+      { i18n },
       React.createElement(
-        AppShell,
-        { dehydratedState },
-        React.createElement(RouterProvider, { router }),
+        Shell,
+        { title, nonce, initialData: shellData },
+        React.createElement(
+          AppShell,
+          { dehydratedState },
+          React.createElement(RouterProvider, { router }),
+        ),
       ),
     ),
   );
