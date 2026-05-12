@@ -1,7 +1,10 @@
 import React from "react";
 import { createRoute } from "@tanstack/react-router";
+import { t } from "@lingui/core/macro";
+import { Trans } from "@lingui/react/macro";
 import { adminTeamsRoute } from "./route";
-import { AdminSection } from "../../../app";
+import { AdminBreadcrumbs } from "../navigation";
+import { AdminCard, AdminTeamsTable } from "../../../app";
 
 export const adminTeamsIndexRoute = createRoute({
   getParentRoute: () => adminTeamsRoute,
@@ -10,5 +13,12 @@ export const adminTeamsIndexRoute = createRoute({
 });
 
 function AdminTeamsPage() {
-  return <AdminSection role="admin" />;
+  return (
+    <section className="space-y-6" aria-label={t`团队管理`}>
+      <AdminBreadcrumbs segments={[{ label: <Trans>团队</Trans> }]} />
+      <AdminCard title="全部团队">
+        <AdminTeamsTable />
+      </AdminCard>
+    </section>
+  );
 }

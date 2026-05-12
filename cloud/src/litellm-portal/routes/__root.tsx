@@ -11,14 +11,16 @@
  */
 
 import React, { useEffect } from "react";
-import { createRootRouteWithContext, Outlet, useRouter, useRouterState } from "@tanstack/react-router";
+import { Link, createRootRouteWithContext, Outlet, useRouter, useRouterState } from "@tanstack/react-router";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { Switch } from "@cloudflare/kumo/components/switch";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Toasty } from "@cloudflare/kumo/components/toast";
 import { TooltipProvider } from "@cloudflare/kumo/components/tooltip";
+import { LinkProvider, type LinkComponentProps } from "@cloudflare/kumo/utils";
 import { QueryClient, QueryClientProvider, HydrationBoundary } from "@tanstack/react-query";
 import { PortalErrorBanner } from "../app";
+import { PortalCommandPalette } from "./portal-command-palette";
 import { useMe } from "../hooks/use-me";
 import type { RouterContext } from "../router";
 
@@ -130,6 +132,14 @@ function PortalTabs() {
   );
 }
 
+
+const KumoRouterLink = React.forwardRef<HTMLAnchorElement, LinkComponentProps>(function KumoRouterLink(
+  { href, to, ...props },
+  ref,
+) {
+  return <Link ref={ref} to={href ?? to ?? "/"} {...props} />;
+});
+
 // ---------------------------------------------------------------------------
 // Root layout component
 // ---------------------------------------------------------------------------
@@ -177,6 +187,8 @@ function RootLayout() {
         </nav>
       )}
 
+      {isAdmin ? <PortalCommandPalette /> : null}
+
       <Outlet />
 
       <div id="portal-error-root">
@@ -203,7 +215,9 @@ export function AppShell({ dehydratedState, children }: AppShellProps) {
       <HydrationBoundary state={dehydratedState}>
         <Toasty>
           <TooltipProvider delay={300}>
-            {children}
+            <LinkProvider component={KumoRouterLink}>
+              {children}
+            </LinkProvider>
           </TooltipProvider>
         </Toasty>
       </HydrationBoundary>

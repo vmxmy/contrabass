@@ -14,8 +14,9 @@
  */
 
 import React from "react";
-import { createRoute, Outlet, redirect } from "@tanstack/react-router";
+import { createRoute, redirect } from "@tanstack/react-router";
 import { rootRoute } from "../__root";
+import { AdminSidebar } from "./navigation";
 
 export const adminRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -29,5 +30,5 @@ export const adminRoute = createRoute({
 });
 
 function AdminLayout() {
-  return <Outlet />;
+  return <AdminSidebar />;
 }
