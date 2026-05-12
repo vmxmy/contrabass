@@ -1553,7 +1553,7 @@ function normalizeAdminSummary(value: unknown): AdminSummary {
   return value && typeof value === "object" ? value as AdminSummary : {};
 }
 
-function AdminHeroStats() {
+export function AdminHeroStats() {
   const [summary, setSummary] = useState<AdminSummary>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1669,7 +1669,7 @@ function AdminHeroStats() {
 }
 
 // TODO(CONTRABASS-3 follow-up): Migrate AdminUsersTable to a dedicated useAdminUsers() RPC hook.
-function AdminUsersTable() {
+export function AdminUsersTable() {
   const [data, setData] = useState<AdminUsersResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1774,7 +1774,7 @@ function AdminUsersTable() {
 }
 
 // TODO(CONTRABASS-3 follow-up): Migrate AdminTeamsTable to a dedicated useAdminTeams() RPC hook.
-function AdminTeamsTable() {
+export function AdminTeamsTable() {
   const [data, setData] = useState<AdminTeamsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1858,7 +1858,7 @@ function AdminTeamsTable() {
 }
 
 // TODO(CONTRABASS-3 follow-up): Migrate AdminGlobalUsage to a dedicated useAdminUsage() RPC hook.
-function AdminGlobalUsage() {
+export function AdminGlobalUsage() {
   const config = useMemo(() => portalConfig(), []);
   const grains = useMemo(() => Object.keys(config.usageWindows), [config]);
   const presets = useMemo(() => usageWindowPresets(config), [config]);
@@ -2061,7 +2061,7 @@ function AdminGlobalUsage() {
 }
 
 // TODO(CONTRABASS-3 follow-up): Migrate AdminAuditFeed to a dedicated useAdminAudit() RPC hook.
-function AdminAuditFeed() {
+export function AdminAuditFeed() {
   const [data, setData] = useState<AdminAuditResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -2199,7 +2199,7 @@ function AdminAuditFeed() {
   );
 }
 
-function AdminCard({ title, children }: { title: string; children: React.ReactNode }) {
+export function AdminCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <LayerCard className="overflow-hidden p-0">
       <Collapsible.Root defaultOpen>

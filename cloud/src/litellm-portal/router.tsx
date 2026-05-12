@@ -34,6 +34,7 @@ import { adminAuditRoute } from "./routes/admin/audit/route";
 import { adminAuditIndexRoute } from "./routes/admin/audit/index";
 import { adminAuditEventIdRoute } from "./routes/admin/audit/$eventId";
 import { adminUsageRoute } from "./routes/admin/usage/route";
+import { adminSettingsRoute } from "./routes/admin/settings";
 
 // Wire up parent/child relationships using `addChildren`.
 const routeTree = rootRoute.addChildren([
@@ -53,6 +54,7 @@ const routeTree = rootRoute.addChildren([
       adminAuditEventIdRoute,
     ]),
     adminUsageRoute,
+    adminSettingsRoute,
   ]),
 ]);
 

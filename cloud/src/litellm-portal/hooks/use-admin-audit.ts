@@ -1,14 +1,23 @@
 import { useQuery } from "@tanstack/react-query";
 import { AdminAuditSchema } from "../schemas";
 
-export const ADMIN_AUDIT_QUERY_KEY = (page: number, size: number) => ["admin", "audit", page, size] as const;
+export type AdminAuditParams = {
+  page?: number;
+  size?: number;
+  window?: string;
+};
 
-export function useAdminAudit(page: number, size: number) {
+export const ADMIN_AUDIT_QUERY_KEY = (params: Required<AdminAuditParams>) => ["admin", "audit", params.page, params.size, params.window] as const;
+
+export function useAdminAudit(params: AdminAuditParams = {}) {
+  const queryParams = { page: params.page ?? 1, size: params.size ?? 50, window: params.window ?? "" };
+
   return useQuery({
-    queryKey: ADMIN_AUDIT_QUERY_KEY(page, size),
+    queryKey: ADMIN_AUDIT_QUERY_KEY(queryParams),
     queryFn: async () => {
-      const params = new URLSearchParams({ page: String(page), size: String(size) });
-      const res = await fetch(`/api/admin/audit?${params.toString()}`, { headers: { "content-type": "application/json" } });
+      const searchParams = new URLSearchParams({ page: String(queryParams.page), size: String(queryParams.size) });
+      if (queryParams.window) searchParams.set("window", queryParams.window);
+      const res = await fetch(`/api/admin/audit?${searchParams.toString()}`, { headers: { "content-type": "application/json" } });
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: "request_failed" })) as Record<string, unknown>;
         throw new Error(typeof body.error === "string" ? body.error : "request_failed");

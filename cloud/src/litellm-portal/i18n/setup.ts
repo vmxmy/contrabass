@@ -1,4 +1,4 @@
-import { setupI18n as linguiSetupI18n } from "@lingui/core";
+import { i18n as globalI18n } from "@lingui/core";
 import zhCNMessages from "./messages/zh-CN";
 import enMessages from "./messages/en";
 
@@ -42,9 +42,8 @@ export function detectLocale(acceptLanguage: string | null | undefined): Support
  */
 export function setupI18n(locale: SupportedLocale = DEFAULT_LOCALE) {
   const messages = catalogs[locale] ?? catalogs[DEFAULT_LOCALE];
-  const i18n = linguiSetupI18n();
-  i18n.loadAndActivate({ locale, messages });
-  return i18n;
+  globalI18n.loadAndActivate({ locale, messages });
+  return globalI18n;
 }
 
 export { DEFAULT_LOCALE, SUPPORTED_LOCALES };
