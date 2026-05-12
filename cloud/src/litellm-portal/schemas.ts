@@ -331,3 +331,24 @@ export const ErrorResponseSchema = z.object({
 });
 
 export type ErrorResponse = z.infer<typeof ErrorResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// /api/admin/roles/invalidate
+// ---------------------------------------------------------------------------
+
+export const AdminRolesInvalidateQuerySchema = z.object({
+  email: z.string().min(1),
+});
+
+export type AdminRolesInvalidateQuery = z.infer<typeof AdminRolesInvalidateQuerySchema>;
+
+// ---------------------------------------------------------------------------
+// /api/_internal/role-changed
+// ---------------------------------------------------------------------------
+
+export const RoleChangedBodySchema = z.object({
+  email: z.string().min(1),
+  secret: z.string().min(1),
+});
+
+export type RoleChangedBody = z.infer<typeof RoleChangedBodySchema>;
