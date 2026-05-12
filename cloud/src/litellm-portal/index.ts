@@ -10,9 +10,12 @@ import {
 } from "./utils";
 import { resolveIdentity } from "./roles";
 import { app as honoApp, loadDashboard } from "./routes";
+import { detectLeakInResponse } from "./security/leak-detector";
+import { withSecurityHeaders } from "./security/headers";
 import type { JsonValue, LiteLLMPortalEnv } from "./types";
 
 export type { LiteLLMPortalEnv } from "./types";
+export { RateLimitDO } from "./security/rate-limit-do";
 
 export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMPortalEnv): Promise<Response> {
   const url = new URL(request.url);
@@ -40,14 +43,14 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
             ? dashboard
             : { error: dashboardError ?? "dashboard_load_failed" };
           const html = await renderPortalSSR(env, identityResult.identity, initialData, nonce);
-          return htmlResponse(html);
+          return htmlResponse(html, nonce);
         }
       }
     } catch {
       // fall through to unauthenticated shell
     }
     const html = await renderPortalSSR(env, { email: "", userId: "", domain: "", litellmUserId: "", role: "none" }, null, nonce);
-    return htmlResponse(html);
+    return htmlResponse(html, nonce);
   }
 
   if (request.method === "GET" && url.pathname === "/kumo.css") {
@@ -70,7 +73,12 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
   // The Hono app handles auth middleware, identity resolution, Zod validation,
   // and schema-validated responses internally.
   try {
-    return await honoApp.fetch(request, env);
+    const apiResponse = await honoApp.fetch(request, env);
+    // Apply leak detector only on admin routes where master-key material could appear.
+    const scanned = url.pathname.startsWith("/api/admin/")
+      ? await detectLeakInResponse(apiResponse)
+      : apiResponse;
+    return withSecurityHeaders(scanned);
   } catch (error) {
     const message = error instanceof Error ? error.message : "internal_error";
     return jsonResponse({ error: message }, message === "litellm_config_missing" ? 500 : 502);

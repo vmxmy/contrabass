@@ -1,4 +1,5 @@
 import type { JsonValue, LiteLLMPortalEnv } from "./types";
+import { securityHeaders as buildSecurityHeaders } from "./security/headers";
 
 export function portalCompanyName(env: LiteLLMPortalEnv): string {
   return env.LITELLM_PORTAL_COMPANY_NAME?.trim() || "gz-zhiyun";
@@ -61,21 +62,18 @@ export async function readJson(response: Response): Promise<unknown> {
   }
 }
 
-export function securityHeaders(): Record<string, string> {
-  return {
-    "referrer-policy": "same-origin",
-    "x-content-type-options": "nosniff",
-  };
+export function securityHeaders(nonce?: string): Record<string, string> {
+  return buildSecurityHeaders(nonce);
 }
 
 export function jsonResponse(body: Record<string, JsonValue>, status = 200): Response {
   return Response.json(body, { status, headers: securityHeaders() });
 }
 
-export function htmlResponse(html: string): Response {
+export function htmlResponse(html: string, nonce?: string): Response {
   return new Response(html, {
     headers: {
-      ...securityHeaders(),
+      ...securityHeaders(nonce),
       "content-type": "text/html; charset=utf-8",
     },
   });

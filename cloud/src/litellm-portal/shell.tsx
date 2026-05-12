@@ -35,6 +35,7 @@ export function Shell({ title, nonce, initialData, children }: ShellProps) {
           <script
             type="application/json"
             id="initial-data"
+            nonce={nonce}
             dangerouslySetInnerHTML={{ __html: serializeForScript(initialData) }}
           />
         )}

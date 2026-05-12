@@ -11,6 +11,7 @@ export type LiteLLMPortalEnv = {
   LITELLM_PORTAL_COMPANY_NAME?: string;
   LITELLM_PORTAL_DEV_AUTH?: string;
   LITELLM_PORTAL_DISPLAY_NAME?: string;
+  RATE_LIMIT_DO?: DurableObjectNamespace;
 };
 
 export type PortalPrincipal = {
