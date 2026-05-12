@@ -46,3 +46,23 @@ new_classes = ["RateLimitDO"]
 [observability]
 enabled = true
 head_sampling_rate = 1.0
+
+# TODO: Create datasets in Cloudflare dashboard or via:
+#   wrangler analytics-engine create portal-metrics
+#   wrangler analytics-engine create portal-audit
+[[analytics_engine_datasets]]
+binding = "METRICS_AE"
+dataset = "portal-metrics"
+
+[[analytics_engine_datasets]]
+binding = "AUDIT_AE"
+dataset = "portal-audit"
+
+# TODO: Create the KV namespace first via:
+#   wrangler kv namespace create ROLE_CACHE_KV --config wrangler.litellm-portal.toml
+#   wrangler kv namespace create ROLE_CACHE_KV --preview --config wrangler.litellm-portal.toml
+# Then replace the placeholder id values below with the real namespace IDs.
+[[kv_namespaces]]
+binding = "ROLE_CACHE_KV"
+id = "REPLACE_WITH_REAL_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_REAL_KV_PREVIEW_NAMESPACE_ID"

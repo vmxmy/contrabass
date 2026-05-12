@@ -79,12 +79,14 @@ describe("portal security headers on non-SSR responses", () => {
     expect(csp).toContain("frame-ancestors 'none'");
   });
 
-  it("not_found path includes security headers", async () => {
+  it("unknown path is served as SSR shell and includes security headers", async () => {
+    // With SPA deep-link support, unknown paths are served as the SSR shell (200)
+    // rather than a 404, so that path-based routes can be directly linked.
     const response = await handleLiteLLMPortalRequest(
       new Request("https://portal.test/unknown-path"),
       portalEnv(),
     );
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(200);
     expect(response.headers.get("x-frame-options")).toBe("DENY");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
   });

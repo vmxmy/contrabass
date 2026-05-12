@@ -1,5 +1,15 @@
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
+export interface AnalyticsEngineDataset {
+  writeDataPoint(point: { blobs?: string[]; doubles?: number[]; indexes?: string[] }): void;
+}
+
+export type KVNamespace = {
+  get(key: string, opts?: { type?: string }): Promise<string | null>;
+  put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>;
+  delete(key: string): Promise<void>;
+};
+
 export type LiteLLMPortalEnv = {
   CLOUDFLARE_ACCESS_AUD?: string;
   CLOUDFLARE_ACCESS_TEAM_DOMAIN?: string;
@@ -11,6 +21,10 @@ export type LiteLLMPortalEnv = {
   LITELLM_PORTAL_COMPANY_NAME?: string;
   LITELLM_PORTAL_DEV_AUTH?: string;
   LITELLM_PORTAL_DISPLAY_NAME?: string;
+  METRICS_AE?: AnalyticsEngineDataset;
+  AUDIT_AE?: AnalyticsEngineDataset;
+  ROLE_CACHE_KV?: KVNamespace;
+  ROLE_INVALIDATION_WEBHOOK_TOKEN?: string;
   RATE_LIMIT_DO?: DurableObjectNamespace;
 };
 

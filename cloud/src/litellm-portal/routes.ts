@@ -4,6 +4,7 @@ import type { LiteLLMPortalEnv, PortalIdentity } from "./types";
 import { applyAdminRateLimit } from "./security/rate-limit-middleware";
 import { authenticateRequest } from "./auth";
 import { resolveIdentity } from "./roles";
+import { invalidateRole } from "./role-cache";
 import { portalCompanyName, roundCurrency, sumDefinedNumbers, uniqueSorted } from "./utils";
 import {
   configuredAllowedModels,
@@ -37,6 +38,8 @@ import {
   UsageSchema,
   UsageTimeseriesSchema,
   ErrorResponseSchema,
+  AdminRolesInvalidateQuerySchema,
+  RoleChangedBodySchema,
 } from "./schemas";
 import type { LiteLLMKey, LiteLLMTeam, JsonValue } from "./types";
 
@@ -483,6 +486,48 @@ const adminUsageTimeseriesApp = new Hono<HonoEnv>()
     return c.json(UsageTimeseriesSchema.parse(timeseries));
   });
 
+const adminRolesInvalidateApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/admin/*", async (c, next) => {
+    const identity = c.get("identity");
+    if (identity.role !== "admin") {
+      return c.json({ error: "admin_required" }, 403);
+    }
+    await next();
+  })
+  .post("/admin/roles/invalidate", async (c) => {
+    const url = new URL(c.req.url);
+    const parsed = AdminRolesInvalidateQuerySchema.safeParse({
+      email: url.searchParams.get("email"),
+    });
+    if (!parsed.success) {
+      return c.json({ error: "email_required" }, 400);
+    }
+    await invalidateRole(c.env, parsed.data.email);
+    return new Response(null, { status: 204 });
+  });
+
+const internalRoleChangedApp = new Hono<{ Bindings: LiteLLMPortalEnv }>()
+  .post("/_internal/role-changed", async (c) => {
+    let rawBody: unknown;
+    try {
+      rawBody = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid_json" }, 400);
+    }
+    const parsed = RoleChangedBodySchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return c.json({ error: "invalid_body" }, 400);
+    }
+    const { email, secret } = parsed.data;
+    const expectedToken = c.env.ROLE_INVALIDATION_WEBHOOK_TOKEN;
+    if (!expectedToken || secret !== expectedToken) {
+      return c.json({ error: "unauthorized" }, 401);
+    }
+    await invalidateRole(c.env, email);
+    return new Response(null, { status: 204 });
+  });
+
 // ---------------------------------------------------------------------------
 // Top-level app mounts /api/* with global error handler
 // ---------------------------------------------------------------------------
@@ -493,6 +538,10 @@ const app = new Hono<{ Bindings: LiteLLMPortalEnv }>()
     const status = message === "litellm_config_missing" ? 500 : 502;
     return c.json({ error: message }, status);
   })
+  // Unauthenticated internal webhook — must be mounted before any auth-gated sub-apps.
+  // Hono v4: use("/*", mw) in a sub-app intercepts all paths, so unauthenticated routes
+  // must precede auth-gated sub-apps in the mount order.
+  .route("/api", internalRoleChangedApp)
   .route("/api", meApp)
   .route("/api", dashboardApp)
   .route("/api", modelsApp)
@@ -506,6 +555,7 @@ const app = new Hono<{ Bindings: LiteLLMPortalEnv }>()
   .route("/api", adminTeamsApp)
   .route("/api", adminAuditApp)
   .route("/api", adminUsageTimeseriesApp)
+  .route("/api", adminRolesInvalidateApp)
   .all("/*", (c) => c.json({ error: "not_found" }, 404));
 
 export { app };
