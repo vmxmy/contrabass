@@ -107,7 +107,8 @@ describe("litellm portal worker", () => {
     // Components that must remain in the bundle
     expect(js).toContain("aria-pressed");
     expect(js).toContain("Brush native");
-    expect(js).toContain("ClipboardText");
+    // ClipboardText replaced by SensitiveInput in P2-05
+    expect(js).toContain("SensitiveInput");
   });
 
   it("app.generated.ts contains no CustomEvent bridge, litellm-portal: events, or __litellmPortal globals", () => {
@@ -1792,6 +1793,52 @@ describe("litellm portal worker", () => {
         expect(serialized, `${path} must not leak sk- prefix`).not.toMatch(/sk-/u);
         expect(serialized.toLowerCase(), `${path} must not leak 'master'`).not.toContain("master");
       }
+    });
+  });
+
+  describe("Zod schema validation (POST /api/keys)", () => {
+    it("returns 400 with key_alias_required when keyAlias is missing from POST /api/keys body", async () => {
+      globalThis.fetch = async (input) => {
+        if (String(input).includes("/user/list")) {
+          return Response.json({
+            users: [{ user_id: "liqingying", user_email: "liqingying@gz-zhiyun.com", teams: [], spend: 0, max_budget: null, user_role: "internal_user" }],
+          });
+        }
+        return Response.json({});
+      };
+
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/keys", "liqingying@gz-zhiyun.com", {
+          method: "POST",
+          body: JSON.stringify({}),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: "key_alias_required" });
+    });
+
+    it("returns 400 with key_alias_required when keyAlias is an empty string in POST /api/keys body", async () => {
+      globalThis.fetch = async (input) => {
+        if (String(input).includes("/user/list")) {
+          return Response.json({
+            users: [{ user_id: "liqingying", user_email: "liqingying@gz-zhiyun.com", teams: [], spend: 0, max_budget: null, user_role: "internal_user" }],
+          });
+        }
+        return Response.json({});
+      };
+
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/keys", "liqingying@gz-zhiyun.com", {
+          method: "POST",
+          body: JSON.stringify({ keyAlias: "" }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: "key_alias_required" });
     });
   });
 
