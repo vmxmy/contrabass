@@ -57,3 +57,7 @@ workspaces/
 cloud/.playwright-cli/
 cloud/.wrangler/
 cloud/output/
+
+# Cloudflare Workers local secrets (never commit)
+.dev.vars
+**/.dev.vars

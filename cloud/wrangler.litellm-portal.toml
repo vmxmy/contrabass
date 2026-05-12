@@ -17,9 +17,46 @@ LITELLM_BASE_URL = "https://litellm.ziikoo.com"
 LITELLM_PORTAL_COMPANY_NAME = "gz-zhiyun"
 LITELLM_PORTAL_DISPLAY_NAME = "智云AI管理平台"
 
+[[durable_objects.bindings]]
+name = "RATE_LIMIT_DO"
+class_name = "RateLimitDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RateLimitDO"]
+
+# ---------------------------------------------------------------------------
+# Workers Secret Store (opt-in — requires manual provisioning)
+# Run: wrangler secrets-store store create default_secrets_store --remote
+# Then add secrets:
+#   wrangler secrets-store secret put LITELLM_MASTER_KEY --store-id <store-id> --remote
+#   wrangler secrets-store secret put ROLE_INVALIDATION_WEBHOOK_TOKEN --store-id <store-id> --remote
+# Uncomment the blocks below after the store is provisioned.
+# ---------------------------------------------------------------------------
+# [[secrets_store_secrets]]
+# binding = "LITELLM_MASTER_KEY"
+# store_id = "<your-secrets-store-id>"
+# secret_name = "LITELLM_MASTER_KEY"
+#
+# [[secrets_store_secrets]]
+# binding = "ROLE_INVALIDATION_WEBHOOK_TOKEN"
+# store_id = "<your-secrets-store-id>"
+# secret_name = "ROLE_INVALIDATION_WEBHOOK_TOKEN"
+
 [observability]
 enabled = true
 head_sampling_rate = 1.0
+
+# TODO: Create datasets in Cloudflare dashboard or via:
+#   wrangler analytics-engine create portal-metrics
+#   wrangler analytics-engine create portal-audit
+[[analytics_engine_datasets]]
+binding = "METRICS_AE"
+dataset = "portal-metrics"
+
+[[analytics_engine_datasets]]
+binding = "AUDIT_AE"
+dataset = "portal-audit"
 
 # TODO: Create the KV namespace first via:
 #   wrangler kv namespace create ROLE_CACHE_KV --config wrangler.litellm-portal.toml
@@ -27,5 +64,5 @@ head_sampling_rate = 1.0
 # Then replace the placeholder id values below with the real namespace IDs.
 [[kv_namespaces]]
 binding = "ROLE_CACHE_KV"
-id = "REPLACE_WITH_REAL_KV_NAMESPACE_ID"
-preview_id = "REPLACE_WITH_REAL_KV_PREVIEW_NAMESPACE_ID"
+id = "8493d26272f84fe1bfa0c5bd6d564ad8"
+preview_id = "cba1b4b32c054bfba72439ef48f73cf6"

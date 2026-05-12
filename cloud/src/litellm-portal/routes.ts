@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { LiteLLMPortalEnv, PortalIdentity } from "./types";
+import { applyAdminRateLimit } from "./security/rate-limit-middleware";
 import { authenticateRequest } from "./auth";
 import { resolveIdentity } from "./roles";
 import { invalidateRole } from "./role-cache";
@@ -350,6 +351,7 @@ const usageTimeseriesApp = new Hono<HonoEnv>()
 
 const adminSummaryApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
   .use("/admin/*", async (c, next) => {
     const identity = c.get("identity");
     if (identity.role !== "admin") {
@@ -391,6 +393,7 @@ const adminSummaryApp = new Hono<HonoEnv>()
 
 const adminUsersApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
   .use("/admin/*", async (c, next) => {
     const identity = c.get("identity");
     if (identity.role !== "admin") {
@@ -420,6 +423,7 @@ const adminUsersApp = new Hono<HonoEnv>()
 
 const adminTeamsApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
   .use("/admin/*", async (c, next) => {
     const identity = c.get("identity");
     if (identity.role !== "admin") {
@@ -434,6 +438,7 @@ const adminTeamsApp = new Hono<HonoEnv>()
 
 const adminAuditApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
   .use("/admin/*", async (c, next) => {
     const identity = c.get("identity");
     if (identity.role !== "admin") {
@@ -464,6 +469,7 @@ const adminAuditApp = new Hono<HonoEnv>()
 
 const adminUsageTimeseriesApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
   .use("/admin/*", async (c, next) => {
     const identity = c.get("identity");
     if (identity.role !== "admin") {

@@ -1,26 +1,6 @@
-import type { JsonValue, LiteLLMPortalEnv, PortalIdentity } from "./types";
-
-interface ServerImpl {
-  renderPortalSSR(
-    env: LiteLLMPortalEnv,
-    identity: PortalIdentity,
-    initialData: JsonValue | null,
-    nonce: string,
-  ): Promise<string>;
-}
-
-const implPath = "./server-impl";
-
-async function loadImpl(): Promise<ServerImpl> {
-  return import(implPath) as Promise<ServerImpl>;
-}
-
-export async function renderPortalSSR(
-  env: LiteLLMPortalEnv,
-  identity: PortalIdentity,
-  initialData: JsonValue | null,
-  nonce: string,
-): Promise<string> {
-  const impl = await loadImpl();
-  return impl.renderPortalSSR(env, identity, initialData, nonce);
-}
+// Public facade for the React SSR implementation.
+//
+// Re-exports `renderPortalSSR` from server-impl so callers can `await import("./server")`
+// without dragging the .tsx implementation through tsc's JSX resolver in non-JSX files.
+// This file stays a plain .ts so it's safe to import from anywhere in the worker.
+export { renderPortalSSR } from "./server-impl";
