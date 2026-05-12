@@ -31,6 +31,10 @@ import { parseUsageTimeseriesRequest, readUsageTimeseries } from "./timeseries";
 import { readUserDailyActivity } from "./usage";
 import { adminListUsers, adminListTeams, adminListAuditEvents, adminGlobalUsageTimeseries, adminSummary } from "./admin";
 import type { JsonValue, LiteLLMKey, LiteLLMPortalEnv, LiteLLMTeam, PortalIdentity } from "./types";
+import { recordMetric } from "./observability/metrics";
+import { recordAudit } from "./observability/audit";
+import { checkClientErrorRateLimit, recordClientError } from "./observability/client-error";
+import type { ClientErrorPayload } from "./observability/client-error";
 
 export type { LiteLLMPortalEnv } from "./types";
 
@@ -86,21 +90,113 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
     return jsonResponse({ error: "not_found" }, 404);
   }
 
+  // Client-error endpoint: no auth required, rate-limited per session
+  if (request.method === "POST" && url.pathname === "/api/_internal/client-error") {
+    return handleClientError(request, env);
+  }
+
+  const apiStart = Date.now();
   const auth = await authenticateRequest(request, env);
   if (!auth.ok) {
+    recordMetric(env, {
+      route: url.pathname,
+      status: auth.status,
+      latencyMs: Date.now() - apiStart,
+      upstreamMs: 0,
+      role: "none",
+      cacheHit: false,
+    });
     return jsonResponse({ error: auth.error }, auth.status);
   }
 
   try {
     const identityResult = await resolveIdentity(env, auth.principal);
     if (!identityResult.ok) {
+      recordMetric(env, {
+        route: url.pathname,
+        status: identityResult.status,
+        latencyMs: Date.now() - apiStart,
+        upstreamMs: 0,
+        role: "none",
+        cacheHit: false,
+      });
       return jsonResponse({ error: identityResult.error }, identityResult.status);
     }
-    return await routeApiRequest(request, env, identityResult.identity);
+
+    if (url.pathname.startsWith("/api/admin/")) {
+      recordAudit(env, {
+        actor: identityResult.identity.email,
+        action: url.pathname,
+        target: url.search ? url.search.slice(1) : "",
+        ip: request.headers.get("cf-connecting-ip") ?? "unknown",
+        ts: new Date().toISOString(),
+      });
+    }
+
+    const upstreamStart = Date.now();
+    const response = await routeApiRequest(request, env, identityResult.identity);
+    recordMetric(env, {
+      route: url.pathname,
+      status: response.status,
+      latencyMs: Date.now() - apiStart,
+      upstreamMs: Date.now() - upstreamStart,
+      role: identityResult.identity.role,
+      cacheHit: false,
+    });
+    return response;
   } catch (error) {
     const message = error instanceof Error ? error.message : "internal_error";
-    return jsonResponse({ error: message }, message === "litellm_config_missing" ? 500 : 502);
+    const status = message === "litellm_config_missing" ? 500 : 502;
+    recordMetric(env, {
+      route: url.pathname,
+      status,
+      latencyMs: Date.now() - apiStart,
+      upstreamMs: 0,
+      role: "none",
+      cacheHit: false,
+    });
+    return jsonResponse({ error: message }, status);
   }
+}
+
+async function handleClientError(request: Request, env: LiteLLMPortalEnv): Promise<Response> {
+  const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
+  let payload: ClientErrorPayload;
+  try {
+    payload = await request.json() as ClientErrorPayload;
+  } catch {
+    return jsonResponse({ error: "invalid_json" }, 400);
+  }
+  if (!Array.isArray(payload?.events) || payload.events.length === 0) {
+    return jsonResponse({ error: "events_required" }, 400);
+  }
+
+  const firstEvent = payload.events[0];
+  const sessionId = typeof firstEvent?.sessionId === "string" ? firstEvent.sessionId : "unknown";
+
+  if (!checkClientErrorRateLimit(sessionId)) {
+    recordAudit(env, {
+      actor: `session:${sessionId}`,
+      action: "client_error_rate_limited",
+      target: "",
+      ip,
+      ts: new Date().toISOString(),
+    });
+    return jsonResponse({ error: "rate_limited" }, 429);
+  }
+
+  for (const event of payload.events) {
+    if (typeof event?.message === "string" && typeof event?.sessionId === "string") {
+      recordClientError(env, {
+        message: event.message,
+        stack: typeof event.stack === "string" ? event.stack : undefined,
+        sessionId: event.sessionId,
+        ts: typeof event.ts === "string" ? event.ts : new Date().toISOString(),
+      }, ip);
+    }
+  }
+
+  return jsonResponse({ ok: true });
 }
 
 function requireAdmin(identity: PortalIdentity): Response | null {
