@@ -444,7 +444,7 @@ describe("CreateKeyButton", () => {
     });
   });
 
-  it("copies the newly created full key with Kumo ClipboardText", async () => {
+  it("copies the newly created full key with kumo SensitiveInput", async () => {
     const writeText = vi.fn(async () => {});
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -484,7 +484,8 @@ describe("CreateKeyButton", () => {
       expect(screen.queryByText("Key 已创建")).not.toBeNull();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "复制完整 Key" }));
+    // SensitiveInput renders a "Copy to clipboard" button (aria-label from kumo)
+    fireEvent.click(screen.getByRole("button", { name: "Copy to clipboard" }));
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith("sk-new-key-123");
@@ -526,9 +527,128 @@ describe("CreateKeyButton", () => {
     if (submitBtn) fireEvent.click(submitBtn);
 
     await waitFor(() => {
-      expect(screen.queryByText("sk-new-key-123")).not.toBeNull();
+      expect(screen.queryByText("Key 已创建")).not.toBeNull();
+      // SensitiveInput masks the value by default; check the underlying input element's value
+      const keyInput = document.querySelector<HTMLInputElement>("input[value='sk-new-key-123']");
+      expect(keyInput).not.toBeNull();
+    });
+  });
+
+  it("shows Field error on alias when submitting empty form (spec 6.2)", async () => {
+    globalThis.fetch = vi.fn(async () => Response.json({ models: [] })) as typeof fetch;
+
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText("创建 Key"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    // Submit without filling alias — Field should show error message
+    const submitButtons = screen.getAllByText("创建");
+    const submitBtn = submitButtons.find((el) => el.closest("button"));
+    if (submitBtn) fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByText("请输入 Key 名称")).not.toBeNull();
+    });
+  });
+
+  it("shows Field error for duplicate alias returned from backend (spec 6.2)", async () => {
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/models")) return Response.json({ models: [] });
+      if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
+        return Response.json(
+          { error: "key_alias_conflict", keyAlias: "my-key", message: "already exists" },
+          { status: 409 },
+        );
+      }
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText("创建 Key"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    const aliasInput = document.getElementById("create-key-alias");
+    if (aliasInput) fireEvent.change(aliasInput, { target: { value: "my-key" } });
+
+    const submitBtn = screen.getAllByText("创建").find((el) => el.closest("button"));
+    if (submitBtn) fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByText("名称「my-key」已存在，请换一个名称。")).not.toBeNull();
+    });
+  });
+
+  it("renders Combobox for model selection when models are available (spec 6.3)", async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/models")) return Response.json({ models: ["gpt-4o-mini", "claude-3-5-sonnet"] });
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText("创建 Key"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    // Combobox trigger input should be rendered with the model selection placeholder
+    await waitFor(() => {
+      const comboInput = document.querySelector<HTMLInputElement>("[placeholder='选择模型…']");
+      expect(comboInput).not.toBeNull();
+    });
+
+    // The "允许模型" label and "(optional)" indicator must be present
+    expect(screen.queryByText("允许模型")).not.toBeNull();
+    expect(document.querySelector("[placeholder='选择模型…']")).not.toBeNull();
+  });
+
+  it("SensitiveInput defaults to masked (spec 6.4)", async () => {
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/models")) return Response.json({ models: [] });
+      if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
+        return Response.json({
+          rawKey: "sk-secret-abc",
+          keyAlias: "my-key",
+          expires: null,
+          keyId: "tok-1",
+        }, { status: 201 });
+      }
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText("创建 Key"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    const aliasInput = document.getElementById("create-key-alias");
+    if (aliasInput) fireEvent.change(aliasInput, { target: { value: "my-key" } });
+
+    const submitBtn = screen.getAllByText("创建").find((el) => el.closest("button"));
+    if (submitBtn) fireEvent.click(submitBtn);
+
+    await waitFor(() => {
       expect(screen.queryByText("Key 已创建")).not.toBeNull();
     });
+
+    // SensitiveInput should render with type="password" (masked) by default
+    const keyInput = document.querySelector<HTMLInputElement>("input[value='sk-secret-abc']");
+    expect(keyInput).not.toBeNull();
+    expect(keyInput?.type).toBe("password");
+
+    // The "Reveal value" button must be present (eye icon)
+    expect(screen.getByRole("button", { name: "Reveal value" })).not.toBeNull();
   });
 });
 });
