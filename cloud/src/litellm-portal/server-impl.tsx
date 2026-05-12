@@ -62,10 +62,19 @@ export async function renderPortalSSR(
     }
   }
 
+  // Merge dehydratedState into the script payload so the client can rehydrate
+  // without an extra round-trip. The client reads `queryClient` off the parsed JSON.
+  const shellData: import("./types").JsonValue | null = dataWithIdentity !== null
+    ? {
+        ...(dataWithIdentity as Record<string, import("./types").JsonValue>),
+        ...(dehydratedState !== undefined ? { queryClient: dehydratedState as import("./types").JsonValue } : {}),
+      }
+    : null;
+
   const markup = renderToString(
     React.createElement(
       Shell,
-      { title, nonce, initialData: dataWithIdentity },
+      { title, nonce, initialData: shellData },
       React.createElement(App, {
         initialData: dataWithIdentity as import("./app").InitialDashboardData | null,
         role: identity.role,
