@@ -14,6 +14,7 @@ import { Switch } from "@cloudflare/kumo/components/switch";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { QueryClient, QueryClientProvider, HydrationBoundary, dehydrate } from "@tanstack/react-query";
 import { UsageChart, type UsageTimeseries } from "./chart";
 
 export type InitialDashboardData = {
@@ -2221,9 +2222,22 @@ export function PortalTabs({ tab, onSelect }: { tab: TabKey; onSelect: (next: Ta
 type AppProps = {
   initialData?: InitialDashboardData | null;
   role?: PortalRole;
+  dehydratedState?: unknown;
 };
 
-export function App({ initialData, role: initialRole }: AppProps) {
+function createQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: 60_000,
+        refetchOnWindowFocus: false,
+      },
+    },
+  });
+}
+
+export function App({ initialData, role: initialRole, dehydratedState }: AppProps) {
+  const [queryClient] = useState(createQueryClient);
   const { role, ready } = usePortalRole(initialRole);
   const [tab, setTab] = useState<TabKey>(() => readTabFromHash(initialRole ?? "none"));
 
@@ -2240,6 +2254,8 @@ export function App({ initialData, role: initialRole }: AppProps) {
   const platformName = initialData?.me?.company ?? "智云AI管理平台";
 
   return (
+    <QueryClientProvider client={queryClient}>
+      <HydrationBoundary state={dehydratedState}>
     <main className="container mx-auto px-4 py-10 lg:px-10 lg:py-16">
       <header className="mb-12 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-4">
@@ -2295,6 +2311,8 @@ export function App({ initialData, role: initialRole }: AppProps) {
         <PortalErrorBanner initialData={initialData} />
       </div>
     </main>
+      </HydrationBoundary>
+    </QueryClientProvider>
   );
 }
 
