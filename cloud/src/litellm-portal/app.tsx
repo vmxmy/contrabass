@@ -14,8 +14,46 @@ import { Switch } from "@cloudflare/kumo/components/switch";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createRoot } from "react-dom/client";
 import { UsageChart, type UsageTimeseries } from "./chart";
+
+export type InitialDashboardData = {
+  me?: { email?: string | null; domain?: string | null; company?: string | null } | null;
+  user?: { litellmUserId?: string | null; totalSpend?: number | null; maxBudget?: number | null } | null;
+  summary?: {
+    totalSpend?: number | null;
+    recentSpend?: number | null;
+    keyBudget?: number | null;
+    keyCount?: number | null;
+    availableModelCount?: number | null;
+    teamCount?: number | null;
+    totalTokens?: number | null;
+    requestCount?: number | null;
+  } | null;
+  models?: { models?: string[]; source?: string } | null;
+  teams?: Array<{
+    id?: string | null;
+    alias?: string | null;
+    models?: string[] | null;
+    spend?: number | null;
+    maxBudget?: number | null;
+    tpmLimit?: number | null;
+    rpmLimit?: number | null;
+  }> | null;
+  keys?: {
+    totalCount?: number;
+    items?: Array<{
+      id?: string | null;
+      alias?: string | null;
+      displayKey?: string | null;
+      models?: string[];
+      spend?: number | null;
+      maxBudget?: number | null;
+      expiresAt?: string | null;
+    }>;
+  } | null;
+  usage?: { available?: boolean } | null;
+  error?: string | null;
+};
 
 type ModelAccess = {
   models: string[];
@@ -70,19 +108,10 @@ type PortalStats = {
 declare global {
   interface Window {
     __PORTAL_CONFIG?: PortalConfig;
-    __litellmPortalModelAccess?: Partial<ModelAccess>;
-    __litellmPortalKeys?: PortalKey[];
-    __litellmPortalTeams?: PortalTeam[];
-    __litellmPortalStats?: PortalStats;
-    __litellmPortalError?: string | null;
+    __INITIAL_DATA__?: InitialDashboardData;
   }
 }
 
-const MODEL_EVENT = "litellm-portal:models";
-const KEYS_EVENT = "litellm-portal:keys";
-const TEAMS_EVENT = "litellm-portal:teams";
-const STATS_EVENT = "litellm-portal:stats";
-const ERROR_EVENT = "litellm-portal:error";
 const PREVIEW_LIMIT = 12;
 const MODEL_CELL_PREVIEW_LIMIT = 3;
 
@@ -135,9 +164,10 @@ const sourceLabels: Record<string, string> = {
 const numberFormatter = new Intl.NumberFormat("zh-CN");
 
 function portalConfig(): Required<PortalConfig> {
+  const config = typeof window !== "undefined" ? window.__PORTAL_CONFIG : undefined;
   return {
-    usageWindows: window.__PORTAL_CONFIG?.usageWindows ?? fallbackUsageWindows,
-    defaultUsageWindows: window.__PORTAL_CONFIG?.defaultUsageWindows ?? fallbackDefaultUsageWindows,
+    usageWindows: config?.usageWindows ?? fallbackUsageWindows,
+    defaultUsageWindows: config?.defaultUsageWindows ?? fallbackDefaultUsageWindows,
   };
 }
 
@@ -160,10 +190,6 @@ function normalizeKeys(value: unknown): PortalKey[] {
 function normalizeTeams(value: unknown): PortalTeam[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is PortalTeam => item !== null && typeof item === "object");
-}
-
-function initialModelAccess(): ModelAccess {
-  return normalizeModelAccess(window.__litellmPortalModelAccess);
 }
 
 function sourceLabel(source: string): string {
@@ -830,17 +856,26 @@ function normalizeStats(value: unknown): PortalStats {
   return value as PortalStats;
 }
 
-export function HeroStats() {
-  const [stats, setStats] = useState<PortalStats>(normalizeStats(window.__litellmPortalStats));
+function initialStatsFromData(data: InitialDashboardData | null): PortalStats {
+  if (!data) return {};
+  return {
+    email: data.me?.email,
+    litellmUserId: data.user?.litellmUserId,
+    totalSpend: data.user?.totalSpend,
+    maxBudget: data.user?.maxBudget,
+    keyBudget: data.summary?.keyBudget ?? undefined,
+    recentSpend: data.summary?.recentSpend,
+    usageAvailable: data.usage?.available,
+    requestCount: data.summary?.requestCount,
+    totalTokens: data.summary?.totalTokens,
+    modelCount: data.summary?.availableModelCount,
+    keyCount: data.summary?.keyCount,
+    teamCount: data.summary?.teamCount,
+  };
+}
 
-  useEffect(() => {
-    const update = (event: Event) => {
-      setStats(normalizeStats(event instanceof CustomEvent ? event.detail : window.__litellmPortalStats));
-    };
-    window.addEventListener(STATS_EVENT, update);
-    if (window.__litellmPortalStats) update(new Event(STATS_EVENT));
-    return () => window.removeEventListener(STATS_EVENT, update);
-  }, []);
+export function HeroStats({ initialData }: { initialData?: InitialDashboardData | null }) {
+  const [stats, setStats] = useState<PortalStats>(() => initialStatsFromData(initialData ?? null));
 
   const email = text(stats.email);
   const recentDisplay = stats.usageAvailable ? fmt(stats.recentSpend) : "暂无数据";
@@ -881,20 +916,9 @@ export function HeroStats() {
   );
 }
 
-export function TeamsAccessCard() {
-  const [teams, setTeams] = useState<PortalTeam[]>(normalizeTeams(window.__litellmPortalTeams));
-  const [loaded, setLoaded] = useState(Array.isArray(window.__litellmPortalTeams));
-
-  useEffect(() => {
-    const update = (event: Event) => {
-      const next = normalizeTeams(event instanceof CustomEvent ? event.detail : window.__litellmPortalTeams);
-      setTeams(next);
-      setLoaded(true);
-    };
-    window.addEventListener(TEAMS_EVENT, update);
-    if (window.__litellmPortalTeams) update(new Event(TEAMS_EVENT));
-    return () => window.removeEventListener(TEAMS_EVENT, update);
-  }, []);
+export function TeamsAccessCard({ initialData }: { initialData?: InitialDashboardData | null }) {
+  const [teams, setTeams] = useState<PortalTeam[]>(() => normalizeTeams(initialData?.teams));
+  const [loaded] = useState(Array.isArray(initialData?.teams));
 
   return (
     <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
@@ -944,25 +968,10 @@ export function TeamsAccessCard() {
   );
 }
 
-export function ModelAccessCard() {
-  const initial = initialModelAccess();
+export function ModelAccessCard({ initialData }: { initialData?: InitialDashboardData | null }) {
+  const initial = normalizeModelAccess(initialData?.models);
   const [modelAccess, setModelAccess] = useState<ModelAccess>(initial);
   const [open, setOpen] = useState(initial.models.length > 0 && initial.models.length <= PREVIEW_LIMIT);
-
-  useEffect(() => {
-    const updateModels = (event: Event) => {
-      const next = normalizeModelAccess(event instanceof CustomEvent ? event.detail : window.__litellmPortalModelAccess);
-      setModelAccess(next);
-      setOpen(next.models.length > 0 && next.models.length <= PREVIEW_LIMIT);
-    };
-
-    window.addEventListener(MODEL_EVENT, updateModels);
-    if (window.__litellmPortalModelAccess) {
-      updateModels(new Event(MODEL_EVENT));
-    }
-
-    return () => window.removeEventListener(MODEL_EVENT, updateModels);
-  }, []);
 
   const previewModels = useMemo(() => modelAccess.models.slice(0, PREVIEW_LIMIT), [modelAccess.models]);
   const remainingCount = Math.max(modelAccess.models.length - previewModels.length, 0);
@@ -1016,28 +1025,12 @@ export function ModelAccessCard() {
   );
 }
 
-export function ApiKeysCard() {
-  const [keys, setKeys] = useState<PortalKey[]>(normalizeKeys(window.__litellmPortalKeys));
-  const [loaded, setLoaded] = useState(Array.isArray(window.__litellmPortalKeys));
+export function ApiKeysCard({ initialData }: { initialData?: InitialDashboardData | null }) {
+  const [keys, setKeys] = useState<PortalKey[]>(() => normalizeKeys(initialData?.keys?.items));
+  const [loaded] = useState(Array.isArray(initialData?.keys?.items));
 
   const handleDeleted = useCallback((keyId: string) => {
     setKeys((current) => current.filter((key) => key.id !== keyId));
-    window.dispatchEvent(new CustomEvent("litellm-portal:refresh"));
-  }, []);
-
-  useEffect(() => {
-    const updateKeys = (event: Event) => {
-      const next = normalizeKeys(event instanceof CustomEvent ? event.detail : window.__litellmPortalKeys);
-      setKeys(next);
-      setLoaded(true);
-    };
-
-    window.addEventListener(KEYS_EVENT, updateKeys);
-    if (window.__litellmPortalKeys) {
-      updateKeys(new Event(KEYS_EVENT));
-    }
-
-    return () => window.removeEventListener(KEYS_EVENT, updateKeys);
   }, []);
 
   return (
@@ -1106,22 +1099,11 @@ export function ApiKeysCard() {
   );
 }
 
-export function PortalErrorBanner() {
-  const [message, setMessage] = useState<string | null>(window.__litellmPortalError ?? null);
-
-  useEffect(() => {
-    const updateError = (event: Event) => {
-      const detail = event instanceof CustomEvent ? event.detail : window.__litellmPortalError;
-      setMessage(typeof detail === "string" && detail.length > 0 ? detail : null);
-    };
-
-    window.addEventListener(ERROR_EVENT, updateError);
-    if (window.__litellmPortalError) {
-      updateError(new Event(ERROR_EVENT));
-    }
-
-    return () => window.removeEventListener(ERROR_EVENT, updateError);
-  }, []);
+export function PortalErrorBanner({ initialData }: { initialData?: InitialDashboardData | null }) {
+  const [message, setMessage] = useState<string | null>(() => {
+    const err = initialData?.error;
+    return typeof err === "string" && err.length > 0 ? err : null;
+  });
 
   if (!message) return null;
 
@@ -1176,7 +1158,7 @@ type CreateKeyResult = {
   keyId: string;
 };
 
-export function CreateKeyButton() {
+export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) {
   const [open, setOpen] = useState(false);
   const [alias, setAlias] = useState("");
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
@@ -1251,9 +1233,9 @@ export function CreateKeyButton() {
     const shouldRefresh = result !== null;
     resetForm();
     if (shouldRefresh) {
-      window.dispatchEvent(new CustomEvent("litellm-portal:refresh"));
+      onRefresh?.();
     }
-  }, [result, resetForm]);
+  }, [result, resetForm, onRefresh]);
 
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
@@ -2178,10 +2160,11 @@ function fetchPortalRoleOnce(): Promise<PortalRole> {
   return portalRolePromise;
 }
 
-function usePortalRole(): { role: PortalRole; ready: boolean } {
-  const [role, setRole] = useState<PortalRole>("none");
-  const [ready, setReady] = useState(false);
+function usePortalRole(initialRole?: PortalRole): { role: PortalRole; ready: boolean } {
+  const [role, setRole] = useState<PortalRole>(initialRole ?? "none");
+  const [ready, setReady] = useState(initialRole !== undefined);
   useEffect(() => {
+    if (initialRole !== undefined) return;
     let cancelled = false;
     fetchPortalRoleOnce().then((next) => {
       if (cancelled) return;
@@ -2191,7 +2174,7 @@ function usePortalRole(): { role: PortalRole; ready: boolean } {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [initialRole]);
   return { role, ready };
 }
 
@@ -2203,22 +2186,6 @@ export function readTabFromHash(role: PortalRole): TabKey {
   return "user";
 }
 
-function applyTabToDom(tab: TabKey) {
-  const userPanel = document.getElementById("user-panel");
-  const adminPanel = document.getElementById("admin-root");
-  if (tab === "admin") {
-    userPanel?.setAttribute("hidden", "");
-    adminPanel?.removeAttribute("hidden");
-  } else {
-    adminPanel?.setAttribute("hidden", "");
-    userPanel?.removeAttribute("hidden");
-  }
-}
-
-function AdminSectionLoader() {
-  const { role } = usePortalRole();
-  return <AdminSection role={role} />;
-}
 
 export function PortalTabs({ tab, onSelect }: { tab: TabKey; onSelect: (next: TabKey) => void }) {
   return (
@@ -2235,75 +2202,92 @@ export function PortalTabs({ tab, onSelect }: { tab: TabKey; onSelect: (next: Ta
   );
 }
 
-function PortalTabsLoader() {
-  const { role, ready } = usePortalRole();
-  const [tab, setTab] = useState<TabKey>("user");
+type AppProps = {
+  initialData?: InitialDashboardData | null;
+  role?: PortalRole;
+};
 
-  useEffect(() => {
-    if (!ready) return;
-    if (role !== "admin") {
-      applyTabToDom("user");
-      return;
-    }
-    const initial = readTabFromHash(role);
-    setTab(initial);
-    applyTabToDom(initial);
-    const tabsRoot = document.getElementById("portal-tabs-root");
-    tabsRoot?.removeAttribute("hidden");
-  }, [ready, role]);
+export function App({ initialData, role: initialRole }: AppProps) {
+  const { role, ready } = usePortalRole(initialRole);
+  const [tab, setTab] = useState<TabKey>(() => readTabFromHash(initialRole ?? "none"));
 
-  if (!ready || role !== "admin") return null;
-
-  const select = (next: TabKey) => {
+  const handleTabSelect = useCallback((next: TabKey) => {
     setTab(next);
-    applyTabToDom(next);
-    history.replaceState(null, "", "#" + next);
-  };
+    if (typeof history !== "undefined") {
+      history.replaceState(null, "", "#" + next);
+    }
+  }, []);
 
-  return <PortalTabs tab={tab} onSelect={select} />;
+  const isAdmin = role === "admin";
+  const showUserPanel = tab === "user" || !isAdmin;
+  const showAdminPanel = isAdmin && tab === "admin";
+  const platformName = initialData?.me?.company ?? "智云AI管理平台";
+
+  return (
+    <main className="container mx-auto px-4 py-10 lg:px-10 lg:py-16">
+      <header className="mb-12 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="space-y-4">
+          <span className="inline-flex w-fit items-center rounded-full bg-kumo-info-tint/70 px-2.5 py-1 text-xs font-semibold text-kumo-info">Cloudflare Access 已保护</span>
+          <div className="space-y-3">
+            <h1 className="text-3xl font-semibold tracking-tight text-kumo-strong lg:text-4xl">{platformName}</h1>
+            <p className="max-w-3xl text-base leading-relaxed text-kumo-subtle">面向智云团队的 AI 能力自助台：只读查看个人 API Key、团队可用模型、预算与近 30 天用量，数据权限自动绑定当前登录邮箱。</p>
+          </div>
+        </div>
+        <div id="header-actions-root" className="flex flex-wrap items-center gap-3 sm:self-auto">
+          <HeaderActions />
+        </div>
+      </header>
+
+      {ready && isAdmin && (
+        <nav id="portal-tabs-root">
+          <PortalTabs tab={tab} onSelect={handleTabSelect} />
+        </nav>
+      )}
+
+      {showUserPanel && (
+        <div id="user-panel">
+          <div id="hero-stats-root" className="mb-14">
+            <HeroStats initialData={initialData} />
+          </div>
+
+          <section id="usage-panel-root" className="mb-14">
+            <UsagePanel />
+          </section>
+
+          <section className="mb-10 grid grid-cols-1 gap-5 md:grid-cols-[1fr_2fr]">
+            <div id="teams-root">
+              <TeamsAccessCard initialData={initialData} />
+            </div>
+            <div id="models-root">
+              <ModelAccessCard initialData={initialData} />
+            </div>
+          </section>
+
+          <div id="keys-root">
+            <ApiKeysCard initialData={initialData} />
+          </div>
+        </div>
+      )}
+
+      {isAdmin && (
+        <div id="admin-root" hidden={!showAdminPanel}>
+          <AdminSection role={role} />
+        </div>
+      )}
+
+      <div id="portal-error-root">
+        <PortalErrorBanner initialData={initialData} />
+      </div>
+    </main>
+  );
 }
 
-const usageRoot = document.getElementById("usage-panel-root");
-if (usageRoot) {
-  createRoot(usageRoot).render(<UsagePanel />);
-}
-
-const modelsRoot = document.getElementById("models-root");
-if (modelsRoot) {
-  createRoot(modelsRoot).render(<ModelAccessCard />);
-}
-
-const teamsRoot = document.getElementById("teams-root");
-if (teamsRoot) {
-  createRoot(teamsRoot).render(<TeamsAccessCard />);
-}
-
-const heroStatsRoot = document.getElementById("hero-stats-root");
-if (heroStatsRoot) {
-  createRoot(heroStatsRoot).render(<HeroStats />);
-}
-
-const headerActionsRoot = document.getElementById("header-actions-root");
-if (headerActionsRoot) {
-  createRoot(headerActionsRoot).render(<HeaderActions />);
-}
-
-const keysRoot = document.getElementById("keys-root");
-if (keysRoot) {
-  createRoot(keysRoot).render(<ApiKeysCard />);
-}
-
-const errorRoot = document.getElementById("portal-error-root");
-if (errorRoot) {
-  createRoot(errorRoot).render(<PortalErrorBanner />);
-}
-
-const adminRoot = document.getElementById("admin-root");
-if (adminRoot) {
-  createRoot(adminRoot).render(<AdminSectionLoader />);
-}
-
-const portalTabsRoot = document.getElementById("portal-tabs-root");
-if (portalTabsRoot) {
-  createRoot(portalTabsRoot).render(<PortalTabsLoader />);
+if (typeof document !== "undefined") {
+  const root = document.getElementById("root");
+  if (root) {
+    const initialData: InitialDashboardData | null = (typeof window !== "undefined" && window.__INITIAL_DATA__) ? window.__INITIAL_DATA__ : null;
+    import("react-dom/client").then(({ hydrateRoot }) => {
+      hydrateRoot(document, <App initialData={initialData} />);
+    });
+  }
 }
