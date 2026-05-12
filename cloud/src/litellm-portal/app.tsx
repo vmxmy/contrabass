@@ -899,7 +899,7 @@ function statsFromDashboard(data: Dashboard | undefined): PortalStats {
   };
 }
 
-export function HeroStats({ initialData: _initialData }: { initialData?: InitialDashboardData | null }) {
+export function HeroStats() {
   const { data } = useDashboard();
   const stats = statsFromDashboard(data);
 
@@ -958,7 +958,7 @@ export function HeroStats({ initialData: _initialData }: { initialData?: Initial
   );
 }
 
-export function TeamsAccessCard({ initialData: _initialData }: { initialData?: InitialDashboardData | null }) {
+export function TeamsAccessCard() {
   const { data, isLoading } = useDashboard();
   const teams = normalizeTeams(data?.teams);
   const loaded = !isLoading;
@@ -1021,7 +1021,7 @@ export function TeamsAccessCard({ initialData: _initialData }: { initialData?: I
   );
 }
 
-export function ModelAccessCard({ initialData: _initialData }: { initialData?: InitialDashboardData | null }) {
+export function ModelAccessCard() {
   const { data } = useDashboard();
   const modelAccess = normalizeModelAccess(data?.models);
   const [open, setOpen] = useState(modelAccess.models.length > 0 && modelAccess.models.length <= PREVIEW_LIMIT);
@@ -1074,7 +1074,7 @@ export function ModelAccessCard({ initialData: _initialData }: { initialData?: I
   );
 }
 
-export function ApiKeysCard({ initialData: _initialData }: { initialData?: InitialDashboardData | null }) {
+export function ApiKeysCard() {
   const { data, isLoading } = useDashboard();
   const keys = normalizeKeys(data?.keys?.items);
   const loaded = !isLoading;
@@ -2377,7 +2377,7 @@ export function App({ initialData, role: initialRole, dehydratedState }: AppProp
       {showUserPanel && (
         <div id="user-panel">
           <div id="hero-stats-root" className="mb-14">
-            <HeroStats initialData={initialData} />
+            <HeroStats />
           </div>
 
           <section id="usage-panel-root" className="mb-14">
@@ -2386,15 +2386,15 @@ export function App({ initialData, role: initialRole, dehydratedState }: AppProp
 
           <section className="mb-10 grid grid-cols-1 gap-5 md:grid-cols-[1fr_2fr]">
             <div id="teams-root">
-              <TeamsAccessCard initialData={initialData} />
+              <TeamsAccessCard />
             </div>
             <div id="models-root">
-              <ModelAccessCard initialData={initialData} />
+              <ModelAccessCard />
             </div>
           </section>
 
           <div id="keys-root">
-            <ApiKeysCard initialData={initialData} />
+            <ApiKeysCard />
           </div>
         </div>
       )}
