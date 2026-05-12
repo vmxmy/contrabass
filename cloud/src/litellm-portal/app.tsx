@@ -1211,23 +1211,13 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [budget, setBudget] = useState("");
   const [duration, setDuration] = useState("");
-  const [models, setModels] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [aliasError, setAliasError] = useState<string | null>(null);
   const [result, setResult] = useState<CreateKeyResult | null>(null);
   const durationSelectValue = duration || NEVER_EXPIRES_VALUE;
   const createKey = useCreateKey();
-
-  useEffect(() => {
-    if (!open) return;
-    fetch("/api/models", { headers: { "content-type": "application/json" } })
-      .then(async (res) => {
-        if (!res.ok) return;
-        const data = await res.json();
-        if (Array.isArray(data.models)) setModels(data.models);
-      })
-      .catch(() => {});
-  }, [open]);
+  const { data: dashboardData } = useDashboard();
+  const models = dashboardData?.models?.models ?? [];
 
   const resetForm = useCallback(() => {
     setAlias("");
