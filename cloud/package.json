@@ -21,7 +21,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "analyze:litellm-portal-bundle": "node scripts/analyze-litellm-portal-bundle.mjs"
+    "analyze:litellm-portal-bundle": "node scripts/analyze-litellm-portal-bundle.mjs",
+    "plane:issue": "node scripts/plane-issue.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260508.1",
