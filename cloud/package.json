@@ -26,6 +26,7 @@
     "prepare": "husky"
   },
   "devDependencies": {
+    "@axe-core/react": "^4.11.3",
     "@cloudflare/workers-types": "^4.20260508.1",
     "@commitlint/cli": "^19.8.1",
     "@commitlint/config-conventional": "^19.8.1",
@@ -42,10 +43,15 @@
     "typescript": "^5.9.3",
     "vite": "^6.3.5",
     "vitest": "^4.1.5",
+    "vitest-axe": "^0.1.0",
     "wrangler": "^4.90.0"
   },
   "dependencies": {
     "@cloudflare/kumo": "^2.1.0",
+    "@lingui/core": "^6.0.1",
+    "@lingui/react": "^6.0.1",
+    "@tanstack/react-query": "^5.80.2",
+    "@tanstack/react-router": "^1.169.2",
     "echarts": "^6.0.0",
     "hono": "^4.12.18",
     "liquidjs": "^10.25.7",

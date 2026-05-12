@@ -1,20 +1,37 @@
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Banner } from "@cloudflare/kumo/components/banner";
 import { Button } from "@cloudflare/kumo/components/button";
-import { ClipboardText } from "@cloudflare/kumo/components/clipboard-text";
 import { Collapsible } from "@cloudflare/kumo/components/collapsible";
+import { Combobox } from "@cloudflare/kumo/components/combobox";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
+import { DropdownMenu } from "@cloudflare/kumo/components/dropdown";
 import { Empty } from "@cloudflare/kumo/components/empty";
+import { Field } from "@cloudflare/kumo/components/field";
+import { Grid, GridItem } from "@cloudflare/kumo/components/grid";
 import { Input } from "@cloudflare/kumo/components/input";
 import { LayerCard } from "@cloudflare/kumo/components/layer-card";
 import { Loader, SkeletonLine } from "@cloudflare/kumo/components/loader";
+import { Meter } from "@cloudflare/kumo/components/meter";
+import { Surface } from "@cloudflare/kumo/components/surface";
 import { Pagination } from "@cloudflare/kumo/components/pagination";
+import { Popover } from "@cloudflare/kumo/components/popover";
 import { Select } from "@cloudflare/kumo/components/select";
+import { SensitiveInput } from "@cloudflare/kumo/components/sensitive-input";
 import { Switch } from "@cloudflare/kumo/components/switch";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
+import { I18nProvider } from "@lingui/react";
+import { Text } from "@cloudflare/kumo/components/text";
+import { Toasty } from "@cloudflare/kumo/components/toast";
+import { Tooltip, TooltipProvider } from "@cloudflare/kumo/components/tooltip";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { QueryClient, QueryClientProvider, HydrationBoundary } from "@tanstack/react-query";
 import { UsageChart, type UsageTimeseries } from "./chart";
+import { detectLocale, setupI18n } from "./i18n/setup";
+import { fmt, fmtInt } from "./lib/format";
+import { useToast } from "./hooks/use-toast";
+import { useDashboard } from "./hooks/use-dashboard";
+import type { Dashboard } from "./schemas";
 
 export type InitialDashboardData = {
   me?: { email?: string | null; domain?: string | null; company?: string | null } | null;
@@ -164,8 +181,6 @@ const sourceLabels: Record<string, string> = {
   litellm: "来自 LiteLLM 全局模型",
 };
 
-const numberFormatter = new Intl.NumberFormat("zh-CN");
-
 function portalConfig(): Required<PortalConfig> {
   const config = typeof window !== "undefined" ? window.__PORTAL_CONFIG : undefined;
   return {
@@ -205,14 +220,6 @@ function text(value: unknown): string {
 
 function keyLabel(key: PortalKey): string {
   return text(key.alias ?? key.displayKey ?? key.id);
-}
-
-function fmt(value: unknown): string {
-  return "$" + Number(value || 0).toFixed(2);
-}
-
-function fmtInt(value: unknown): string {
-  return numberFormatter.format(Number(value || 0));
 }
 
 function modelBadgeColor(model: string): string {
@@ -259,14 +266,43 @@ function budgetLabel(tone: "danger" | "warning" | "success"): string {
   return "正常";
 }
 
+function BudgetInfoPopover() {
+  return (
+    <Popover>
+      <Popover.Trigger
+        render={
+          <button
+            type="button"
+            className="inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold leading-none text-kumo-subtle ring-1 ring-kumo-line hover:bg-kumo-tint hover:text-kumo-default focus:outline-none focus-visible:ring-2 focus-visible:ring-kumo-focus"
+            aria-label="预算阈值说明"
+          >
+            ?
+          </button>
+        }
+      />
+      <Popover.Content className="max-w-xs p-4">
+        <Popover.Title className="mb-2 text-sm font-semibold text-kumo-strong">预算阈值说明</Popover.Title>
+        <Popover.Description className="space-y-1 text-xs text-kumo-subtle">
+          <p><span className="font-semibold text-kumo-success">正常</span>：花费低于预算的 80%</p>
+          <p><span className="font-semibold text-kumo-warning">即将超支</span>：花费达到预算的 80%–99%</p>
+          <p><span className="font-semibold text-kumo-danger">超预算</span>：花费已达到或超过预算</p>
+        </Popover.Description>
+      </Popover.Content>
+    </Popover>
+  );
+}
+
 function BudgetBadge({ spend, maxBudget }: { spend: unknown; maxBudget: unknown }) {
   const tone = statusTone(spend, maxBudget);
   if (!tone) return null;
   const variant = tone === "danger" ? "error" : tone === "warning" ? "warning" : "success";
   return (
-    <Badge variant={variant} className="ml-2">
-      {budgetLabel(tone)}
-    </Badge>
+    <>
+      <Badge variant={variant} className="ml-2">
+        {budgetLabel(tone)}
+      </Badge>
+      <BudgetInfoPopover />
+    </>
   );
 }
 
@@ -331,24 +367,24 @@ function deleteKeyErrorMessage(value: unknown): string {
     : code || "删除失败";
 }
 
+import { useDeleteKey } from "./hooks/use-delete-key";
+import { useCreateKey } from "./hooks/use-create-key";
+
 function DeleteKeyButton({
   apiKey,
-  onDeleted,
 }: {
   apiKey: PortalKey;
-  onDeleted: (keyId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const keyId = typeof apiKey.id === "string" ? apiKey.id : "";
   const label = keyLabel(apiKey);
+  const deleteKey = useDeleteKey();
 
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     setOpen(nextOpen);
     if (!nextOpen) {
       setError(null);
-      setDeleting(false);
     }
   }, []);
 
@@ -357,26 +393,14 @@ function DeleteKeyButton({
       setError("缺少要删除的 Key ID。");
       return;
     }
-    setDeleting(true);
     setError(null);
-    try {
-      const response = await fetch(`/api/keys/${encodeURIComponent(keyId)}`, {
-        method: "DELETE",
-        headers: { "content-type": "application/json" },
-      });
-      const body = response.status === 204 ? {} : await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setError(deleteKeyErrorMessage(body));
-        return;
-      }
-      onDeleted(keyId);
-      setOpen(false);
-    } catch {
-      setError("网络请求失败");
-    } finally {
-      setDeleting(false);
-    }
-  }, [keyId, onDeleted]);
+    deleteKey.mutate(keyId, {
+      onSuccess: () => { setOpen(false); },
+      onError: (err: unknown) => {
+        setError(deleteKeyErrorMessage(err));
+      },
+    });
+  }, [keyId, deleteKey]);
 
   return (
     <Dialog.Root role="alertdialog" open={open} onOpenChange={handleOpenChange}>
@@ -388,11 +412,11 @@ function DeleteKeyButton({
         )}
       />
       <Dialog size="sm" className="space-y-5 p-6">
-        <Dialog.Title className="text-lg font-semibold text-kumo-strong">
-          删除 API Key？
+        <Dialog.Title>
+          <Text variant="heading3" as="h2">删除 API Key？</Text>
         </Dialog.Title>
-        <Dialog.Description className="text-sm text-kumo-subtle">
-          将删除「{label}」。删除后该 Key 会立即失效，此操作不可撤销。
+        <Dialog.Description>
+          <Text variant="secondary">将删除「{label}」。删除后该 Key 会立即失效，此操作不可撤销。</Text>
         </Dialog.Description>
         {error ? (
           <Banner variant="error" title="删除失败" description={error} />
@@ -400,12 +424,12 @@ function DeleteKeyButton({
         <div className="flex justify-end gap-2">
           <Dialog.Close
             render={(props) => (
-              <Button {...props} variant="secondary" size="sm" disabled={deleting}>
+              <Button {...props} variant="secondary" size="sm" disabled={deleteKey.isPending}>
                 取消
               </Button>
             )}
           />
-          <Button variant="destructive" size="sm" loading={deleting} onClick={handleDelete}>
+          <Button variant="destructive" size="sm" loading={deleteKey.isPending} onClick={handleDelete}>
             确认删除
           </Button>
         </div>
@@ -417,11 +441,11 @@ function DeleteKeyButton({
 function MetricTile({ label, value, loading = false }: { label: string; value: string; loading?: boolean }) {
   return (
     <div className="rounded-lg bg-kumo-recessed p-5 transition-colors hover:bg-kumo-tint">
-      <p className="text-xs font-medium text-kumo-subtle">{label}</p>
+      <Text variant="secondary" size="xs">{label}</Text>
       {loading ? (
         <SkeletonLine className="mt-3" minWidth={96} maxWidth={150} blockHeight={24} />
       ) : (
-        <p className="mt-3 font-mono text-lg font-semibold text-kumo-strong">{value}</p>
+        <Text variant="mono" size="lg" as="p" className="mt-3 font-semibold">{value}</Text>
       )}
     </div>
   );
@@ -576,17 +600,17 @@ function TopModels({ data, loading }: { data: UsageTimeseries | null; loading: b
 
   const models = data?.topModels ?? [];
   if (models.length === 0) {
-    return <span className="text-sm text-kumo-subtle">暂无模型用量拆分。</span>;
+    return <Text variant="secondary">暂无模型用量拆分。</Text>;
   }
 
   return (
     <div className="flex flex-col gap-3">
       {models.map((model) => (
         <div key={model.model} className="rounded-lg bg-kumo-recessed p-5 transition-colors hover:bg-kumo-tint">
-          <p className="truncate font-mono text-sm font-semibold text-kumo-strong">{model.model}</p>
-          <p className="mt-2 text-xs text-kumo-subtle">
+          <Text variant="mono" as="p" className="truncate font-semibold">{model.model}</Text>
+          <Text variant="secondary" size="xs" as="p" className="mt-2">
             {fmt(model.spend)} · {fmtInt(model.totalTokens)} tokens · {fmtInt(model.requests)} 请求
-          </p>
+          </Text>
         </div>
       ))}
     </div>
@@ -711,21 +735,21 @@ export function UsagePanel() {
       <div className="border-b border-kumo-line bg-kumo-elevated p-6">
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-lg font-semibold text-kumo-strong">Token 用量趋势</p>
+            <Text variant="heading3" as="h2">Token 用量趋势</Text>
             <span className="rounded-full bg-kumo-info-tint px-2.5 py-1 text-xs font-semibold text-kumo-info">Brush native</span>
             <span className="rounded-full bg-kumo-success-tint px-2.5 py-1 text-xs font-semibold text-kumo-success">{grainStatus}</span>
           </div>
-          <p className="text-sm leading-relaxed text-kumo-subtle">{windowText}</p>
-          <p className="text-xs text-kumo-subtle">
+          <Text variant="secondary" as="p" className="leading-relaxed">{windowText}</Text>
+          <Text variant="secondary" size="xs" as="p">
             在图表中横向拖拽会吸附到最接近的时间预设；预设和粒度芯片都支持键盘单次触发。
-          </p>
+          </Text>
           {rangeHint ? (
             <p className="text-xs font-medium text-kumo-brand" aria-live="polite">{rangeHint}</p>
           ) : null}
         </div>
         <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_auto]" aria-label="用量筛选">
           <div className="space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">时间范围预设</p>
+            <Text variant="secondary" size="xs" as="p" className="font-semibold uppercase tracking-wider">时间范围预设</Text>
             <div className="flex flex-wrap gap-2" role="group" aria-label="时间范围预设">
               {presets.map((preset) => (
                 <button
@@ -741,7 +765,7 @@ export function UsagePanel() {
             </div>
           </div>
           <div className="space-y-2 xl:w-[380px]">
-            <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">时间粒度</p>
+            <Text variant="secondary" size="xs" as="p" className="font-semibold uppercase tracking-wider">时间粒度</Text>
             <div className="flex flex-wrap gap-2" role="group" aria-label="时间粒度">
               <button
                 type="button"
@@ -753,18 +777,21 @@ export function UsagePanel() {
               </button>
               {grains.map((item) => {
                 const disabled = !supportsWindowForGrain(item, windowKey, config);
+                const disabledHint = disabled
+                  ? `${selectedWindowLabel} 不支持${usageGrainLabels[item] ?? item}粒度`
+                  : undefined;
                 return (
-                  <button
-                    key={item}
-                    type="button"
-                    className={controlPillClass(grainMode === item, disabled)}
-                    aria-pressed={grainMode === item}
-                    disabled={disabled}
-                    title={disabled ? `${selectedWindowLabel} 不支持${usageGrainLabels[item] ?? item}粒度` : undefined}
-                    onClick={() => handleManualGrainClick(item)}
-                  >
-                    {usageGrainLabels[item] ?? item}
-                  </button>
+                  <Tooltip key={item} content={disabledHint}>
+                    <button
+                      type="button"
+                      className={controlPillClass(grainMode === item, disabled)}
+                      aria-pressed={grainMode === item}
+                      disabled={disabled}
+                      onClick={() => handleManualGrainClick(item)}
+                    >
+                      {usageGrainLabels[item] ?? item}
+                    </button>
+                  </Tooltip>
                 );
               })}
             </div>
@@ -783,7 +810,7 @@ export function UsagePanel() {
           </div>
         </div>
         <div className="border-t border-kumo-line p-8 md:border-l md:border-t-0">
-          <p className="mb-5 text-sm font-semibold text-kumo-default">高频模型</p>
+          <Text bold as="p" className="mb-5">高频模型</Text>
           <TopModels data={data} loading={loading} />
         </div>
       </div>
@@ -847,19 +874,14 @@ function StatTile({
     <LayerCard className="p-6">
       <div className="flex items-center gap-2">
         <span className={`inline-block h-2 w-2 rounded-full ${dot}`} />
-        <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">{label}</p>
+        <Text variant="secondary" size="xs" className="font-semibold uppercase tracking-wider">{label}</Text>
       </div>
       {children}
     </LayerCard>
   );
 }
 
-function normalizeStats(value: unknown): PortalStats {
-  if (!value || typeof value !== "object") return {};
-  return value as PortalStats;
-}
-
-function initialStatsFromData(data: InitialDashboardData | null): PortalStats {
+function statsFromDashboard(data: Dashboard | undefined): PortalStats {
   if (!data) return {};
   return {
     email: data.me?.email,
@@ -877,8 +899,9 @@ function initialStatsFromData(data: InitialDashboardData | null): PortalStats {
   };
 }
 
-export function HeroStats({ initialData }: { initialData?: InitialDashboardData | null }) {
-  const [stats, setStats] = useState<PortalStats>(() => initialStatsFromData(initialData ?? null));
+export function HeroStats({ initialData: _initialData }: { initialData?: InitialDashboardData | null }) {
+  const { data } = useDashboard();
+  const stats = statsFromDashboard(data);
 
   const email = text(stats.email);
   const recentDisplay = stats.usageAvailable ? fmt(stats.recentSpend) : "暂无数据";
@@ -887,47 +910,64 @@ export function HeroStats({ initialData }: { initialData?: InitialDashboardData 
     : `预算 ${fmt(stats.maxBudget)}`;
 
   return (
-    <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
-      <StatTile accent="info" label="当前身份">
-        <p className="mt-4 truncate text-2xl font-semibold text-kumo-strong" title={email}>{email}</p>
-        <p className="mt-3 truncate font-mono text-sm text-kumo-subtle">
-          {stats.litellmUserId == null ? "—" : `LiteLLM: ${stats.litellmUserId}`}
-        </p>
-      </StatTile>
-      <StatTile accent="brand" label="累计花费">
-        <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">{fmt(stats.totalSpend)}</p>
-        <div className="mt-3 flex min-h-[20px] items-center gap-2 text-sm text-kumo-subtle">
-          {budgetText}
-          <BudgetBadge spend={stats.totalSpend} maxBudget={stats.maxBudget} />
-        </div>
-      </StatTile>
-      <StatTile accent="success" label="近 30 天">
-        <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">{recentDisplay}</p>
-        <p className="mt-3 text-sm text-kumo-subtle">
-          {fmtInt(stats.requestCount)} 次请求 · {fmtInt(stats.totalTokens)} tokens
-        </p>
-      </StatTile>
-      <StatTile accent="success" label="权限范围">
-        <p className="mt-4 text-3xl font-semibold leading-tight text-kumo-strong">
-          {fmtInt(stats.modelCount)} 模型
-        </p>
-        <p className="mt-3 text-sm text-kumo-subtle">
-          {fmtInt(stats.keyCount)} 个 Key · {fmtInt(stats.teamCount)} 个团队
-        </p>
-      </StatTile>
-    </section>
+    <Grid variant="4up" gap="lg">
+      <GridItem>
+        <StatTile accent="info" label="当前身份">
+          <Text variant="heading2" as="p" className="mt-4 truncate">{email}</Text>
+          <Text variant="mono" as="p" className="mt-3 truncate">
+            {stats.litellmUserId == null ? "—" : `LiteLLM: ${stats.litellmUserId}`}
+          </Text>
+        </StatTile>
+      </GridItem>
+      <GridItem>
+        <StatTile accent="brand" label="累计花费">
+          <Text variant="heading1" as="p" className="mt-4 leading-tight">{fmt(stats.totalSpend)}</Text>
+          {stats.maxBudget != null ? (
+            <Meter
+              className="mt-3"
+              value={Number(stats.totalSpend || 0)}
+              max={stats.maxBudget}
+              customValue={`${fmt(stats.totalSpend)} / ${fmt(stats.maxBudget)}`}
+            />
+          ) : null}
+          <div className="mt-2 flex min-h-[20px] items-center gap-2">
+            <Text variant="secondary">{budgetText}</Text>
+            <BudgetBadge spend={stats.totalSpend} maxBudget={stats.maxBudget} />
+          </div>
+        </StatTile>
+      </GridItem>
+      <GridItem>
+        <StatTile accent="success" label="近 30 天">
+          <Text variant="heading1" as="p" className="mt-4 leading-tight">{recentDisplay}</Text>
+          <Text variant="secondary" as="p" className="mt-3">
+            {fmtInt(stats.requestCount)} 次请求 · {fmtInt(stats.totalTokens)} tokens
+          </Text>
+        </StatTile>
+      </GridItem>
+      <GridItem>
+        <StatTile accent="success" label="权限范围">
+          <Text variant="heading1" as="p" className="mt-4 leading-tight">
+            {fmtInt(stats.modelCount)} 模型
+          </Text>
+          <Text variant="secondary" as="p" className="mt-3">
+            {fmtInt(stats.keyCount)} 个 Key · {fmtInt(stats.teamCount)} 个团队
+          </Text>
+        </StatTile>
+      </GridItem>
+    </Grid>
   );
 }
 
-export function TeamsAccessCard({ initialData }: { initialData?: InitialDashboardData | null }) {
-  const [teams, setTeams] = useState<PortalTeam[]>(() => normalizeTeams(initialData?.teams));
-  const [loaded] = useState(Array.isArray(initialData?.teams));
+export function TeamsAccessCard({ initialData: _initialData }: { initialData?: InitialDashboardData | null }) {
+  const { data, isLoading } = useDashboard();
+  const teams = normalizeTeams(data?.teams);
+  const loaded = !isLoading;
 
   return (
     <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
       <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-        <p className="text-lg font-semibold text-kumo-strong">团队权限</p>
-        <p className="text-sm text-kumo-subtle">只展示当前账号所属团队的信息。</p>
+        <Text variant="heading3" as="p">团队权限</Text>
+        <Text variant="secondary" as="p">只展示当前账号所属团队的信息。</Text>
       </div>
       {!loaded ? (
         <div className="p-6 text-sm text-kumo-subtle">Loading…</div>
@@ -954,9 +994,19 @@ export function TeamsAccessCard({ initialData }: { initialData?: InitialDashboar
                     <Table.Cell className="text-kumo-default">{text(team.alias ?? team.id)}</Table.Cell>
                     <Table.Cell className="text-right font-mono text-kumo-default">{modelsCount || "未限制"}</Table.Cell>
                     <Table.Cell className="text-right font-mono text-kumo-default">{team.spend == null ? "—" : fmt(team.spend)}</Table.Cell>
-                    <Table.Cell className="text-right font-mono text-kumo-default">
-                      {team.maxBudget == null ? "—" : fmt(team.maxBudget)}
-                      <BudgetBadge spend={team.spend} maxBudget={team.maxBudget} />
+                    <Table.Cell className="text-right text-kumo-default">
+                      {team.maxBudget == null ? (
+                        <span className="font-mono">—</span>
+                      ) : (
+                        <div className="flex flex-col items-end gap-1">
+                          <Meter
+                            value={Number(team.spend || 0)}
+                            max={team.maxBudget}
+                            customValue={`${fmt(team.spend)} / ${fmt(team.maxBudget)}`}
+                          />
+                          <BudgetBadge spend={team.spend} maxBudget={team.maxBudget} />
+                        </div>
+                      )}
                     </Table.Cell>
                     <Table.Cell className="text-right font-mono text-kumo-default">{team.rpmLimit == null ? "—" : fmtInt(team.rpmLimit)}</Table.Cell>
                     <Table.Cell className="text-right font-mono text-kumo-default">{team.tpmLimit == null ? "—" : fmtInt(team.tpmLimit)}</Table.Cell>
@@ -971,10 +1021,10 @@ export function TeamsAccessCard({ initialData }: { initialData?: InitialDashboar
   );
 }
 
-export function ModelAccessCard({ initialData }: { initialData?: InitialDashboardData | null }) {
-  const initial = normalizeModelAccess(initialData?.models);
-  const [modelAccess, setModelAccess] = useState<ModelAccess>(initial);
-  const [open, setOpen] = useState(initial.models.length > 0 && initial.models.length <= PREVIEW_LIMIT);
+export function ModelAccessCard({ initialData: _initialData }: { initialData?: InitialDashboardData | null }) {
+  const { data } = useDashboard();
+  const modelAccess = normalizeModelAccess(data?.models);
+  const [open, setOpen] = useState(modelAccess.models.length > 0 && modelAccess.models.length <= PREVIEW_LIMIT);
 
   const previewModels = useMemo(() => modelAccess.models.slice(0, PREVIEW_LIMIT), [modelAccess.models]);
   const remainingCount = Math.max(modelAccess.models.length - previewModels.length, 0);
@@ -987,12 +1037,8 @@ export function ModelAccessCard({ initialData }: { initialData?: InitialDashboar
       <div className="border-b border-kumo-line bg-kumo-elevated p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1">
-            <p className="text-lg font-semibold text-kumo-strong">
-              团队可用模型
-            </p>
-            <p className="text-sm text-kumo-subtle">
-              {sourceLabel(modelAccess.source)}
-            </p>
+            <Text variant="heading3" as="p">团队可用模型</Text>
+            <Text variant="secondary" as="p">{sourceLabel(modelAccess.source)}</Text>
           </div>
           <Badge variant="outline" className="rounded-full">
             {modelAccess.models.length || "—"} 个模型
@@ -1011,52 +1057,36 @@ export function ModelAccessCard({ initialData }: { initialData?: InitialDashboar
               {triggerText}
             </Collapsible.DefaultTrigger>
             {open ? (
-              <div className="mt-4 space-y-4 rounded-lg bg-kumo-recessed p-5" role="region" aria-label="全部可用模型">
+              <Surface className="mt-4 space-y-4 rounded-lg p-5" role="region" aria-label="全部可用模型">
                 <div className="flex max-h-80 flex-wrap gap-3 overflow-y-auto pr-1">
                   <ModelBadges models={modelAccess.models} />
                 </div>
-              </div>
+              </Surface>
             ) : null}
           </Collapsible.Root>
         ) : (
-          <p className="text-sm text-kumo-subtle">
+          <Text variant="secondary" as="p">
             模型数量较少，已直接展示完整清单。
-          </p>
+          </Text>
         )}
       </div>
     </article>
   );
 }
 
-export function ApiKeysCard({ initialData }: { initialData?: InitialDashboardData | null }) {
-  const [keys, setKeys] = useState<PortalKey[]>(() => normalizeKeys(initialData?.keys?.items));
-  const [loaded] = useState(Array.isArray(initialData?.keys?.items));
-
-  const handleDeleted = useCallback((keyId: string) => {
-    setKeys((current) => current.filter((key) => key.id !== keyId));
-  }, []);
-
-  const refetchKeys = useCallback(async () => {
-    try {
-      const response = await fetch("/api/keys", { headers: { "content-type": "application/json" } });
-      if (!response.ok) return;
-      const body = await response.json().catch(() => null) as { keys?: unknown } | null;
-      if (body && Array.isArray(body.keys)) {
-        setKeys(normalizeKeys(body.keys));
-      }
-    } catch {
-      // network failure — keep current state; user can retry by reloading
-    }
-  }, []);
+export function ApiKeysCard({ initialData: _initialData }: { initialData?: InitialDashboardData | null }) {
+  const { data, isLoading } = useDashboard();
+  const keys = normalizeKeys(data?.keys?.items);
+  const loaded = !isLoading;
 
   return (
     <section className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-kumo-line bg-kumo-elevated p-6">
         <div>
-          <p className="text-lg font-semibold text-kumo-strong">API Keys</p>
-          <p className="text-sm text-kumo-subtle">仅列出当前 LiteLLM 用户拥有的密钥。</p>
+          <Text variant="heading3" as="p">API Keys</Text>
+          <Text variant="secondary" as="p">仅列出当前 LiteLLM 用户拥有的密钥。</Text>
         </div>
-        <CreateKeyButton onRefresh={refetchKeys} />
+        <CreateKeyButton />
       </div>
       <div className="overflow-x-auto">
         {!loaded ? (
@@ -1102,7 +1132,7 @@ export function ApiKeysCard({ initialData }: { initialData?: InitialDashboardDat
                     </Table.Cell>
                     <Table.Cell className="py-3 pr-5 text-kumo-default">{text(key.expiresAt)}</Table.Cell>
                     <Table.Cell className="py-3 pr-5 text-right">
-                      <DeleteKeyButton apiKey={key} onDeleted={handleDeleted} />
+                      <DeleteKeyButton apiKey={key} />
                     </Table.Cell>
                   </Table.Row>
                 );
@@ -1175,16 +1205,18 @@ type CreateKeyResult = {
 };
 
 export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) {
+  const toast = useToast();
   const [open, setOpen] = useState(false);
   const [alias, setAlias] = useState("");
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [budget, setBudget] = useState("");
   const [duration, setDuration] = useState("");
   const [models, setModels] = useState<string[]>([]);
-  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [aliasError, setAliasError] = useState<string | null>(null);
   const [result, setResult] = useState<CreateKeyResult | null>(null);
   const durationSelectValue = duration || NEVER_EXPIRES_VALUE;
+  const createKey = useCreateKey();
 
   useEffect(() => {
     if (!open) return;
@@ -1203,55 +1235,51 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
     setBudget("");
     setDuration("");
     setError(null);
+    setAliasError(null);
     setResult(null);
-    setSubmitting(false);
   }, []);
 
-  const handleSubmit = useCallback(async () => {
+  const handleSubmit = useCallback(() => {
     const trimmed = alias.trim();
     if (!trimmed) {
-      setError("请输入 Key 名称");
+      setAliasError("请输入 Key 名称");
       return;
     }
-    setSubmitting(true);
     setError(null);
-    try {
-      const body: Record<string, unknown> = { keyAlias: trimmed };
-      if (selectedModels.length > 0) body.models = selectedModels;
-      if (budget) {
-        const parsed = Number(budget);
-        if (Number.isFinite(parsed) && parsed >= 0) body.maxBudget = parsed;
-      }
-      if (duration) body.duration = duration;
-
-      const res = await fetch("/api/keys", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setError(createKeyErrorMessage(data));
-        return;
-      }
-      setResult(data as CreateKeyResult);
-    } catch {
-      setError("网络请求失败");
-    } finally {
-      setSubmitting(false);
+    setAliasError(null);
+    const input: Parameters<typeof createKey.mutate>[0] = { keyAlias: trimmed };
+    if (selectedModels.length > 0) input.models = selectedModels;
+    if (budget) {
+      const parsed = Number(budget);
+      if (Number.isFinite(parsed) && parsed >= 0) input.maxBudget = parsed;
     }
-  }, [alias, selectedModels, budget, duration]);
+    if (duration) input.duration = duration;
+
+    createKey.mutate(input, {
+      onSuccess: (data) => {
+        setResult({
+          rawKey: data.rawKey,
+          keyAlias: data.keyAlias,
+          expires: data.expires,
+          keyId: data.keyId,
+        });
+        toast.success("Key 已创建", data.keyAlias ?? trimmed);
+        onRefresh?.();
+      },
+      onError: (err: unknown) => {
+        const msg = createKeyErrorMessage(err);
+        setAliasError(msg);
+        toast.error("创建失败", msg);
+      },
+    });
+  }, [alias, selectedModels, budget, duration, createKey, toast, onRefresh]);
 
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     setOpen(nextOpen);
-    if (nextOpen) return;
-
-    const shouldRefresh = result !== null;
-    resetForm();
-    if (shouldRefresh) {
-      onRefresh?.();
+    if (!nextOpen) {
+      resetForm();
     }
-  }, [result, resetForm, onRefresh]);
+  }, [resetForm]);
 
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
@@ -1263,13 +1291,15 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
         )}
       />
       <Dialog size="base" className="space-y-6 p-8">
-        <Dialog.Title className="text-lg font-semibold text-kumo-strong">
-          {result ? "Key 已创建" : "创建新 API Key"}
+        <Dialog.Title>
+          <Text variant="heading3" as="h2">{result ? "Key 已创建" : "创建新 API Key"}</Text>
         </Dialog.Title>
-        <Dialog.Description className="text-sm text-kumo-subtle">
-          {result
-            ? "请立即复制完整 Key，关闭后无法再次查看。"
-            : "创建一个新的 API Key，绑定到当前登录用户。"}
+        <Dialog.Description>
+          <Text variant="secondary">
+            {result
+              ? "请立即复制完整 Key，关闭后无法再次查看。"
+              : "创建一个新的 API Key，绑定到当前登录用户。"}
+          </Text>
         </Dialog.Description>
 
         {result ? (
@@ -1280,27 +1310,26 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
               description="关闭此对话框后将无法再次查看完整 Key。"
             />
 
-            <div className="rounded-xl bg-kumo-recessed p-5 ring-1 ring-kumo-line">
+            <Surface className="rounded-xl p-5 ring-1 ring-kumo-line">
               <div className="space-y-1">
-                <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">Key 名称</p>
-                <p className="text-sm font-semibold text-kumo-strong">{result.keyAlias || "—"}</p>
+                <Text variant="secondary" size="xs" className="font-semibold uppercase tracking-wider">Key 名称</Text>
+                <Text variant="heading3" as="p">{result.keyAlias || "—"}</Text>
               </div>
-              <div className="mt-4 space-y-1">
-                <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">完整 Key</p>
-                <ClipboardText
-                  className="w-full min-w-0 text-kumo-brand"
-                  labels={{ copyAction: "复制完整 Key" }}
+              <div className="mt-4 space-y-2">
+                <SensitiveInput
+                  label="完整 Key"
                   size="lg"
-                  text={result.rawKey}
+                  readOnly
+                  defaultValue={result.rawKey}
                 />
               </div>
               {result.expires ? (
                 <div className="mt-4 space-y-1">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">过期时间</p>
-                  <p className="font-mono text-sm text-kumo-default">{result.expires}</p>
+                  <Text variant="secondary" size="xs" className="font-semibold uppercase tracking-wider">过期时间</Text>
+                  <Text variant="mono" as="p">{result.expires}</Text>
                 </div>
               ) : null}
-            </div>
+            </Surface>
 
             <div className="flex justify-end">
               <Dialog.Close
@@ -1317,47 +1346,59 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
             {error ? (
               <Banner variant="error" title="创建失败" description={error} />
             ) : null}
-            <div className="space-y-1.5">
+
+            <Field
+              label="名称"
+              required={true}
+              error={aliasError ? { message: aliasError, match: true } : undefined}
+            >
               <Input
                 id="create-key-alias"
-                label={<>名称 <span className="text-kumo-danger">*</span></>}
                 size="lg"
                 placeholder="例如：production-api"
                 value={alias}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAlias(e.target.value)}
               />
-            </div>
+            </Field>
 
             {models.length > 0 ? (
-              <div className="space-y-1.5">
-                <Select
-                  label="允许模型"
-                  className="w-full"
-                  size="lg"
-                  multiple
-                  placeholder="继承当前用户可用模型"
-                  renderValue={(value) => {
-                    const selected = selectedModelsFromValue(value);
-                    if (selected.length === 0) return "继承当前用户可用模型";
-                    if (selected.length > 3) return `${selected.slice(0, 2).join(", ")} 等 ${selected.length} 个模型`;
-                    return selected.join(", ");
-                  }}
+              <Combobox
+                multiple
+                items={models}
+                value={selectedModels}
+                onValueChange={(value) => setSelectedModels(value as string[])}
+                label="允许模型"
+                required={false}
+                description="留空则继承当前用户可用模型"
+                size="lg"
+              >
+                <Combobox.TriggerMultipleWithInput
+                  placeholder="选择模型…"
+                  renderItem={(item) => (
+                    <Combobox.Chip value={item as string}>{item as string}</Combobox.Chip>
+                  )}
                   value={selectedModels}
-                  onValueChange={(value) => setSelectedModels(selectedModelsFromValue(value))}
-                >
-                  {models.map((model) => (
-                    <Select.Option key={model} value={model}>
-                      {model}
-                    </Select.Option>
-                  ))}
-                </Select>
-              </div>
+                />
+                <Combobox.Content>
+                  <Combobox.List>
+                    {(item) => (
+                      <Combobox.Item key={item as string} value={item as string}>
+                        {item as string}
+                      </Combobox.Item>
+                    )}
+                  </Combobox.List>
+                  <Combobox.Empty>无匹配模型</Combobox.Empty>
+                </Combobox.Content>
+              </Combobox>
             ) : null}
 
-            <div className="space-y-1.5">
+            <Field
+              label="预算上限（USD）"
+              required={false}
+              description="留空表示不限"
+            >
               <Input
                 id="create-key-budget"
-                label="预算上限（USD）"
                 size="lg"
                 type="number"
                 min="0"
@@ -1366,7 +1407,7 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
                 value={budget}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBudget(e.target.value)}
               />
-            </div>
+            </Field>
 
             <div className="space-y-1.5">
               <Select
@@ -1392,7 +1433,7 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
                   </Button>
                 )}
               />
-              <Button variant="primary" size="lg" loading={submitting} onClick={handleSubmit}>
+              <Button variant="primary" size="lg" loading={createKey.isPending} onClick={handleSubmit}>
                 创建
               </Button>
             </div>
@@ -1565,63 +1606,71 @@ function AdminHeroStats() {
       {error ? (
         <Banner variant="error" title="全局概览加载失败" description={error} />
       ) : null}
-      <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4" aria-label="全局管理概览">
-        <StatTile accent="info" label="全局账户">
-          {loading ? (
-            <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
-          ) : (
-            <>
-              <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">
-                {fmtInt(summary.userCount)}
-              </p>
-              <p className="mt-3 text-sm text-kumo-subtle">
-                {fmtInt(summary.adminCount)} 个管理员 · {fmtInt(summary.unmanagedRoleCount)} 个未映射角色
-              </p>
-            </>
-          )}
-        </StatTile>
-        <StatTile accent="brand" label="全局花费">
-          {loading ? (
-            <SkeletonLine className="mt-4" minWidth={110} maxWidth={180} blockHeight={32} />
-          ) : (
-            <>
-              <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">{fmt(summary.totalSpend)}</p>
-              <p className="mt-3 text-sm text-kumo-subtle">
-                预算 {summary.totalBudget == null ? "—" : fmt(summary.totalBudget)} · 团队花费 {fmt(summary.teamSpend)}
-              </p>
-            </>
-          )}
-        </StatTile>
-        <StatTile accent="success" label="资源覆盖">
-          {loading ? (
-            <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
-          ) : (
-            <>
-              <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">
-                {fmtInt(summary.teamCount)}
-              </p>
-              <p className="mt-3 text-sm text-kumo-subtle">
-                {fmtInt(summary.noTeamUserCount)} 个用户未关联团队
-              </p>
-            </>
-          )}
-        </StatTile>
-        <StatTile accent="warning" label="风险雷达">
-          {loading ? (
-            <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
-          ) : (
-            <>
-              <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">
-                {fmtInt(summary.riskCount)}
-              </p>
-              <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-kumo-subtle">
-                <span>{fmtInt(Number(summary.overBudgetUserCount || 0) + Number(summary.overBudgetTeamCount || 0))} 个超预算对象</span>
-                {summary.limited ? <Badge variant="warning">样本视图</Badge> : null}
-              </div>
-            </>
-          )}
-        </StatTile>
-      </section>
+      <Grid variant="4up" gap="lg" aria-label="全局管理概览">
+        <GridItem>
+          <StatTile accent="info" label="全局账户">
+            {loading ? (
+              <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
+            ) : (
+              <>
+                <Text variant="heading1" as="p" className="mt-4 leading-tight">
+                  {fmtInt(summary.userCount)}
+                </Text>
+                <Text variant="secondary" as="p" className="mt-3">
+                  {fmtInt(summary.adminCount)} 个管理员 · {fmtInt(summary.unmanagedRoleCount)} 个未映射角色
+                </Text>
+              </>
+            )}
+          </StatTile>
+        </GridItem>
+        <GridItem>
+          <StatTile accent="brand" label="全局花费">
+            {loading ? (
+              <SkeletonLine className="mt-4" minWidth={110} maxWidth={180} blockHeight={32} />
+            ) : (
+              <>
+                <Text variant="heading1" as="p" className="mt-4 leading-tight">{fmt(summary.totalSpend)}</Text>
+                <Text variant="secondary" as="p" className="mt-3">
+                  预算 {summary.totalBudget == null ? "—" : fmt(summary.totalBudget)} · 团队花费 {fmt(summary.teamSpend)}
+                </Text>
+              </>
+            )}
+          </StatTile>
+        </GridItem>
+        <GridItem>
+          <StatTile accent="success" label="资源覆盖">
+            {loading ? (
+              <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
+            ) : (
+              <>
+                <Text variant="heading1" as="p" className="mt-4 leading-tight">
+                  {fmtInt(summary.teamCount)}
+                </Text>
+                <Text variant="secondary" as="p" className="mt-3">
+                  {fmtInt(summary.noTeamUserCount)} 个用户未关联团队
+                </Text>
+              </>
+            )}
+          </StatTile>
+        </GridItem>
+        <GridItem>
+          <StatTile accent="warning" label="风险雷达">
+            {loading ? (
+              <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
+            ) : (
+              <>
+                <Text variant="heading1" as="p" className="mt-4 leading-tight">
+                  {fmtInt(summary.riskCount)}
+                </Text>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <Text variant="secondary">{fmtInt(Number(summary.overBudgetUserCount || 0) + Number(summary.overBudgetTeamCount || 0))} 个超预算对象</Text>
+                  {summary.limited ? <Badge variant="warning">样本视图</Badge> : null}
+                </div>
+              </>
+            )}
+          </StatTile>
+        </GridItem>
+      </Grid>
       {!loading ? (
         <p className="text-xs text-kumo-subtle">{sampledText}，风险项由预算、角色映射和团队覆盖情况计算。</p>
       ) : null}
@@ -1629,6 +1678,7 @@ function AdminHeroStats() {
   );
 }
 
+// TODO(CONTRABASS-3 follow-up): Migrate AdminUsersTable to a dedicated useAdminUsers() RPC hook.
 function AdminUsersTable() {
   const [data, setData] = useState<AdminUsersResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1690,16 +1740,31 @@ function AdminUsersTable() {
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">累计消费</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">团队数</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">最大预算</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle"><span className="sr-only">操作</span></Table.Head>
               </Table.Row>
             </Table.Header>
             <Table.Body>
               {data.users.map((user) => (
                 <Table.Row key={user.userId} className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
-                  <Table.Cell className="py-3 pl-5 pr-3 font-mono text-kumo-default">{text(user.email)}</Table.Cell>
+                  <Table.Cell className="py-3 pl-5 pr-3 font-mono text-kumo-default">
+                    <Tooltip content={user.email}>
+                      <span className="block max-w-[200px] truncate">{text(user.email)}</span>
+                    </Tooltip>
+                  </Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-kumo-subtle">{text(user.role)}</Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmt(user.spend)}</Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmtInt(user.teamIds.length)}</Table.Cell>
-                  <Table.Cell className="py-3 pr-5 text-right font-mono text-kumo-default">{user.maxBudget == null ? "—" : fmt(user.maxBudget)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{user.maxBudget == null ? "—" : fmt(user.maxBudget)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-5 text-right">
+                    <DropdownMenu>
+                      <DropdownMenu.Trigger aria-label="更多操作" className="rounded px-2 py-1 text-sm text-kumo-subtle hover:bg-kumo-fill hover:text-kumo-default">
+                        ⋯
+                      </DropdownMenu.Trigger>
+                      <DropdownMenu.Content>
+                        <DropdownMenu.Item onClick={() => {}}>查看详情</DropdownMenu.Item>
+                      </DropdownMenu.Content>
+                    </DropdownMenu>
+                  </Table.Cell>
                 </Table.Row>
               ))}
             </Table.Body>
@@ -1718,6 +1783,7 @@ function AdminUsersTable() {
   );
 }
 
+// TODO(CONTRABASS-3 follow-up): Migrate AdminTeamsTable to a dedicated useAdminTeams() RPC hook.
 function AdminTeamsTable() {
   const [data, setData] = useState<AdminTeamsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1765,17 +1831,32 @@ function AdminTeamsTable() {
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">消费</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">TPM</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">RPM</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle"><span className="sr-only">操作</span></Table.Head>
               </Table.Row>
             </Table.Header>
             <Table.Body>
               {data.teams.map((team) => (
                 <Table.Row key={team.id} className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
-                  <Table.Cell className="py-3 pl-5 pr-3 font-mono text-xs text-kumo-subtle">{text(team.id)}</Table.Cell>
+                  <Table.Cell className="py-3 pl-5 pr-3 font-mono text-xs text-kumo-subtle">
+                    <Tooltip content={team.id}>
+                      <span className="block max-w-[120px] truncate">{text(team.id)}</span>
+                    </Tooltip>
+                  </Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-kumo-default">{text(team.alias)}</Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-kumo-subtle">{team.models.length > 0 ? team.models.join(", ") : "—"}</Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmt(team.spend)}</Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{team.tpmLimit == null ? "—" : fmtInt(team.tpmLimit)}</Table.Cell>
-                  <Table.Cell className="py-3 pr-5 text-right font-mono text-kumo-default">{team.rpmLimit == null ? "—" : fmtInt(team.rpmLimit)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{team.rpmLimit == null ? "—" : fmtInt(team.rpmLimit)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-5 text-right">
+                    <DropdownMenu>
+                      <DropdownMenu.Trigger aria-label="更多操作" className="rounded px-2 py-1 text-sm text-kumo-subtle hover:bg-kumo-fill hover:text-kumo-default">
+                        ⋯
+                      </DropdownMenu.Trigger>
+                      <DropdownMenu.Content>
+                        <DropdownMenu.Item onClick={() => {}}>查看详情</DropdownMenu.Item>
+                      </DropdownMenu.Content>
+                    </DropdownMenu>
+                  </Table.Cell>
                 </Table.Row>
               ))}
             </Table.Body>
@@ -1786,6 +1867,7 @@ function AdminTeamsTable() {
   );
 }
 
+// TODO(CONTRABASS-3 follow-up): Migrate AdminGlobalUsage to a dedicated useAdminUsage() RPC hook.
 function AdminGlobalUsage() {
   const config = useMemo(() => portalConfig(), []);
   const grains = useMemo(() => Object.keys(config.usageWindows), [config]);
@@ -1903,18 +1985,18 @@ function AdminGlobalUsage() {
       <div className="border-b border-kumo-line bg-kumo-elevated p-6">
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-base font-semibold text-kumo-strong">全局 Token 用量趋势</p>
+            <Text variant="heading3" as="p">全局 Token 用量趋势</Text>
             <span className="rounded-full bg-kumo-info-tint px-2.5 py-1 text-xs font-semibold text-kumo-info">Brush native</span>
             <span className="rounded-full bg-kumo-success-tint px-2.5 py-1 text-xs font-semibold text-kumo-success">{grainStatus}</span>
           </div>
-          <p className="text-sm leading-relaxed text-kumo-subtle">{windowText}</p>
+          <Text variant="secondary" as="p" className="leading-relaxed">{windowText}</Text>
           {rangeHint ? (
             <p className="text-xs font-medium text-kumo-brand" aria-live="polite">{rangeHint}</p>
           ) : null}
         </div>
         <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_auto]" aria-label="全局用量筛选">
           <div className="space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">时间范围预设</p>
+            <Text variant="secondary" size="xs" as="p" className="font-semibold uppercase tracking-wider">时间范围预设</Text>
             <div className="flex flex-wrap gap-2" role="group" aria-label="时间范围预设">
               {presets.map((preset) => (
                 <button
@@ -1930,7 +2012,7 @@ function AdminGlobalUsage() {
             </div>
           </div>
           <div className="space-y-2 xl:w-[380px]">
-            <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">时间粒度</p>
+            <Text variant="secondary" size="xs" as="p" className="font-semibold uppercase tracking-wider">时间粒度</Text>
             <div className="flex flex-wrap gap-2" role="group" aria-label="时间粒度">
               <button
                 type="button"
@@ -1942,18 +2024,21 @@ function AdminGlobalUsage() {
               </button>
               {grains.map((item) => {
                 const disabled = !supportsWindowForGrain(item, windowKey, config);
+                const disabledHint = disabled
+                  ? `${selectedWindowLabel} 不支持${usageGrainLabels[item] ?? item}粒度`
+                  : undefined;
                 return (
-                  <button
-                    key={item}
-                    type="button"
-                    className={controlPillClass(grainMode === item, disabled)}
-                    aria-pressed={grainMode === item}
-                    disabled={disabled}
-                    title={disabled ? `${selectedWindowLabel} 不支持${usageGrainLabels[item] ?? item}粒度` : undefined}
-                    onClick={() => handleManualGrainClick(item)}
-                  >
-                    {usageGrainLabels[item] ?? item}
-                  </button>
+                  <Tooltip key={item} content={disabledHint}>
+                    <button
+                      type="button"
+                      className={controlPillClass(grainMode === item, disabled)}
+                      aria-pressed={grainMode === item}
+                      disabled={disabled}
+                      onClick={() => handleManualGrainClick(item)}
+                    >
+                      {usageGrainLabels[item] ?? item}
+                    </button>
+                  </Tooltip>
                 );
               })}
             </div>
@@ -1972,7 +2057,7 @@ function AdminGlobalUsage() {
           </div>
         </div>
         <div className="border-t border-kumo-line p-8 md:border-l md:border-t-0">
-          <p className="mb-5 text-sm font-semibold text-kumo-default">高频模型</p>
+          <Text bold as="p" className="mb-5">高频模型</Text>
           <TopModels data={data} loading={loading} />
         </div>
       </div>
@@ -1985,6 +2070,7 @@ function AdminGlobalUsage() {
   );
 }
 
+// TODO(CONTRABASS-3 follow-up): Migrate AdminAuditFeed to a dedicated useAdminAudit() RPC hook.
 function AdminAuditFeed() {
   const [data, setData] = useState<AdminAuditResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -2052,6 +2138,7 @@ function AdminAuditFeed() {
                 <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">对象类型</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">对象 ID</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">详情</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle"><span className="sr-only">操作</span></Table.Head>
               </Table.Row>
             </Table.Header>
             <Table.Body>
@@ -2060,10 +2147,18 @@ function AdminAuditFeed() {
                   <Table.Row className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
                     <Table.Cell className="py-3 pl-5 pr-3 font-mono text-xs text-kumo-subtle">{event.createdAt ? event.createdAt.slice(0, 19).replace("T", " ") : "—"}</Table.Cell>
                     <Table.Cell className="py-3 pr-3 text-kumo-default">{text(event.action)}</Table.Cell>
-                    <Table.Cell className="py-3 pr-3 text-kumo-default">{text(event.actorUserEmail ?? event.actorUserId)}</Table.Cell>
+                    <Table.Cell className="py-3 pr-3 text-kumo-default">
+                      <Tooltip content={event.actorUserEmail ?? event.actorUserId}>
+                        <span className="block max-w-[160px] truncate">{text(event.actorUserEmail ?? event.actorUserId)}</span>
+                      </Tooltip>
+                    </Table.Cell>
                     <Table.Cell className="py-3 pr-3 text-kumo-subtle">{text(event.objectType)}</Table.Cell>
-                    <Table.Cell className="py-3 pr-3 font-mono text-xs text-kumo-subtle">{text(event.objectId)}</Table.Cell>
-                    <Table.Cell className="py-3 pr-5">
+                    <Table.Cell className="py-3 pr-3 font-mono text-xs text-kumo-subtle">
+                      <Tooltip content={event.objectId}>
+                        <span className="block max-w-[120px] truncate">{text(event.objectId)}</span>
+                      </Tooltip>
+                    </Table.Cell>
+                    <Table.Cell className="py-3 pr-3">
                       <button
                         type="button"
                         className="text-xs font-semibold text-kumo-brand hover:text-kumo-brand-hover"
@@ -2073,13 +2168,23 @@ function AdminAuditFeed() {
                         {expandedId === event.id ? "收起" : "展开"}
                       </button>
                     </Table.Cell>
+                    <Table.Cell className="py-3 pr-5 text-right">
+                      <DropdownMenu>
+                        <DropdownMenu.Trigger aria-label="更多操作">
+                          <Button variant="ghost" size="xs">⋯</Button>
+                        </DropdownMenu.Trigger>
+                        <DropdownMenu.Content>
+                          <DropdownMenu.Item onClick={() => {}}>查看详情</DropdownMenu.Item>
+                        </DropdownMenu.Content>
+                      </DropdownMenu>
+                    </Table.Cell>
                   </Table.Row>
                   {expandedId === event.id ? (
                     <Table.Row className="border-b border-kumo-fill bg-kumo-recessed">
-                      <Table.Cell colSpan={6} className="px-5 py-4">
+                      <Table.Cell colSpan={7} className="px-5 py-4">
                         <div className="space-y-3 text-xs">
                           <div>
-                            <p className="mb-1 font-semibold uppercase tracking-wider text-kumo-subtle">变更后</p>
+                            <Text variant="secondary" size="xs" className="mb-1 font-semibold uppercase tracking-wider">变更后</Text>
                             <pre className="overflow-x-auto rounded-lg bg-kumo-base p-3 font-mono text-kumo-default ring-1 ring-kumo-line">{JSON.stringify(event, null, 2)}</pre>
                           </div>
                         </div>
@@ -2109,8 +2214,10 @@ function AdminCard({ title, children }: { title: string; children: React.ReactNo
     <LayerCard className="overflow-hidden p-0">
       <Collapsible.Root defaultOpen>
         <div className="flex items-center justify-between border-b border-kumo-line bg-kumo-elevated px-6 py-5">
-          <p className="text-lg font-semibold text-kumo-strong">{title}</p>
-          <Collapsible.DefaultTrigger className="text-sm font-medium text-kumo-brand hover:text-kumo-brand-hover" />
+          <Text variant="heading3" as="p">{title}</Text>
+          <Collapsible.DefaultTrigger className="text-sm font-medium text-kumo-brand hover:text-kumo-brand-hover">
+            <span className="sr-only">折叠或展开</span>
+          </Collapsible.DefaultTrigger>
         </div>
         <Collapsible.Panel>
           {children}
@@ -2126,7 +2233,7 @@ export function AdminSection({ role }: { role: PortalRole }) {
   return (
     <section className="space-y-8" aria-label="全局管理（只读）">
       <div className="flex flex-wrap items-center gap-3">
-        <h2 className="text-2xl font-semibold text-kumo-strong">全局管理（只读）</h2>
+        <Text variant="heading2" as="h2">全局管理（只读）</Text>
         <Badge variant="secondary" className="rounded-full bg-kumo-warning-tint text-kumo-warning">仅管理员可见</Badge>
       </div>
       <AdminHeroStats />
@@ -2135,8 +2242,8 @@ export function AdminSection({ role }: { role: PortalRole }) {
       </AdminCard>
       <div className="space-y-4">
         <div>
-          <p className="text-sm font-semibold uppercase tracking-wider text-kumo-subtle">资源与权限</p>
-          <p className="mt-1 text-sm text-kumo-subtle">账户、团队和模型范围保持和个人视图相同的数据语言。</p>
+          <Text variant="secondary" as="p" className="font-semibold uppercase tracking-wider">资源与权限</Text>
+          <Text variant="secondary" as="p" className="mt-1">账户、团队和模型范围保持和个人视图相同的数据语言。</Text>
         </div>
         <AdminCard title="全员账户">
           <AdminUsersTable />
@@ -2147,8 +2254,8 @@ export function AdminSection({ role }: { role: PortalRole }) {
       </div>
       <div className="space-y-4">
         <div>
-          <p className="text-sm font-semibold uppercase tracking-wider text-kumo-subtle">审计与风险</p>
-          <p className="mt-1 text-sm text-kumo-subtle">用于核对近期变更和风险线索，当前保持只读。</p>
+          <Text variant="secondary" as="p" className="font-semibold uppercase tracking-wider">审计与风险</Text>
+          <Text variant="secondary" as="p" className="mt-1">用于核对近期变更和风险线索，当前保持只读。</Text>
         </div>
         <AdminCard title="审计日志">
         <AdminAuditFeed />
@@ -2221,9 +2328,22 @@ export function PortalTabs({ tab, onSelect }: { tab: TabKey; onSelect: (next: Ta
 type AppProps = {
   initialData?: InitialDashboardData | null;
   role?: PortalRole;
+  dehydratedState?: unknown;
 };
 
-export function App({ initialData, role: initialRole }: AppProps) {
+function createQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: 60_000,
+        refetchOnWindowFocus: false,
+      },
+    },
+  });
+}
+
+export function App({ initialData, role: initialRole, dehydratedState }: AppProps) {
+  const [queryClient] = useState(createQueryClient);
   const { role, ready } = usePortalRole(initialRole);
   const [tab, setTab] = useState<TabKey>(() => readTabFromHash(initialRole ?? "none"));
 
@@ -2240,13 +2360,17 @@ export function App({ initialData, role: initialRole }: AppProps) {
   const platformName = initialData?.me?.company ?? "智云AI管理平台";
 
   return (
+    <QueryClientProvider client={queryClient}>
+      <HydrationBoundary state={dehydratedState}>
+        <Toasty>
+          <TooltipProvider delay={300}>
     <main className="container mx-auto px-4 py-10 lg:px-10 lg:py-16">
       <header className="mb-12 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-4">
           <span className="inline-flex w-fit items-center rounded-full bg-kumo-info-tint/70 px-2.5 py-1 text-xs font-semibold text-kumo-info">Cloudflare Access 已保护</span>
           <div className="space-y-3">
-            <h1 className="text-3xl font-semibold tracking-tight text-kumo-strong lg:text-4xl">{platformName}</h1>
-            <p className="max-w-3xl text-base leading-relaxed text-kumo-subtle">面向智云团队的 AI 能力自助台：只读查看个人 API Key、团队可用模型、预算与近 30 天用量，数据权限自动绑定当前登录邮箱。</p>
+            <Text variant="heading1" as="h1">{platformName}</Text>
+            <Text variant="secondary" as="p" className="max-w-3xl leading-relaxed">面向智云团队的 AI 能力自助台：只读查看个人 API Key、团队可用模型、预算与近 30 天用量，数据权限自动绑定当前登录邮箱。</Text>
           </div>
         </div>
         <div id="header-actions-root" className="flex flex-wrap items-center gap-3 sm:self-auto">
@@ -2295,6 +2419,53 @@ export function App({ initialData, role: initialRole }: AppProps) {
         <PortalErrorBanner initialData={initialData} />
       </div>
     </main>
+          </TooltipProvider>
+        </Toasty>
+      </HydrationBoundary>
+    </QueryClientProvider>
   );
+}
+
+if (typeof document !== "undefined") {
+  const root = document.getElementById("root");
+  if (root) {
+    let initialData: InitialDashboardData | null = null;
+    let dehydratedState: unknown = undefined;
+    const dataEl = document.getElementById("initial-data");
+    if (dataEl && dataEl.textContent) {
+      try {
+        const parsed = JSON.parse(dataEl.textContent) as InitialDashboardData & { queryClient?: unknown };
+        dehydratedState = parsed.queryClient;
+        // Strip the queryClient field before passing as InitialDashboardData
+        const { queryClient: _qc, ...rest } = parsed;
+        void _qc;
+        initialData = rest as InitialDashboardData;
+      } catch {
+        // malformed JSON — start with no data
+      }
+    }
+    const roleRaw = initialData?.role;
+    const role: PortalRole | undefined = roleRaw === "admin" || roleRaw === "user" || roleRaw === "none" ? roleRaw : undefined;
+    const locale = detectLocale(navigator.languages?.join(",") ?? navigator.language ?? null);
+    const i18n = setupI18n(locale);
+
+    Promise.all([
+      import("react-dom/client"),
+      import("@tanstack/react-router"),
+      import("./router"),
+      import("./routes/__root"),
+    ]).then(([{ hydrateRoot }, { RouterProvider }, { createPortalRouter, createBrowserHistory }, { AppShell }]) => {
+      const history = createBrowserHistory();
+      const router = createPortalRouter(history, { role });
+      hydrateRoot(
+        root,
+        <I18nProvider i18n={i18n}>
+          <AppShell dehydratedState={dehydratedState}>
+            <RouterProvider router={router} />
+          </AppShell>
+        </I18nProvider>,
+      );
+    });
+  }
 }
 
