@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { LiteLLMPortalEnv, PortalIdentity } from "./types";
+import { applyAdminRateLimit } from "./security/rate-limit-middleware";
 import { authenticateRequest } from "./auth";
 import { resolveIdentity } from "./roles";
 import { invalidateRole } from "./role-cache";
@@ -357,6 +358,7 @@ const usageTimeseriesApp = new Hono<HonoEnv>()
 
 const adminSummaryApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
   .use("/admin/*", requireAdmin)
   .get("/admin/summary", async (c) => {
     const [userPage, teams] = await Promise.all([
@@ -392,6 +394,7 @@ const adminSummaryApp = new Hono<HonoEnv>()
 
 const adminUsersApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
   .use("/admin/*", requireAdmin)
   .get("/admin/users", async (c) => {
     const url = new URL(c.req.url);
@@ -415,6 +418,7 @@ const adminUsersApp = new Hono<HonoEnv>()
 
 const adminTeamsApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
   .use("/admin/*", requireAdmin)
   .get("/admin/teams", async (c) => {
     const teams = await listAllTeams(c.env);
@@ -423,6 +427,7 @@ const adminTeamsApp = new Hono<HonoEnv>()
 
 const adminAuditApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
   .use("/admin/*", requireAdmin)
   .get("/admin/audit", async (c) => {
     const url = new URL(c.req.url);
@@ -447,6 +452,7 @@ const adminAuditApp = new Hono<HonoEnv>()
 
 const adminUsageTimeseriesApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
   .use("/admin/*", requireAdmin)
   .get("/admin/usage/timeseries", async (c) => {
     const parsed = parseUsageTimeseriesRequest(new URL(c.req.url));

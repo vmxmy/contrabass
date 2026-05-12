@@ -107,7 +107,8 @@ describe("litellm portal worker", () => {
     // Components that must remain in the bundle
     expect(js).toContain("aria-pressed");
     expect(js).toContain("Brush native");
-    expect(js).toContain("ClipboardText");
+    // ClipboardText replaced by SensitiveInput in P2-05
+    expect(js).toContain("SensitiveInput");
   });
 
   it("app.generated.ts contains no CustomEvent bridge, litellm-portal: events, or __litellmPortal globals", () => {
