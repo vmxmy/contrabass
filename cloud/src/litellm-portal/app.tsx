@@ -1,25 +1,30 @@
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Banner } from "@cloudflare/kumo/components/banner";
 import { Button } from "@cloudflare/kumo/components/button";
-import { ClipboardText } from "@cloudflare/kumo/components/clipboard-text";
 import { Collapsible } from "@cloudflare/kumo/components/collapsible";
+import { Combobox } from "@cloudflare/kumo/components/combobox";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
 import { DropdownMenu } from "@cloudflare/kumo/components/dropdown";
 import { Empty } from "@cloudflare/kumo/components/empty";
+import { Field } from "@cloudflare/kumo/components/field";
 import { Input } from "@cloudflare/kumo/components/input";
 import { LayerCard } from "@cloudflare/kumo/components/layer-card";
 import { Loader, SkeletonLine } from "@cloudflare/kumo/components/loader";
 import { Pagination } from "@cloudflare/kumo/components/pagination";
 import { Popover } from "@cloudflare/kumo/components/popover";
 import { Select } from "@cloudflare/kumo/components/select";
+import { SensitiveInput } from "@cloudflare/kumo/components/sensitive-input";
 import { Switch } from "@cloudflare/kumo/components/switch";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { Toasty } from "@cloudflare/kumo/components/toast";
 import { Tooltip, TooltipProvider } from "@cloudflare/kumo/components/tooltip";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { QueryClient, QueryClientProvider, HydrationBoundary } from "@tanstack/react-query";
 import { UsageChart, type UsageTimeseries } from "./chart";
 import { useToast } from "./hooks/use-toast";
+import { useDashboard } from "./hooks/use-dashboard";
+import type { Dashboard } from "./schemas";
 
 export type InitialDashboardData = {
   me?: { email?: string | null; domain?: string | null; company?: string | null } | null;
@@ -365,24 +370,24 @@ function deleteKeyErrorMessage(value: unknown): string {
     : code || "删除失败";
 }
 
+import { useDeleteKey } from "./hooks/use-delete-key";
+import { useCreateKey } from "./hooks/use-create-key";
+
 function DeleteKeyButton({
   apiKey,
-  onDeleted,
 }: {
   apiKey: PortalKey;
-  onDeleted: (keyId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const keyId = typeof apiKey.id === "string" ? apiKey.id : "";
   const label = keyLabel(apiKey);
+  const deleteKey = useDeleteKey();
 
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     setOpen(nextOpen);
     if (!nextOpen) {
       setError(null);
-      setDeleting(false);
     }
   }, []);
 
@@ -391,26 +396,14 @@ function DeleteKeyButton({
       setError("缺少要删除的 Key ID。");
       return;
     }
-    setDeleting(true);
     setError(null);
-    try {
-      const response = await fetch(`/api/keys/${encodeURIComponent(keyId)}`, {
-        method: "DELETE",
-        headers: { "content-type": "application/json" },
-      });
-      const body = response.status === 204 ? {} : await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setError(deleteKeyErrorMessage(body));
-        return;
-      }
-      onDeleted(keyId);
-      setOpen(false);
-    } catch {
-      setError("网络请求失败");
-    } finally {
-      setDeleting(false);
-    }
-  }, [keyId, onDeleted]);
+    deleteKey.mutate(keyId, {
+      onSuccess: () => { setOpen(false); },
+      onError: (err: unknown) => {
+        setError(deleteKeyErrorMessage(err));
+      },
+    });
+  }, [keyId, deleteKey]);
 
   return (
     <Dialog.Root role="alertdialog" open={open} onOpenChange={handleOpenChange}>
@@ -434,12 +427,12 @@ function DeleteKeyButton({
         <div className="flex justify-end gap-2">
           <Dialog.Close
             render={(props) => (
-              <Button {...props} variant="secondary" size="sm" disabled={deleting}>
+              <Button {...props} variant="secondary" size="sm" disabled={deleteKey.isPending}>
                 取消
               </Button>
             )}
           />
-          <Button variant="destructive" size="sm" loading={deleting} onClick={handleDelete}>
+          <Button variant="destructive" size="sm" loading={deleteKey.isPending} onClick={handleDelete}>
             确认删除
           </Button>
         </div>
@@ -891,12 +884,7 @@ function StatTile({
   );
 }
 
-function normalizeStats(value: unknown): PortalStats {
-  if (!value || typeof value !== "object") return {};
-  return value as PortalStats;
-}
-
-function initialStatsFromData(data: InitialDashboardData | null): PortalStats {
+function statsFromDashboard(data: Dashboard | undefined): PortalStats {
   if (!data) return {};
   return {
     email: data.me?.email,
@@ -914,8 +902,9 @@ function initialStatsFromData(data: InitialDashboardData | null): PortalStats {
   };
 }
 
-export function HeroStats({ initialData }: { initialData?: InitialDashboardData | null }) {
-  const [stats, setStats] = useState<PortalStats>(() => initialStatsFromData(initialData ?? null));
+export function HeroStats({ initialData: _initialData }: { initialData?: InitialDashboardData | null }) {
+  const { data } = useDashboard();
+  const stats = statsFromDashboard(data);
 
   const email = text(stats.email);
   const recentDisplay = stats.usageAvailable ? fmt(stats.recentSpend) : "暂无数据";
@@ -960,9 +949,10 @@ export function HeroStats({ initialData }: { initialData?: InitialDashboardData 
   );
 }
 
-export function TeamsAccessCard({ initialData }: { initialData?: InitialDashboardData | null }) {
-  const [teams, setTeams] = useState<PortalTeam[]>(() => normalizeTeams(initialData?.teams));
-  const [loaded] = useState(Array.isArray(initialData?.teams));
+export function TeamsAccessCard({ initialData: _initialData }: { initialData?: InitialDashboardData | null }) {
+  const { data, isLoading } = useDashboard();
+  const teams = normalizeTeams(data?.teams);
+  const loaded = !isLoading;
 
   return (
     <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
@@ -1012,10 +1002,10 @@ export function TeamsAccessCard({ initialData }: { initialData?: InitialDashboar
   );
 }
 
-export function ModelAccessCard({ initialData }: { initialData?: InitialDashboardData | null }) {
-  const initial = normalizeModelAccess(initialData?.models);
-  const [modelAccess, setModelAccess] = useState<ModelAccess>(initial);
-  const [open, setOpen] = useState(initial.models.length > 0 && initial.models.length <= PREVIEW_LIMIT);
+export function ModelAccessCard({ initialData: _initialData }: { initialData?: InitialDashboardData | null }) {
+  const { data } = useDashboard();
+  const modelAccess = normalizeModelAccess(data?.models);
+  const [open, setOpen] = useState(modelAccess.models.length > 0 && modelAccess.models.length <= PREVIEW_LIMIT);
 
   const previewModels = useMemo(() => modelAccess.models.slice(0, PREVIEW_LIMIT), [modelAccess.models]);
   const remainingCount = Math.max(modelAccess.models.length - previewModels.length, 0);
@@ -1069,26 +1059,10 @@ export function ModelAccessCard({ initialData }: { initialData?: InitialDashboar
   );
 }
 
-export function ApiKeysCard({ initialData }: { initialData?: InitialDashboardData | null }) {
-  const [keys, setKeys] = useState<PortalKey[]>(() => normalizeKeys(initialData?.keys?.items));
-  const [loaded] = useState(Array.isArray(initialData?.keys?.items));
-
-  const handleDeleted = useCallback((keyId: string) => {
-    setKeys((current) => current.filter((key) => key.id !== keyId));
-  }, []);
-
-  const refetchKeys = useCallback(async () => {
-    try {
-      const response = await fetch("/api/keys", { headers: { "content-type": "application/json" } });
-      if (!response.ok) return;
-      const body = await response.json().catch(() => null) as { keys?: unknown } | null;
-      if (body && Array.isArray(body.keys)) {
-        setKeys(normalizeKeys(body.keys));
-      }
-    } catch {
-      // network failure — keep current state; user can retry by reloading
-    }
-  }, []);
+export function ApiKeysCard({ initialData: _initialData }: { initialData?: InitialDashboardData | null }) {
+  const { data, isLoading } = useDashboard();
+  const keys = normalizeKeys(data?.keys?.items);
+  const loaded = !isLoading;
 
   return (
     <section className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
@@ -1097,7 +1071,7 @@ export function ApiKeysCard({ initialData }: { initialData?: InitialDashboardDat
           <p className="text-lg font-semibold text-kumo-strong">API Keys</p>
           <p className="text-sm text-kumo-subtle">仅列出当前 LiteLLM 用户拥有的密钥。</p>
         </div>
-        <CreateKeyButton onRefresh={refetchKeys} />
+        <CreateKeyButton />
       </div>
       <div className="overflow-x-auto">
         {!loaded ? (
@@ -1143,7 +1117,7 @@ export function ApiKeysCard({ initialData }: { initialData?: InitialDashboardDat
                     </Table.Cell>
                     <Table.Cell className="py-3 pr-5 text-kumo-default">{text(key.expiresAt)}</Table.Cell>
                     <Table.Cell className="py-3 pr-5 text-right">
-                      <DeleteKeyButton apiKey={key} onDeleted={handleDeleted} />
+                      <DeleteKeyButton apiKey={key} />
                     </Table.Cell>
                   </Table.Row>
                 );
@@ -1223,10 +1197,11 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
   const [budget, setBudget] = useState("");
   const [duration, setDuration] = useState("");
   const [models, setModels] = useState<string[]>([]);
-  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [aliasError, setAliasError] = useState<string | null>(null);
   const [result, setResult] = useState<CreateKeyResult | null>(null);
   const durationSelectValue = duration || NEVER_EXPIRES_VALUE;
+  const createKey = useCreateKey();
 
   useEffect(() => {
     if (!open) return;
@@ -1245,61 +1220,51 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
     setBudget("");
     setDuration("");
     setError(null);
+    setAliasError(null);
     setResult(null);
-    setSubmitting(false);
   }, []);
 
-  const handleSubmit = useCallback(async () => {
+  const handleSubmit = useCallback(() => {
     const trimmed = alias.trim();
     if (!trimmed) {
-      setError("请输入 Key 名称");
+      setAliasError("请输入 Key 名称");
       return;
     }
-    setSubmitting(true);
     setError(null);
-    try {
-      const body: Record<string, unknown> = { keyAlias: trimmed };
-      if (selectedModels.length > 0) body.models = selectedModels;
-      if (budget) {
-        const parsed = Number(budget);
-        if (Number.isFinite(parsed) && parsed >= 0) body.maxBudget = parsed;
-      }
-      if (duration) body.duration = duration;
-
-      const res = await fetch("/api/keys", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        const msg = createKeyErrorMessage(data);
-        setError(msg);
-        toast.error("创建失败", msg);
-        return;
-      }
-      const created = data as CreateKeyResult;
-      setResult(created);
-      toast.success("Key 已创建", created.keyAlias ?? trimmed);
-    } catch {
-      const msg = "网络请求失败";
-      setError(msg);
-      toast.error("创建失败", msg);
-    } finally {
-      setSubmitting(false);
+    setAliasError(null);
+    const input: Parameters<typeof createKey.mutate>[0] = { keyAlias: trimmed };
+    if (selectedModels.length > 0) input.models = selectedModels;
+    if (budget) {
+      const parsed = Number(budget);
+      if (Number.isFinite(parsed) && parsed >= 0) input.maxBudget = parsed;
     }
-  }, [alias, selectedModels, budget, duration, toast]);
+    if (duration) input.duration = duration;
+
+    createKey.mutate(input, {
+      onSuccess: (data) => {
+        setResult({
+          rawKey: data.rawKey,
+          keyAlias: data.keyAlias,
+          expires: data.expires,
+          keyId: data.keyId,
+        });
+        toast.success("Key 已创建", data.keyAlias ?? trimmed);
+        onRefresh?.();
+      },
+      onError: (err: unknown) => {
+        const msg = createKeyErrorMessage(err);
+        setAliasError(msg);
+        toast.error("创建失败", msg);
+      },
+    });
+  }, [alias, selectedModels, budget, duration, createKey, toast, onRefresh]);
 
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     setOpen(nextOpen);
-    if (nextOpen) return;
-
-    const shouldRefresh = result !== null;
-    resetForm();
-    if (shouldRefresh) {
-      onRefresh?.();
+    if (!nextOpen) {
+      resetForm();
     }
-  }, [result, resetForm, onRefresh]);
+  }, [resetForm]);
 
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
@@ -1333,13 +1298,12 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
                 <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">Key 名称</p>
                 <p className="text-sm font-semibold text-kumo-strong">{result.keyAlias || "—"}</p>
               </div>
-              <div className="mt-4 space-y-1">
-                <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">完整 Key</p>
-                <ClipboardText
-                  className="w-full min-w-0 text-kumo-brand"
-                  labels={{ copyAction: "复制完整 Key" }}
+              <div className="mt-4 space-y-2">
+                <SensitiveInput
+                  label="完整 Key"
                   size="lg"
-                  text={result.rawKey}
+                  readOnly
+                  defaultValue={result.rawKey}
                 />
               </div>
               {result.expires ? (
@@ -1365,47 +1329,59 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
             {error ? (
               <Banner variant="error" title="创建失败" description={error} />
             ) : null}
-            <div className="space-y-1.5">
+
+            <Field
+              label="名称"
+              required={true}
+              error={aliasError ? { message: aliasError, match: true } : undefined}
+            >
               <Input
                 id="create-key-alias"
-                label={<>名称 <span className="text-kumo-danger">*</span></>}
                 size="lg"
                 placeholder="例如：production-api"
                 value={alias}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAlias(e.target.value)}
               />
-            </div>
+            </Field>
 
             {models.length > 0 ? (
-              <div className="space-y-1.5">
-                <Select
-                  label="允许模型"
-                  className="w-full"
-                  size="lg"
-                  multiple
-                  placeholder="继承当前用户可用模型"
-                  renderValue={(value) => {
-                    const selected = selectedModelsFromValue(value);
-                    if (selected.length === 0) return "继承当前用户可用模型";
-                    if (selected.length > 3) return `${selected.slice(0, 2).join(", ")} 等 ${selected.length} 个模型`;
-                    return selected.join(", ");
-                  }}
+              <Combobox
+                multiple
+                items={models}
+                value={selectedModels}
+                onValueChange={(value) => setSelectedModels(value as string[])}
+                label="允许模型"
+                required={false}
+                description="留空则继承当前用户可用模型"
+                size="lg"
+              >
+                <Combobox.TriggerMultipleWithInput
+                  placeholder="选择模型…"
+                  renderItem={(item) => (
+                    <Combobox.Chip value={item as string}>{item as string}</Combobox.Chip>
+                  )}
                   value={selectedModels}
-                  onValueChange={(value) => setSelectedModels(selectedModelsFromValue(value))}
-                >
-                  {models.map((model) => (
-                    <Select.Option key={model} value={model}>
-                      {model}
-                    </Select.Option>
-                  ))}
-                </Select>
-              </div>
+                />
+                <Combobox.Content>
+                  <Combobox.List>
+                    {(item) => (
+                      <Combobox.Item key={item as string} value={item as string}>
+                        {item as string}
+                      </Combobox.Item>
+                    )}
+                  </Combobox.List>
+                  <Combobox.Empty>无匹配模型</Combobox.Empty>
+                </Combobox.Content>
+              </Combobox>
             ) : null}
 
-            <div className="space-y-1.5">
+            <Field
+              label="预算上限（USD）"
+              required={false}
+              description="留空表示不限"
+            >
               <Input
                 id="create-key-budget"
-                label="预算上限（USD）"
                 size="lg"
                 type="number"
                 min="0"
@@ -1414,7 +1390,7 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
                 value={budget}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBudget(e.target.value)}
               />
-            </div>
+            </Field>
 
             <div className="space-y-1.5">
               <Select
@@ -1440,7 +1416,7 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
                   </Button>
                 )}
               />
-              <Button variant="primary" size="lg" loading={submitting} onClick={handleSubmit}>
+              <Button variant="primary" size="lg" loading={createKey.isPending} onClick={handleSubmit}>
                 创建
               </Button>
             </div>
@@ -1677,6 +1653,7 @@ function AdminHeroStats() {
   );
 }
 
+// TODO(CONTRABASS-3 follow-up): Migrate AdminUsersTable to a dedicated useAdminUsers() RPC hook.
 function AdminUsersTable() {
   const [data, setData] = useState<AdminUsersResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1781,6 +1758,7 @@ function AdminUsersTable() {
   );
 }
 
+// TODO(CONTRABASS-3 follow-up): Migrate AdminTeamsTable to a dedicated useAdminTeams() RPC hook.
 function AdminTeamsTable() {
   const [data, setData] = useState<AdminTeamsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1864,6 +1842,7 @@ function AdminTeamsTable() {
   );
 }
 
+// TODO(CONTRABASS-3 follow-up): Migrate AdminGlobalUsage to a dedicated useAdminUsage() RPC hook.
 function AdminGlobalUsage() {
   const config = useMemo(() => portalConfig(), []);
   const grains = useMemo(() => Object.keys(config.usageWindows), [config]);
@@ -2066,6 +2045,7 @@ function AdminGlobalUsage() {
   );
 }
 
+// TODO(CONTRABASS-3 follow-up): Migrate AdminAuditFeed to a dedicated useAdminAudit() RPC hook.
 function AdminAuditFeed() {
   const [data, setData] = useState<AdminAuditResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -2321,9 +2301,22 @@ export function PortalTabs({ tab, onSelect }: { tab: TabKey; onSelect: (next: Ta
 type AppProps = {
   initialData?: InitialDashboardData | null;
   role?: PortalRole;
+  dehydratedState?: unknown;
 };
 
-export function App({ initialData, role: initialRole }: AppProps) {
+function createQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: 60_000,
+        refetchOnWindowFocus: false,
+      },
+    },
+  });
+}
+
+export function App({ initialData, role: initialRole, dehydratedState }: AppProps) {
+  const [queryClient] = useState(createQueryClient);
   const { role, ready } = usePortalRole(initialRole);
   const [tab, setTab] = useState<TabKey>(() => readTabFromHash(initialRole ?? "none"));
 
@@ -2340,8 +2333,10 @@ export function App({ initialData, role: initialRole }: AppProps) {
   const platformName = initialData?.me?.company ?? "智云AI管理平台";
 
   return (
-    <Toasty>
-      <TooltipProvider delay={300}>
+    <QueryClientProvider client={queryClient}>
+      <HydrationBoundary state={dehydratedState}>
+        <Toasty>
+          <TooltipProvider delay={300}>
     <main className="container mx-auto px-4 py-10 lg:px-10 lg:py-16">
       <header className="mb-12 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-4">
@@ -2397,8 +2392,10 @@ export function App({ initialData, role: initialRole }: AppProps) {
         <PortalErrorBanner initialData={initialData} />
       </div>
     </main>
-      </TooltipProvider>
-    </Toasty>
+          </TooltipProvider>
+        </Toasty>
+      </HydrationBoundary>
+    </QueryClientProvider>
   );
 }
 
@@ -2406,10 +2403,16 @@ if (typeof document !== "undefined") {
   const root = document.getElementById("root");
   if (root) {
     let initialData: InitialDashboardData | null = null;
+    let dehydratedState: unknown = undefined;
     const dataEl = document.getElementById("initial-data");
     if (dataEl && dataEl.textContent) {
       try {
-        initialData = JSON.parse(dataEl.textContent) as InitialDashboardData;
+        const parsed = JSON.parse(dataEl.textContent) as InitialDashboardData & { queryClient?: unknown };
+        dehydratedState = parsed.queryClient;
+        // Strip the queryClient field before passing as InitialDashboardData
+        const { queryClient: _qc, ...rest } = parsed;
+        void _qc;
+        initialData = rest as InitialDashboardData;
       } catch {
         // malformed JSON — start with no data
       }
@@ -2417,7 +2420,7 @@ if (typeof document !== "undefined") {
     const roleRaw = initialData?.role;
     const role: PortalRole | undefined = roleRaw === "admin" || roleRaw === "user" || roleRaw === "none" ? roleRaw : undefined;
     import("react-dom/client").then(({ hydrateRoot }) => {
-      hydrateRoot(root, <App initialData={initialData} role={role} />);
+      hydrateRoot(root, <App initialData={initialData} role={role} dehydratedState={dehydratedState} />);
     });
   }
 }

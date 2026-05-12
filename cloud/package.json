@@ -37,6 +37,7 @@
   },
   "dependencies": {
     "@cloudflare/kumo": "^2.1.0",
+    "@tanstack/react-query": "^5.80.2",
     "echarts": "^6.0.0",
     "hono": "^4.12.18",
     "liquidjs": "^10.25.7",

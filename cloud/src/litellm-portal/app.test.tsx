@@ -4,6 +4,9 @@
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { DASHBOARD_QUERY_KEY } from "./hooks/use-dashboard";
+import type { Dashboard } from "./schemas";
 
 const toastAddSpy = vi.fn();
 
@@ -106,6 +109,16 @@ const usageData: UsageTimeseries = {
   topModels: [{ model: "gpt-4o-mini", spend: 1.5, totalTokens: 3000, requests: 30 }],
 };
 
+function createWrapper(initialData?: Partial<Dashboard>) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (initialData !== undefined) {
+    qc.setQueryData<Dashboard>(DASHBOARD_QUERY_KEY, initialData as Dashboard);
+  }
+  return function Wrapper({ children }: { children: React.ReactNode }) {
+    return React.createElement(QueryClientProvider, { client: qc }, children);
+  };
+}
+
 function installPortalConfig() {
   window.__PORTAL_CONFIG = {
     usageWindows: {
@@ -155,21 +168,24 @@ describe("PortalTabs", () => {
 
 describe("ModelAccessCard", () => {
   it("expands by default when model count is <= 12", () => {
-    render(<ModelAccessCard initialData={{ models: { models: ["gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet"], source: "team" } }} />);
+    const dashData = { models: { models: ["gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet"], source: "team" } };
+    render(<ModelAccessCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
     expect(screen.queryByText("团队可用模型")).not.toBeNull();
     expect(screen.queryByText("gpt-4o")).not.toBeNull();
   });
 
   it("collapses by default and shows trigger when model count exceeds 12", () => {
     const models = Array.from({ length: 15 }, (_, i) => `model-${i + 1}`);
-    render(<ModelAccessCard initialData={{ models: { models, source: "team" } }} />);
+    const dashData = { models: { models, source: "team" } };
+    render(<ModelAccessCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
     expect(screen.queryByText("团队可用模型")).not.toBeNull();
     expect(screen.queryByText("model-13")).toBeNull();
     expect(screen.queryByText(/展开全部 15 个模型/)).not.toBeNull();
   });
 
   it("renders initial model list from initialData prop", () => {
-    render(<ModelAccessCard initialData={{ models: { models: ["gpt-4o", "deepseek-v3"], source: "configured" } }} />);
+    const dashData = { models: { models: ["gpt-4o", "deepseek-v3"], source: "configured" } };
+    render(<ModelAccessCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
     expect(screen.queryByText("gpt-4o")).not.toBeNull();
     expect(screen.queryByText("deepseek-v3")).not.toBeNull();
   });
@@ -314,7 +330,7 @@ describe("UsagePanel", () => {
 
 describe("ApiKeysCard", () => {
   it("renders API keys with clipboard text and collapsible model detail", () => {
-    render(<ApiKeysCard initialData={{ keys: { totalCount: 1, items: [
+    const dashData = { keys: { totalCount: 1, items: [
       {
         id: "key-1",
         alias: "primary",
@@ -324,7 +340,8 @@ describe("ApiKeysCard", () => {
         maxBudget: 20,
         expiresAt: "—",
       },
-    ] } }} />);
+    ] } };
+    render(<ApiKeysCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
 
     expect(screen.queryByText("API Keys")).not.toBeNull();
     expect(screen.queryByText("创建 Key")).not.toBeNull();
@@ -334,7 +351,7 @@ describe("ApiKeysCard", () => {
   });
 
   it("renders model lists for multiple API keys", () => {
-    render(<ApiKeysCard initialData={{ keys: { totalCount: 2, items: [
+    const dashData = { keys: { totalCount: 2, items: [
       {
         id: "key-1",
         alias: "team-inherited",
@@ -353,7 +370,8 @@ describe("ApiKeysCard", () => {
         maxBudget: 20,
         expiresAt: null,
       },
-    ] } }} />);
+    ] } };
+    render(<ApiKeysCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
 
     expect(screen.queryByText("team-inherited")).not.toBeNull();
     expect(screen.queryByText("explicit")).not.toBeNull();
@@ -362,16 +380,17 @@ describe("ApiKeysCard", () => {
   });
 
   it("renders initial keys from initialData prop", () => {
-    render(<ApiKeysCard initialData={{ keys: { totalCount: 1, items: [
+    const dashData = { keys: { totalCount: 1, items: [
       { id: "k1", alias: "init-key", displayKey: "sk-lit...init", models: [], spend: 0, maxBudget: null, expiresAt: null },
-    ] } }} />);
+    ] } };
+    render(<ApiKeysCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
     expect(screen.queryByText("init-key")).not.toBeNull();
   });
 
   it("deletes an API key after confirmation", async () => {
     globalThis.fetch = vi.fn(async () => new Response(null, { status: 204 })) as typeof fetch;
 
-    render(<ApiKeysCard initialData={{ keys: { totalCount: 1, items: [
+    const dashData = { keys: { totalCount: 1, items: [
       {
         id: "key-1",
         alias: "primary",
@@ -381,7 +400,8 @@ describe("ApiKeysCard", () => {
         maxBudget: 20,
         expiresAt: null,
       },
-    ] } }} />);
+    ] } };
+    render(<ApiKeysCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
     fireEvent.click(screen.getByText("删除"));
 
     await waitFor(() => {
@@ -413,14 +433,14 @@ describe("PortalErrorBanner", () => {
 
 describe("CreateKeyButton", () => {
   it("renders create key trigger button", () => {
-    render(<CreateKeyButton />);
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
     expect(screen.queryByText("创建 Key")).not.toBeNull();
   });
 
   it("shows validation error when submitting without alias", async () => {
     globalThis.fetch = vi.fn(async () => Response.json({ models: [] })) as typeof fetch;
 
-    render(<CreateKeyButton />);
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
     const trigger = screen.getByText("创建 Key");
     fireEvent.click(trigger);
 
@@ -451,7 +471,7 @@ describe("CreateKeyButton", () => {
       return Response.json({});
     }) as typeof fetch;
 
-    render(<CreateKeyButton />);
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByText("创建 Key"));
 
     await waitFor(() => {
@@ -472,7 +492,7 @@ describe("CreateKeyButton", () => {
     });
   });
 
-  it("copies the newly created full key with Kumo ClipboardText", async () => {
+  it("copies the newly created full key with kumo SensitiveInput", async () => {
     const writeText = vi.fn(async () => {});
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -492,7 +512,7 @@ describe("CreateKeyButton", () => {
       return Response.json({});
     }) as typeof fetch;
 
-    render(<CreateKeyButton />);
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByText("创建 Key"));
 
     await waitFor(() => {
@@ -512,7 +532,8 @@ describe("CreateKeyButton", () => {
       expect(screen.queryByText("Key 已创建")).not.toBeNull();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "复制完整 Key" }));
+    // SensitiveInput renders a "Copy to clipboard" button (aria-label from kumo)
+    fireEvent.click(screen.getByRole("button", { name: "Copy to clipboard" }));
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith("sk-new-key-123");
@@ -536,7 +557,7 @@ describe("CreateKeyButton", () => {
       return Response.json({});
     }) as typeof fetch;
 
-    render(<CreateKeyButton />);
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
     const trigger = screen.getByText("创建 Key");
     fireEvent.click(trigger);
 
@@ -554,9 +575,128 @@ describe("CreateKeyButton", () => {
     if (submitBtn) fireEvent.click(submitBtn);
 
     await waitFor(() => {
-      expect(screen.queryByText("sk-new-key-123")).not.toBeNull();
+      expect(screen.queryByText("Key 已创建")).not.toBeNull();
+      // SensitiveInput masks the value by default; check the underlying input element's value
+      const keyInput = document.querySelector<HTMLInputElement>("input[value='sk-new-key-123']");
+      expect(keyInput).not.toBeNull();
+    });
+  });
+
+  it("shows Field error on alias when submitting empty form (spec 6.2)", async () => {
+    globalThis.fetch = vi.fn(async () => Response.json({ models: [] })) as typeof fetch;
+
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText("创建 Key"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    // Submit without filling alias — Field should show error message
+    const submitButtons = screen.getAllByText("创建");
+    const submitBtn = submitButtons.find((el) => el.closest("button"));
+    if (submitBtn) fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByText("请输入 Key 名称")).not.toBeNull();
+    });
+  });
+
+  it("shows Field error for duplicate alias returned from backend (spec 6.2)", async () => {
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/models")) return Response.json({ models: [] });
+      if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
+        return Response.json(
+          { error: "key_alias_conflict", keyAlias: "my-key", message: "already exists" },
+          { status: 409 },
+        );
+      }
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText("创建 Key"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    const aliasInput = document.getElementById("create-key-alias");
+    if (aliasInput) fireEvent.change(aliasInput, { target: { value: "my-key" } });
+
+    const submitBtn = screen.getAllByText("创建").find((el) => el.closest("button"));
+    if (submitBtn) fireEvent.click(submitBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByText("名称「my-key」已存在，请换一个名称。")).not.toBeNull();
+    });
+  });
+
+  it("renders Combobox for model selection when models are available (spec 6.3)", async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/models")) return Response.json({ models: ["gpt-4o-mini", "claude-3-5-sonnet"] });
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText("创建 Key"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    // Combobox trigger input should be rendered with the model selection placeholder
+    await waitFor(() => {
+      const comboInput = document.querySelector<HTMLInputElement>("[placeholder='选择模型…']");
+      expect(comboInput).not.toBeNull();
+    });
+
+    // The "允许模型" label and "(optional)" indicator must be present
+    expect(screen.queryByText("允许模型")).not.toBeNull();
+    expect(document.querySelector("[placeholder='选择模型…']")).not.toBeNull();
+  });
+
+  it("SensitiveInput defaults to masked (spec 6.4)", async () => {
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/models")) return Response.json({ models: [] });
+      if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
+        return Response.json({
+          rawKey: "sk-secret-abc",
+          keyAlias: "my-key",
+          expires: null,
+          keyId: "tok-1",
+        }, { status: 201 });
+      }
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText("创建 Key"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    const aliasInput = document.getElementById("create-key-alias");
+    if (aliasInput) fireEvent.change(aliasInput, { target: { value: "my-key" } });
+
+    const submitBtn = screen.getAllByText("创建").find((el) => el.closest("button"));
+    if (submitBtn) fireEvent.click(submitBtn);
+
+    await waitFor(() => {
       expect(screen.queryByText("Key 已创建")).not.toBeNull();
     });
+
+    // SensitiveInput should render with type="password" (masked) by default
+    const keyInput = document.querySelector<HTMLInputElement>("input[value='sk-secret-abc']");
+    expect(keyInput).not.toBeNull();
+    expect(keyInput?.type).toBe("password");
+
+    // The "Reveal value" button must be present (eye icon)
+    expect(screen.getByRole("button", { name: "Reveal value" })).not.toBeNull();
   });
 });
 });
@@ -840,7 +980,7 @@ describe("useToast — CreateKeyButton integration", () => {
       return Response.json({ rawKey: "sk-abc123", keyAlias: "my-key", expires: null, keyId: "kid-1" });
     }) as typeof fetch;
 
-    render(<CreateKeyButton />);
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByRole("button", { name: "创建 Key" }));
 
     await waitFor(() => {
@@ -868,7 +1008,7 @@ describe("useToast — CreateKeyButton integration", () => {
       );
     }) as typeof fetch;
 
-    render(<CreateKeyButton />);
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByRole("button", { name: "创建 Key" }));
 
     await waitFor(() => {
@@ -893,6 +1033,7 @@ describe("Tooltip — HeroStats truncated email", () => {
     // The mock passes children through transparently; verify no title attr.
     const { container } = render(
       <HeroStats initialData={{ me: { email: "truncated-long-email@example.com" } }} />,
+      { wrapper: createWrapper({ me: { email: "truncated-long-email@example.com" } }) },
     );
     const emailEl = container.querySelector("p.truncate");
     expect(emailEl).not.toBeNull();
