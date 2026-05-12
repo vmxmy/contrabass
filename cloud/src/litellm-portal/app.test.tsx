@@ -8,6 +8,53 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DASHBOARD_QUERY_KEY } from "./hooks/use-dashboard";
 import type { Dashboard } from "./schemas";
 
+const toastAddSpy = vi.fn();
+
+vi.mock("@cloudflare/kumo/components/toast", () => ({
+  Toasty: ({ children }: { children: React.ReactNode }) => children,
+  ToastProvider: ({ children }: { children: React.ReactNode }) => children,
+  useKumoToastManager: () => ({
+    toasts: [],
+    add: toastAddSpy,
+    remove: vi.fn(),
+    update: vi.fn(),
+    promise: vi.fn(),
+  }),
+}));
+
+vi.mock("@cloudflare/kumo/components/tooltip", () => ({
+  Tooltip: ({ children }: { children: React.ReactNode }) => children,
+  TooltipProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+
+vi.mock("@cloudflare/kumo/components/dropdown", async () => {
+  const ReactModule = await import("react");
+  const DropdownMenu = ({ children }: { children: React.ReactNode }) =>
+    ReactModule.createElement("div", { "data-testid": "dropdown-menu" }, children);
+  DropdownMenu.Trigger = ({ children, "aria-label": ariaLabel }: { children: React.ReactNode; "aria-label"?: string }) =>
+    ReactModule.createElement("div", { role: "button", "aria-label": ariaLabel }, children);
+  DropdownMenu.Content = ({ children }: { children: React.ReactNode }) =>
+    ReactModule.createElement("div", { role: "menu" }, children);
+  DropdownMenu.Item = ({ children, onClick }: { children: React.ReactNode; onClick?: () => void }) =>
+    ReactModule.createElement("div", { role: "menuitem", onClick }, children);
+  return { DropdownMenu };
+});
+
+vi.mock("@cloudflare/kumo/components/popover", async () => {
+  const ReactModule = await import("react");
+  const Popover = ({ children }: { children: React.ReactNode }) =>
+    ReactModule.createElement("div", { "data-testid": "popover" }, children);
+  Popover.Trigger = ({ render }: { render: React.ReactElement }) => render;
+  Popover.Content = ({ children }: { children: React.ReactNode }) =>
+    ReactModule.createElement("div", { "data-testid": "popover-content" }, children);
+  Popover.Title = ({ children }: { children: React.ReactNode }) =>
+    ReactModule.createElement("p", { className: "popover-title" }, children);
+  Popover.Description = ({ children }: { children: React.ReactNode }) =>
+    ReactModule.createElement("div", { className: "popover-description" }, children);
+  Popover.Close = ({ children }: { children: React.ReactNode }) => children;
+  return { Popover };
+});
+
 vi.mock("@cloudflare/kumo/components/chart", async () => {
   const ReactModule = await import("react");
   return {
@@ -38,7 +85,7 @@ vi.mock("@cloudflare/kumo/components/chart", async () => {
   };
 });
 
-import { AdminSection, ApiKeysCard, CreateKeyButton, ModelAccessCard, PortalErrorBanner, PortalTabs, readTabFromHash, UsagePanel } from "./app";
+import { AdminSection, ApiKeysCard, CreateKeyButton, HeroStats, ModelAccessCard, PortalErrorBanner, PortalTabs, readTabFromHash, UsagePanel } from "./app";
 import { UsageChart, type UsageTimeseries } from "./chart";
 
 const originalFetch = globalThis.fetch;
@@ -98,6 +145,7 @@ afterEach(() => {
   cleanup();
   globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
+  toastAddSpy.mockClear();
   delete window.__PORTAL_CONFIG;
 });
 
@@ -810,6 +858,43 @@ describe("AdminSection", () => {
     expect(container.firstChild).toBeNull();
   });
 
+  it("renders ⋯ action column and DropdownMenu in users table", async () => {
+    installPortalConfig();
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/admin/users")) {
+        return Response.json({
+          users: [{ userId: "u1", email: "admin@test.com", spend: 1.5, maxBudget: 100, teamIds: [], role: "proxy_admin" }],
+          totalCount: 1,
+          page: 1,
+          size: 50,
+        });
+      }
+      if (url.includes("/api/admin/summary")) return Response.json({ userCount: 1 });
+      if (url.includes("/api/admin/teams")) return Response.json({ teams: [] });
+      if (url.includes("/api/admin/audit")) return Response.json({ events: [], totalCount: 0, page: 1, size: 50 });
+      if (url.includes("/api/admin/usage/timeseries")) return Response.json({
+        available: true, grain: "day", window: "30d", windowLabel: "近 30 天",
+        start: "2024-01-01T00:00:00.000Z", end: "2024-01-30T23:59:59.999Z",
+        source: "spend_logs_v2_global", timezone: "Asia/Shanghai", limited: false, maxPages: null,
+        buckets: [], totals: { totalTokens: 0, promptTokens: 0, completionTokens: 0, requests: 0, spend: 0 },
+        topModels: [],
+      });
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<AdminSection role="admin" />);
+
+    await waitFor(() => {
+      expect(screen.queryAllByRole("button", { name: "更多操作" }).length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "更多操作" })[0]);
+    await waitFor(() => {
+      expect(screen.queryByText("查看详情")).not.toBeNull();
+    });
+  });
+
   it("renders aligned admin dashboard sections when role is admin", async () => {
     installPortalConfig();
     globalThis.fetch = vi.fn(async (input) => {
@@ -884,5 +969,115 @@ describe("AdminSection", () => {
       expect(screen.queryByText("审计与风险")).not.toBeNull();
       expect(screen.queryByText("审计日志")).not.toBeNull();
     });
+  });
+});
+
+describe("useToast — CreateKeyButton integration", () => {
+  it("fires toast.add with success variant after successful key creation", async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/models")) return Response.json({ models: [] });
+      return Response.json({ rawKey: "sk-abc123", keyAlias: "my-key", expires: null, keyId: "kid-1" });
+    }) as typeof fetch;
+
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByRole("button", { name: "创建 Key" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    const aliasInput = screen.getByLabelText(/名称/) as HTMLInputElement;
+    fireEvent.change(aliasInput, { target: { value: "my-key" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    await waitFor(() => {
+      expect(toastAddSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ variant: "success" }),
+      );
+    });
+  });
+
+  it("fires toast.add with error variant when backend returns 409", async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/models")) return Response.json({ models: [] });
+      return new Response(
+        JSON.stringify({ error: "key_alias_conflict", keyAlias: "my-key" }),
+        { status: 409, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByRole("button", { name: "创建 Key" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+    });
+
+    const aliasInput = screen.getByLabelText(/名称/) as HTMLInputElement;
+    fireEvent.change(aliasInput, { target: { value: "my-key" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+
+    await waitFor(() => {
+      expect(toastAddSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ variant: "error" }),
+      );
+    });
+  });
+});
+
+describe("Tooltip — HeroStats truncated email", () => {
+  it("renders email text without title= attribute (Tooltip replaces it)", () => {
+    // HeroStats uses <Tooltip> instead of title= for truncated email.
+    // The mock passes children through transparently; verify no title attr.
+    const { container } = render(
+      <HeroStats initialData={{ me: { email: "truncated-long-email@example.com" } }} />,
+      { wrapper: createWrapper({ me: { email: "truncated-long-email@example.com" } }) },
+    );
+    const emailEl = container.querySelector("p.truncate");
+    expect(emailEl).not.toBeNull();
+    expect(emailEl?.getAttribute("title")).toBeNull();
+    expect(emailEl?.textContent).toBe("truncated-long-email@example.com");
+  });
+});
+
+describe("DropdownMenu — AdminUsersTable row actions", () => {
+  it("shows 查看详情 menu item after clicking ⋯ trigger", async () => {
+    installPortalConfig();
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/admin/users")) {
+        return Response.json({
+          users: [{ userId: "u2", email: "user@example.com", spend: 0, maxBudget: null, teamIds: [], role: "proxy_user" }],
+          totalCount: 1, page: 1, size: 50,
+        });
+      }
+      if (url.includes("/api/admin/summary")) return Response.json({ userCount: 1 });
+      if (url.includes("/api/admin/teams")) return Response.json({ teams: [] });
+      if (url.includes("/api/admin/audit")) return Response.json({ events: [], totalCount: 0, page: 1, size: 50 });
+      if (url.includes("/api/admin/usage/timeseries")) return Response.json({
+        available: true, grain: "day", window: "30d", windowLabel: "近 30 天",
+        start: "2024-01-01T00:00:00.000Z", end: "2024-01-30T23:59:59.999Z",
+        source: "spend_logs_v2_global", timezone: "Asia/Shanghai", limited: false, maxPages: null,
+        buckets: [], totals: { totalTokens: 0, promptTokens: 0, completionTokens: 0, requests: 0, spend: 0 },
+        topModels: [],
+      });
+      return Response.json({});
+    }) as typeof fetch;
+
+    render(<AdminSection role="admin" />);
+
+    await waitFor(() => {
+      expect(screen.queryAllByRole("button", { name: "更多操作" }).length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "更多操作" })[0]);
+
+    await waitFor(() => {
+      expect(screen.queryByText("查看详情")).not.toBeNull();
+    });
+
+    expect(screen.queryByRole("menuitem", { name: "查看详情" })).not.toBeNull();
   });
 });

@@ -4,20 +4,25 @@ import { Button } from "@cloudflare/kumo/components/button";
 import { Collapsible } from "@cloudflare/kumo/components/collapsible";
 import { Combobox } from "@cloudflare/kumo/components/combobox";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
+import { DropdownMenu } from "@cloudflare/kumo/components/dropdown";
 import { Empty } from "@cloudflare/kumo/components/empty";
 import { Field } from "@cloudflare/kumo/components/field";
 import { Input } from "@cloudflare/kumo/components/input";
 import { LayerCard } from "@cloudflare/kumo/components/layer-card";
 import { Loader, SkeletonLine } from "@cloudflare/kumo/components/loader";
 import { Pagination } from "@cloudflare/kumo/components/pagination";
+import { Popover } from "@cloudflare/kumo/components/popover";
 import { Select } from "@cloudflare/kumo/components/select";
 import { SensitiveInput } from "@cloudflare/kumo/components/sensitive-input";
 import { Switch } from "@cloudflare/kumo/components/switch";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
+import { Toasty } from "@cloudflare/kumo/components/toast";
+import { Tooltip, TooltipProvider } from "@cloudflare/kumo/components/tooltip";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { QueryClient, QueryClientProvider, HydrationBoundary } from "@tanstack/react-query";
 import { UsageChart, type UsageTimeseries } from "./chart";
+import { useToast } from "./hooks/use-toast";
 import { useDashboard } from "./hooks/use-dashboard";
 import type { Dashboard } from "./schemas";
 
@@ -264,14 +269,43 @@ function budgetLabel(tone: "danger" | "warning" | "success"): string {
   return "正常";
 }
 
+function BudgetInfoPopover() {
+  return (
+    <Popover>
+      <Popover.Trigger
+        render={
+          <button
+            type="button"
+            className="inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold leading-none text-kumo-subtle ring-1 ring-kumo-line hover:bg-kumo-tint hover:text-kumo-default focus:outline-none focus-visible:ring-2 focus-visible:ring-kumo-focus"
+            aria-label="预算阈值说明"
+          >
+            ?
+          </button>
+        }
+      />
+      <Popover.Content className="max-w-xs p-4">
+        <Popover.Title className="mb-2 text-sm font-semibold text-kumo-strong">预算阈值说明</Popover.Title>
+        <Popover.Description className="space-y-1 text-xs text-kumo-subtle">
+          <p><span className="font-semibold text-kumo-success">正常</span>：花费低于预算的 80%</p>
+          <p><span className="font-semibold text-kumo-warning">即将超支</span>：花费达到预算的 80%–99%</p>
+          <p><span className="font-semibold text-kumo-danger">超预算</span>：花费已达到或超过预算</p>
+        </Popover.Description>
+      </Popover.Content>
+    </Popover>
+  );
+}
+
 function BudgetBadge({ spend, maxBudget }: { spend: unknown; maxBudget: unknown }) {
   const tone = statusTone(spend, maxBudget);
   if (!tone) return null;
   const variant = tone === "danger" ? "error" : tone === "warning" ? "warning" : "success";
   return (
-    <Badge variant={variant} className="ml-2">
-      {budgetLabel(tone)}
-    </Badge>
+    <>
+      <Badge variant={variant} className="ml-2">
+        {budgetLabel(tone)}
+      </Badge>
+      <BudgetInfoPopover />
+    </>
   );
 }
 
@@ -746,18 +780,21 @@ export function UsagePanel() {
               </button>
               {grains.map((item) => {
                 const disabled = !supportsWindowForGrain(item, windowKey, config);
+                const disabledHint = disabled
+                  ? `${selectedWindowLabel} 不支持${usageGrainLabels[item] ?? item}粒度`
+                  : undefined;
                 return (
-                  <button
-                    key={item}
-                    type="button"
-                    className={controlPillClass(grainMode === item, disabled)}
-                    aria-pressed={grainMode === item}
-                    disabled={disabled}
-                    title={disabled ? `${selectedWindowLabel} 不支持${usageGrainLabels[item] ?? item}粒度` : undefined}
-                    onClick={() => handleManualGrainClick(item)}
-                  >
-                    {usageGrainLabels[item] ?? item}
-                  </button>
+                  <Tooltip key={item} content={disabledHint}>
+                    <button
+                      type="button"
+                      className={controlPillClass(grainMode === item, disabled)}
+                      aria-pressed={grainMode === item}
+                      disabled={disabled}
+                      onClick={() => handleManualGrainClick(item)}
+                    >
+                      {usageGrainLabels[item] ?? item}
+                    </button>
+                  </Tooltip>
                 );
               })}
             </div>
@@ -878,10 +915,14 @@ export function HeroStats({ initialData: _initialData }: { initialData?: Initial
   return (
     <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
       <StatTile accent="info" label="当前身份">
-        <p className="mt-4 truncate text-2xl font-semibold text-kumo-strong" title={email}>{email}</p>
-        <p className="mt-3 truncate font-mono text-sm text-kumo-subtle">
-          {stats.litellmUserId == null ? "—" : `LiteLLM: ${stats.litellmUserId}`}
-        </p>
+        <Tooltip content={email}>
+          <p className="mt-4 truncate text-2xl font-semibold text-kumo-strong">{email}</p>
+        </Tooltip>
+        <Tooltip content={stats.litellmUserId == null ? null : `LiteLLM: ${stats.litellmUserId}`}>
+          <p className="mt-3 truncate font-mono text-sm text-kumo-subtle">
+            {stats.litellmUserId == null ? "—" : `LiteLLM: ${stats.litellmUserId}`}
+          </p>
+        </Tooltip>
       </StatTile>
       <StatTile accent="brand" label="累计花费">
         <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">{fmt(stats.totalSpend)}</p>
@@ -1148,7 +1189,8 @@ type CreateKeyResult = {
   keyId: string;
 };
 
-export function CreateKeyButton() {
+export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) {
+  const toast = useToast();
   const [open, setOpen] = useState(false);
   const [alias, setAlias] = useState("");
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
@@ -1206,12 +1248,16 @@ export function CreateKeyButton() {
           expires: data.expires,
           keyId: data.keyId,
         });
+        toast.success("Key 已创建", data.keyAlias ?? trimmed);
+        onRefresh?.();
       },
       onError: (err: unknown) => {
-        setAliasError(createKeyErrorMessage(err));
+        const msg = createKeyErrorMessage(err);
+        setAliasError(msg);
+        toast.error("创建失败", msg);
       },
     });
-  }, [alias, selectedModels, budget, duration, createKey]);
+  }, [alias, selectedModels, budget, duration, createKey, toast, onRefresh]);
 
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     setOpen(nextOpen);
@@ -1669,16 +1715,31 @@ function AdminUsersTable() {
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">累计消费</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">团队数</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">最大预算</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle" />
               </Table.Row>
             </Table.Header>
             <Table.Body>
               {data.users.map((user) => (
                 <Table.Row key={user.userId} className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
-                  <Table.Cell className="py-3 pl-5 pr-3 font-mono text-kumo-default">{text(user.email)}</Table.Cell>
+                  <Table.Cell className="py-3 pl-5 pr-3 font-mono text-kumo-default">
+                    <Tooltip content={user.email}>
+                      <span className="block max-w-[200px] truncate">{text(user.email)}</span>
+                    </Tooltip>
+                  </Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-kumo-subtle">{text(user.role)}</Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmt(user.spend)}</Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmtInt(user.teamIds.length)}</Table.Cell>
-                  <Table.Cell className="py-3 pr-5 text-right font-mono text-kumo-default">{user.maxBudget == null ? "—" : fmt(user.maxBudget)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{user.maxBudget == null ? "—" : fmt(user.maxBudget)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-5 text-right">
+                    <DropdownMenu>
+                      <DropdownMenu.Trigger aria-label="更多操作">
+                        <Button variant="ghost" size="xs">⋯</Button>
+                      </DropdownMenu.Trigger>
+                      <DropdownMenu.Content>
+                        <DropdownMenu.Item onClick={() => {}}>查看详情</DropdownMenu.Item>
+                      </DropdownMenu.Content>
+                    </DropdownMenu>
+                  </Table.Cell>
                 </Table.Row>
               ))}
             </Table.Body>
@@ -1745,17 +1806,32 @@ function AdminTeamsTable() {
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">消费</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">TPM</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">RPM</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle" />
               </Table.Row>
             </Table.Header>
             <Table.Body>
               {data.teams.map((team) => (
                 <Table.Row key={team.id} className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
-                  <Table.Cell className="py-3 pl-5 pr-3 font-mono text-xs text-kumo-subtle">{text(team.id)}</Table.Cell>
+                  <Table.Cell className="py-3 pl-5 pr-3 font-mono text-xs text-kumo-subtle">
+                    <Tooltip content={team.id}>
+                      <span className="block max-w-[120px] truncate">{text(team.id)}</span>
+                    </Tooltip>
+                  </Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-kumo-default">{text(team.alias)}</Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-kumo-subtle">{team.models.length > 0 ? team.models.join(", ") : "—"}</Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmt(team.spend)}</Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{team.tpmLimit == null ? "—" : fmtInt(team.tpmLimit)}</Table.Cell>
-                  <Table.Cell className="py-3 pr-5 text-right font-mono text-kumo-default">{team.rpmLimit == null ? "—" : fmtInt(team.rpmLimit)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{team.rpmLimit == null ? "—" : fmtInt(team.rpmLimit)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-5 text-right">
+                    <DropdownMenu>
+                      <DropdownMenu.Trigger aria-label="更多操作">
+                        <Button variant="ghost" size="xs">⋯</Button>
+                      </DropdownMenu.Trigger>
+                      <DropdownMenu.Content>
+                        <DropdownMenu.Item onClick={() => {}}>查看详情</DropdownMenu.Item>
+                      </DropdownMenu.Content>
+                    </DropdownMenu>
+                  </Table.Cell>
                 </Table.Row>
               ))}
             </Table.Body>
@@ -1923,18 +1999,21 @@ function AdminGlobalUsage() {
               </button>
               {grains.map((item) => {
                 const disabled = !supportsWindowForGrain(item, windowKey, config);
+                const disabledHint = disabled
+                  ? `${selectedWindowLabel} 不支持${usageGrainLabels[item] ?? item}粒度`
+                  : undefined;
                 return (
-                  <button
-                    key={item}
-                    type="button"
-                    className={controlPillClass(grainMode === item, disabled)}
-                    aria-pressed={grainMode === item}
-                    disabled={disabled}
-                    title={disabled ? `${selectedWindowLabel} 不支持${usageGrainLabels[item] ?? item}粒度` : undefined}
-                    onClick={() => handleManualGrainClick(item)}
-                  >
-                    {usageGrainLabels[item] ?? item}
-                  </button>
+                  <Tooltip key={item} content={disabledHint}>
+                    <button
+                      type="button"
+                      className={controlPillClass(grainMode === item, disabled)}
+                      aria-pressed={grainMode === item}
+                      disabled={disabled}
+                      onClick={() => handleManualGrainClick(item)}
+                    >
+                      {usageGrainLabels[item] ?? item}
+                    </button>
+                  </Tooltip>
                 );
               })}
             </div>
@@ -2034,6 +2113,7 @@ function AdminAuditFeed() {
                 <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">对象类型</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">对象 ID</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">详情</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle" />
               </Table.Row>
             </Table.Header>
             <Table.Body>
@@ -2042,10 +2122,18 @@ function AdminAuditFeed() {
                   <Table.Row className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
                     <Table.Cell className="py-3 pl-5 pr-3 font-mono text-xs text-kumo-subtle">{event.createdAt ? event.createdAt.slice(0, 19).replace("T", " ") : "—"}</Table.Cell>
                     <Table.Cell className="py-3 pr-3 text-kumo-default">{text(event.action)}</Table.Cell>
-                    <Table.Cell className="py-3 pr-3 text-kumo-default">{text(event.actorUserEmail ?? event.actorUserId)}</Table.Cell>
+                    <Table.Cell className="py-3 pr-3 text-kumo-default">
+                      <Tooltip content={event.actorUserEmail ?? event.actorUserId}>
+                        <span className="block max-w-[160px] truncate">{text(event.actorUserEmail ?? event.actorUserId)}</span>
+                      </Tooltip>
+                    </Table.Cell>
                     <Table.Cell className="py-3 pr-3 text-kumo-subtle">{text(event.objectType)}</Table.Cell>
-                    <Table.Cell className="py-3 pr-3 font-mono text-xs text-kumo-subtle">{text(event.objectId)}</Table.Cell>
-                    <Table.Cell className="py-3 pr-5">
+                    <Table.Cell className="py-3 pr-3 font-mono text-xs text-kumo-subtle">
+                      <Tooltip content={event.objectId}>
+                        <span className="block max-w-[120px] truncate">{text(event.objectId)}</span>
+                      </Tooltip>
+                    </Table.Cell>
+                    <Table.Cell className="py-3 pr-3">
                       <button
                         type="button"
                         className="text-xs font-semibold text-kumo-brand hover:text-kumo-brand-hover"
@@ -2055,10 +2143,20 @@ function AdminAuditFeed() {
                         {expandedId === event.id ? "收起" : "展开"}
                       </button>
                     </Table.Cell>
+                    <Table.Cell className="py-3 pr-5 text-right">
+                      <DropdownMenu>
+                        <DropdownMenu.Trigger aria-label="更多操作">
+                          <Button variant="ghost" size="xs">⋯</Button>
+                        </DropdownMenu.Trigger>
+                        <DropdownMenu.Content>
+                          <DropdownMenu.Item onClick={() => {}}>查看详情</DropdownMenu.Item>
+                        </DropdownMenu.Content>
+                      </DropdownMenu>
+                    </Table.Cell>
                   </Table.Row>
                   {expandedId === event.id ? (
                     <Table.Row className="border-b border-kumo-fill bg-kumo-recessed">
-                      <Table.Cell colSpan={6} className="px-5 py-4">
+                      <Table.Cell colSpan={7} className="px-5 py-4">
                         <div className="space-y-3 text-xs">
                           <div>
                             <p className="mb-1 font-semibold uppercase tracking-wider text-kumo-subtle">变更后</p>
@@ -2237,6 +2335,8 @@ export function App({ initialData, role: initialRole, dehydratedState }: AppProp
   return (
     <QueryClientProvider client={queryClient}>
       <HydrationBoundary state={dehydratedState}>
+        <Toasty>
+          <TooltipProvider delay={300}>
     <main className="container mx-auto px-4 py-10 lg:px-10 lg:py-16">
       <header className="mb-12 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-4">
@@ -2292,6 +2392,8 @@ export function App({ initialData, role: initialRole, dehydratedState }: AppProp
         <PortalErrorBanner initialData={initialData} />
       </div>
     </main>
+          </TooltipProvider>
+        </Toasty>
       </HydrationBoundary>
     </QueryClientProvider>
   );
