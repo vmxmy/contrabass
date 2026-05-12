@@ -1,0 +1,151 @@
+name: Portal E2E + Visual Regression
+
+on:
+  pull_request:
+    paths:
+      - "cloud/src/litellm-portal/**"
+      - "cloud/tests/e2e/**"
+      - "cloud/playwright.config.ts"
+      - "cloud/.storybook/**"
+      - "cloud/package.json"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # E2E tests — Playwright against a live wrangler dev preview
+  # ---------------------------------------------------------------------------
+  e2e:
+    name: Playwright E2E (${{ matrix.browser }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: oven-sh/setup-bun@v2
+
+      # Install root bun workspace (needed by wrangler and cloud scripts)
+      - name: Install root dependencies
+        run: bun install
+
+      # Install cloud pnpm dependencies
+      - name: Install cloud pnpm dependencies
+        working-directory: cloud
+        run: |
+          corepack enable
+          pnpm install
+
+      # Build the portal app bundle (SPA) before starting wrangler dev
+      - name: Build LiteLLM Portal SPA
+        working-directory: cloud
+        run: pnpm build:litellm-portal
+
+      # Install Playwright browser binaries
+      - name: Install Playwright browsers
+        working-directory: cloud
+        run: pnpm exec playwright install --with-deps ${{ matrix.browser }}
+
+      # Start wrangler dev in the background and wait for it to be ready.
+      # LITELLM_PORTAL_DEV_AUTH=true enables the x-litellm-portal-dev-email
+      # header injection used by the E2E specs.
+      - name: Start wrangler dev (background)
+        working-directory: cloud
+        env:
+          LITELLM_PORTAL_DEV_AUTH: "true"
+          # Provide stub values so the worker starts without real credentials.
+          # Specs that need API responses mock them via page.route().
+          LITELLM_BASE_URL: "http://localhost:14000"
+          LITELLM_MASTER_KEY: "sk-test-placeholder"
+          CLOUDFLARE_ACCESS_AUD: "test-aud"
+          CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://test.cloudflareaccess.com"
+        run: |
+          pnpm wrangler dev \
+            --config wrangler.litellm-portal.toml \
+            --port 8787 \
+            --var LITELLM_PORTAL_DEV_AUTH:true \
+            &
+          # Wait up to 30 s for the dev server to become ready
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8787/ > /dev/null 2>&1; then
+              echo "wrangler dev is ready"
+              break
+            fi
+            echo "Waiting for wrangler dev… ($i/30)"
+            sleep 1
+          done
+
+      # Run Playwright specs
+      - name: Run Playwright tests
+        working-directory: cloud
+        env:
+          CI: "true"
+          PLAYWRIGHT_BASE_URL: "http://127.0.0.1:8787"
+        run: pnpm test:e2e --project=${{ matrix.browser }}
+
+      # Always upload trace / screenshot artifacts on failure
+      - name: Upload Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ matrix.browser }}
+          path: |
+            cloud/playwright-report/
+            cloud/test-results/
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # Storybook build + Chromatic visual regression
+  # ---------------------------------------------------------------------------
+  storybook:
+    name: Storybook Build + Chromatic
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Chromatic needs full git history for baseline detection
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install root dependencies
+        run: bun install
+
+      - name: Install cloud pnpm dependencies
+        working-directory: cloud
+        run: |
+          corepack enable
+          pnpm install
+
+      - name: Build Storybook
+        working-directory: cloud
+        run: pnpm storybook:build
+
+      - name: Upload Storybook artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: storybook-static
+          path: cloud/storybook-static/
+          retention-days: 7
+
+      # TODO(project-owner): Add CHROMATIC_PROJECT_TOKEN to repository secrets,
+      # then remove the `if: false` guard below to enable visual regression gating.
+      # See https://www.chromatic.com/docs/github-actions for setup instructions.
+      - name: Publish to Chromatic
+        if: false # TODO: set to `secrets.CHROMATIC_PROJECT_TOKEN != ''` once token is configured
+        uses: chromaui/action@latest
+        with:
+          projectToken: ${{ secrets.CHROMATIC_PROJECT_TOKEN }}
+          storybookBuildDir: cloud/storybook-static
+          exitOnceUploaded: false
+          onlyChanged: true
