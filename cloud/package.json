@@ -31,6 +31,7 @@
   },
   "devDependencies": {
     "@axe-core/react": "^4.11.3",
+    "@babel/core": "^7.29.0",
     "@cloudflare/workers-types": "^4.20260508.1",
     "@commitlint/cli": "^19.8.1",
     "@commitlint/config-conventional": "^19.8.1",

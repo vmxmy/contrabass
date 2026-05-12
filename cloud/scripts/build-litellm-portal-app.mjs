@@ -1,9 +1,40 @@
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { transformAsync } from "@babel/core";
+import linguiMacroPlugin from "@lingui/babel-plugin-lingui-macro";
+import { makeConfig } from "@lingui/conf";
 import { build } from "esbuild";
 
 const entryPoint = fileURLToPath(new URL("../src/litellm-portal/app.tsx", import.meta.url));
 const outputFile = new URL("../src/litellm-portal/app.generated.ts", import.meta.url);
+const litellmPortalRoot = fileURLToPath(new URL("../src/litellm-portal/", import.meta.url));
+
+const linguiConfig = makeConfig({
+  locales: ["zh-CN", "en"],
+  sourceLocale: "zh-CN",
+  catalogs: [{ path: "src/litellm-portal/i18n/messages/{locale}", include: ["src/litellm-portal"] }],
+});
+
+const linguiMacroTransformPlugin = {
+  name: "lingui-macro-transform",
+  setup(buildContext) {
+    buildContext.onLoad({ filter: /\.[cm]?[jt]sx?$/ }, async (args) => {
+      if (!args.path.startsWith(litellmPortalRoot)) return undefined;
+      const result = await transformAsync(readFileSync(args.path, "utf8"), {
+        filename: args.path,
+        babelrc: false,
+        configFile: false,
+        parserOpts: { plugins: ["typescript", "jsx"] },
+        plugins: [[linguiMacroPlugin, { linguiConfig }]],
+        sourceMaps: false,
+      });
+      return {
+        contents: result?.code ?? "",
+        loader: args.path.endsWith(".tsx") || args.path.endsWith(".jsx") ? "tsx" : "ts",
+      };
+    });
+  },
+};
 
 const result = await build({
   entryPoints: [entryPoint],
@@ -17,6 +48,7 @@ const result = await build({
   define: {
     "process.env.NODE_ENV": "\"production\"",
   },
+  plugins: [linguiMacroTransformPlugin],
   legalComments: "none",
 });
 
