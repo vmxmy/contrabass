@@ -20,11 +20,12 @@ export type ShellProps = {
   nonce: string;
   initialData: JsonValue | null;
   children: React.ReactNode;
+  locale?: string;
 };
 
-export function Shell({ title, nonce, initialData, children }: ShellProps) {
+export function Shell({ title, nonce, initialData, children, locale = "zh-CN" }: ShellProps) {
   return (
-    <html lang="zh-CN" data-theme="kumo">
+    <html lang={locale} data-theme="kumo">
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />

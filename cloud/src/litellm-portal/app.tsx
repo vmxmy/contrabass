@@ -20,12 +20,14 @@ import { SensitiveInput } from "@cloudflare/kumo/components/sensitive-input";
 import { Switch } from "@cloudflare/kumo/components/switch";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
+import { I18nProvider } from "@lingui/react";
 import { Text } from "@cloudflare/kumo/components/text";
 import { Toasty } from "@cloudflare/kumo/components/toast";
 import { Tooltip, TooltipProvider } from "@cloudflare/kumo/components/tooltip";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { QueryClient, QueryClientProvider, HydrationBoundary } from "@tanstack/react-query";
 import { UsageChart, type UsageTimeseries } from "./chart";
+import { detectLocale, setupI18n } from "./i18n/setup";
 import { fmt, fmtInt } from "./lib/format";
 import { useToast } from "./hooks/use-toast";
 import { useDashboard } from "./hooks/use-dashboard";
@@ -1738,7 +1740,7 @@ function AdminUsersTable() {
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">累计消费</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">团队数</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">最大预算</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle" />
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle"><span className="sr-only">操作</span></Table.Head>
               </Table.Row>
             </Table.Header>
             <Table.Body>
@@ -1755,8 +1757,8 @@ function AdminUsersTable() {
                   <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{user.maxBudget == null ? "—" : fmt(user.maxBudget)}</Table.Cell>
                   <Table.Cell className="py-3 pr-5 text-right">
                     <DropdownMenu>
-                      <DropdownMenu.Trigger aria-label="更多操作">
-                        <Button variant="ghost" size="xs">⋯</Button>
+                      <DropdownMenu.Trigger aria-label="更多操作" className="rounded px-2 py-1 text-sm text-kumo-subtle hover:bg-kumo-fill hover:text-kumo-default">
+                        ⋯
                       </DropdownMenu.Trigger>
                       <DropdownMenu.Content>
                         <DropdownMenu.Item onClick={() => {}}>查看详情</DropdownMenu.Item>
@@ -1829,7 +1831,7 @@ function AdminTeamsTable() {
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">消费</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">TPM</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">RPM</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle" />
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle"><span className="sr-only">操作</span></Table.Head>
               </Table.Row>
             </Table.Header>
             <Table.Body>
@@ -1847,8 +1849,8 @@ function AdminTeamsTable() {
                   <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{team.rpmLimit == null ? "—" : fmtInt(team.rpmLimit)}</Table.Cell>
                   <Table.Cell className="py-3 pr-5 text-right">
                     <DropdownMenu>
-                      <DropdownMenu.Trigger aria-label="更多操作">
-                        <Button variant="ghost" size="xs">⋯</Button>
+                      <DropdownMenu.Trigger aria-label="更多操作" className="rounded px-2 py-1 text-sm text-kumo-subtle hover:bg-kumo-fill hover:text-kumo-default">
+                        ⋯
                       </DropdownMenu.Trigger>
                       <DropdownMenu.Content>
                         <DropdownMenu.Item onClick={() => {}}>查看详情</DropdownMenu.Item>
@@ -2136,7 +2138,7 @@ function AdminAuditFeed() {
                 <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">对象类型</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">对象 ID</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">详情</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle" />
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle"><span className="sr-only">操作</span></Table.Head>
               </Table.Row>
             </Table.Header>
             <Table.Body>
@@ -2213,7 +2215,9 @@ function AdminCard({ title, children }: { title: string; children: React.ReactNo
       <Collapsible.Root defaultOpen>
         <div className="flex items-center justify-between border-b border-kumo-line bg-kumo-elevated px-6 py-5">
           <Text variant="heading3" as="p">{title}</Text>
-          <Collapsible.DefaultTrigger className="text-sm font-medium text-kumo-brand hover:text-kumo-brand-hover" />
+          <Collapsible.DefaultTrigger className="text-sm font-medium text-kumo-brand hover:text-kumo-brand-hover">
+            <span className="sr-only">折叠或展开</span>
+          </Collapsible.DefaultTrigger>
         </div>
         <Collapsible.Panel>
           {children}
@@ -2442,8 +2446,14 @@ if (typeof document !== "undefined") {
     }
     const roleRaw = initialData?.role;
     const role: PortalRole | undefined = roleRaw === "admin" || roleRaw === "user" || roleRaw === "none" ? roleRaw : undefined;
+    const locale = detectLocale(navigator.languages?.join(",") ?? navigator.language ?? null);
+    const i18n = setupI18n(locale);
     import("react-dom/client").then(({ hydrateRoot }) => {
-      hydrateRoot(root, <App initialData={initialData} role={role} dehydratedState={dehydratedState} />);
+      hydrateRoot(root, (
+        <I18nProvider i18n={i18n}>
+          <App initialData={initialData} role={role} dehydratedState={dehydratedState} />
+        </I18nProvider>
+      ));
     });
   }
 }

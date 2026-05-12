@@ -2,11 +2,38 @@
  * @vitest-environment happy-dom
  */
 import React from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { axe } from "vitest-axe";
+import { toHaveNoViolations } from "vitest-axe/matchers";
+import { I18nProvider } from "@lingui/react";
+import { setupI18n } from "./i18n/setup";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DASHBOARD_QUERY_KEY } from "./hooks/use-dashboard";
 import type { Dashboard } from "./schemas";
+
+beforeAll(() => {
+  expect.extend({ toHaveNoViolations });
+});
+
+const i18n = setupI18n("zh-CN");
+
+function renderWithI18n(ui: React.ReactElement, dashboard?: Partial<Dashboard>) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (dashboard !== undefined) {
+    qc.setQueryData<Dashboard>(DASHBOARD_QUERY_KEY, dashboard as Dashboard);
+  }
+  return render(
+    <QueryClientProvider client={qc}>
+      <I18nProvider i18n={i18n}>{ui}</I18nProvider>
+    </QueryClientProvider>,
+  );
+}
+
+async function expectNoAxe(container: HTMLElement) {
+  const results = await axe(container);
+  expect(results).toHaveNoViolations();
+}
 
 const toastAddSpy = vi.fn();
 
@@ -64,12 +91,16 @@ vi.mock("@cloudflare/kumo/components/chart", async () => {
     TimeseriesChart: ({ data, onTimeRangeChange, ariaDescription }: any) =>
       ReactModule.createElement(
         "div",
-        {
-          "data-testid": "kumo-timeseries-chart",
-          "data-series": JSON.stringify(data),
-          role: "img",
-          "aria-label": ariaDescription,
-        },
+        { "data-testid": "kumo-timeseries-chart-wrapper" },
+        ReactModule.createElement(
+          "div",
+          {
+            "data-testid": "kumo-timeseries-chart",
+            "data-series": JSON.stringify(data),
+            role: "img",
+            "aria-label": ariaDescription,
+          },
+        ),
         ReactModule.createElement(
           "button",
           {
@@ -150,10 +181,11 @@ afterEach(() => {
 });
 
 describe("PortalTabs", () => {
-  it("uses persona-oriented labels", () => {
-    render(<PortalTabs tab="user" onSelect={() => {}} />);
+  it("uses persona-oriented labels", async () => {
+    const { container } = renderWithI18n(<PortalTabs tab="user" onSelect={() => {}} />);
     expect(screen.queryByText("个人视图")).not.toBeNull();
     expect(screen.queryByText("全局管理")).not.toBeNull();
+    await expectNoAxe(container);
   });
 
   it("keeps admins on personal view unless #admin is explicit", () => {
@@ -167,11 +199,12 @@ describe("PortalTabs", () => {
 });
 
 describe("ModelAccessCard", () => {
-  it("expands by default when model count is <= 12", () => {
+  it("expands by default when model count is <= 12", async () => {
     const dashData = { models: { models: ["gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet"], source: "team" } };
-    render(<ModelAccessCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
+    const { container } = renderWithI18n(<ModelAccessCard initialData={dashData as never} />, dashData);
     expect(screen.queryByText("团队可用模型")).not.toBeNull();
     expect(screen.queryByText("gpt-4o")).not.toBeNull();
+    await expectNoAxe(container);
   });
 
   it("collapses by default and shows trigger when model count exceeds 12", () => {
@@ -192,9 +225,10 @@ describe("ModelAccessCard", () => {
 });
 
 describe("UsageChart", () => {
-  it("shows Kumo loader when loading", () => {
-    render(<UsageChart data={null} loading />);
+  it("shows Kumo loader when loading", async () => {
+    const { container } = renderWithI18n(<UsageChart data={null} loading />);
     expect(screen.queryByLabelText("正在加载用量图表")).not.toBeNull();
+    await expectNoAxe(container);
   });
 
   it("renders chart when usage data is provided", async () => {
@@ -221,7 +255,7 @@ describe("UsagePanel", () => {
       return Response.json(usageData);
     }) as typeof fetch;
 
-    render(<UsagePanel />);
+    const { container } = renderWithI18n(<UsagePanel />);
 
     expect(screen.queryByRole("group", { name: "时间范围预设" })).not.toBeNull();
     expect(screen.queryByText("时间粒度")).not.toBeNull();
@@ -233,6 +267,7 @@ describe("UsagePanel", () => {
       expect(screen.queryByText(/峰值/)).not.toBeNull();
     });
     expect(seen[0]).toContain("/api/usage/timeseries?grain=day&window=30d");
+    await expectNoAxe(container);
   });
 
   it("uses preset auto grain and allows one-click manual grain when valid", async () => {
@@ -329,7 +364,7 @@ describe("UsagePanel", () => {
 });
 
 describe("ApiKeysCard", () => {
-  it("renders API keys with clipboard text and collapsible model detail", () => {
+  it("renders API keys with clipboard text and collapsible model detail", async () => {
     const dashData = { keys: { totalCount: 1, items: [
       {
         id: "key-1",
@@ -341,13 +376,14 @@ describe("ApiKeysCard", () => {
         expiresAt: "—",
       },
     ] } };
-    render(<ApiKeysCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
+    const { container } = renderWithI18n(<ApiKeysCard initialData={dashData as never} />, dashData);
 
     expect(screen.queryByText("API Keys")).not.toBeNull();
     expect(screen.queryByText("创建 Key")).not.toBeNull();
     expect(screen.queryByText("primary")).not.toBeNull();
     expect(screen.queryByText("sk-lit...cret")).not.toBeNull();
     expect(screen.queryByText(/展开全部/)).not.toBeNull();
+    await expectNoAxe(container);
   });
 
   it("renders model lists for multiple API keys", () => {
@@ -420,10 +456,11 @@ describe("ApiKeysCard", () => {
 });
 
 describe("PortalErrorBanner", () => {
-  it("renders page errors from initialData prop", () => {
-    render(<PortalErrorBanner initialData={{ error: "页面数据加载失败" }} />);
+  it("renders page errors from initialData prop", async () => {
+    const { container } = renderWithI18n(<PortalErrorBanner initialData={{ error: "页面数据加载失败" }} />);
     expect(screen.queryByRole("alert")).not.toBeNull();
     expect(screen.queryAllByText("页面数据加载失败").length).toBeGreaterThan(0);
+    await expectNoAxe(container);
   });
 
   it("renders nothing when no error in initialData", () => {
@@ -432,9 +469,10 @@ describe("PortalErrorBanner", () => {
   });
 
 describe("CreateKeyButton", () => {
-  it("renders create key trigger button", () => {
-    render(<CreateKeyButton />, { wrapper: createWrapper() });
+  it("renders create key trigger button", async () => {
+    const { container } = renderWithI18n(<CreateKeyButton />);
     expect(screen.queryByText("创建 Key")).not.toBeNull();
+    await expectNoAxe(container);
   });
 
   it("shows validation error when submitting without alias", async () => {
@@ -722,13 +760,14 @@ describe("AdminSection", () => {
     }) as typeof fetch;
 
     // #when
-    render(<AdminSection role="admin" />);
+    const { container } = renderWithI18n(<AdminSection role="admin" />);
 
     // #then - both email addresses appear as table rows
     await waitFor(() => {
       expect(screen.queryByText("alice@gz-zhiyun.com")).not.toBeNull();
       expect(screen.queryByText("bob@gz-zhiyun.com")).not.toBeNull();
     });
+    await expectNoAxe(container);
   });
 
   it("AdminAuditFeed navigates to page 2 when next-page button is clicked", async () => {
