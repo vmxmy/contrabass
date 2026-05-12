@@ -53,6 +53,9 @@ export type InitialDashboardData = {
   } | null;
   usage?: { available?: boolean } | null;
   error?: string | null;
+  role?: string | null;
+  email?: string | null;
+  litellmUserId?: string | null;
 };
 
 type ModelAccess = {
@@ -2285,9 +2288,19 @@ export function App({ initialData, role: initialRole }: AppProps) {
 if (typeof document !== "undefined") {
   const root = document.getElementById("root");
   if (root) {
-    const initialData: InitialDashboardData | null = (typeof window !== "undefined" && window.__INITIAL_DATA__) ? window.__INITIAL_DATA__ : null;
+    let initialData: InitialDashboardData | null = null;
+    const dataEl = document.getElementById("initial-data");
+    if (dataEl && dataEl.textContent) {
+      try {
+        initialData = JSON.parse(dataEl.textContent) as InitialDashboardData;
+      } catch {
+        // malformed JSON — start with no data
+      }
+    }
+    const roleRaw = initialData?.role;
+    const role: PortalRole | undefined = roleRaw === "admin" || roleRaw === "user" || roleRaw === "none" ? roleRaw : undefined;
     import("react-dom/client").then(({ hydrateRoot }) => {
-      hydrateRoot(document, <App initialData={initialData} />);
+      hydrateRoot(root, <App initialData={initialData} role={role} />);
     });
   }
 }

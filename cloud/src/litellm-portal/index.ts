@@ -49,8 +49,17 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
       if (auth.ok) {
         const identityResult = await resolveIdentity(env, auth.principal);
         if (identityResult.ok) {
-          const dashboard = await loadDashboard(env, identityResult.identity);
-          const html = await renderPortalSSR(env, identityResult.identity, dashboard, nonce);
+          let dashboard: Record<string, JsonValue> | null = null;
+          let dashboardError: string | null = null;
+          try {
+            dashboard = await loadDashboard(env, identityResult.identity);
+          } catch (err) {
+            dashboardError = err instanceof Error ? err.message : "dashboard_load_failed";
+          }
+          const initialData: JsonValue = dashboard !== null
+            ? dashboard
+            : { error: dashboardError ?? "dashboard_load_failed" };
+          const html = await renderPortalSSR(env, identityResult.identity, initialData, nonce);
           return htmlResponse(html);
         }
       }

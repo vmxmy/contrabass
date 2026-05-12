@@ -86,10 +86,6 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
   delete window.__PORTAL_CONFIG;
-  delete window.__litellmPortalUsageData;
-  delete window.__litellmPortalModelAccess;
-  delete window.__litellmPortalKeys;
-  delete window.__litellmPortalError;
 });
 
 describe("PortalTabs", () => {

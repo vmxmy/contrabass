@@ -13,12 +13,21 @@ export async function renderPortalSSR(
 ): Promise<string> {
   const title = portalDisplayName(env);
 
+  const dataWithIdentity: JsonValue | null = initialData !== null
+    ? {
+        ...(initialData as Record<string, JsonValue>),
+        role: identity.role,
+        email: identity.email,
+        litellmUserId: identity.litellmUserId,
+      }
+    : null;
+
   const markup = renderToString(
     React.createElement(
       Shell,
-      { title, nonce, initialData },
+      { title, nonce, initialData: dataWithIdentity },
       React.createElement(App, {
-        initialData: initialData as import("./app").InitialDashboardData | null,
+        initialData: dataWithIdentity as import("./app").InitialDashboardData | null,
         role: identity.role,
       }),
     ),

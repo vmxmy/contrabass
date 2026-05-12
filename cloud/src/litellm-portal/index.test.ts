@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { portalAppJs } from "./app.generated";
 import { handleLiteLLMPortalRequest, type LiteLLMPortalEnv } from "./index";
 import { _clearRoleCacheForTests } from "./roles";
 
@@ -107,6 +108,12 @@ describe("litellm portal worker", () => {
     expect(js).toContain("aria-pressed");
     expect(js).toContain("Brush native");
     expect(js).toContain("ClipboardText");
+  });
+
+  it("app.generated.ts contains no CustomEvent bridge, litellm-portal: events, or __litellmPortal globals", () => {
+    expect(portalAppJs).not.toContain("CustomEvent");
+    expect(portalAppJs).not.toContain("litellm-portal:");
+    expect(portalAppJs).not.toContain("__litellmPortal");
   });
 
   it("serves an empty favicon response without requiring authentication", async () => {
