@@ -13,8 +13,10 @@ import { Select } from "@cloudflare/kumo/components/select";
 import { Switch } from "@cloudflare/kumo/components/switch";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
+import { I18nProvider } from "@lingui/react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UsageChart, type UsageTimeseries } from "./chart";
+import { detectLocale, setupI18n } from "./i18n/setup";
 
 export type InitialDashboardData = {
   me?: { email?: string | null; domain?: string | null; company?: string | null } | null;
@@ -2110,7 +2112,9 @@ function AdminCard({ title, children }: { title: string; children: React.ReactNo
       <Collapsible.Root defaultOpen>
         <div className="flex items-center justify-between border-b border-kumo-line bg-kumo-elevated px-6 py-5">
           <p className="text-lg font-semibold text-kumo-strong">{title}</p>
-          <Collapsible.DefaultTrigger className="text-sm font-medium text-kumo-brand hover:text-kumo-brand-hover" />
+          <Collapsible.DefaultTrigger className="text-sm font-medium text-kumo-brand hover:text-kumo-brand-hover">
+            <span className="sr-only">折叠或展开</span>
+          </Collapsible.DefaultTrigger>
         </div>
         <Collapsible.Panel>
           {children}
@@ -2312,8 +2316,14 @@ if (typeof document !== "undefined") {
     }
     const roleRaw = initialData?.role;
     const role: PortalRole | undefined = roleRaw === "admin" || roleRaw === "user" || roleRaw === "none" ? roleRaw : undefined;
+    const locale = detectLocale(navigator.languages?.join(",") ?? navigator.language ?? null);
+    const i18n = setupI18n(locale);
     import("react-dom/client").then(({ hydrateRoot }) => {
-      hydrateRoot(root, <App initialData={initialData} role={role} />);
+      hydrateRoot(root, (
+        <I18nProvider i18n={i18n}>
+          <App initialData={initialData} role={role} />
+        </I18nProvider>
+      ));
     });
   }
 }

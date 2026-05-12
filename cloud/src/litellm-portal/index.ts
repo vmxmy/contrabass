@@ -59,14 +59,14 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
           const initialData: JsonValue = dashboard !== null
             ? dashboard
             : { error: dashboardError ?? "dashboard_load_failed" };
-          const html = await renderPortalSSR(env, identityResult.identity, initialData, nonce);
+          const html = await renderPortalSSR(env, identityResult.identity, initialData, nonce, request);
           return htmlResponse(html);
         }
       }
     } catch {
       // fall through to unauthenticated shell
     }
-    const html = await renderPortalSSR(env, { email: "", userId: "", domain: "", litellmUserId: "", role: "none" }, null, nonce);
+    const html = await renderPortalSSR(env, { email: "", userId: "", domain: "", litellmUserId: "", role: "none" }, null, nonce, request);
     return htmlResponse(html);
   }
 

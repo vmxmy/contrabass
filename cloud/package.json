@@ -25,6 +25,7 @@
     "plane:issue": "node scripts/plane-issue.mjs"
   },
   "devDependencies": {
+    "@axe-core/react": "^4.11.3",
     "@cloudflare/workers-types": "^4.20260508.1",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^19.2.14",
@@ -33,10 +34,13 @@
     "happy-dom": "^20.9.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.5",
+    "vitest-axe": "^0.1.0",
     "wrangler": "^4.90.0"
   },
   "dependencies": {
     "@cloudflare/kumo": "^2.1.0",
+    "@lingui/core": "^6.0.1",
+    "@lingui/react": "^6.0.1",
     "echarts": "^6.0.0",
     "hono": "^4.12.18",
     "liquidjs": "^10.25.7",
