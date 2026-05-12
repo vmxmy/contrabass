@@ -25,6 +25,7 @@ export type LiteLLMPortalEnv = {
   AUDIT_AE?: AnalyticsEngineDataset;
   ROLE_CACHE_KV?: KVNamespace;
   ROLE_INVALIDATION_WEBHOOK_TOKEN?: string;
+  RATE_LIMIT_DO?: DurableObjectNamespace;
 };
 
 export type PortalPrincipal = {

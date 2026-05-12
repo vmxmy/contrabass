@@ -36,6 +36,7 @@ export function Shell({ title, nonce, initialData, children, locale = "zh-CN" }:
           <script
             type="application/json"
             id="initial-data"
+            nonce={nonce}
             dangerouslySetInnerHTML={{ __html: serializeForScript(initialData) }}
           />
         )}
