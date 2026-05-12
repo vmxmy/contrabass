@@ -1796,6 +1796,52 @@ describe("litellm portal worker", () => {
     });
   });
 
+  describe("Zod schema validation (POST /api/keys)", () => {
+    it("returns 400 with key_alias_required when keyAlias is missing from POST /api/keys body", async () => {
+      globalThis.fetch = async (input) => {
+        if (String(input).includes("/user/list")) {
+          return Response.json({
+            users: [{ user_id: "liqingying", user_email: "liqingying@gz-zhiyun.com", teams: [], spend: 0, max_budget: null, user_role: "internal_user" }],
+          });
+        }
+        return Response.json({});
+      };
+
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/keys", "liqingying@gz-zhiyun.com", {
+          method: "POST",
+          body: JSON.stringify({}),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: "key_alias_required" });
+    });
+
+    it("returns 400 with key_alias_required when keyAlias is an empty string in POST /api/keys body", async () => {
+      globalThis.fetch = async (input) => {
+        if (String(input).includes("/user/list")) {
+          return Response.json({
+            users: [{ user_id: "liqingying", user_email: "liqingying@gz-zhiyun.com", teams: [], spend: 0, max_budget: null, user_role: "internal_user" }],
+          });
+        }
+        return Response.json({});
+      };
+
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/keys", "liqingying@gz-zhiyun.com", {
+          method: "POST",
+          body: JSON.stringify({ keyAlias: "" }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: "key_alias_required" });
+    });
+  });
+
 });
 
 function portalEnv(overrides: Partial<LiteLLMPortalEnv> = {}): LiteLLMPortalEnv {
