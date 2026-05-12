@@ -38,7 +38,6 @@ export function useCreateKey() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: DASHBOARD_QUERY_KEY });
-      void queryClient.invalidateQueries({ queryKey: ["keys"] });
     },
   });
 }
