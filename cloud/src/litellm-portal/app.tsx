@@ -2448,12 +2448,23 @@ if (typeof document !== "undefined") {
     const role: PortalRole | undefined = roleRaw === "admin" || roleRaw === "user" || roleRaw === "none" ? roleRaw : undefined;
     const locale = detectLocale(navigator.languages?.join(",") ?? navigator.language ?? null);
     const i18n = setupI18n(locale);
-    import("react-dom/client").then(({ hydrateRoot }) => {
-      hydrateRoot(root, (
+
+    Promise.all([
+      import("react-dom/client"),
+      import("@tanstack/react-router"),
+      import("./router"),
+      import("./routes/__root"),
+    ]).then(([{ hydrateRoot }, { RouterProvider }, { createPortalRouter, createBrowserHistory }, { AppShell }]) => {
+      const history = createBrowserHistory();
+      const router = createPortalRouter(history, { role });
+      hydrateRoot(
+        root,
         <I18nProvider i18n={i18n}>
-          <App initialData={initialData} role={role} dehydratedState={dehydratedState} />
-        </I18nProvider>
-      ));
+          <AppShell dehydratedState={dehydratedState}>
+            <RouterProvider router={router} />
+          </AppShell>
+        </I18nProvider>,
+      );
     });
   }
 }

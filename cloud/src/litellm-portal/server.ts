@@ -6,7 +6,7 @@ interface ServerImpl {
     identity: PortalIdentity,
     initialData: JsonValue | null,
     nonce: string,
-    request?: Request,
+    requestUrl?: string,
   ): Promise<string>;
 }
 
@@ -21,8 +21,8 @@ export async function renderPortalSSR(
   identity: PortalIdentity,
   initialData: JsonValue | null,
   nonce: string,
-  request?: Request,
+  requestUrl?: string,
 ): Promise<string> {
   const impl = await loadImpl();
-  return impl.renderPortalSSR(env, identity, initialData, nonce, request);
+  return impl.renderPortalSSR(env, identity, initialData, nonce, requestUrl);
 }

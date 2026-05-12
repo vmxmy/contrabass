@@ -1,28 +1,29 @@
 import React from "react";
 import { renderToString } from "react-dom/server";
+import { RouterProvider } from "@tanstack/react-router";
 import { I18nProvider } from "@lingui/react";
 import { QueryClient, dehydrate } from "@tanstack/react-query";
 import type { JsonValue, LiteLLMPortalEnv, PortalIdentity } from "./types";
 import { Shell } from "./shell";
-import { App } from "./app";
+import { AppShell } from "./routes/__root";
 import { portalDisplayName, portalCompanyName } from "./utils";
-import { detectLocale, setupI18n } from "./i18n/setup";
+import { setupI18n } from "./i18n/setup";
 import { DASHBOARD_QUERY_KEY } from "./hooks/use-dashboard";
 import { ME_QUERY_KEY } from "./hooks/use-me";
 import { DashboardSchema, MeSchema } from "./schemas";
+import { createPortalRouter, createMemoryHistory } from "./router";
 
 export async function renderPortalSSR(
   env: LiteLLMPortalEnv,
   identity: PortalIdentity,
   initialData: JsonValue | null,
   nonce: string,
-  request?: Request,
+  requestUrl?: string,
 ): Promise<string> {
   const title = portalDisplayName(env);
 
-  const acceptLanguage = request?.headers.get("accept-language") ?? null;
-  const locale = detectLocale(acceptLanguage);
-  const i18n = setupI18n(locale);
+  // Default to zh-CN; client-side i18n re-initialises from navigator.languages.
+  const i18n = setupI18n("zh-CN");
 
   const dataWithIdentity: JsonValue | null = initialData !== null
     ? {
@@ -36,12 +37,12 @@ export async function renderPortalSSR(
   // Prefetch into a server-side QueryClient so the client can rehydrate without
   // re-fetching on first paint.
   let dehydratedState: unknown = undefined;
+  const serverQueryClient = new QueryClient({
+    defaultOptions: { queries: { staleTime: 60_000 } },
+  });
+
   if (dataWithIdentity !== null) {
     try {
-      const serverQueryClient = new QueryClient({
-        defaultOptions: { queries: { staleTime: 60_000 } },
-      });
-
       // Seed dashboard query from already-fetched SSR data (no extra network call).
       const dashboardParsed = DashboardSchema.safeParse(dataWithIdentity);
       if (dashboardParsed.success) {
@@ -70,12 +71,39 @@ export async function renderPortalSSR(
 
   // Merge dehydratedState into the script payload so the client can rehydrate
   // without an extra round-trip. The client reads `queryClient` off the parsed JSON.
-  const shellData: import("./types").JsonValue | null = dataWithIdentity !== null
+  const shellData: JsonValue | null = dataWithIdentity !== null
     ? {
-        ...(dataWithIdentity as Record<string, import("./types").JsonValue>),
-        ...(dehydratedState !== undefined ? { queryClient: dehydratedState as import("./types").JsonValue } : {}),
+        ...(dataWithIdentity as Record<string, JsonValue>),
+        ...(dehydratedState !== undefined ? { queryClient: dehydratedState as JsonValue } : {}),
       }
     : null;
+
+  // Build a memory-backed router pointing at the request URL so SSR renders
+  // the correct route without a client-side redirect flash.
+  //
+  // TanStack Router SSR quirk: createMemoryHistory must receive the full path
+  // (pathname + search) but NOT the origin; use URL.pathname when requestUrl
+  // is a full URL string.
+  const initialPath = (() => {
+    if (!requestUrl) return "/";
+    try {
+      const u = new URL(requestUrl);
+      return u.pathname + u.search;
+    } catch {
+      // requestUrl was already a path (e.g. "/admin/audit/abc")
+      return requestUrl.startsWith("/") ? requestUrl : "/";
+    }
+  })();
+
+  const role = identity.role === "admin" || identity.role === "user" || identity.role === "none"
+    ? identity.role
+    : "none";
+
+  const history = createMemoryHistory({ initialEntries: [initialPath] });
+  const router = createPortalRouter(history, { role });
+
+  // Let the router resolve the matched route before rendering to string.
+  await router.load();
 
   const markup = renderToString(
     React.createElement(
@@ -83,12 +111,12 @@ export async function renderPortalSSR(
       { i18n },
       React.createElement(
         Shell,
-        { title, nonce, initialData: shellData, locale },
-        React.createElement(App, {
-          initialData: dataWithIdentity as import("./app").InitialDashboardData | null,
-          role: identity.role,
-          dehydratedState,
-        }),
+        { title, nonce, initialData: shellData },
+        React.createElement(
+          AppShell,
+          { dehydratedState },
+          React.createElement(RouterProvider, { router }),
+        ),
       ),
     ),
   );
