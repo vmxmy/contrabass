@@ -64,5 +64,5 @@ dataset = "portal-audit"
 # Then replace the placeholder id values below with the real namespace IDs.
 [[kv_namespaces]]
 binding = "ROLE_CACHE_KV"
-id = "REPLACE_WITH_REAL_KV_NAMESPACE_ID"
-preview_id = "REPLACE_WITH_REAL_KV_PREVIEW_NAMESPACE_ID"
+id = "8493d26272f84fe1bfa0c5bd6d564ad8"
+preview_id = "cba1b4b32c054bfba72439ef48f73cf6"
