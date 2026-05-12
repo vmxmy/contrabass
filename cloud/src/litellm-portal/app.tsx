@@ -1036,6 +1036,19 @@ export function ApiKeysCard({ initialData }: { initialData?: InitialDashboardDat
     setKeys((current) => current.filter((key) => key.id !== keyId));
   }, []);
 
+  const refetchKeys = useCallback(async () => {
+    try {
+      const response = await fetch("/api/keys", { headers: { "content-type": "application/json" } });
+      if (!response.ok) return;
+      const body = await response.json().catch(() => null) as { keys?: unknown } | null;
+      if (body && Array.isArray(body.keys)) {
+        setKeys(normalizeKeys(body.keys));
+      }
+    } catch {
+      // network failure — keep current state; user can retry by reloading
+    }
+  }, []);
+
   return (
     <section className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-kumo-line bg-kumo-elevated p-6">
@@ -1043,7 +1056,7 @@ export function ApiKeysCard({ initialData }: { initialData?: InitialDashboardDat
           <p className="text-lg font-semibold text-kumo-strong">API Keys</p>
           <p className="text-sm text-kumo-subtle">仅列出当前 LiteLLM 用户拥有的密钥。</p>
         </div>
-        <CreateKeyButton />
+        <CreateKeyButton onRefresh={refetchKeys} />
       </div>
       <div className="overflow-x-auto">
         {!loaded ? (
