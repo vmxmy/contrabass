@@ -1,15 +1,17 @@
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Banner } from "@cloudflare/kumo/components/banner";
 import { Button } from "@cloudflare/kumo/components/button";
-import { ClipboardText } from "@cloudflare/kumo/components/clipboard-text";
 import { Collapsible } from "@cloudflare/kumo/components/collapsible";
+import { Combobox } from "@cloudflare/kumo/components/combobox";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
 import { Empty } from "@cloudflare/kumo/components/empty";
+import { Field } from "@cloudflare/kumo/components/field";
 import { Input } from "@cloudflare/kumo/components/input";
 import { LayerCard } from "@cloudflare/kumo/components/layer-card";
 import { Loader, SkeletonLine } from "@cloudflare/kumo/components/loader";
 import { Pagination } from "@cloudflare/kumo/components/pagination";
 import { Select } from "@cloudflare/kumo/components/select";
+import { SensitiveInput } from "@cloudflare/kumo/components/sensitive-input";
 import { Switch } from "@cloudflare/kumo/components/switch";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
@@ -1183,6 +1185,7 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
   const [models, setModels] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [aliasError, setAliasError] = useState<string | null>(null);
   const [result, setResult] = useState<CreateKeyResult | null>(null);
   const durationSelectValue = duration || NEVER_EXPIRES_VALUE;
 
@@ -1203,6 +1206,7 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
     setBudget("");
     setDuration("");
     setError(null);
+    setAliasError(null);
     setResult(null);
     setSubmitting(false);
   }, []);
@@ -1210,11 +1214,12 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
   const handleSubmit = useCallback(async () => {
     const trimmed = alias.trim();
     if (!trimmed) {
-      setError("请输入 Key 名称");
+      setAliasError("请输入 Key 名称");
       return;
     }
     setSubmitting(true);
     setError(null);
+    setAliasError(null);
     try {
       const body: Record<string, unknown> = { keyAlias: trimmed };
       if (selectedModels.length > 0) body.models = selectedModels;
@@ -1231,7 +1236,8 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(createKeyErrorMessage(data));
+        const msg = createKeyErrorMessage(data);
+        setAliasError(msg);
         return;
       }
       setResult(data as CreateKeyResult);
@@ -1285,13 +1291,12 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
                 <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">Key 名称</p>
                 <p className="text-sm font-semibold text-kumo-strong">{result.keyAlias || "—"}</p>
               </div>
-              <div className="mt-4 space-y-1">
-                <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">完整 Key</p>
-                <ClipboardText
-                  className="w-full min-w-0 text-kumo-brand"
-                  labels={{ copyAction: "复制完整 Key" }}
+              <div className="mt-4 space-y-2">
+                <SensitiveInput
+                  label="完整 Key"
                   size="lg"
-                  text={result.rawKey}
+                  readOnly
+                  defaultValue={result.rawKey}
                 />
               </div>
               {result.expires ? (
@@ -1317,47 +1322,59 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
             {error ? (
               <Banner variant="error" title="创建失败" description={error} />
             ) : null}
-            <div className="space-y-1.5">
+
+            <Field
+              label="名称"
+              required={true}
+              error={aliasError ? { message: aliasError, match: true } : undefined}
+            >
               <Input
                 id="create-key-alias"
-                label={<>名称 <span className="text-kumo-danger">*</span></>}
                 size="lg"
                 placeholder="例如：production-api"
                 value={alias}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAlias(e.target.value)}
               />
-            </div>
+            </Field>
 
             {models.length > 0 ? (
-              <div className="space-y-1.5">
-                <Select
-                  label="允许模型"
-                  className="w-full"
-                  size="lg"
-                  multiple
-                  placeholder="继承当前用户可用模型"
-                  renderValue={(value) => {
-                    const selected = selectedModelsFromValue(value);
-                    if (selected.length === 0) return "继承当前用户可用模型";
-                    if (selected.length > 3) return `${selected.slice(0, 2).join(", ")} 等 ${selected.length} 个模型`;
-                    return selected.join(", ");
-                  }}
+              <Combobox
+                multiple
+                items={models}
+                value={selectedModels}
+                onValueChange={(value) => setSelectedModels(value as string[])}
+                label="允许模型"
+                required={false}
+                description="留空则继承当前用户可用模型"
+                size="lg"
+              >
+                <Combobox.TriggerMultipleWithInput
+                  placeholder="选择模型…"
+                  renderItem={(item) => (
+                    <Combobox.Chip value={item as string}>{item as string}</Combobox.Chip>
+                  )}
                   value={selectedModels}
-                  onValueChange={(value) => setSelectedModels(selectedModelsFromValue(value))}
-                >
-                  {models.map((model) => (
-                    <Select.Option key={model} value={model}>
-                      {model}
-                    </Select.Option>
-                  ))}
-                </Select>
-              </div>
+                />
+                <Combobox.Content>
+                  <Combobox.List>
+                    {(item) => (
+                      <Combobox.Item key={item as string} value={item as string}>
+                        {item as string}
+                      </Combobox.Item>
+                    )}
+                  </Combobox.List>
+                  <Combobox.Empty>无匹配模型</Combobox.Empty>
+                </Combobox.Content>
+              </Combobox>
             ) : null}
 
-            <div className="space-y-1.5">
+            <Field
+              label="预算上限（USD）"
+              required={false}
+              description="留空表示不限"
+            >
               <Input
                 id="create-key-budget"
-                label="预算上限（USD）"
                 size="lg"
                 type="number"
                 min="0"
@@ -1366,7 +1383,7 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
                 value={budget}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBudget(e.target.value)}
               />
-            </div>
+            </Field>
 
             <div className="space-y-1.5">
               <Select
