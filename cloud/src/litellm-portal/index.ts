@@ -21,7 +21,18 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
     return new Response(null, { status: 204, headers: securityHeaders() });
   }
 
-  if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
+  // Serve the portal SPA shell for all non-asset GET requests so that
+  // path-based routes like /admin, /admin/users, /admin/audit/:id can be
+  // directly linked and deep-linked.  Asset paths (/kumo.css, /portal.js,
+  // /favicon.ico) are handled by their own branches below; /api/* goes to
+  // the Hono app at the end of this handler.
+  const isPortalPage = request.method === "GET" &&
+    !url.pathname.startsWith("/api/") &&
+    url.pathname !== "/kumo.css" &&
+    url.pathname !== "/portal.js" &&
+    url.pathname !== "/favicon.ico";
+
+  if (isPortalPage) {
     const nonce = crypto.randomUUID().replace(/-/g, "");
     const { renderPortalSSR } = await import("./server");
     try {
@@ -39,14 +50,14 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
           const initialData: JsonValue = dashboard !== null
             ? dashboard
             : { error: dashboardError ?? "dashboard_load_failed" };
-          const html = await renderPortalSSR(env, identityResult.identity, initialData, nonce);
+          const html = await renderPortalSSR(env, identityResult.identity, initialData, nonce, request.url);
           return htmlResponse(html);
         }
       }
     } catch {
       // fall through to unauthenticated shell
     }
-    const html = await renderPortalSSR(env, { email: "", userId: "", domain: "", litellmUserId: "", role: "none" }, null, nonce);
+    const html = await renderPortalSSR(env, { email: "", userId: "", domain: "", litellmUserId: "", role: "none" }, null, nonce, request.url);
     return htmlResponse(html);
   }
 
