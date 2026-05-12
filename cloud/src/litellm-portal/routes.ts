@@ -176,6 +176,13 @@ async function applyAuthMiddleware(c: Context<HonoEnv>, next: () => Promise<void
   await next();
 }
 
+async function requireAdmin(c: Context<HonoEnv>, next: () => Promise<void>): Promise<Response | void> {
+  if (c.get("identity").role !== "admin") {
+    return c.json({ error: "admin_required" }, 403);
+  }
+  await next();
+}
+
 // ---------------------------------------------------------------------------
 // One-route-per-sub-app typed chains (avoids TS2589 from long accumulation)
 // ---------------------------------------------------------------------------
@@ -350,13 +357,7 @@ const usageTimeseriesApp = new Hono<HonoEnv>()
 
 const adminSummaryApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
-  .use("/admin/*", async (c, next) => {
-    const identity = c.get("identity");
-    if (identity.role !== "admin") {
-      return c.json({ error: "admin_required" }, 403);
-    }
-    await next();
-  })
+  .use("/admin/*", requireAdmin)
   .get("/admin/summary", async (c) => {
     const [userPage, teams] = await Promise.all([
       listAllUsers(c.env, { page: 1, size: ADMIN_SUMMARY_PAGE_SIZE }),
@@ -391,13 +392,7 @@ const adminSummaryApp = new Hono<HonoEnv>()
 
 const adminUsersApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
-  .use("/admin/*", async (c, next) => {
-    const identity = c.get("identity");
-    if (identity.role !== "admin") {
-      return c.json({ error: "admin_required" }, 403);
-    }
-    await next();
-  })
+  .use("/admin/*", requireAdmin)
   .get("/admin/users", async (c) => {
     const url = new URL(c.req.url);
     const page = sanitizeIntParam(url.searchParams.get("page"), 1);
@@ -420,13 +415,7 @@ const adminUsersApp = new Hono<HonoEnv>()
 
 const adminTeamsApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
-  .use("/admin/*", async (c, next) => {
-    const identity = c.get("identity");
-    if (identity.role !== "admin") {
-      return c.json({ error: "admin_required" }, 403);
-    }
-    await next();
-  })
+  .use("/admin/*", requireAdmin)
   .get("/admin/teams", async (c) => {
     const teams = await listAllTeams(c.env);
     return c.json(AdminTeamsSchema.parse({ teams: teams.map(publicTeam) }));
@@ -434,13 +423,7 @@ const adminTeamsApp = new Hono<HonoEnv>()
 
 const adminAuditApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
-  .use("/admin/*", async (c, next) => {
-    const identity = c.get("identity");
-    if (identity.role !== "admin") {
-      return c.json({ error: "admin_required" }, 403);
-    }
-    await next();
-  })
+  .use("/admin/*", requireAdmin)
   .get("/admin/audit", async (c) => {
     const url = new URL(c.req.url);
     const page = sanitizeIntParam(url.searchParams.get("page"), 1);
@@ -464,13 +447,7 @@ const adminAuditApp = new Hono<HonoEnv>()
 
 const adminUsageTimeseriesApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
-  .use("/admin/*", async (c, next) => {
-    const identity = c.get("identity");
-    if (identity.role !== "admin") {
-      return c.json({ error: "admin_required" }, 403);
-    }
-    await next();
-  })
+  .use("/admin/*", requireAdmin)
   .get("/admin/usage/timeseries", async (c) => {
     const parsed = parseUsageTimeseriesRequest(new URL(c.req.url));
     if (!parsed.ok) {

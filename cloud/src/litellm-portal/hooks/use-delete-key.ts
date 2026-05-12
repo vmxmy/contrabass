@@ -43,7 +43,6 @@ export function useDeleteKey() {
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: DASHBOARD_QUERY_KEY });
-      void queryClient.invalidateQueries({ queryKey: ["keys"] });
     },
   });
 }

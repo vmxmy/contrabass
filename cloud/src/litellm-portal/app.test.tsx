@@ -121,7 +121,7 @@ describe("PortalTabs", () => {
 describe("ModelAccessCard", () => {
   it("expands by default when model count is <= 12", () => {
     const dashData = { models: { models: ["gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet"], source: "team" } };
-    render(<ModelAccessCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
+    render(<ModelAccessCard />, { wrapper: createWrapper(dashData) });
     expect(screen.queryByText("团队可用模型")).not.toBeNull();
     expect(screen.queryByText("gpt-4o")).not.toBeNull();
   });
@@ -129,7 +129,7 @@ describe("ModelAccessCard", () => {
   it("collapses by default and shows trigger when model count exceeds 12", () => {
     const models = Array.from({ length: 15 }, (_, i) => `model-${i + 1}`);
     const dashData = { models: { models, source: "team" } };
-    render(<ModelAccessCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
+    render(<ModelAccessCard />, { wrapper: createWrapper(dashData) });
     expect(screen.queryByText("团队可用模型")).not.toBeNull();
     expect(screen.queryByText("model-13")).toBeNull();
     expect(screen.queryByText(/展开全部 15 个模型/)).not.toBeNull();
@@ -137,7 +137,7 @@ describe("ModelAccessCard", () => {
 
   it("renders initial model list from initialData prop", () => {
     const dashData = { models: { models: ["gpt-4o", "deepseek-v3"], source: "configured" } };
-    render(<ModelAccessCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
+    render(<ModelAccessCard />, { wrapper: createWrapper(dashData) });
     expect(screen.queryByText("gpt-4o")).not.toBeNull();
     expect(screen.queryByText("deepseek-v3")).not.toBeNull();
   });
@@ -293,7 +293,7 @@ describe("ApiKeysCard", () => {
         expiresAt: "—",
       },
     ] } };
-    render(<ApiKeysCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
+    render(<ApiKeysCard />, { wrapper: createWrapper(dashData) });
 
     expect(screen.queryByText("API Keys")).not.toBeNull();
     expect(screen.queryByText("创建 Key")).not.toBeNull();
@@ -323,7 +323,7 @@ describe("ApiKeysCard", () => {
         expiresAt: null,
       },
     ] } };
-    render(<ApiKeysCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
+    render(<ApiKeysCard />, { wrapper: createWrapper(dashData) });
 
     expect(screen.queryByText("team-inherited")).not.toBeNull();
     expect(screen.queryByText("explicit")).not.toBeNull();
@@ -335,7 +335,7 @@ describe("ApiKeysCard", () => {
     const dashData = { keys: { totalCount: 1, items: [
       { id: "k1", alias: "init-key", displayKey: "sk-lit...init", models: [], spend: 0, maxBudget: null, expiresAt: null },
     ] } };
-    render(<ApiKeysCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
+    render(<ApiKeysCard />, { wrapper: createWrapper(dashData) });
     expect(screen.queryByText("init-key")).not.toBeNull();
   });
 
@@ -353,7 +353,7 @@ describe("ApiKeysCard", () => {
         expiresAt: null,
       },
     ] } };
-    render(<ApiKeysCard initialData={dashData as never} />, { wrapper: createWrapper(dashData) });
+    render(<ApiKeysCard />, { wrapper: createWrapper(dashData) });
     fireEvent.click(screen.getByText("删除"));
 
     await waitFor(() => {
