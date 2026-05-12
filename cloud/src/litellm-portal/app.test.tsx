@@ -438,8 +438,6 @@ describe("CreateKeyButton", () => {
   });
 
   it("shows validation error when submitting without alias", async () => {
-    globalThis.fetch = vi.fn(async () => Response.json({ models: [] })) as typeof fetch;
-
     render(<CreateKeyButton />, { wrapper: createWrapper() });
     const trigger = screen.getByText("创建 Key");
     fireEvent.click(trigger);
@@ -460,7 +458,6 @@ describe("CreateKeyButton", () => {
   it("shows a precise duplicate-name error when key alias already exists", async () => {
     globalThis.fetch = vi.fn(async (input, init) => {
       const url = String(input);
-      if (url.includes("/api/models")) return Response.json({ models: [] });
       if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
         return Response.json({
           error: "key_alias_conflict",
@@ -500,7 +497,6 @@ describe("CreateKeyButton", () => {
     });
     globalThis.fetch = vi.fn(async (input, init) => {
       const url = String(input);
-      if (url.includes("/api/models")) return Response.json({ models: ["gpt-4o-mini"] });
       if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
         return Response.json({
           rawKey: "sk-new-key-123",
@@ -512,7 +508,7 @@ describe("CreateKeyButton", () => {
       return Response.json({});
     }) as typeof fetch;
 
-    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    render(<CreateKeyButton />, { wrapper: createWrapper({ models: { models: ["gpt-4o-mini"] } }) });
     fireEvent.click(screen.getByText("创建 Key"));
 
     await waitFor(() => {
@@ -545,7 +541,6 @@ describe("CreateKeyButton", () => {
     globalThis.fetch = vi.fn(async (input, init) => {
       const url = String(input);
       calls.push({ method: (init as RequestInit)?.method, url });
-      if (url.includes("/api/models")) return Response.json({ models: ["gpt-4o-mini"] });
       if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
         return Response.json({
           rawKey: "sk-new-key-123",
@@ -557,7 +552,7 @@ describe("CreateKeyButton", () => {
       return Response.json({});
     }) as typeof fetch;
 
-    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    render(<CreateKeyButton />, { wrapper: createWrapper({ models: { models: ["gpt-4o-mini"] } }) });
     const trigger = screen.getByText("创建 Key");
     fireEvent.click(trigger);
 
@@ -583,8 +578,6 @@ describe("CreateKeyButton", () => {
   });
 
   it("shows Field error on alias when submitting empty form (spec 6.2)", async () => {
-    globalThis.fetch = vi.fn(async () => Response.json({ models: [] })) as typeof fetch;
-
     render(<CreateKeyButton />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByText("创建 Key"));
 
@@ -605,7 +598,6 @@ describe("CreateKeyButton", () => {
   it("shows Field error for duplicate alias returned from backend (spec 6.2)", async () => {
     globalThis.fetch = vi.fn(async (input, init) => {
       const url = String(input);
-      if (url.includes("/api/models")) return Response.json({ models: [] });
       if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
         return Response.json(
           { error: "key_alias_conflict", keyAlias: "my-key", message: "already exists" },
@@ -634,13 +626,7 @@ describe("CreateKeyButton", () => {
   });
 
   it("renders Combobox for model selection when models are available (spec 6.3)", async () => {
-    globalThis.fetch = vi.fn(async (input) => {
-      const url = String(input);
-      if (url.includes("/api/models")) return Response.json({ models: ["gpt-4o-mini", "claude-3-5-sonnet"] });
-      return Response.json({});
-    }) as typeof fetch;
-
-    render(<CreateKeyButton />, { wrapper: createWrapper() });
+    render(<CreateKeyButton />, { wrapper: createWrapper({ models: { models: ["gpt-4o-mini", "claude-3-5-sonnet"] } }) });
     fireEvent.click(screen.getByText("创建 Key"));
 
     await waitFor(() => {
@@ -661,7 +647,6 @@ describe("CreateKeyButton", () => {
   it("SensitiveInput defaults to masked (spec 6.4)", async () => {
     globalThis.fetch = vi.fn(async (input, init) => {
       const url = String(input);
-      if (url.includes("/api/models")) return Response.json({ models: [] });
       if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
         return Response.json({
           rawKey: "sk-secret-abc",
