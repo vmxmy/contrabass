@@ -3,7 +3,7 @@ import { jsonResponse, roundCurrency, sumDefinedNumbers } from "./utils";
 import { listAllUsers, listAllTeams, listAuditEvents, publicTeam } from "./litellm";
 import { parseUsageTimeseriesRequest, readGlobalUsageTimeseries } from "./timeseries";
 
-const ADMIN_SUMMARY_PAGE_SIZE = 200;
+const ADMIN_SUMMARY_PAGE_SIZE = 100;
 
 function sanitizeIntParam(value: string | null, fallback: number): number {
   if (value === null) return fallback;

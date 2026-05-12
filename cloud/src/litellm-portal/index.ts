@@ -7,12 +7,12 @@ import {
   htmlResponse,
   javascriptResponse,
   jsonResponse,
+  portalCompanyName,
   roundCurrency,
   securityHeaders,
   sumDefinedNumbers,
   uniqueSorted,
 } from "./utils";
-import { portalCompanyName, renderPortalHtml } from "./html";
 import {
   configuredAllowedModels,
   createKey,
@@ -42,7 +42,32 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
   }
 
   if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
-    return htmlResponse(renderPortalHtml(env));
+    const nonce = crypto.randomUUID().replace(/-/g, "");
+    const { renderPortalSSR } = await import("./server");
+    try {
+      const auth = await authenticateRequest(request, env);
+      if (auth.ok) {
+        const identityResult = await resolveIdentity(env, auth.principal);
+        if (identityResult.ok) {
+          let dashboard: Record<string, JsonValue> | null = null;
+          let dashboardError: string | null = null;
+          try {
+            dashboard = await loadDashboard(env, identityResult.identity);
+          } catch (err) {
+            dashboardError = err instanceof Error ? err.message : "dashboard_load_failed";
+          }
+          const initialData: JsonValue = dashboard !== null
+            ? dashboard
+            : { error: dashboardError ?? "dashboard_load_failed" };
+          const html = await renderPortalSSR(env, identityResult.identity, initialData, nonce);
+          return htmlResponse(html);
+        }
+      }
+    } catch {
+      // fall through to unauthenticated shell
+    }
+    const html = await renderPortalSSR(env, { email: "", userId: "", domain: "", litellmUserId: "", role: "none" }, null, nonce);
+    return htmlResponse(html);
   }
 
   if (request.method === "GET" && url.pathname === "/kumo.css") {
@@ -103,7 +128,7 @@ async function routeApiRequest(
   }
 
   if (request.method === "GET" && url.pathname === "/api/dashboard") {
-    return jsonResponse(await readDashboard(env, identity));
+    return jsonResponse(await loadDashboard(env, identity));
   }
 
   if (request.method === "GET" && url.pathname === "/api/models") {
@@ -244,7 +269,7 @@ async function routeApiRequest(
   return jsonResponse({ error: "not_found" }, 404);
 }
 
-async function readDashboard(
+export async function loadDashboard(
   env: LiteLLMPortalEnv,
   identity: PortalIdentity,
 ): Promise<Record<string, JsonValue>> {

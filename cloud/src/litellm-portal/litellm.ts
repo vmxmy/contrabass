@@ -496,7 +496,7 @@ function csv(value: string | undefined): string[] {
     .filter((entry) => entry.length > 0);
 }
 
-const ADMIN_PAGE_SIZE_MAX = 200;
+const ADMIN_PAGE_SIZE_MAX = 100;
 const ADMIN_PAGE_SIZE_DEFAULT = 50;
 
 function clampAdminPageSize(size: number | undefined): number {

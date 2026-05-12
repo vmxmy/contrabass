@@ -1,4 +1,12 @@
-import type { JsonValue } from "./types";
+import type { JsonValue, LiteLLMPortalEnv } from "./types";
+
+export function portalCompanyName(env: LiteLLMPortalEnv): string {
+  return env.LITELLM_PORTAL_COMPANY_NAME?.trim() || "gz-zhiyun";
+}
+
+export function portalDisplayName(env: LiteLLMPortalEnv): string {
+  return env.LITELLM_PORTAL_DISPLAY_NAME?.trim() || "智云AI管理平台";
+}
 
 export function escapeHtml(str: string): string {
   return str

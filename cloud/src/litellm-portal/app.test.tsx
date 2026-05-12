@@ -86,10 +86,6 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
   delete window.__PORTAL_CONFIG;
-  delete window.__litellmPortalUsageData;
-  delete window.__litellmPortalModelAccess;
-  delete window.__litellmPortalKeys;
-  delete window.__litellmPortalError;
 });
 
 describe("PortalTabs", () => {
@@ -111,38 +107,23 @@ describe("PortalTabs", () => {
 
 describe("ModelAccessCard", () => {
   it("expands by default when model count is <= 12", () => {
-    window.__litellmPortalModelAccess = {
-      models: ["gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet"],
-      source: "team",
-    };
-    render(<ModelAccessCard />);
+    render(<ModelAccessCard initialData={{ models: { models: ["gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet"], source: "team" } }} />);
     expect(screen.queryByText("团队可用模型")).not.toBeNull();
     expect(screen.queryByText("gpt-4o")).not.toBeNull();
   });
 
   it("collapses by default and shows trigger when model count exceeds 12", () => {
     const models = Array.from({ length: 15 }, (_, i) => `model-${i + 1}`);
-    window.__litellmPortalModelAccess = { models, source: "team" };
-    render(<ModelAccessCard />);
+    render(<ModelAccessCard initialData={{ models: { models, source: "team" } }} />);
     expect(screen.queryByText("团队可用模型")).not.toBeNull();
     expect(screen.queryByText("model-13")).toBeNull();
     expect(screen.queryByText(/展开全部 15 个模型/)).not.toBeNull();
   });
 
-  it("updates model list when CustomEvent is dispatched", async () => {
-    window.__litellmPortalModelAccess = { models: ["gpt-4o"], source: "team" };
-    render(<ModelAccessCard />);
+  it("renders initial model list from initialData prop", () => {
+    render(<ModelAccessCard initialData={{ models: { models: ["gpt-4o", "deepseek-v3"], source: "configured" } }} />);
     expect(screen.queryByText("gpt-4o")).not.toBeNull();
-
-    window.dispatchEvent(
-      new CustomEvent("litellm-portal:models", {
-        detail: { models: ["gpt-4o", "deepseek-v3"], source: "configured" },
-      }),
-    );
-
-    await waitFor(() => {
-      expect(screen.queryByText("deepseek-v3")).not.toBeNull();
-    });
+    expect(screen.queryByText("deepseek-v3")).not.toBeNull();
   });
 });
 
@@ -285,7 +266,7 @@ describe("UsagePanel", () => {
 
 describe("ApiKeysCard", () => {
   it("renders API keys with clipboard text and collapsible model detail", () => {
-    window.__litellmPortalKeys = [
+    render(<ApiKeysCard initialData={{ keys: { totalCount: 1, items: [
       {
         id: "key-1",
         alias: "primary",
@@ -295,9 +276,7 @@ describe("ApiKeysCard", () => {
         maxBudget: 20,
         expiresAt: "—",
       },
-    ];
-
-    render(<ApiKeysCard />);
+    ] } }} />);
 
     expect(screen.queryByText("API Keys")).not.toBeNull();
     expect(screen.queryByText("创建 Key")).not.toBeNull();
@@ -307,7 +286,7 @@ describe("ApiKeysCard", () => {
   });
 
   it("renders model lists for multiple API keys", () => {
-    window.__litellmPortalKeys = [
+    render(<ApiKeysCard initialData={{ keys: { totalCount: 2, items: [
       {
         id: "key-1",
         alias: "team-inherited",
@@ -326,9 +305,7 @@ describe("ApiKeysCard", () => {
         maxBudget: 20,
         expiresAt: null,
       },
-    ];
-
-    render(<ApiKeysCard />);
+    ] } }} />);
 
     expect(screen.queryByText("team-inherited")).not.toBeNull();
     expect(screen.queryByText("explicit")).not.toBeNull();
@@ -336,21 +313,17 @@ describe("ApiKeysCard", () => {
     expect(screen.queryAllByText("gpt-5.5").length).toBe(2);
   });
 
-  it("updates keys from CustomEvent", async () => {
-    render(<ApiKeysCard />);
-    window.dispatchEvent(
-      new CustomEvent("litellm-portal:keys", {
-        detail: [{ alias: "event-key", displayKey: "sk-lit...vent", models: [], spend: 0, maxBudget: null, expiresAt: null }],
-      }),
-    );
-
-    await waitFor(() => {
-      expect(screen.queryByText("event-key")).not.toBeNull();
-    });
+  it("renders initial keys from initialData prop", () => {
+    render(<ApiKeysCard initialData={{ keys: { totalCount: 1, items: [
+      { id: "k1", alias: "init-key", displayKey: "sk-lit...init", models: [], spend: 0, maxBudget: null, expiresAt: null },
+    ] } }} />);
+    expect(screen.queryByText("init-key")).not.toBeNull();
   });
 
   it("deletes an API key after confirmation", async () => {
-    window.__litellmPortalKeys = [
+    globalThis.fetch = vi.fn(async () => new Response(null, { status: 204 })) as typeof fetch;
+
+    render(<ApiKeysCard initialData={{ keys: { totalCount: 1, items: [
       {
         id: "key-1",
         alias: "primary",
@@ -360,12 +333,7 @@ describe("ApiKeysCard", () => {
         maxBudget: 20,
         expiresAt: null,
       },
-    ];
-    const refreshListener = vi.fn();
-    window.addEventListener("litellm-portal:refresh", refreshListener);
-    globalThis.fetch = vi.fn(async () => new Response(null, { status: 204 })) as typeof fetch;
-
-    render(<ApiKeysCard />);
+    ] } }} />);
     fireEvent.click(screen.getByText("删除"));
 
     await waitFor(() => {
@@ -380,20 +348,19 @@ describe("ApiKeysCard", () => {
       method: "DELETE",
       headers: { "content-type": "application/json" },
     });
-    expect(refreshListener).toHaveBeenCalledTimes(1);
-    window.removeEventListener("litellm-portal:refresh", refreshListener);
   });
 });
 
 describe("PortalErrorBanner", () => {
-  it("renders page errors from CustomEvent", async () => {
-    render(<PortalErrorBanner />);
-    window.dispatchEvent(new CustomEvent("litellm-portal:error", { detail: "页面数据加载失败" }));
+  it("renders page errors from initialData prop", () => {
+    render(<PortalErrorBanner initialData={{ error: "页面数据加载失败" }} />);
+    expect(screen.queryByRole("alert")).not.toBeNull();
+    expect(screen.queryAllByText("页面数据加载失败").length).toBeGreaterThan(0);
+  });
 
-    await waitFor(() => {
-      expect(screen.queryByRole("alert")).not.toBeNull();
-      expect(screen.queryAllByText("页面数据加载失败").length).toBeGreaterThan(0);
-    });
+  it("renders nothing when no error in initialData", () => {
+    render(<PortalErrorBanner initialData={null} />);
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
 describe("CreateKeyButton", () => {
