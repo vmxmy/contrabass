@@ -7,9 +7,12 @@ import { Dialog } from "@cloudflare/kumo/components/dialog";
 import { DropdownMenu } from "@cloudflare/kumo/components/dropdown";
 import { Empty } from "@cloudflare/kumo/components/empty";
 import { Field } from "@cloudflare/kumo/components/field";
+import { Grid, GridItem } from "@cloudflare/kumo/components/grid";
 import { Input } from "@cloudflare/kumo/components/input";
 import { LayerCard } from "@cloudflare/kumo/components/layer-card";
 import { Loader, SkeletonLine } from "@cloudflare/kumo/components/loader";
+import { Meter } from "@cloudflare/kumo/components/meter";
+import { Surface } from "@cloudflare/kumo/components/surface";
 import { Pagination } from "@cloudflare/kumo/components/pagination";
 import { Popover } from "@cloudflare/kumo/components/popover";
 import { Select } from "@cloudflare/kumo/components/select";
@@ -17,11 +20,13 @@ import { SensitiveInput } from "@cloudflare/kumo/components/sensitive-input";
 import { Switch } from "@cloudflare/kumo/components/switch";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
+import { Text } from "@cloudflare/kumo/components/text";
 import { Toasty } from "@cloudflare/kumo/components/toast";
 import { Tooltip, TooltipProvider } from "@cloudflare/kumo/components/tooltip";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { QueryClient, QueryClientProvider, HydrationBoundary } from "@tanstack/react-query";
 import { UsageChart, type UsageTimeseries } from "./chart";
+import { fmt, fmtInt } from "./lib/format";
 import { useToast } from "./hooks/use-toast";
 import { useDashboard } from "./hooks/use-dashboard";
 import type { Dashboard } from "./schemas";
@@ -174,8 +179,6 @@ const sourceLabels: Record<string, string> = {
   litellm: "来自 LiteLLM 全局模型",
 };
 
-const numberFormatter = new Intl.NumberFormat("zh-CN");
-
 function portalConfig(): Required<PortalConfig> {
   const config = typeof window !== "undefined" ? window.__PORTAL_CONFIG : undefined;
   return {
@@ -215,14 +218,6 @@ function text(value: unknown): string {
 
 function keyLabel(key: PortalKey): string {
   return text(key.alias ?? key.displayKey ?? key.id);
-}
-
-function fmt(value: unknown): string {
-  return "$" + Number(value || 0).toFixed(2);
-}
-
-function fmtInt(value: unknown): string {
-  return numberFormatter.format(Number(value || 0));
 }
 
 function modelBadgeColor(model: string): string {
@@ -415,11 +410,11 @@ function DeleteKeyButton({
         )}
       />
       <Dialog size="sm" className="space-y-5 p-6">
-        <Dialog.Title className="text-lg font-semibold text-kumo-strong">
-          删除 API Key？
+        <Dialog.Title>
+          <Text variant="heading3" as="h2">删除 API Key？</Text>
         </Dialog.Title>
-        <Dialog.Description className="text-sm text-kumo-subtle">
-          将删除「{label}」。删除后该 Key 会立即失效，此操作不可撤销。
+        <Dialog.Description>
+          <Text variant="secondary">将删除「{label}」。删除后该 Key 会立即失效，此操作不可撤销。</Text>
         </Dialog.Description>
         {error ? (
           <Banner variant="error" title="删除失败" description={error} />
@@ -444,11 +439,11 @@ function DeleteKeyButton({
 function MetricTile({ label, value, loading = false }: { label: string; value: string; loading?: boolean }) {
   return (
     <div className="rounded-lg bg-kumo-recessed p-5 transition-colors hover:bg-kumo-tint">
-      <p className="text-xs font-medium text-kumo-subtle">{label}</p>
+      <Text variant="secondary" size="xs">{label}</Text>
       {loading ? (
         <SkeletonLine className="mt-3" minWidth={96} maxWidth={150} blockHeight={24} />
       ) : (
-        <p className="mt-3 font-mono text-lg font-semibold text-kumo-strong">{value}</p>
+        <Text variant="mono" size="lg" as="p" className="mt-3 font-semibold">{value}</Text>
       )}
     </div>
   );
@@ -603,17 +598,17 @@ function TopModels({ data, loading }: { data: UsageTimeseries | null; loading: b
 
   const models = data?.topModels ?? [];
   if (models.length === 0) {
-    return <span className="text-sm text-kumo-subtle">暂无模型用量拆分。</span>;
+    return <Text variant="secondary">暂无模型用量拆分。</Text>;
   }
 
   return (
     <div className="flex flex-col gap-3">
       {models.map((model) => (
         <div key={model.model} className="rounded-lg bg-kumo-recessed p-5 transition-colors hover:bg-kumo-tint">
-          <p className="truncate font-mono text-sm font-semibold text-kumo-strong">{model.model}</p>
-          <p className="mt-2 text-xs text-kumo-subtle">
+          <Text variant="mono" as="p" className="truncate font-semibold">{model.model}</Text>
+          <Text variant="secondary" size="xs" as="p" className="mt-2">
             {fmt(model.spend)} · {fmtInt(model.totalTokens)} tokens · {fmtInt(model.requests)} 请求
-          </p>
+          </Text>
         </div>
       ))}
     </div>
@@ -738,21 +733,21 @@ export function UsagePanel() {
       <div className="border-b border-kumo-line bg-kumo-elevated p-6">
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-lg font-semibold text-kumo-strong">Token 用量趋势</p>
+            <Text variant="heading3" as="h2">Token 用量趋势</Text>
             <span className="rounded-full bg-kumo-info-tint px-2.5 py-1 text-xs font-semibold text-kumo-info">Brush native</span>
             <span className="rounded-full bg-kumo-success-tint px-2.5 py-1 text-xs font-semibold text-kumo-success">{grainStatus}</span>
           </div>
-          <p className="text-sm leading-relaxed text-kumo-subtle">{windowText}</p>
-          <p className="text-xs text-kumo-subtle">
+          <Text variant="secondary" as="p" className="leading-relaxed">{windowText}</Text>
+          <Text variant="secondary" size="xs" as="p">
             在图表中横向拖拽会吸附到最接近的时间预设；预设和粒度芯片都支持键盘单次触发。
-          </p>
+          </Text>
           {rangeHint ? (
             <p className="text-xs font-medium text-kumo-brand" aria-live="polite">{rangeHint}</p>
           ) : null}
         </div>
         <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_auto]" aria-label="用量筛选">
           <div className="space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">时间范围预设</p>
+            <Text variant="secondary" size="xs" as="p" className="font-semibold uppercase tracking-wider">时间范围预设</Text>
             <div className="flex flex-wrap gap-2" role="group" aria-label="时间范围预设">
               {presets.map((preset) => (
                 <button
@@ -768,7 +763,7 @@ export function UsagePanel() {
             </div>
           </div>
           <div className="space-y-2 xl:w-[380px]">
-            <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">时间粒度</p>
+            <Text variant="secondary" size="xs" as="p" className="font-semibold uppercase tracking-wider">时间粒度</Text>
             <div className="flex flex-wrap gap-2" role="group" aria-label="时间粒度">
               <button
                 type="button"
@@ -813,7 +808,7 @@ export function UsagePanel() {
           </div>
         </div>
         <div className="border-t border-kumo-line p-8 md:border-l md:border-t-0">
-          <p className="mb-5 text-sm font-semibold text-kumo-default">高频模型</p>
+          <Text bold as="p" className="mb-5">高频模型</Text>
           <TopModels data={data} loading={loading} />
         </div>
       </div>
@@ -877,7 +872,7 @@ function StatTile({
     <LayerCard className="p-6">
       <div className="flex items-center gap-2">
         <span className={`inline-block h-2 w-2 rounded-full ${dot}`} />
-        <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">{label}</p>
+        <Text variant="secondary" size="xs" className="font-semibold uppercase tracking-wider">{label}</Text>
       </div>
       {children}
     </LayerCard>
@@ -913,39 +908,51 @@ export function HeroStats({ initialData: _initialData }: { initialData?: Initial
     : `预算 ${fmt(stats.maxBudget)}`;
 
   return (
-    <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
-      <StatTile accent="info" label="当前身份">
-        <Tooltip content={email}>
-          <p className="mt-4 truncate text-2xl font-semibold text-kumo-strong">{email}</p>
-        </Tooltip>
-        <Tooltip content={stats.litellmUserId == null ? null : `LiteLLM: ${stats.litellmUserId}`}>
-          <p className="mt-3 truncate font-mono text-sm text-kumo-subtle">
+    <Grid variant="4up" gap="lg">
+      <GridItem>
+        <StatTile accent="info" label="当前身份">
+          <Text variant="heading2" as="p" className="mt-4 truncate">{email}</Text>
+          <Text variant="mono" as="p" className="mt-3 truncate">
             {stats.litellmUserId == null ? "—" : `LiteLLM: ${stats.litellmUserId}`}
-          </p>
-        </Tooltip>
-      </StatTile>
-      <StatTile accent="brand" label="累计花费">
-        <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">{fmt(stats.totalSpend)}</p>
-        <div className="mt-3 flex min-h-[20px] items-center gap-2 text-sm text-kumo-subtle">
-          {budgetText}
-          <BudgetBadge spend={stats.totalSpend} maxBudget={stats.maxBudget} />
-        </div>
-      </StatTile>
-      <StatTile accent="success" label="近 30 天">
-        <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">{recentDisplay}</p>
-        <p className="mt-3 text-sm text-kumo-subtle">
-          {fmtInt(stats.requestCount)} 次请求 · {fmtInt(stats.totalTokens)} tokens
-        </p>
-      </StatTile>
-      <StatTile accent="success" label="权限范围">
-        <p className="mt-4 text-3xl font-semibold leading-tight text-kumo-strong">
-          {fmtInt(stats.modelCount)} 模型
-        </p>
-        <p className="mt-3 text-sm text-kumo-subtle">
-          {fmtInt(stats.keyCount)} 个 Key · {fmtInt(stats.teamCount)} 个团队
-        </p>
-      </StatTile>
-    </section>
+          </Text>
+        </StatTile>
+      </GridItem>
+      <GridItem>
+        <StatTile accent="brand" label="累计花费">
+          <Text variant="heading1" as="p" className="mt-4 leading-tight">{fmt(stats.totalSpend)}</Text>
+          {stats.maxBudget != null ? (
+            <Meter
+              className="mt-3"
+              value={Number(stats.totalSpend || 0)}
+              max={stats.maxBudget}
+              customValue={`${fmt(stats.totalSpend)} / ${fmt(stats.maxBudget)}`}
+            />
+          ) : null}
+          <div className="mt-2 flex min-h-[20px] items-center gap-2">
+            <Text variant="secondary">{budgetText}</Text>
+            <BudgetBadge spend={stats.totalSpend} maxBudget={stats.maxBudget} />
+          </div>
+        </StatTile>
+      </GridItem>
+      <GridItem>
+        <StatTile accent="success" label="近 30 天">
+          <Text variant="heading1" as="p" className="mt-4 leading-tight">{recentDisplay}</Text>
+          <Text variant="secondary" as="p" className="mt-3">
+            {fmtInt(stats.requestCount)} 次请求 · {fmtInt(stats.totalTokens)} tokens
+          </Text>
+        </StatTile>
+      </GridItem>
+      <GridItem>
+        <StatTile accent="success" label="权限范围">
+          <Text variant="heading1" as="p" className="mt-4 leading-tight">
+            {fmtInt(stats.modelCount)} 模型
+          </Text>
+          <Text variant="secondary" as="p" className="mt-3">
+            {fmtInt(stats.keyCount)} 个 Key · {fmtInt(stats.teamCount)} 个团队
+          </Text>
+        </StatTile>
+      </GridItem>
+    </Grid>
   );
 }
 
@@ -957,8 +964,8 @@ export function TeamsAccessCard({ initialData: _initialData }: { initialData?: I
   return (
     <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
       <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-        <p className="text-lg font-semibold text-kumo-strong">团队权限</p>
-        <p className="text-sm text-kumo-subtle">只展示当前账号所属团队的信息。</p>
+        <Text variant="heading3" as="p">团队权限</Text>
+        <Text variant="secondary" as="p">只展示当前账号所属团队的信息。</Text>
       </div>
       {!loaded ? (
         <div className="p-6 text-sm text-kumo-subtle">Loading…</div>
@@ -985,9 +992,19 @@ export function TeamsAccessCard({ initialData: _initialData }: { initialData?: I
                     <Table.Cell className="text-kumo-default">{text(team.alias ?? team.id)}</Table.Cell>
                     <Table.Cell className="text-right font-mono text-kumo-default">{modelsCount || "未限制"}</Table.Cell>
                     <Table.Cell className="text-right font-mono text-kumo-default">{team.spend == null ? "—" : fmt(team.spend)}</Table.Cell>
-                    <Table.Cell className="text-right font-mono text-kumo-default">
-                      {team.maxBudget == null ? "—" : fmt(team.maxBudget)}
-                      <BudgetBadge spend={team.spend} maxBudget={team.maxBudget} />
+                    <Table.Cell className="text-right text-kumo-default">
+                      {team.maxBudget == null ? (
+                        <span className="font-mono">—</span>
+                      ) : (
+                        <div className="flex flex-col items-end gap-1">
+                          <Meter
+                            value={Number(team.spend || 0)}
+                            max={team.maxBudget}
+                            customValue={`${fmt(team.spend)} / ${fmt(team.maxBudget)}`}
+                          />
+                          <BudgetBadge spend={team.spend} maxBudget={team.maxBudget} />
+                        </div>
+                      )}
                     </Table.Cell>
                     <Table.Cell className="text-right font-mono text-kumo-default">{team.rpmLimit == null ? "—" : fmtInt(team.rpmLimit)}</Table.Cell>
                     <Table.Cell className="text-right font-mono text-kumo-default">{team.tpmLimit == null ? "—" : fmtInt(team.tpmLimit)}</Table.Cell>
@@ -1018,12 +1035,8 @@ export function ModelAccessCard({ initialData: _initialData }: { initialData?: I
       <div className="border-b border-kumo-line bg-kumo-elevated p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1">
-            <p className="text-lg font-semibold text-kumo-strong">
-              团队可用模型
-            </p>
-            <p className="text-sm text-kumo-subtle">
-              {sourceLabel(modelAccess.source)}
-            </p>
+            <Text variant="heading3" as="p">团队可用模型</Text>
+            <Text variant="secondary" as="p">{sourceLabel(modelAccess.source)}</Text>
           </div>
           <Badge variant="outline" className="rounded-full">
             {modelAccess.models.length || "—"} 个模型
@@ -1042,17 +1055,17 @@ export function ModelAccessCard({ initialData: _initialData }: { initialData?: I
               {triggerText}
             </Collapsible.DefaultTrigger>
             {open ? (
-              <div className="mt-4 space-y-4 rounded-lg bg-kumo-recessed p-5" role="region" aria-label="全部可用模型">
+              <Surface className="mt-4 space-y-4 rounded-lg p-5" role="region" aria-label="全部可用模型">
                 <div className="flex max-h-80 flex-wrap gap-3 overflow-y-auto pr-1">
                   <ModelBadges models={modelAccess.models} />
                 </div>
-              </div>
+              </Surface>
             ) : null}
           </Collapsible.Root>
         ) : (
-          <p className="text-sm text-kumo-subtle">
+          <Text variant="secondary" as="p">
             模型数量较少，已直接展示完整清单。
-          </p>
+          </Text>
         )}
       </div>
     </article>
@@ -1068,8 +1081,8 @@ export function ApiKeysCard({ initialData: _initialData }: { initialData?: Initi
     <section className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-kumo-line bg-kumo-elevated p-6">
         <div>
-          <p className="text-lg font-semibold text-kumo-strong">API Keys</p>
-          <p className="text-sm text-kumo-subtle">仅列出当前 LiteLLM 用户拥有的密钥。</p>
+          <Text variant="heading3" as="p">API Keys</Text>
+          <Text variant="secondary" as="p">仅列出当前 LiteLLM 用户拥有的密钥。</Text>
         </div>
         <CreateKeyButton />
       </div>
@@ -1276,13 +1289,15 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
         )}
       />
       <Dialog size="base" className="space-y-6 p-8">
-        <Dialog.Title className="text-lg font-semibold text-kumo-strong">
-          {result ? "Key 已创建" : "创建新 API Key"}
+        <Dialog.Title>
+          <Text variant="heading3" as="h2">{result ? "Key 已创建" : "创建新 API Key"}</Text>
         </Dialog.Title>
-        <Dialog.Description className="text-sm text-kumo-subtle">
-          {result
-            ? "请立即复制完整 Key，关闭后无法再次查看。"
-            : "创建一个新的 API Key，绑定到当前登录用户。"}
+        <Dialog.Description>
+          <Text variant="secondary">
+            {result
+              ? "请立即复制完整 Key，关闭后无法再次查看。"
+              : "创建一个新的 API Key，绑定到当前登录用户。"}
+          </Text>
         </Dialog.Description>
 
         {result ? (
@@ -1293,10 +1308,10 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
               description="关闭此对话框后将无法再次查看完整 Key。"
             />
 
-            <div className="rounded-xl bg-kumo-recessed p-5 ring-1 ring-kumo-line">
+            <Surface className="rounded-xl p-5 ring-1 ring-kumo-line">
               <div className="space-y-1">
-                <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">Key 名称</p>
-                <p className="text-sm font-semibold text-kumo-strong">{result.keyAlias || "—"}</p>
+                <Text variant="secondary" size="xs" className="font-semibold uppercase tracking-wider">Key 名称</Text>
+                <Text variant="heading3" as="p">{result.keyAlias || "—"}</Text>
               </div>
               <div className="mt-4 space-y-2">
                 <SensitiveInput
@@ -1308,11 +1323,11 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
               </div>
               {result.expires ? (
                 <div className="mt-4 space-y-1">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">过期时间</p>
-                  <p className="font-mono text-sm text-kumo-default">{result.expires}</p>
+                  <Text variant="secondary" size="xs" className="font-semibold uppercase tracking-wider">过期时间</Text>
+                  <Text variant="mono" as="p">{result.expires}</Text>
                 </div>
               ) : null}
-            </div>
+            </Surface>
 
             <div className="flex justify-end">
               <Dialog.Close
@@ -1589,63 +1604,71 @@ function AdminHeroStats() {
       {error ? (
         <Banner variant="error" title="全局概览加载失败" description={error} />
       ) : null}
-      <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4" aria-label="全局管理概览">
-        <StatTile accent="info" label="全局账户">
-          {loading ? (
-            <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
-          ) : (
-            <>
-              <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">
-                {fmtInt(summary.userCount)}
-              </p>
-              <p className="mt-3 text-sm text-kumo-subtle">
-                {fmtInt(summary.adminCount)} 个管理员 · {fmtInt(summary.unmanagedRoleCount)} 个未映射角色
-              </p>
-            </>
-          )}
-        </StatTile>
-        <StatTile accent="brand" label="全局花费">
-          {loading ? (
-            <SkeletonLine className="mt-4" minWidth={110} maxWidth={180} blockHeight={32} />
-          ) : (
-            <>
-              <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">{fmt(summary.totalSpend)}</p>
-              <p className="mt-3 text-sm text-kumo-subtle">
-                预算 {summary.totalBudget == null ? "—" : fmt(summary.totalBudget)} · 团队花费 {fmt(summary.teamSpend)}
-              </p>
-            </>
-          )}
-        </StatTile>
-        <StatTile accent="success" label="资源覆盖">
-          {loading ? (
-            <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
-          ) : (
-            <>
-              <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">
-                {fmtInt(summary.teamCount)}
-              </p>
-              <p className="mt-3 text-sm text-kumo-subtle">
-                {fmtInt(summary.noTeamUserCount)} 个用户未关联团队
-              </p>
-            </>
-          )}
-        </StatTile>
-        <StatTile accent="warning" label="风险雷达">
-          {loading ? (
-            <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
-          ) : (
-            <>
-              <p className="mt-4 font-mono text-3xl font-semibold leading-tight text-kumo-strong">
-                {fmtInt(summary.riskCount)}
-              </p>
-              <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-kumo-subtle">
-                <span>{fmtInt(Number(summary.overBudgetUserCount || 0) + Number(summary.overBudgetTeamCount || 0))} 个超预算对象</span>
-                {summary.limited ? <Badge variant="warning">样本视图</Badge> : null}
-              </div>
-            </>
-          )}
-        </StatTile>
-      </section>
+      <Grid variant="4up" gap="lg" aria-label="全局管理概览">
+        <GridItem>
+          <StatTile accent="info" label="全局账户">
+            {loading ? (
+              <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
+            ) : (
+              <>
+                <Text variant="heading1" as="p" className="mt-4 leading-tight">
+                  {fmtInt(summary.userCount)}
+                </Text>
+                <Text variant="secondary" as="p" className="mt-3">
+                  {fmtInt(summary.adminCount)} 个管理员 · {fmtInt(summary.unmanagedRoleCount)} 个未映射角色
+                </Text>
+              </>
+            )}
+          </StatTile>
+        </GridItem>
+        <GridItem>
+          <StatTile accent="brand" label="全局花费">
+            {loading ? (
+              <SkeletonLine className="mt-4" minWidth={110} maxWidth={180} blockHeight={32} />
+            ) : (
+              <>
+                <Text variant="heading1" as="p" className="mt-4 leading-tight">{fmt(summary.totalSpend)}</Text>
+                <Text variant="secondary" as="p" className="mt-3">
+                  预算 {summary.totalBudget == null ? "—" : fmt(summary.totalBudget)} · 团队花费 {fmt(summary.teamSpend)}
+                </Text>
+              </>
+            )}
+          </StatTile>
+        </GridItem>
+        <GridItem>
+          <StatTile accent="success" label="资源覆盖">
+            {loading ? (
+              <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
+            ) : (
+              <>
+                <Text variant="heading1" as="p" className="mt-4 leading-tight">
+                  {fmtInt(summary.teamCount)}
+                </Text>
+                <Text variant="secondary" as="p" className="mt-3">
+                  {fmtInt(summary.noTeamUserCount)} 个用户未关联团队
+                </Text>
+              </>
+            )}
+          </StatTile>
+        </GridItem>
+        <GridItem>
+          <StatTile accent="warning" label="风险雷达">
+            {loading ? (
+              <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
+            ) : (
+              <>
+                <Text variant="heading1" as="p" className="mt-4 leading-tight">
+                  {fmtInt(summary.riskCount)}
+                </Text>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <Text variant="secondary">{fmtInt(Number(summary.overBudgetUserCount || 0) + Number(summary.overBudgetTeamCount || 0))} 个超预算对象</Text>
+                  {summary.limited ? <Badge variant="warning">样本视图</Badge> : null}
+                </div>
+              </>
+            )}
+          </StatTile>
+        </GridItem>
+      </Grid>
       {!loading ? (
         <p className="text-xs text-kumo-subtle">{sampledText}，风险项由预算、角色映射和团队覆盖情况计算。</p>
       ) : null}
@@ -1960,18 +1983,18 @@ function AdminGlobalUsage() {
       <div className="border-b border-kumo-line bg-kumo-elevated p-6">
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-base font-semibold text-kumo-strong">全局 Token 用量趋势</p>
+            <Text variant="heading3" as="p">全局 Token 用量趋势</Text>
             <span className="rounded-full bg-kumo-info-tint px-2.5 py-1 text-xs font-semibold text-kumo-info">Brush native</span>
             <span className="rounded-full bg-kumo-success-tint px-2.5 py-1 text-xs font-semibold text-kumo-success">{grainStatus}</span>
           </div>
-          <p className="text-sm leading-relaxed text-kumo-subtle">{windowText}</p>
+          <Text variant="secondary" as="p" className="leading-relaxed">{windowText}</Text>
           {rangeHint ? (
             <p className="text-xs font-medium text-kumo-brand" aria-live="polite">{rangeHint}</p>
           ) : null}
         </div>
         <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_auto]" aria-label="全局用量筛选">
           <div className="space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">时间范围预设</p>
+            <Text variant="secondary" size="xs" as="p" className="font-semibold uppercase tracking-wider">时间范围预设</Text>
             <div className="flex flex-wrap gap-2" role="group" aria-label="时间范围预设">
               {presets.map((preset) => (
                 <button
@@ -1987,7 +2010,7 @@ function AdminGlobalUsage() {
             </div>
           </div>
           <div className="space-y-2 xl:w-[380px]">
-            <p className="text-xs font-semibold uppercase tracking-wider text-kumo-subtle">时间粒度</p>
+            <Text variant="secondary" size="xs" as="p" className="font-semibold uppercase tracking-wider">时间粒度</Text>
             <div className="flex flex-wrap gap-2" role="group" aria-label="时间粒度">
               <button
                 type="button"
@@ -2032,7 +2055,7 @@ function AdminGlobalUsage() {
           </div>
         </div>
         <div className="border-t border-kumo-line p-8 md:border-l md:border-t-0">
-          <p className="mb-5 text-sm font-semibold text-kumo-default">高频模型</p>
+          <Text bold as="p" className="mb-5">高频模型</Text>
           <TopModels data={data} loading={loading} />
         </div>
       </div>
@@ -2159,7 +2182,7 @@ function AdminAuditFeed() {
                       <Table.Cell colSpan={7} className="px-5 py-4">
                         <div className="space-y-3 text-xs">
                           <div>
-                            <p className="mb-1 font-semibold uppercase tracking-wider text-kumo-subtle">变更后</p>
+                            <Text variant="secondary" size="xs" className="mb-1 font-semibold uppercase tracking-wider">变更后</Text>
                             <pre className="overflow-x-auto rounded-lg bg-kumo-base p-3 font-mono text-kumo-default ring-1 ring-kumo-line">{JSON.stringify(event, null, 2)}</pre>
                           </div>
                         </div>
@@ -2189,7 +2212,7 @@ function AdminCard({ title, children }: { title: string; children: React.ReactNo
     <LayerCard className="overflow-hidden p-0">
       <Collapsible.Root defaultOpen>
         <div className="flex items-center justify-between border-b border-kumo-line bg-kumo-elevated px-6 py-5">
-          <p className="text-lg font-semibold text-kumo-strong">{title}</p>
+          <Text variant="heading3" as="p">{title}</Text>
           <Collapsible.DefaultTrigger className="text-sm font-medium text-kumo-brand hover:text-kumo-brand-hover" />
         </div>
         <Collapsible.Panel>
@@ -2206,7 +2229,7 @@ export function AdminSection({ role }: { role: PortalRole }) {
   return (
     <section className="space-y-8" aria-label="全局管理（只读）">
       <div className="flex flex-wrap items-center gap-3">
-        <h2 className="text-2xl font-semibold text-kumo-strong">全局管理（只读）</h2>
+        <Text variant="heading2" as="h2">全局管理（只读）</Text>
         <Badge variant="secondary" className="rounded-full bg-kumo-warning-tint text-kumo-warning">仅管理员可见</Badge>
       </div>
       <AdminHeroStats />
@@ -2215,8 +2238,8 @@ export function AdminSection({ role }: { role: PortalRole }) {
       </AdminCard>
       <div className="space-y-4">
         <div>
-          <p className="text-sm font-semibold uppercase tracking-wider text-kumo-subtle">资源与权限</p>
-          <p className="mt-1 text-sm text-kumo-subtle">账户、团队和模型范围保持和个人视图相同的数据语言。</p>
+          <Text variant="secondary" as="p" className="font-semibold uppercase tracking-wider">资源与权限</Text>
+          <Text variant="secondary" as="p" className="mt-1">账户、团队和模型范围保持和个人视图相同的数据语言。</Text>
         </div>
         <AdminCard title="全员账户">
           <AdminUsersTable />
@@ -2227,8 +2250,8 @@ export function AdminSection({ role }: { role: PortalRole }) {
       </div>
       <div className="space-y-4">
         <div>
-          <p className="text-sm font-semibold uppercase tracking-wider text-kumo-subtle">审计与风险</p>
-          <p className="mt-1 text-sm text-kumo-subtle">用于核对近期变更和风险线索，当前保持只读。</p>
+          <Text variant="secondary" as="p" className="font-semibold uppercase tracking-wider">审计与风险</Text>
+          <Text variant="secondary" as="p" className="mt-1">用于核对近期变更和风险线索，当前保持只读。</Text>
         </div>
         <AdminCard title="审计日志">
         <AdminAuditFeed />
@@ -2342,8 +2365,8 @@ export function App({ initialData, role: initialRole, dehydratedState }: AppProp
         <div className="space-y-4">
           <span className="inline-flex w-fit items-center rounded-full bg-kumo-info-tint/70 px-2.5 py-1 text-xs font-semibold text-kumo-info">Cloudflare Access 已保护</span>
           <div className="space-y-3">
-            <h1 className="text-3xl font-semibold tracking-tight text-kumo-strong lg:text-4xl">{platformName}</h1>
-            <p className="max-w-3xl text-base leading-relaxed text-kumo-subtle">面向智云团队的 AI 能力自助台：只读查看个人 API Key、团队可用模型、预算与近 30 天用量，数据权限自动绑定当前登录邮箱。</p>
+            <Text variant="heading1" as="h1">{platformName}</Text>
+            <Text variant="secondary" as="p" className="max-w-3xl leading-relaxed">面向智云团队的 AI 能力自助台：只读查看个人 API Key、团队可用模型、预算与近 30 天用量，数据权限自动绑定当前登录邮箱。</Text>
           </div>
         </div>
         <div id="header-actions-root" className="flex flex-wrap items-center gap-3 sm:self-auto">
