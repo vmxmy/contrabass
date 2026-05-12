@@ -13,6 +13,10 @@ import { app as honoApp, loadDashboard } from "./routes";
 import { detectLeakInResponse } from "./security/leak-detector";
 import { withSecurityHeaders } from "./security/headers";
 import type { JsonValue, LiteLLMPortalEnv } from "./types";
+import { recordMetric } from "./observability/metrics";
+import { recordAudit } from "./observability/audit";
+import { checkClientErrorRateLimit, recordClientError } from "./observability/client-error";
+import type { ClientErrorPayload } from "./observability/client-error";
 
 export type { LiteLLMPortalEnv } from "./types";
 export { RateLimitDO } from "./security/rate-limit-do";
@@ -80,20 +84,104 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
     return jsonResponse({ error: "not_found" }, 404);
   }
 
-  // Delegate all /api/* requests to the typed Hono RPC app.
-  // The Hono app handles auth middleware, identity resolution, Zod validation,
-  // and schema-validated responses internally.
+  // Client-error endpoint: no auth required, rate-limited per session
+  if (request.method === "POST" && url.pathname === "/api/_internal/client-error") {
+    return handleClientError(request, env);
+  }
+
+  // Delegate all /api/* requests to the typed Hono RPC app with observability wrapping.
+  const apiStart = Date.now();
+
+  // Record audit trail for admin routes before delegating to Hono.
+  if (url.pathname.startsWith("/api/admin/")) {
+    try {
+      const auth = await authenticateRequest(request, env);
+      if (auth.ok) {
+        const identityResult = await resolveIdentity(env, auth.principal);
+        if (identityResult.ok) {
+          recordAudit(env, {
+            actor: identityResult.identity.email,
+            action: url.pathname,
+            target: url.search ? url.search.slice(1) : "",
+            ip: request.headers.get("cf-connecting-ip") ?? "unknown",
+            ts: new Date().toISOString(),
+          });
+        }
+      }
+    } catch {
+      // audit failure must not block the request
+    }
+  }
+
   try {
     const apiResponse = await honoApp.fetch(request, env);
     // Apply leak detector only on admin routes where master-key material could appear.
     const scanned = url.pathname.startsWith("/api/admin/")
       ? await detectLeakInResponse(apiResponse)
       : apiResponse;
-    return withSecurityHeaders(scanned);
+    const securedResponse = withSecurityHeaders(scanned);
+    recordMetric(env, {
+      route: url.pathname,
+      status: securedResponse.status,
+      latencyMs: Date.now() - apiStart,
+      upstreamMs: 0,
+      role: "none",
+      cacheHit: false,
+    });
+    return securedResponse;
   } catch (error) {
     const message = error instanceof Error ? error.message : "internal_error";
-    return jsonResponse({ error: message }, message === "litellm_config_missing" ? 500 : 502);
+    const status = message === "litellm_config_missing" ? 500 : 502;
+    recordMetric(env, {
+      route: url.pathname,
+      status,
+      latencyMs: Date.now() - apiStart,
+      upstreamMs: 0,
+      role: "none",
+      cacheHit: false,
+    });
+    return jsonResponse({ error: message }, status);
   }
+}
+
+async function handleClientError(request: Request, env: LiteLLMPortalEnv): Promise<Response> {
+  const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
+  let payload: ClientErrorPayload;
+  try {
+    payload = await request.json() as ClientErrorPayload;
+  } catch {
+    return jsonResponse({ error: "invalid_json" }, 400);
+  }
+  if (!Array.isArray(payload?.events) || payload.events.length === 0) {
+    return jsonResponse({ error: "events_required" }, 400);
+  }
+
+  const firstEvent = payload.events[0];
+  const sessionId = typeof firstEvent?.sessionId === "string" ? firstEvent.sessionId : "unknown";
+
+  if (!checkClientErrorRateLimit(sessionId)) {
+    recordAudit(env, {
+      actor: `session:${sessionId}`,
+      action: "client_error_rate_limited",
+      target: "",
+      ip,
+      ts: new Date().toISOString(),
+    });
+    return jsonResponse({ error: "rate_limited" }, 429);
+  }
+
+  for (const event of payload.events) {
+    if (typeof event?.message === "string" && typeof event?.sessionId === "string") {
+      recordClientError(env, {
+        message: event.message,
+        stack: typeof event.stack === "string" ? event.stack : undefined,
+        sessionId: event.sessionId,
+        ts: typeof event.ts === "string" ? event.ts : new Date().toISOString(),
+      }, ip);
+    }
+  }
+
+  return jsonResponse({ ok: true });
 }
 
 export default {

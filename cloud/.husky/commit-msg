@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Enforce conventional commit messages via commitlint.
+cd "$(git rev-parse --show-toplevel)/cloud"
+pnpm exec commitlint --edit "$1"

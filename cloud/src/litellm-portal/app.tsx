@@ -2426,6 +2426,105 @@ export function App({ initialData, role: initialRole, dehydratedState }: AppProp
   );
 }
 
+type ErrorBoundaryState = { hasError: boolean; errorMessage: string };
+
+export class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  ErrorBoundaryState
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, errorMessage: "" };
+  }
+
+  static getDerivedStateFromError(error: unknown): ErrorBoundaryState {
+    const message = error instanceof Error ? error.message : String(error);
+    return { hasError: true, errorMessage: message };
+  }
+
+  componentDidCatch(error: unknown, info: React.ErrorInfo): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const stack = error instanceof Error ? error.stack : undefined;
+    queueClientError(message, stack ?? info.componentStack ?? undefined);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div role="alert" className="container mx-auto px-4 py-10">
+          <div className="rounded-lg border border-kumo-danger-subtle bg-kumo-danger-tint/30 p-6 text-kumo-danger">
+            <h2 className="mb-2 text-lg font-semibold">页面渲染出错</h2>
+            <p className="text-sm text-kumo-subtle">{this.state.errorMessage || "未知错误，请刷新页面重试。"}</p>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+const clientErrorQueue: Array<{ message: string; stack?: string; sessionId: string; ts: string }> = [];
+const CLIENT_ERROR_BATCH_SIZE = 5;
+const CLIENT_ERROR_FLUSH_MS = 10_000;
+let clientErrorFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function getPortalSessionId(): string {
+  if (typeof sessionStorage === "undefined") return "unknown";
+  const key = "_portal_session_id";
+  const existing = sessionStorage.getItem(key);
+  if (existing) return existing;
+  const id = crypto.randomUUID();
+  sessionStorage.setItem(key, id);
+  return id;
+}
+
+function flushClientErrors(): void {
+  const events = clientErrorQueue.splice(0);
+  if (events.length === 0) return;
+  void fetch("/api/_internal/client-error", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ events }),
+  }).catch(() => {
+    // best-effort
+  });
+}
+
+function queueClientError(message: string, stack?: string): void {
+  clientErrorQueue.push({
+    message,
+    stack,
+    sessionId: getPortalSessionId(),
+    ts: new Date().toISOString(),
+  });
+  if (clientErrorQueue.length >= CLIENT_ERROR_BATCH_SIZE) {
+    if (clientErrorFlushTimer !== null) {
+      clearTimeout(clientErrorFlushTimer);
+      clientErrorFlushTimer = null;
+    }
+    flushClientErrors();
+    return;
+  }
+  if (clientErrorFlushTimer === null) {
+    clientErrorFlushTimer = setTimeout(() => {
+      clientErrorFlushTimer = null;
+      flushClientErrors();
+    }, CLIENT_ERROR_FLUSH_MS);
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("error", (event) => {
+    queueClientError(event.message, event.error instanceof Error ? event.error.stack : undefined);
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event.reason;
+    const message = reason instanceof Error ? reason.message : String(reason ?? "unhandled_rejection");
+    const stack = reason instanceof Error ? reason.stack : undefined;
+    queueClientError(message, stack);
+  });
+}
+
 if (typeof document !== "undefined") {
   const root = document.getElementById("root");
   if (root) {
@@ -2459,12 +2558,15 @@ if (typeof document !== "undefined") {
       const router = createPortalRouter(history, { role });
       hydrateRoot(
         root,
-        <I18nProvider i18n={i18n}>
-          <AppShell dehydratedState={dehydratedState}>
-            <RouterProvider router={router} />
-          </AppShell>
-        </I18nProvider>,
+        <ErrorBoundary>
+          <I18nProvider i18n={i18n}>
+            <AppShell dehydratedState={dehydratedState}>
+              <RouterProvider router={router} />
+            </AppShell>
+          </I18nProvider>
+        </ErrorBoundary>,
       );
     });
   }
 }
+

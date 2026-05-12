@@ -1,0 +1,13 @@
+{
+  "*.{ts,tsx}": [
+    "prettier --write",
+    "tsc --noEmit --incremental",
+    "vitest related --run"
+  ],
+  "*.{js,mjs}": [
+    "prettier --write"
+  ],
+  "*.json": [
+    "prettier --write"
+  ]
+}
