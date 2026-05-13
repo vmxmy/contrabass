@@ -116,7 +116,8 @@ vi.mock("@cloudflare/kumo/components/chart", async () => {
   };
 });
 
-import { AdminSection, ApiKeysCard, CreateKeyButton, HeroStats, ModelAccessCard, PortalErrorBanner, PortalTabs, readTabFromHash, UsagePanel } from "./app";
+import { ApiKeysCard, CreateKeyButton, HeroStats, ModelAccessCard, PortalErrorBanner, PortalTabs, readTabFromHash, UsagePanel } from "./app";
+import { AdminSection } from "./admin-components";
 import { UsageChart, type UsageTimeseries } from "./chart";
 
 const originalFetch = globalThis.fetch;
