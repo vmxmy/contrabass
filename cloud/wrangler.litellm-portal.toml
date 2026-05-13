@@ -71,8 +71,7 @@ binding = "ROLE_CACHE_KV"
 id = "8493d26272f84fe1bfa0c5bd6d564ad8"
 preview_id = "cba1b4b32c054bfba72439ef48f73cf6"
 
-# OWNER: run `wrangler kv namespace create user-prefs` and replace the placeholders before deploy.
 [[kv_namespaces]]
 binding = "USER_PREFS_KV"
-id = "__TBD_OWNER_FILLS_BEFORE_DEPLOY__"
-preview_id = "__TBD_OWNER_FILLS_BEFORE_DEPLOY__"
+id = "433b1ca91b414671a8840280951a96a6"
+preview_id = "018d861aecd54a61af541a841c9fc0fa"
