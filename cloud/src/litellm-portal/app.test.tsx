@@ -271,6 +271,21 @@ describe("UsagePanel", () => {
     await expectNoAxe(container);
   });
 
+  it("uses the preferred default usage window when provided", async () => {
+    installPortalConfig();
+    const seen: string[] = [];
+    globalThis.fetch = vi.fn(async (input) => {
+      seen.push(String(input));
+      return Response.json(usageData);
+    }) as typeof fetch;
+
+    render(<UsagePanel defaultUsageWindow="7d" />);
+
+    await waitFor(() => {
+      expect(seen[0]).toContain("/api/usage/timeseries?grain=day&window=7d");
+    });
+  });
+
   it("uses preset auto grain and allows one-click manual grain when valid", async () => {
     installPortalConfig();
     const seen: string[] = [];

@@ -1,7 +1,11 @@
 import React from "react";
 import type { JsonValue } from "./types";
+import type { UserPreferences } from "./schemas";
 
-const FOUC_SCRIPT = `(()=>{try{const s=localStorage.getItem('litellm-portal-mode');const p=window.matchMedia?.('(prefers-color-scheme: dark)').matches;const m=s==='dark'||s==='light'?s:p?'dark':'light';document.documentElement.dataset.mode=m;}catch{document.documentElement.dataset.mode='light';}})();`;
+function foucScript(theme: UserPreferences["theme"]): string {
+  const serializedTheme = JSON.stringify(theme);
+  return `(()=>{try{const s=${serializedTheme};const p=window.matchMedia?.('(prefers-color-scheme: dark)').matches;const m=s==='dark'||s==='light'?s:p?'dark':'light';document.documentElement.dataset.mode=m;}catch{document.documentElement.dataset.mode='light';}})();`;
+}
 
 const LINE_SEP = String.fromCharCode(0x2028);
 const PARA_SEP = String.fromCharCode(0x2029);
@@ -21,9 +25,10 @@ export type ShellProps = {
   initialData: JsonValue | null;
   children: React.ReactNode;
   locale?: string;
+  initialTheme?: UserPreferences["theme"];
 };
 
-export function Shell({ title, nonce, initialData, children, locale = "zh-CN" }: ShellProps) {
+export function Shell({ title, nonce, initialData, children, locale = "zh-CN", initialTheme = "auto" }: ShellProps) {
   return (
     <html lang={locale} data-theme="kumo">
       <head>
@@ -31,7 +36,7 @@ export function Shell({ title, nonce, initialData, children, locale = "zh-CN" }:
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{title}</title>
         <link rel="stylesheet" href="/kumo.css" />
-        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: FOUC_SCRIPT }} />
+        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: foucScript(initialTheme) }} />
         {initialData !== null && (
           <script
             type="application/json"

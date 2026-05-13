@@ -131,7 +131,7 @@ describe("litellm portal worker", () => {
     expect(adminChunk).toBeDefined();
     expect(portalAppJs).not.toContain("AdminUsersTable");
     expect(portalAppJs).not.toContain("AdminAuditFeed");
-    expect(adminChunk?.inputs).toContain("src/litellm-portal/admin-components.tsx");
+    expect(adminChunk?.inputs.some((input) => input.endsWith("src/litellm-portal/admin-components.tsx"))).toBe(true);
     expect(adminChunk?.js).toContain("\\u5168\\u5458\\u8D26\\u6237");
     expect(adminChunk?.js).toContain("\\u5BA1\\u8BA1\\u65E5\\u5FD7");
   });

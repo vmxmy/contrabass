@@ -21,6 +21,51 @@ export const MeSchema = z.object({
 
 export type Me = z.infer<typeof MeSchema>;
 
+
+// ---------------------------------------------------------------------------
+// /api/me/preferences and /api/admin/preferences-defaults
+// ---------------------------------------------------------------------------
+
+export const UserPreferencesNotificationsSchema = z.object({
+  budgetThresholdEnabled: z.boolean().default(true),
+  budgetThreshold: z.number().min(0).max(1).default(0.8),
+  keyExpirySoon: z.boolean().default(true),
+  keyCreation: z.boolean().default(true),
+});
+
+const DefaultUserPreferencesNotifications = {
+  budgetThresholdEnabled: true,
+  budgetThreshold: 0.8,
+  keyExpirySoon: true,
+  keyCreation: true,
+} satisfies z.infer<typeof UserPreferencesNotificationsSchema>;
+
+export const UserPreferencesSchema = z.object({
+  theme: z.enum(["auto", "dark", "light"]).default("auto"),
+  defaultTab: z.enum(["user", "admin"]).default("user"),
+  defaultUsageWindow: z.enum(["6h", "24h", "48h", "7d", "30d", "12mo"]).default("30d"),
+  language: z.enum(["auto", "zh-CN", "en"]).default("auto"),
+  density: z.enum(["comfortable", "compact"]).default("comfortable"),
+  notifications: UserPreferencesNotificationsSchema.default(DefaultUserPreferencesNotifications),
+});
+
+export const UserPreferencesPatchSchema = z.object({
+  theme: z.enum(["auto", "dark", "light"]).optional(),
+  defaultTab: z.enum(["user", "admin"]).optional(),
+  defaultUsageWindow: z.enum(["6h", "24h", "48h", "7d", "30d", "12mo"]).optional(),
+  language: z.enum(["auto", "zh-CN", "en"]).optional(),
+  density: z.enum(["comfortable", "compact"]).optional(),
+  notifications: z.object({
+    budgetThresholdEnabled: z.boolean().optional(),
+    budgetThreshold: z.number().min(0).max(1).optional(),
+    keyExpirySoon: z.boolean().optional(),
+    keyCreation: z.boolean().optional(),
+  }).strict().optional(),
+}).strict();
+
+export type UserPreferences = z.infer<typeof UserPreferencesSchema>;
+export type UserPreferencesPatch = z.infer<typeof UserPreferencesPatchSchema>;
+
 // ---------------------------------------------------------------------------
 // /api/dashboard sub-shapes
 // ---------------------------------------------------------------------------

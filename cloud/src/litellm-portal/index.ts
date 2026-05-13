@@ -17,6 +17,7 @@ import { recordMetric } from "./observability/metrics";
 import { recordAudit } from "./observability/audit";
 import { checkClientErrorRateLimit, recordClientError } from "./observability/client-error";
 import type { ClientErrorPayload } from "./observability/client-error";
+import { scanBudgetThresholds } from "./notifications";
 
 export type { LiteLLMPortalEnv } from "./types";
 export { RateLimitDO } from "./security/rate-limit-do";
@@ -200,4 +201,7 @@ async function handleClientError(request: Request, env: LiteLLMPortalEnv): Promi
 
 export default {
   fetch: handleLiteLLMPortalRequest,
+  async scheduled(_controller, env, ctx) {
+    ctx.waitUntil(scanBudgetThresholds(env));
+  },
 } satisfies ExportedHandler<LiteLLMPortalEnv>;

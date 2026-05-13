@@ -36,6 +36,10 @@ vi.mock("../hooks/use-admin-audit", () => ({
   }),
 }));
 
+vi.mock("../hooks/use-preferences", () => ({
+  useUpdatePreferences: () => ({ mutate: vi.fn() }),
+}));
+
 type CommandItem = { id: string; title: string; description?: string };
 type CommandGroup = { id: string; label: string; items: CommandItem[] };
 

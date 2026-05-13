@@ -6,7 +6,7 @@ import {
   TeamsAccessCard,
   ModelAccessCard,
   ApiKeysCard,
-  UsagePanel,
+  PreferencesAwareUsagePanel,
 } from "../app";
 
 export const indexRoute = createRoute({
@@ -23,7 +23,7 @@ function UserView() {
       </div>
 
       <section id="usage-panel-root" className="mb-14">
-        <UsagePanel />
+        <PreferencesAwareUsagePanel />
       </section>
 
       <section className="mb-10 grid grid-cols-1 gap-5 md:grid-cols-[1fr_2fr]">

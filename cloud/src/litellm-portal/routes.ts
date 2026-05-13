@@ -6,6 +6,8 @@ import { applyAdminRateLimit } from "./security/rate-limit-middleware";
 import { authenticateRequest } from "./auth";
 import { resolveIdentity } from "./roles";
 import { invalidateRole } from "./role-cache";
+import { KVUserPrefsStore } from "./preferences";
+import { sendEmail } from "./notifications";
 import { portalCompanyName, roundCurrency, sumDefinedNumbers, uniqueSorted } from "./utils";
 import {
   configuredAllowedModels,
@@ -45,6 +47,8 @@ import {
   AdminSummarySchema,
   UsageSchema,
   UsageTimeseriesSchema,
+  UserPreferencesSchema,
+  UserPreferencesPatchSchema,
   ErrorResponseSchema,
   AdminRolesInvalidateQuerySchema,
   RoleChangedBodySchema,
@@ -218,6 +222,65 @@ const meApp = new Hono<HonoEnv>()
     }));
   });
 
+
+const preferencesApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .get("/me/preferences", async (c) => {
+    const identity = c.get("identity");
+    const store = new KVUserPrefsStore(c.env.USER_PREFS_KV);
+    return c.json(UserPreferencesSchema.parse(await store.getForEmail(identity.email)));
+  })
+  .patch("/me/preferences", async (c) => {
+    let rawBody: unknown;
+    try {
+      rawBody = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid_json" }, 400);
+    }
+    const parsed = UserPreferencesPatchSchema.safeParse(rawBody);
+    if (!parsed.success) {
+      const firstIssue = parsed.error.issues[0];
+      return c.json(ErrorResponseSchema.parse({
+        error: "validation_error",
+        path: firstIssue?.path.join(".") ?? "",
+        message: firstIssue?.message ?? "invalid_preferences",
+      }), 422);
+    }
+    const identity = c.get("identity");
+    const store = new KVUserPrefsStore(c.env.USER_PREFS_KV);
+    const next = await store.patchForEmail(identity.email, parsed.data);
+    return c.json(UserPreferencesSchema.parse(next));
+  });
+
+const adminPreferencesDefaultsApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
+  .use("/admin/*", requireAdmin)
+  .get("/admin/preferences-defaults", async (c) => {
+    const store = new KVUserPrefsStore(c.env.USER_PREFS_KV);
+    return c.json(UserPreferencesSchema.parse(await store.getGlobalDefaults()));
+  })
+  .patch("/admin/preferences-defaults", async (c) => {
+    let rawBody: unknown;
+    try {
+      rawBody = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid_json" }, 400);
+    }
+    const parsed = UserPreferencesPatchSchema.safeParse(rawBody);
+    if (!parsed.success) {
+      const firstIssue = parsed.error.issues[0];
+      return c.json(ErrorResponseSchema.parse({
+        error: "validation_error",
+        path: firstIssue?.path.join(".") ?? "",
+        message: firstIssue?.message ?? "invalid_preferences",
+      }), 422);
+    }
+    const store = new KVUserPrefsStore(c.env.USER_PREFS_KV);
+    const next = await store.patchGlobalDefaults(parsed.data);
+    return c.json(UserPreferencesSchema.parse(next));
+  });
+
 const dashboardApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
   .get("/dashboard", async (c) => {
@@ -290,6 +353,17 @@ const keysPostApp = new Hono<HonoEnv>()
         maxBudget: maxBudget ?? null,
         duration: duration ?? null,
       });
+      try {
+        const preferences = await new KVUserPrefsStore(c.env.USER_PREFS_KV).getForEmail(identity.email);
+        if (preferences.notifications.keyCreation) {
+          await sendEmail(identity.email, "keyCreation", {
+            keyAlias: result.keyAlias ?? keyAlias,
+            createdAt: new Date().toISOString(),
+          });
+        }
+      } catch {
+        // Key creation should not fail if notification delivery is unavailable.
+      }
       return c.json(CreateKeyResultSchema.parse(result), 201);
     } catch (error) {
       if (error instanceof KeyAliasConflictError) {
@@ -786,6 +860,7 @@ const app = new Hono<{ Bindings: LiteLLMPortalEnv }>()
   // must precede auth-gated sub-apps in the mount order.
   .route("/api", internalRoleChangedApp)
   .route("/api", meApp)
+  .route("/api", preferencesApp)
   .route("/api", dashboardApp)
   .route("/api", modelsApp)
   .route("/api", keysGetApp)
@@ -798,6 +873,7 @@ const app = new Hono<{ Bindings: LiteLLMPortalEnv }>()
   .route("/api", adminTeamsApp)
   .route("/api", adminAuditApp)
   .route("/api", adminUsageTimeseriesApp)
+  .route("/api", adminPreferencesDefaultsApp)
   .route("/api", adminRolesInvalidateApp)
   .route("/api", adminDisableKeyApp)
   .route("/api", adminUpdateTeamLimitsApp)
