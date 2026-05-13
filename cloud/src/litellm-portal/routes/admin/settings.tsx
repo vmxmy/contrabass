@@ -22,10 +22,10 @@ export function AdminSettingsPage() {
   return (
     <section className="space-y-6" aria-label={t`设置管理`}>
       <AdminBreadcrumbs segments={[{ label: <Trans>设置</Trans> }]} />
-      {isLoading || defaults === undefined ? (
-        <Loader aria-label={t`正在加载全局默认设置`} />
-      ) : error ? (
+      {error ? (
         <Text variant="secondary" as="p"><Trans>全局默认设置加载失败，请稍后重试。</Trans></Text>
+      ) : isLoading || defaults === undefined ? (
+        <Loader aria-label={t`正在加载全局默认设置`} />
       ) : (
         <PreferencesForm
           preferences={defaults}

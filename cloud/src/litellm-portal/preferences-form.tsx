@@ -58,7 +58,9 @@ export function PreferencesForm({ preferences, pending = false, title, descripti
           }}
           description={<Trans>用量图表首次打开时使用的时间范围。</Trans>}
         >
+          <Select.Option value="6h"><Trans>近 6 小时</Trans></Select.Option>
           <Select.Option value="24h"><Trans>近 24 小时</Trans></Select.Option>
+          <Select.Option value="48h"><Trans>近 48 小时</Trans></Select.Option>
           <Select.Option value="7d"><Trans>近 7 天</Trans></Select.Option>
           <Select.Option value="30d"><Trans>近 30 天</Trans></Select.Option>
           <Select.Option value="12mo"><Trans>近 12 个月</Trans></Select.Option>

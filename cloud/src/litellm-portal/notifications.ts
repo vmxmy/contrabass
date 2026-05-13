@@ -1,4 +1,5 @@
 import { listAllUsers } from "./litellm";
+import { isPortalAllowedEmail } from "./auth";
 import { KVUserPrefsStore } from "./preferences";
 import type { LiteLLMPortalEnv } from "./types";
 
@@ -106,7 +107,7 @@ export async function scanBudgetThresholds(
       const email = user.email.trim().toLowerCase();
       const spend = Number(user.spend ?? 0);
       const maxBudget = user.maxBudget;
-      if (!email.includes("@") || maxBudget === null || maxBudget <= 0 || !Number.isFinite(spend)) {
+      if (!email.includes("@") || !isPortalAllowedEmail(email, env) || maxBudget === null || maxBudget <= 0 || !Number.isFinite(spend)) {
         skippedUsers += 1;
         continue;
       }

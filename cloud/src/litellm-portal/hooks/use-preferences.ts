@@ -77,6 +77,9 @@ export function useUpdatePreferences() {
       if (context?.previous !== undefined) {
         queryClient.setQueryData<UserPreferences>(PREFERENCES_QUERY_KEY, context.previous);
         writeCachedPreferences(context.previous);
+      } else {
+        queryClient.removeQueries({ queryKey: PREFERENCES_QUERY_KEY, exact: true });
+        removeCachedPreferences();
       }
     },
     onSuccess: (next) => {
@@ -139,6 +142,16 @@ function writeCachedPreferences(preferences: UserPreferences): void {
   if (storage === undefined) return;
   try {
     storage.setItem(PREFERENCES_CACHE_KEY, JSON.stringify(preferences));
+  } catch {
+    // localStorage is a cache only; failures should not affect server persistence.
+  }
+}
+
+function removeCachedPreferences(): void {
+  const storage = browserStorage();
+  if (storage === undefined) return;
+  try {
+    storage.removeItem(PREFERENCES_CACHE_KEY);
   } catch {
     // localStorage is a cache only; failures should not affect server persistence.
   }

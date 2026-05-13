@@ -97,6 +97,11 @@ function principalFromEmail(email: string, allowedDomain: string, allowedEmails:
   };
 }
 
+export function isPortalAllowedEmail(email: string, env: LiteLLMPortalEnv): boolean {
+  const normalized = email.trim().toLowerCase();
+  return isAllowedEmail(normalized, allowedEmailDomain(env), configuredAllowedEmails(env));
+}
+
 async function getAccessJwks(teamDomain: string): Promise<AccessJwk[]> {
   const cached = accessJwksCache.get(teamDomain);
   if (cached !== undefined && cached.expiresAt > Date.now()) {

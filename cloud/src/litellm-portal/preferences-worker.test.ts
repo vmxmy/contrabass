@@ -145,6 +145,30 @@ describe("cron budget threshold scanner", () => {
     expect(mailBodies[0]).not.toContain("under@gz-zhiyun.com");
   });
 
+  it("does not send budget notifications to users outside the portal allowlist", async () => {
+    const kv = new MemoryKV();
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url === "https://litellm.test/user/list?page=1&page_size=100") {
+        return Response.json({
+          users: [{ user_id: "outside", user_email: "outside@example.com", spend: 99, max_budget: 100 }],
+          total_count: 1,
+        });
+      }
+      if (url === "https://api.mailchannels.net/tx/v1/send") {
+        throw new Error("mailchannels_should_not_be_called");
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    await expect(scanBudgetThresholds(portalEnv({ USER_PREFS_KV: kv }), new Date("2026-05-13T09:00:00.000Z"))).resolves.toEqual({
+      scannedUsers: 1,
+      emailedUsers: 0,
+      skippedUsers: 1,
+      failedUsers: 0,
+    });
+  });
+
   it("continues scanning when one MailChannels send fails", async () => {
     const kv = new MemoryKV();
     const mailBodies: string[] = [];

@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@lingui/react";
 import { setupI18n } from "./i18n/setup";
 import { UserPreferencesSchema } from "./schemas";
-import { useLegacyThemeMigration } from "./hooks/use-preferences";
+import { PREFERENCES_CACHE_KEY, useLegacyThemeMigration, useUpdatePreferences } from "./hooks/use-preferences";
 
 const i18n = setupI18n("zh-CN");
 const originalFetch = globalThis.fetch;
@@ -38,6 +38,14 @@ function renderWithQuery(ui: React.ReactElement) {
 function LegacyThemeMigrationProbe() {
   useLegacyThemeMigration();
   return <div>migration probe</div>;
+}
+
+function FailedPreferenceUpdateProbe() {
+  const updatePreferences = useUpdatePreferences();
+  useEffect(() => {
+    updatePreferences.mutate({ theme: "dark" });
+  }, []);
+  return <div>update probe</div>;
 }
 
 afterEach(() => {
@@ -74,5 +82,28 @@ describe("theme migration", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe("preferences optimistic updates", () => {
+  it("removes first-time optimistic localStorage cache when PATCH fails", async () => {
+    installLocalStorage();
+    let resolveFetch: ((response: Response) => void) | undefined;
+    const responsePromise = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchMock = vi.fn(() => responsePromise);
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    renderWithQuery(<FailedPreferenceUpdateProbe />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(window.localStorage.getItem(PREFERENCES_CACHE_KEY)).toContain("\"theme\":\"dark\""));
+    if (resolveFetch === undefined) {
+      throw new Error("fetch promise was not captured");
+    }
+    resolveFetch(Response.json({ error: "nope" }, { status: 500 }));
+
+    await waitFor(() => expect(window.localStorage.getItem(PREFERENCES_CACHE_KEY)).toBeNull());
   });
 });

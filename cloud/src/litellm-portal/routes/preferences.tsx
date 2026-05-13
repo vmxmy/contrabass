@@ -18,12 +18,12 @@ export function PreferencesPage() {
   const { data: preferences, isLoading, error } = usePreferences();
   const updatePreferences = useUpdatePreferences();
 
-  if (isLoading || preferences === undefined) {
-    return <Loader aria-label={t`正在加载偏好设置`} />;
-  }
-
   if (error) {
     return <Text variant="secondary" as="p"><Trans>偏好设置加载失败，请稍后重试。</Trans></Text>;
+  }
+
+  if (isLoading || preferences === undefined) {
+    return <Loader aria-label={t`正在加载偏好设置`} />;
   }
 
   return (
