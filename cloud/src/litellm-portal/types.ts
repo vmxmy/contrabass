@@ -21,6 +21,7 @@ export type LiteLLMPortalEnv = {
   LITELLM_PORTAL_COMPANY_NAME?: string;
   LITELLM_PORTAL_DEV_AUTH?: string;
   LITELLM_PORTAL_DISPLAY_NAME?: string;
+  LITELLM_PORTAL_WRITE_OPS_ENABLED?: string;
   METRICS_AE?: AnalyticsEngineDataset;
   AUDIT_AE?: AnalyticsEngineDataset;
   ROLE_CACHE_KV?: KVNamespace;
