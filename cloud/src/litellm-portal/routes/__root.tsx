@@ -16,11 +16,11 @@ import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { Switch } from "@cloudflare/kumo/components/switch";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Toasty } from "@cloudflare/kumo/components/toast";
+import { Loader } from "@cloudflare/kumo/components/loader";
 import { TooltipProvider } from "@cloudflare/kumo/components/tooltip";
 import { LinkProvider, type LinkComponentProps } from "@cloudflare/kumo/utils";
 import { QueryClient, QueryClientProvider, HydrationBoundary } from "@tanstack/react-query";
 import { PortalErrorBanner } from "../app";
-import { PortalCommandPalette } from "./portal-command-palette";
 import { useMe } from "../hooks/use-me";
 import type { RouterContext } from "../router";
 
@@ -140,6 +140,20 @@ const KumoRouterLink = React.forwardRef<HTMLAnchorElement, LinkComponentProps>(f
   return <Link ref={ref} to={href ?? to ?? "/"} {...props} />;
 });
 
+
+const LazyPortalCommandPalette = React.lazy(async () => {
+  const module = await import("./portal-command-palette");
+  return { default: module.PortalCommandPalette };
+});
+
+function CommandPaletteFallback() {
+  return (
+    <div className="sr-only" aria-live="polite">
+      <Loader aria-label="正在加载命令面板" />
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Root layout component
 // ---------------------------------------------------------------------------
@@ -187,7 +201,11 @@ function RootLayout() {
         </nav>
       )}
 
-      {isAdmin ? <PortalCommandPalette /> : null}
+      {isAdmin ? (
+        <React.Suspense fallback={<CommandPaletteFallback />}>
+          <LazyPortalCommandPalette />
+        </React.Suspense>
+      ) : null}
 
       <Outlet />
 

@@ -56,6 +56,7 @@ workspaces/
 # Cloud Worker local artifacts
 cloud/.playwright-cli/
 cloud/.wrangler/
+cloud/dist/reports/
 cloud/output/
 
 # Cloudflare Workers local secrets (never commit)

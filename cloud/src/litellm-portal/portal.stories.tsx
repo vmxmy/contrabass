@@ -17,11 +17,11 @@ import {
   HeroStats,
   TeamsAccessCard,
   ApiKeysCard,
-  AdminSection,
   PortalTabs,
   HeaderActions,
   type InitialDashboardData,
 } from "./app";
+import { AdminSection } from "./admin-components";
 
 // ---------------------------------------------------------------------------
 // Shared fixture data

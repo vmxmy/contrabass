@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { portalAppJs } from "./app.generated";
+import { portalAppJs, portalBundleChunks } from "./app.generated";
 import { handleLiteLLMPortalRequest, type LiteLLMPortalEnv } from "./index";
 import { _clearRoleCacheForTests } from "./roles";
 
@@ -104,11 +104,11 @@ describe("litellm portal worker", () => {
     // These assertions are enforced by the build verification step (task 7.3).
     // What we can assert on the served bundle regardless:
     expect(js.length).toBeGreaterThan(1000);
-    // Components that must remain in the bundle
-    expect(js).toContain("aria-pressed");
-    expect(js).toContain("Brush native");
-    // ClipboardText replaced by SensitiveInput in P2-05
-    expect(js).toContain("SensitiveInput");
+    // The served entry is now the user bootstrap. Admin/chart code lives behind
+    // lazy chunks and is requested by the browser only after those paths render.
+    expect(js).toContain("/portal-chunks/");
+    expect(js).not.toContain("AdminUsersTable");
+    expect(js).not.toContain("AdminAuditFeed");
   });
 
   it("app.generated.ts contains no CustomEvent bridge, litellm-portal: events, or __litellmPortal globals", () => {
@@ -124,6 +124,38 @@ describe("litellm portal worker", () => {
     expect(portalAppJs).not.toContain("__INITIAL_DATA__");
     expect(portalAppJs).toContain('initial-data');
     expect(portalAppJs).toContain('"root"');
+  });
+
+  it("app.generated.ts records admin code in a separate lazy chunk", () => {
+    const adminChunk = portalBundleChunks.find((chunk) => chunk.kind === "admin");
+    expect(adminChunk).toBeDefined();
+    expect(portalAppJs).not.toContain("AdminUsersTable");
+    expect(portalAppJs).not.toContain("AdminAuditFeed");
+    expect(adminChunk?.inputs).toContain("src/litellm-portal/admin-components.tsx");
+    expect(adminChunk?.js).toContain("\\u5168\\u5458\\u8D26\\u6237");
+    expect(adminChunk?.js).toContain("\\u5BA1\\u8BA1\\u65E5\\u5FD7");
+  });
+
+  it("serves /portal-chunks/<fileName> as JavaScript matching the bundled chunk", async () => {
+    const chunk = portalBundleChunks[0];
+    expect(chunk).toBeDefined();
+    const response = await handleLiteLLMPortalRequest(
+      new Request(`https://portal.test/portal-chunks/${chunk.fileName}`),
+      portalEnv(),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/javascript");
+    const body = await response.text();
+    expect(body).toBe(chunk.js);
+    expect(body.toLowerCase()).not.toContain("<!doctype html");
+  });
+
+  it("returns 404 for unknown /portal-chunks/<fileName>", async () => {
+    const response = await handleLiteLLMPortalRequest(
+      new Request("https://portal.test/portal-chunks/does-not-exist.js"),
+      portalEnv(),
+    );
+    expect(response.status).toBe(404);
   });
 
   it("serves an empty favicon response without requiring authentication", async () => {

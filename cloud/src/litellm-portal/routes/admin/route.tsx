@@ -1,22 +1,12 @@
 /**
  * Admin layout route with role guard.
  *
- * `beforeLoad` runs before the route component mounts. It reads the resolved
- * role from the router context (seeded by SSR identity or the useMe query
- * that the parent layout fetches). Non-admin users are redirected to `/`
- * before any admin child component renders, which means no `/api/admin/*`
- * requests are ever issued by non-admin clients.
- *
- * Note on TanStack Router context timing: `context.role` is populated when
- * `createPortalRouter` is called with the identity resolved from auth middleware.
- * On the client, the context is seeded from the hydrated `__initial-data__` role
- * field, so the guard works without an extra network round-trip.
+ * Admin UI is loaded through TanStack Router's lazy route component so
+ * non-admin/user-first sessions do not download the Sidebar chunk.
  */
 
-import React from "react";
-import { createRoute, redirect } from "@tanstack/react-router";
+import { createRoute, lazyRouteComponent, redirect } from "@tanstack/react-router";
 import { rootRoute } from "../__root";
-import { AdminSidebar } from "./navigation";
 
 export const adminRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -26,9 +16,5 @@ export const adminRoute = createRoute({
       throw redirect({ to: "/", replace: true });
     }
   },
-  component: AdminLayout,
+  component: lazyRouteComponent(() => import("./route.lazy"), "AdminLayout"),
 });
-
-function AdminLayout() {
-  return <AdminSidebar />;
-}
