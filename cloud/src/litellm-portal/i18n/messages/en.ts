@@ -189,6 +189,31 @@ const messages: Record<string, string> = {
   // resource & risk section labels
   "资源与权限": "Resources & permissions",
   "审计与风险": "Audit & risk",
+
+  // AdminStatusHeader
+  "只读": "Read-only",
+  "样本视图": "Sample view",
+  "系统正常": "System healthy",
+
+  // AdminAuditFeed empty state
+  "尚未记录管理员操作，admin 写操作开启后此处会出现条目。":
+    "No admin operations have been recorded yet. Entries will appear here once admin write operations are enabled.",
+
+  // AccountCell
+  "无邮箱": "No email",
+
+  // ModelChips
+  "+N 更多": "+N more",
+
+  // TopModelsPanel
+  "高频模型排名": "Top models ranking",
+
+  // AdminGlobalUsage collapsible bucket table
+  "分时段用量明细": "Usage by time bucket",
+  "展开或折叠分时段用量明细": "Expand or collapse usage by time bucket",
+
+  // Audit detail labels
+  "原始数据": "Raw data",
 };
 
 export default messages;
