@@ -30,7 +30,7 @@ import { fmt, fmtInt } from "./lib/format";
 import { useToast } from "./hooks/use-toast";
 import { useDashboard } from "./hooks/use-dashboard";
 import { applyThemePreference, useLegacyThemeMigration, usePreferences, useUpdatePreferences } from "./hooks/use-preferences";
-import type { Dashboard } from "./schemas";
+import type { Dashboard, UserPreferences } from "./schemas";
 
 export type InitialDashboardData = {
   me?: { email?: string | null; domain?: string | null; company?: string | null } | null;
@@ -629,14 +629,19 @@ function TopModels({ data, loading }: { data: UsageTimeseries | null; loading: b
   );
 }
 
-export function UsagePanel() {
+export function PreferencesAwareUsagePanel() {
+  const { data: preferences } = usePreferences();
+  return <UsagePanel defaultUsageWindow={preferences?.defaultUsageWindow} />;
+}
+
+export function UsagePanel({ defaultUsageWindow }: { defaultUsageWindow?: UserPreferences["defaultUsageWindow"] } = {}) {
   const config = useMemo(() => portalConfig(), []);
   const grains = useMemo(() => Object.keys(config.usageWindows), [config]);
   const presets = useMemo(() => usageWindowPresets(config), [config]);
   const defaultPreset = useMemo(() => {
-    const defaultDayWindow = defaultWindowFor("day", config);
+    const defaultDayWindow = defaultUsageWindow ?? defaultWindowFor("day", config);
     return presetForWindow(defaultDayWindow, config) ?? presets.find((preset) => preset.grain === "day") ?? presets[0];
-  }, [config, presets]);
+  }, [config, defaultUsageWindow, presets]);
   const [grainMode, setGrainMode] = useState<GrainMode>("auto");
   const [grain, setGrain] = useState(defaultPreset?.grain ?? "day");
   const [windowKey, setWindowKey] = useState(defaultPreset?.windowKey ?? defaultWindowFor("day", config));
@@ -645,6 +650,7 @@ export function UsagePanel() {
   const [loading, setLoading] = useState(true);
   const [rangeHint, setRangeHint] = useState<string | null>(null);
   const requestIdRef = useRef(0);
+  const appliedPreferredWindowRef = useRef(false);
 
   const activePreset = useMemo(
     () => presets.find((preset) => preset.windowKey === windowKey) ?? defaultPreset,
@@ -697,6 +703,16 @@ export function UsagePanel() {
     }
     applyPreset(selection, "brush");
   }, [applyPreset, config]);
+
+  useEffect(() => {
+    if (appliedPreferredWindowRef.current || defaultUsageWindow === undefined) return;
+    appliedPreferredWindowRef.current = true;
+    const preset = presetForWindow(defaultUsageWindow, config);
+    if (!preset) return;
+    setGrainMode("auto");
+    setGrain(preset.grain);
+    setWindowKey(preset.windowKey);
+  }, [config, defaultUsageWindow]);
 
   useEffect(() => {
     if (!grain || !windowKey) return;
@@ -1612,7 +1628,7 @@ export function App({ initialData, role: initialRole, dehydratedState }: AppProp
                   </div>
 
                   <section id="usage-panel-root" className="mb-14">
-                    <UsagePanel />
+                    <PreferencesAwareUsagePanel />
                   </section>
 
                   <section className="mb-10 grid grid-cols-1 gap-5 md:grid-cols-[1fr_2fr]">
