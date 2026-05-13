@@ -884,6 +884,13 @@ describe("AdminSection", () => {
     await waitFor(() => {
       const hourCall = fetchUrls.find((u) => u.includes("/api/admin/usage/timeseries") && u.includes("grain=hour"));
       expect(hourCall).toBeDefined();
+    });
+
+    // Expand the collapsed bucket table to verify "01-01" label appears
+    const expandTriggers = screen.getAllByRole("button", { name: /展开或折叠分时段用量明细/i });
+    fireEvent.click(expandTriggers[expandTriggers.length - 1]);
+
+    await waitFor(() => {
       expect(screen.queryByText("01-01")).not.toBeNull();
     });
   });
@@ -898,7 +905,7 @@ describe("AdminSection", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("renders ⋯ action column and DropdownMenu in users table", async () => {
+  it("no ⋯ action column or DropdownMenu in users table (fake actions removed per spec 5.2)", async () => {
     installPortalConfig();
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
@@ -925,14 +932,14 @@ describe("AdminSection", () => {
 
     render(<AdminSection role="admin" />);
 
+    // Wait for users table to render the user row
     await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: "更多操作" }).length).toBeGreaterThan(0);
+      expect(screen.queryByText("admin@test.com")).not.toBeNull();
     });
 
-    fireEvent.click(screen.getAllByRole("button", { name: "更多操作" })[0]);
-    await waitFor(() => {
-      expect(screen.queryByText("查看详情")).not.toBeNull();
-    });
+    // Fake row actions must be absent
+    expect(screen.queryAllByRole("button", { name: "更多操作" }).length).toBe(0);
+    expect(screen.queryByText("查看详情")).toBeNull();
   });
 
   it("renders aligned admin dashboard sections when role is admin", async () => {
@@ -1083,7 +1090,7 @@ describe("Tooltip — HeroStats truncated email", () => {
 });
 
 describe("DropdownMenu — AdminUsersTable row actions", () => {
-  it("shows 查看详情 menu item after clicking ⋯ trigger", async () => {
+  it("no 查看详情 menu item in users table (stub detail routes removed per spec 5.2)", async () => {
     installPortalConfig();
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
@@ -1108,16 +1115,14 @@ describe("DropdownMenu — AdminUsersTable row actions", () => {
 
     render(<AdminSection role="admin" />);
 
+    // Wait for users table to render
     await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: "更多操作" }).length).toBeGreaterThan(0);
+      expect(screen.queryByText("user@example.com")).not.toBeNull();
     });
 
-    fireEvent.click(screen.getAllByRole("button", { name: "更多操作" })[0]);
-
-    await waitFor(() => {
-      expect(screen.queryByText("查看详情")).not.toBeNull();
-    });
-
-    expect(screen.queryByRole("menuitem", { name: "查看详情" })).not.toBeNull();
+    // Actions column and its menu items must be absent
+    expect(screen.queryAllByRole("button", { name: "更多操作" }).length).toBe(0);
+    expect(screen.queryByText("查看详情")).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "查看详情" })).toBeNull();
   });
 });
