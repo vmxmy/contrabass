@@ -56,8 +56,10 @@ workspaces/
 # Cloud Worker local artifacts
 cloud/.playwright-cli/
 cloud/.wrangler/
+cloud/dist/litellm-portal-worker/
 cloud/dist/reports/
 cloud/output/
+cloud/pnpm-lock.yaml
 
 # Cloudflare Workers local secrets (never commit)
 .dev.vars
