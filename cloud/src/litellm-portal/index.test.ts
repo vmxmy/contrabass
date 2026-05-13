@@ -1874,6 +1874,493 @@ describe("litellm portal worker", () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // Admin write endpoints — Phase 1 (CONTRABASS-16)
+  // ---------------------------------------------------------------------------
+
+  describe("PATCH /api/admin/keys/:id/disable", () => {
+    const adminFetch = (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/user/list?user_email=admin")) {
+        return Promise.resolve(Response.json({
+          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
+        }));
+      }
+      if (url.includes("/key/update")) {
+        return Promise.resolve(Response.json({ status: "ok" }));
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    };
+
+    it("returns 404 when LITELLM_PORTAL_WRITE_OPS_ENABLED is not set", async () => {
+      globalThis.fetch = adminFetch;
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/keys/key-abc/disable", "admin@gz-zhiyun.com", {
+          method: "PATCH",
+          body: JSON.stringify({ reason: "security_incident", disabled: true }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 403 for non-admin users", async () => {
+      globalThis.fetch = async (input) => {
+        if (String(input).includes("/user/list?user_email=user")) {
+          return Response.json({
+            users: [{ user_id: "user-uid", user_role: "internal_user", user_email: "user@gz-zhiyun.com" }],
+          });
+        }
+        return new Response("not found", { status: 404 });
+      };
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/keys/key-abc/disable", "user@gz-zhiyun.com", {
+          method: "PATCH",
+          body: JSON.stringify({ reason: "security_incident", disabled: true }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+      );
+      expect(response.status).toBe(403);
+    });
+
+    it("returns 422 when reason is missing (validation failure)", async () => {
+      globalThis.fetch = adminFetch;
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/keys/key-abc/disable", "admin@gz-zhiyun.com", {
+          method: "PATCH",
+          body: JSON.stringify({ disabled: true }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+      );
+      expect(response.status).toBe(422);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("validation_error");
+    });
+
+    it("disables a key (happy path) and returns keyId + disabled=true", async () => {
+      let keyUpdateCalled = false;
+      globalThis.fetch = async (input) => {
+        const url = String(input);
+        if (url.includes("/user/list?user_email=admin")) {
+          return Response.json({
+            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
+          });
+        }
+        if (url.includes("/key/update")) {
+          keyUpdateCalled = true;
+          return Response.json({ status: "ok" });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/keys/key-abc/disable", "admin@gz-zhiyun.com", {
+          method: "PATCH",
+          body: JSON.stringify({ reason: "security_incident", disabled: true }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.keyId).toBe("key-abc");
+      expect(body.disabled).toBe(true);
+      expect(body.dryRun).toBe(false);
+      expect(keyUpdateCalled).toBe(true);
+    });
+
+    it("dry-run skips LiteLLM call and returns dryRun=true", async () => {
+      let keyUpdateCalled = false;
+      globalThis.fetch = async (input) => {
+        const url = String(input);
+        if (url.includes("/user/list?user_email=admin")) {
+          return Response.json({
+            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
+          });
+        }
+        if (url.includes("/key/update")) {
+          keyUpdateCalled = true;
+          return Response.json({ status: "ok" });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/keys/key-abc/disable?dryRun=true", "admin@gz-zhiyun.com", {
+          method: "PATCH",
+          body: JSON.stringify({ reason: "security_incident", disabled: true }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.dryRun).toBe(true);
+      expect(keyUpdateCalled).toBe(false);
+    });
+  });
+
+  describe("PATCH /api/admin/teams/:id/limits", () => {
+    const adminFetch = (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/user/list?user_email=admin")) {
+        return Promise.resolve(Response.json({
+          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
+        }));
+      }
+      if (url.includes("/team/update")) {
+        return Promise.resolve(Response.json({ status: "ok" }));
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    };
+
+    it("returns 404 when LITELLM_PORTAL_WRITE_OPS_ENABLED is not set", async () => {
+      globalThis.fetch = adminFetch;
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/teams/team-1/limits", "admin@gz-zhiyun.com", {
+          method: "PATCH",
+          body: JSON.stringify({ reason: "budget_adjustment", rpmLimit: 100 }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 403 for non-admin users", async () => {
+      globalThis.fetch = async (input) => {
+        if (String(input).includes("/user/list?user_email=user")) {
+          return Response.json({
+            users: [{ user_id: "user-uid", user_role: "internal_user", user_email: "user@gz-zhiyun.com" }],
+          });
+        }
+        return new Response("not found", { status: 404 });
+      };
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/teams/team-1/limits", "user@gz-zhiyun.com", {
+          method: "PATCH",
+          body: JSON.stringify({ reason: "budget_adjustment", rpmLimit: 100 }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+      );
+      expect(response.status).toBe(403);
+    });
+
+    it("returns 422 when reason is missing", async () => {
+      globalThis.fetch = adminFetch;
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/teams/team-1/limits", "admin@gz-zhiyun.com", {
+          method: "PATCH",
+          body: JSON.stringify({ rpmLimit: 100 }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+      );
+      expect(response.status).toBe(422);
+    });
+
+    it("updates team limits (happy path)", async () => {
+      let teamUpdateBody: Record<string, unknown> | undefined;
+      globalThis.fetch = async (input, init) => {
+        const url = String(input);
+        if (url.includes("/user/list?user_email=admin")) {
+          return Response.json({
+            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
+          });
+        }
+        if (url.includes("/team/update")) {
+          teamUpdateBody = JSON.parse(String((init as RequestInit).body));
+          return Response.json({ status: "ok" });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/teams/team-1/limits", "admin@gz-zhiyun.com", {
+          method: "PATCH",
+          body: JSON.stringify({ reason: "budget_adjustment", rpmLimit: 200, tpmLimit: 5000 }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.teamId).toBe("team-1");
+      expect(body.rpmLimit).toBe(200);
+      expect(body.tpmLimit).toBe(5000);
+      expect(body.dryRun).toBe(false);
+      expect(teamUpdateBody?.team_id).toBe("team-1");
+      expect(teamUpdateBody?.rpm_limit).toBe(200);
+    });
+  });
+
+  describe("PATCH /api/admin/users/:id", () => {
+    const adminFetch = (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/user/list?user_email=admin")) {
+        return Promise.resolve(Response.json({
+          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
+        }));
+      }
+      if (url.includes("/user/update")) {
+        return Promise.resolve(Response.json({ status: "ok" }));
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    };
+
+    it("returns 404 when feature flag is off", async () => {
+      globalThis.fetch = adminFetch;
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/users/user-123", "admin@gz-zhiyun.com", {
+          method: "PATCH",
+          body: JSON.stringify({ reason: "user_request", role: "internal_user" }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 403 for non-admin users", async () => {
+      globalThis.fetch = async (input) => {
+        if (String(input).includes("/user/list?user_email=user")) {
+          return Response.json({
+            users: [{ user_id: "user-uid", user_role: "internal_user", user_email: "user@gz-zhiyun.com" }],
+          });
+        }
+        return new Response("not found", { status: 404 });
+      };
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/users/user-123", "user@gz-zhiyun.com", {
+          method: "PATCH",
+          body: JSON.stringify({ reason: "user_request", role: "internal_user" }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+      );
+      expect(response.status).toBe(403);
+    });
+
+    it("returns 422 for missing reason", async () => {
+      globalThis.fetch = adminFetch;
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/users/user-123", "admin@gz-zhiyun.com", {
+          method: "PATCH",
+          body: JSON.stringify({ role: "internal_user" }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+      );
+      expect(response.status).toBe(422);
+    });
+
+    it("updates user role (happy path)", async () => {
+      let userUpdateBody: Record<string, unknown> | undefined;
+      globalThis.fetch = async (input, init) => {
+        const url = String(input);
+        if (url.includes("/user/list?user_email=admin")) {
+          return Response.json({
+            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
+          });
+        }
+        if (url.includes("/user/update")) {
+          userUpdateBody = JSON.parse(String((init as RequestInit).body));
+          return Response.json({ status: "ok" });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/users/user-123", "admin@gz-zhiyun.com", {
+          method: "PATCH",
+          body: JSON.stringify({ reason: "user_request", role: "internal_user" }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.userId).toBe("user-123");
+      expect(body.role).toBe("internal_user");
+      expect(body.dryRun).toBe(false);
+      expect(userUpdateBody?.user_role).toBe("internal_user");
+    });
+  });
+
+  describe("DELETE /api/admin/keys/:id", () => {
+    const adminFetch = (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/user/list?user_email=admin")) {
+        return Promise.resolve(Response.json({
+          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
+        }));
+      }
+      if (url.includes("/key/delete")) {
+        return Promise.resolve(Response.json({ deleted_keys: ["key-abc"] }));
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    };
+
+    it("returns 404 when feature flag is off", async () => {
+      globalThis.fetch = adminFetch;
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/keys/key-abc", "admin@gz-zhiyun.com", {
+          method: "DELETE",
+          body: JSON.stringify({ reason: "security_incident", confirmAlias: "my-key" }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 403 for non-admin users", async () => {
+      globalThis.fetch = async (input) => {
+        if (String(input).includes("/user/list?user_email=user")) {
+          return Response.json({
+            users: [{ user_id: "user-uid", user_role: "internal_user", user_email: "user@gz-zhiyun.com" }],
+          });
+        }
+        return new Response("not found", { status: 404 });
+      };
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/keys/key-abc", "user@gz-zhiyun.com", {
+          method: "DELETE",
+          body: JSON.stringify({ reason: "security_incident", confirmAlias: "my-key" }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+      );
+      expect(response.status).toBe(403);
+    });
+
+    it("returns 422 when reason is missing", async () => {
+      globalThis.fetch = adminFetch;
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/keys/key-abc", "admin@gz-zhiyun.com", {
+          method: "DELETE",
+          body: JSON.stringify({ confirmAlias: "my-key" }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+      );
+      expect(response.status).toBe(422);
+    });
+
+    it("returns 422 when confirmAlias is missing", async () => {
+      globalThis.fetch = adminFetch;
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/keys/key-abc", "admin@gz-zhiyun.com", {
+          method: "DELETE",
+          body: JSON.stringify({ reason: "security_incident" }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+      );
+      expect(response.status).toBe(422);
+    });
+
+    it("deletes a key (happy path) with confirmAlias present", async () => {
+      let deleteBody: Record<string, unknown> | undefined;
+      globalThis.fetch = async (input, init) => {
+        const url = String(input);
+        if (url.includes("/user/list?user_email=admin")) {
+          return Response.json({
+            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
+          });
+        }
+        if (url.includes("/key/delete")) {
+          deleteBody = JSON.parse(String((init as RequestInit).body));
+          return Response.json({ deleted_keys: ["key-abc"] });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/keys/key-abc", "admin@gz-zhiyun.com", {
+          method: "DELETE",
+          body: JSON.stringify({ reason: "security_incident", confirmAlias: "my-key" }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.keyId).toBe("key-abc");
+      expect(body.dryRun).toBe(false);
+      expect(deleteBody?.keys).toEqual(["key-abc"]);
+    });
+
+    it("dry-run skips deletion and returns dryRun=true", async () => {
+      let deleteKeyCallCount = 0;
+      globalThis.fetch = async (input) => {
+        const url = String(input);
+        if (url.includes("/user/list?user_email=admin")) {
+          return Response.json({
+            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
+          });
+        }
+        if (url.includes("/key/delete")) {
+          deleteKeyCallCount++;
+          return Response.json({ deleted_keys: ["key-abc"] });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/keys/key-abc?dryRun=true", "admin@gz-zhiyun.com", {
+          method: "DELETE",
+          body: JSON.stringify({ reason: "security_incident", confirmAlias: "my-key" }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.dryRun).toBe(true);
+      expect(deleteKeyCallCount).toBe(0);
+    });
+  });
+
+  describe("Audit write: before/after/reason recorded", () => {
+    it("records audit with before/after/reason on key disable", async () => {
+      const auditPoints: Array<{ blobs?: string[] }> = [];
+      globalThis.fetch = async (input) => {
+        const url = String(input);
+        if (url.includes("/user/list?user_email=admin")) {
+          return Response.json({
+            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
+          });
+        }
+        if (url.includes("/key/update")) {
+          return Response.json({ status: "ok" });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      const mockAuditAe = {
+        writeDataPoint(point: { blobs?: string[] }) {
+          auditPoints.push(point);
+        },
+      };
+
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/keys/key-abc/disable", "admin@gz-zhiyun.com", {
+          method: "PATCH",
+          body: JSON.stringify({ reason: "security_incident", disabled: true }),
+        }),
+        portalEnv({
+          LITELLM_PORTAL_DEV_AUTH: "true",
+          LITELLM_PORTAL_WRITE_OPS_ENABLED: "true",
+          AUDIT_AE: mockAuditAe,
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      // auditWrite emits blobs: [actor, action, target, ip, ts, before, after, reason]
+      const writePoints = auditPoints.filter((p) => p.blobs && p.blobs.length >= 8);
+      expect(writePoints.length).toBeGreaterThanOrEqual(1);
+      const point = writePoints[0];
+      expect(point.blobs?.[0]).toBe("admin@gz-zhiyun.com"); // actor
+      expect(point.blobs?.[1]).toBe("admin_key_disable"); // action
+      expect(point.blobs?.[2]).toBe("key-abc"); // target
+      expect(point.blobs?.[5]).toBe(JSON.stringify({ blocked: false })); // before
+      expect(point.blobs?.[6]).toBe(JSON.stringify({ blocked: true })); // after
+      expect(point.blobs?.[7]).toBe("security_incident"); // reason
+    });
+  });
+
 });
 
 function portalEnv(overrides: Partial<LiteLLMPortalEnv> = {}): LiteLLMPortalEnv {
