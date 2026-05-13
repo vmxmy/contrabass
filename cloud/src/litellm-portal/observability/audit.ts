@@ -8,12 +8,38 @@ export type AuditPoint = {
   ts: string;
 };
 
+export type AuditWritePoint = AuditPoint & {
+  before: string;
+  after: string;
+  reason: string;
+};
+
 export function recordAudit(env: LiteLLMPortalEnv, point: AuditPoint): void {
   if (!env.AUDIT_AE) {
     return;
   }
   env.AUDIT_AE.writeDataPoint({
     blobs: [point.actor, point.action, point.target, point.ip, point.ts],
+    doubles: [],
+    indexes: [point.actor],
+  });
+}
+
+export function auditWrite(env: LiteLLMPortalEnv, point: AuditWritePoint): void {
+  if (!env.AUDIT_AE) {
+    return;
+  }
+  env.AUDIT_AE.writeDataPoint({
+    blobs: [
+      point.actor,
+      point.action,
+      point.target,
+      point.ip,
+      point.ts,
+      point.before,
+      point.after,
+      point.reason,
+    ],
     doubles: [],
     indexes: [point.actor],
   });

@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { z } from "zod";
 import type { LiteLLMPortalEnv, PortalIdentity } from "./types";
 import { applyAdminRateLimit } from "./security/rate-limit-middleware";
 import { authenticateRequest } from "./auth";
@@ -10,6 +11,10 @@ import {
   configuredAllowedModels,
   createKey,
   deleteKey,
+  deleteKeyById,
+  getKeyInfo,
+  getTeamInfo,
+  getUserInfo,
   KeyAliasConflictError,
   listAllTeams,
   listAllUsers,
@@ -21,6 +26,9 @@ import {
   readAvailableModelsFromTeams,
   readUserTeams,
   resolveLiteLLMUser,
+  updateKeyBlocked,
+  updateTeamLimits,
+  updateUser,
 } from "./litellm";
 import { parseUsageTimeseriesRequest, readGlobalUsageTimeseries, readUsageTimeseries } from "./timeseries";
 import { readUserDailyActivity } from "./usage";
@@ -40,7 +48,16 @@ import {
   ErrorResponseSchema,
   AdminRolesInvalidateQuerySchema,
   RoleChangedBodySchema,
+  DisableKeyBodySchema,
+  DisableKeyResultSchema,
+  UpdateTeamLimitsBodySchema,
+  UpdateTeamLimitsResultSchema,
+  UpdateUserBodySchema,
+  UpdateUserResultSchema,
+  AdminDeleteKeyBodySchema,
+  AdminDeleteKeyResultSchema,
 } from "./schemas";
+import { auditWrite } from "./observability/audit";
 import type { LiteLLMKey, LiteLLMTeam, JsonValue } from "./types";
 
 type HonoEnv = { Bindings: LiteLLMPortalEnv; Variables: { identity: PortalIdentity } };
@@ -506,6 +523,255 @@ const internalRoleChangedApp = new Hono<{ Bindings: LiteLLMPortalEnv }>()
   });
 
 // ---------------------------------------------------------------------------
+// Feature flag helper
+// ---------------------------------------------------------------------------
+
+function isWriteOpsEnabled(env: LiteLLMPortalEnv): boolean {
+  return env.LITELLM_PORTAL_WRITE_OPS_ENABLED === "true";
+}
+
+function writeOpsDisabledResponse<T extends object>(c: { json: (body: T, status?: number) => Response }): Response {
+  return c.json({ error: "not_found" } as unknown as T, 404);
+}
+
+// ---------------------------------------------------------------------------
+// Shared write-body parsing helper
+// ---------------------------------------------------------------------------
+
+async function parseWriteBody<T>(
+  c: { req: { json: () => Promise<unknown> }; json: (body: object, status?: number) => Response },
+  schema: z.ZodType<T>,
+): Promise<{ ok: true; data: T } | { ok: false; response: Response }> {
+  let rawBody: unknown;
+  try {
+    rawBody = await c.req.json();
+  } catch {
+    return { ok: false, response: c.json({ error: "invalid_json" }, 400) };
+  }
+  const parsed = schema.safeParse(rawBody);
+  if (!parsed.success) {
+    const firstIssue = parsed.error.issues[0];
+    const pathSegments = firstIssue?.path.map((segment) => String(segment)) ?? [];
+    return {
+      ok: false,
+      response: c.json({
+        error: "validation_error",
+        path: pathSegments.join("."),
+        message: firstIssue?.message ?? "invalid_request",
+      }, 422),
+    };
+  }
+  return { ok: true, data: parsed.data };
+}
+
+// ---------------------------------------------------------------------------
+// Admin write endpoints — low risk: PATCH /api/admin/keys/:id/disable
+// ---------------------------------------------------------------------------
+
+const adminDisableKeyApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
+  .use("/admin/*", requireAdmin)
+  .patch("/admin/keys/:keyId/disable", async (c) => {
+    if (!isWriteOpsEnabled(c.env)) return writeOpsDisabledResponse(c);
+
+    const keyId = decodeURIComponent(c.req.param("keyId") ?? "").trim();
+    if (!keyId) return c.json({ error: "key_id_required" }, 400);
+
+    const parsed = await parseWriteBody(c, DisableKeyBodySchema);
+    if (!parsed.ok) return parsed.response;
+    const { reason, disabled } = parsed.data;
+
+    const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
+    const identity = c.get("identity");
+
+    const existing = await getKeyInfo(c.env, keyId);
+    if (!existing) return c.json({ error: "key_not_found" }, 404);
+
+    if (!isDryRun) {
+      await updateKeyBlocked(c.env, keyId, disabled, identity.email);
+      auditWrite(c.env, {
+        actor: identity.email,
+        action: disabled ? "admin_key_disable" : "admin_key_enable",
+        target: keyId,
+        ip: c.req.header("cf-connecting-ip") ?? "unknown",
+        ts: new Date().toISOString(),
+        before: JSON.stringify({ blocked: existing.blocked }),
+        after: JSON.stringify({ blocked: disabled }),
+        reason,
+      });
+    }
+
+    return c.json(DisableKeyResultSchema.parse({ keyId, disabled, dryRun: isDryRun }));
+  });
+
+// ---------------------------------------------------------------------------
+// Admin write endpoints — low risk: PATCH /api/admin/teams/:id/limits
+// ---------------------------------------------------------------------------
+
+const adminUpdateTeamLimitsApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
+  .use("/admin/*", requireAdmin)
+  .patch("/admin/teams/:teamId/limits", async (c) => {
+    if (!isWriteOpsEnabled(c.env)) return writeOpsDisabledResponse(c);
+
+    const teamId = decodeURIComponent(c.req.param("teamId") ?? "").trim();
+    if (!teamId) return c.json({ error: "team_id_required" }, 400);
+
+    const parsed = await parseWriteBody(c, UpdateTeamLimitsBodySchema);
+    if (!parsed.ok) return parsed.response;
+    const { reason, tpmLimit, rpmLimit, maxBudget } = parsed.data;
+
+    const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
+    const identity = c.get("identity");
+
+    const existing = await getTeamInfo(c.env, teamId);
+    if (!existing) return c.json({ error: "team_not_found" }, 404);
+
+    if (!isDryRun) {
+      await updateTeamLimits(c.env, teamId, { tpmLimit, rpmLimit, maxBudget }, identity.email);
+      auditWrite(c.env, {
+        actor: identity.email,
+        action: "admin_team_limits_update",
+        target: teamId,
+        ip: c.req.header("cf-connecting-ip") ?? "unknown",
+        ts: new Date().toISOString(),
+        before: JSON.stringify({
+          tpmLimit: existing.tpmLimit,
+          rpmLimit: existing.rpmLimit,
+          maxBudget: existing.maxBudget,
+        }),
+        after: JSON.stringify({
+          tpmLimit: tpmLimit ?? existing.tpmLimit,
+          rpmLimit: rpmLimit ?? existing.rpmLimit,
+          maxBudget: maxBudget ?? existing.maxBudget,
+        }),
+        reason,
+      });
+    }
+
+    return c.json(UpdateTeamLimitsResultSchema.parse({
+      teamId,
+      tpmLimit: tpmLimit ?? null,
+      rpmLimit: rpmLimit ?? null,
+      maxBudget: maxBudget ?? null,
+      dryRun: isDryRun,
+    }));
+  });
+
+// ---------------------------------------------------------------------------
+// Admin write endpoints — medium risk: PATCH /api/admin/users/:id
+// ---------------------------------------------------------------------------
+
+const adminUpdateUserApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
+  .use("/admin/*", requireAdmin)
+  .patch("/admin/users/:userId", async (c) => {
+    if (!isWriteOpsEnabled(c.env)) return writeOpsDisabledResponse(c);
+
+    const userId = decodeURIComponent(c.req.param("userId") ?? "").trim();
+    if (!userId) return c.json({ error: "user_id_required" }, 400);
+
+    const parsed = await parseWriteBody(c, UpdateUserBodySchema);
+    if (!parsed.ok) return parsed.response;
+    const { reason, role, maxBudget } = parsed.data;
+
+    const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
+    const identity = c.get("identity");
+
+    const existing = await getUserInfo(c.env, userId);
+    if (!existing) return c.json({ error: "user_not_found" }, 404);
+
+    if (!isDryRun) {
+      await updateUser(c.env, userId, { role, maxBudget }, identity.email);
+      auditWrite(c.env, {
+        actor: identity.email,
+        action: "admin_user_update",
+        target: userId,
+        ip: c.req.header("cf-connecting-ip") ?? "unknown",
+        ts: new Date().toISOString(),
+        before: JSON.stringify({ role: existing.role, maxBudget: existing.maxBudget }),
+        after: JSON.stringify({
+          role: role ?? existing.role,
+          maxBudget: maxBudget ?? existing.maxBudget,
+        }),
+        reason,
+      });
+    }
+
+    return c.json(UpdateUserResultSchema.parse({
+      userId,
+      role: role ?? null,
+      maxBudget: maxBudget ?? null,
+      dryRun: isDryRun,
+    }));
+  });
+
+// ---------------------------------------------------------------------------
+// Admin write endpoints — medium risk: DELETE /api/admin/keys/:id
+// ---------------------------------------------------------------------------
+
+const adminDeleteKeyApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
+  .use("/admin/*", requireAdmin)
+  .delete("/admin/keys/:keyId", async (c) => {
+    if (!isWriteOpsEnabled(c.env)) return writeOpsDisabledResponse(c);
+
+    const keyId = decodeURIComponent(c.req.param("keyId") ?? "").trim();
+    if (!keyId) return c.json({ error: "key_id_required" }, 400);
+
+    const parsed = await parseWriteBody(c, AdminDeleteKeyBodySchema);
+    if (!parsed.ok) return parsed.response;
+    const { reason, confirmAlias } = parsed.data;
+
+    const submittedConfirm = confirmAlias?.trim() ?? "";
+    if (submittedConfirm.length === 0) {
+      return c.json({ error: "confirm_alias_required" }, 400);
+    }
+
+    const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
+    const identity = c.get("identity");
+
+    const existing = await getKeyInfo(c.env, keyId);
+    if (!existing) return c.json({ error: "key_not_found" }, 404);
+
+    // Typed-confirmation: the submitted string MUST match the key's alias (or, if
+    // the key has no alias, its public displayKey). This is the safety contract
+    // the UI's ConfirmDialog enforces server-side.
+    const expectedConfirm = (existing.alias && existing.alias.trim().length > 0)
+      ? existing.alias.trim()
+      : existing.displayKey?.trim() ?? "";
+    if (expectedConfirm.length === 0 || submittedConfirm !== expectedConfirm) {
+      return c.json({ error: "confirm_alias_mismatch" }, 403);
+    }
+
+    if (!isDryRun) {
+      await deleteKeyById(c.env, keyId, identity.email);
+      auditWrite(c.env, {
+        actor: identity.email,
+        action: "admin_key_delete",
+        target: keyId,
+        ip: c.req.header("cf-connecting-ip") ?? "unknown",
+        ts: new Date().toISOString(),
+        before: JSON.stringify({
+          keyId,
+          alias: existing.alias,
+          displayKey: existing.displayKey,
+          userId: existing.userId,
+          teamId: existing.teamId,
+        }),
+        after: JSON.stringify({ deleted: true }),
+        reason,
+      });
+    }
+
+    return c.json(AdminDeleteKeyResultSchema.parse({ keyId, dryRun: isDryRun }));
+  });
+
+// ---------------------------------------------------------------------------
 // Top-level app mounts /api/* with global error handler
 // ---------------------------------------------------------------------------
 
@@ -533,6 +799,10 @@ const app = new Hono<{ Bindings: LiteLLMPortalEnv }>()
   .route("/api", adminAuditApp)
   .route("/api", adminUsageTimeseriesApp)
   .route("/api", adminRolesInvalidateApp)
+  .route("/api", adminDisableKeyApp)
+  .route("/api", adminUpdateTeamLimitsApp)
+  .route("/api", adminUpdateUserApp)
+  .route("/api", adminDeleteKeyApp)
   .all("/*", (c) => c.json({ error: "not_found" }, 404));
 
 export { app };
