@@ -478,6 +478,80 @@ function errorText(value: unknown): string {
     .join(" ");
 }
 
+export async function updateKeyBlocked(
+  env: LiteLLMPortalEnv,
+  keyId: string,
+  blocked: boolean,
+  changedBy?: string,
+): Promise<void> {
+  const headers = new Headers();
+  if (changedBy && changedBy.trim().length > 0) {
+    headers.set("litellm-changed-by", changedBy.trim());
+  }
+  await litellmFetch(env, "/key/update", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ key: keyId, blocked }),
+  });
+}
+
+export async function updateTeamLimits(
+  env: LiteLLMPortalEnv,
+  teamId: string,
+  params: { tpmLimit?: number | null; rpmLimit?: number | null; maxBudget?: number | null },
+  changedBy?: string,
+): Promise<void> {
+  const headers = new Headers();
+  if (changedBy && changedBy.trim().length > 0) {
+    headers.set("litellm-changed-by", changedBy.trim());
+  }
+  const body: Record<string, unknown> = { team_id: teamId };
+  if (params.tpmLimit !== undefined) body.tpm_limit = params.tpmLimit;
+  if (params.rpmLimit !== undefined) body.rpm_limit = params.rpmLimit;
+  if (params.maxBudget !== undefined) body.max_budget = params.maxBudget;
+  await litellmFetch(env, "/team/update", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateUser(
+  env: LiteLLMPortalEnv,
+  userId: string,
+  params: { role?: string; maxBudget?: number | null },
+  changedBy?: string,
+): Promise<void> {
+  const headers = new Headers();
+  if (changedBy && changedBy.trim().length > 0) {
+    headers.set("litellm-changed-by", changedBy.trim());
+  }
+  const body: Record<string, unknown> = { user_id: userId };
+  if (params.role !== undefined) body.user_role = params.role;
+  if (params.maxBudget !== undefined) body.max_budget = params.maxBudget;
+  await litellmFetch(env, "/user/update", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteKeyById(
+  env: LiteLLMPortalEnv,
+  keyId: string,
+  changedBy?: string,
+): Promise<void> {
+  const headers = new Headers();
+  if (changedBy && changedBy.trim().length > 0) {
+    headers.set("litellm-changed-by", changedBy.trim());
+  }
+  await litellmFetch(env, "/key/delete", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ keys: [keyId] }),
+  });
+}
+
 export function maskKey(key: string): string {
   if (key.length <= 10) {
     return `${key.slice(0, 2)}...`;

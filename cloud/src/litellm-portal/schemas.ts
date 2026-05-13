@@ -343,6 +343,88 @@ export const AdminRolesInvalidateQuerySchema = z.object({
 export type AdminRolesInvalidateQuery = z.infer<typeof AdminRolesInvalidateQuerySchema>;
 
 // ---------------------------------------------------------------------------
+// Admin write operation schemas (Phase 1: low + medium risk)
+// ---------------------------------------------------------------------------
+
+const REASON_PRESETS = ["routine_maintenance", "security_incident", "user_request", "budget_adjustment", "other"] as const;
+
+export const WriteReasonSchema = z.union([
+  z.enum(REASON_PRESETS),
+  z.string().min(1).max(500),
+]);
+
+export type WriteReason = z.infer<typeof WriteReasonSchema>;
+
+// PATCH /api/admin/keys/:id/disable
+export const DisableKeyBodySchema = z.object({
+  reason: WriteReasonSchema,
+  disabled: z.boolean(),
+});
+
+export type DisableKeyBody = z.infer<typeof DisableKeyBodySchema>;
+
+export const DisableKeyResultSchema = z.object({
+  keyId: z.string(),
+  disabled: z.boolean(),
+  dryRun: z.boolean(),
+});
+
+export type DisableKeyResult = z.infer<typeof DisableKeyResultSchema>;
+
+// PATCH /api/admin/teams/:id/limits
+export const UpdateTeamLimitsBodySchema = z.object({
+  reason: WriteReasonSchema,
+  tpmLimit: z.number().nonnegative().nullable().optional(),
+  rpmLimit: z.number().nonnegative().nullable().optional(),
+  maxBudget: z.number().nonnegative().nullable().optional(),
+});
+
+export type UpdateTeamLimitsBody = z.infer<typeof UpdateTeamLimitsBodySchema>;
+
+export const UpdateTeamLimitsResultSchema = z.object({
+  teamId: z.string(),
+  tpmLimit: z.number().nullable(),
+  rpmLimit: z.number().nullable(),
+  maxBudget: z.number().nullable(),
+  dryRun: z.boolean(),
+});
+
+export type UpdateTeamLimitsResult = z.infer<typeof UpdateTeamLimitsResultSchema>;
+
+// PATCH /api/admin/users/:id
+export const UpdateUserBodySchema = z.object({
+  reason: WriteReasonSchema,
+  role: z.string().min(1).optional(),
+  maxBudget: z.number().nonnegative().nullable().optional(),
+});
+
+export type UpdateUserBody = z.infer<typeof UpdateUserBodySchema>;
+
+export const UpdateUserResultSchema = z.object({
+  userId: z.string(),
+  role: z.string().nullable(),
+  maxBudget: z.number().nullable(),
+  dryRun: z.boolean(),
+});
+
+export type UpdateUserResult = z.infer<typeof UpdateUserResultSchema>;
+
+// DELETE /api/admin/keys/:id (admin)
+export const AdminDeleteKeyBodySchema = z.object({
+  reason: WriteReasonSchema,
+  confirmAlias: z.string().min(1),
+});
+
+export type AdminDeleteKeyBody = z.infer<typeof AdminDeleteKeyBodySchema>;
+
+export const AdminDeleteKeyResultSchema = z.object({
+  keyId: z.string(),
+  dryRun: z.boolean(),
+});
+
+export type AdminDeleteKeyResult = z.infer<typeof AdminDeleteKeyResultSchema>;
+
+// ---------------------------------------------------------------------------
 // /api/_internal/role-changed
 // ---------------------------------------------------------------------------
 
