@@ -102,8 +102,16 @@ export async function renderPortalSSR(
   const history = createMemoryHistory({ initialEntries: [initialPath] });
   const router = createPortalRouter(history, { role });
 
-  // Let the router resolve the matched route before rendering to string.
+  // Resolve loaders and the matched route's lazy component bundles before SSR.
+  // `router.load()` waits for loaders; `preloadRoute` additionally fetches any
+  // `lazyRouteComponent(...)` chunks so renderToString does not capture only the
+  // Suspense fallback for admin pages.
   await router.load();
+  try {
+    await router.preloadRoute({ to: initialPath });
+  } catch {
+    // Preload is best-effort; the client will still hydrate the lazy chunk.
+  }
 
   const markup = renderToString(
     React.createElement(

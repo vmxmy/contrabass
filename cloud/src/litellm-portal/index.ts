@@ -1,4 +1,4 @@
-import { portalAppJs } from "./app.generated";
+import { portalAppJs, portalBundleChunks } from "./app.generated";
 import { kumoStandaloneCss } from "./kumo-css.generated";
 import { authenticateRequest } from "./auth";
 import {
@@ -21,6 +21,10 @@ import type { ClientErrorPayload } from "./observability/client-error";
 export type { LiteLLMPortalEnv } from "./types";
 export { RateLimitDO } from "./security/rate-limit-do";
 
+const portalChunkByFileName = new Map<string, { fileName: string; js: string }>(
+  portalBundleChunks.map((chunk) => [chunk.fileName, chunk]),
+);
+
 export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMPortalEnv): Promise<Response> {
   const url = new URL(request.url);
 
@@ -35,6 +39,7 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
   // the Hono app at the end of this handler.
   const isPortalPage = request.method === "GET" &&
     !url.pathname.startsWith("/api/") &&
+    !url.pathname.startsWith("/portal-chunks/") &&
     url.pathname !== "/kumo.css" &&
     url.pathname !== "/portal.js" &&
     url.pathname !== "/favicon.ico";
@@ -74,6 +79,15 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
 
   if (request.method === "GET" && url.pathname === "/portal.js") {
     return javascriptResponse(portalAppJs);
+  }
+
+  if (request.method === "GET" && url.pathname.startsWith("/portal-chunks/")) {
+    const fileName = url.pathname.slice("/portal-chunks/".length);
+    const chunk = portalChunkByFileName.get(fileName);
+    if (chunk) {
+      return javascriptResponse(chunk.js);
+    }
+    return new Response(null, { status: 404, headers: securityHeaders() });
   }
 
   if (request.method === "GET" && url.pathname === "/favicon.ico") {

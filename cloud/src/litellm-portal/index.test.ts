@@ -136,6 +136,28 @@ describe("litellm portal worker", () => {
     expect(adminChunk?.js).toContain("\\u5BA1\\u8BA1\\u65E5\\u5FD7");
   });
 
+  it("serves /portal-chunks/<fileName> as JavaScript matching the bundled chunk", async () => {
+    const chunk = portalBundleChunks[0];
+    expect(chunk).toBeDefined();
+    const response = await handleLiteLLMPortalRequest(
+      new Request(`https://portal.test/portal-chunks/${chunk.fileName}`),
+      portalEnv(),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/javascript");
+    const body = await response.text();
+    expect(body).toBe(chunk.js);
+    expect(body.toLowerCase()).not.toContain("<!doctype html");
+  });
+
+  it("returns 404 for unknown /portal-chunks/<fileName>", async () => {
+    const response = await handleLiteLLMPortalRequest(
+      new Request("https://portal.test/portal-chunks/does-not-exist.js"),
+      portalEnv(),
+    );
+    expect(response.status).toBe(404);
+  });
+
   it("serves an empty favicon response without requiring authentication", async () => {
     const response = await handleLiteLLMPortalRequest(
       new Request("https://portal.test/favicon.ico"),
