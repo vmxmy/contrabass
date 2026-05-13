@@ -6,6 +6,28 @@ export const PREFERENCES_QUERY_KEY = ["me", "preferences"] as const;
 export const PREFERENCES_CACHE_KEY = "litellm-portal-preferences-cache";
 export const LEGACY_THEME_KEY = "litellm-portal-mode";
 
+type BrowserStorage = {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+};
+
+type BrowserDocument = {
+  documentElement: {
+    dataset: Record<string, string | undefined>;
+  };
+};
+
+type BrowserRuntime = typeof globalThis & {
+  window?: {
+    localStorage?: BrowserStorage;
+    matchMedia?: (query: string) => { matches: boolean };
+  };
+  localStorage?: BrowserStorage;
+  document?: BrowserDocument;
+  matchMedia?: (query: string) => { matches: boolean };
+};
+
 export function usePreferences() {
   return useQuery({
     queryKey: PREFERENCES_QUERY_KEY,
@@ -71,10 +93,11 @@ export function useLegacyThemeMigration() {
   const updatePreferences = useUpdatePreferences();
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    const storage = browserStorage();
+    if (storage === undefined) return;
     let legacy: string | null = null;
     try {
-      legacy = window.localStorage.getItem(LEGACY_THEME_KEY);
+      legacy = storage.getItem(LEGACY_THEME_KEY);
     } catch {
       return;
     }
@@ -83,7 +106,7 @@ export function useLegacyThemeMigration() {
     updatePreferences.mutate({ theme: legacy }, {
       onSuccess: () => {
         try {
-          window.localStorage.removeItem(LEGACY_THEME_KEY);
+          storage.removeItem(LEGACY_THEME_KEY);
         } catch {
           // ignore unavailable storage
         }
@@ -93,15 +116,17 @@ export function useLegacyThemeMigration() {
 }
 
 export function applyThemePreference(theme: UserPreferences["theme"]): void {
-  if (typeof document === "undefined") return;
+  const document = browserDocument();
+  if (document === undefined) return;
   const resolved = theme === "auto" ? systemTheme() : theme;
   document.documentElement.dataset.mode = resolved;
 }
 
 export function readCachedPreferences(): UserPreferences | undefined {
-  if (typeof window === "undefined") return undefined;
+  const storage = browserStorage();
+  if (storage === undefined) return undefined;
   try {
-    const raw = window.localStorage.getItem(PREFERENCES_CACHE_KEY);
+    const raw = storage.getItem(PREFERENCES_CACHE_KEY);
     if (raw === null) return undefined;
     return UserPreferencesSchema.parse(JSON.parse(raw) as unknown);
   } catch {
@@ -110,9 +135,10 @@ export function readCachedPreferences(): UserPreferences | undefined {
 }
 
 function writeCachedPreferences(preferences: UserPreferences): void {
-  if (typeof window === "undefined") return;
+  const storage = browserStorage();
+  if (storage === undefined) return;
   try {
-    window.localStorage.setItem(PREFERENCES_CACHE_KEY, JSON.stringify(preferences));
+    storage.setItem(PREFERENCES_CACHE_KEY, JSON.stringify(preferences));
   } catch {
     // localStorage is a cache only; failures should not affect server persistence.
   }
@@ -138,8 +164,26 @@ function extractError(json: unknown, fallback: string): string {
 }
 
 function systemTheme(): "dark" | "light" {
-  if (typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches) {
+  if (browserMatchMedia()?.("(prefers-color-scheme: dark)").matches) {
     return "dark";
   }
   return "light";
+}
+
+function browserRuntime(): BrowserRuntime {
+  return globalThis as BrowserRuntime;
+}
+
+function browserStorage(): BrowserStorage | undefined {
+  const runtime = browserRuntime();
+  return runtime.window?.localStorage ?? runtime.localStorage;
+}
+
+function browserDocument(): BrowserDocument | undefined {
+  return browserRuntime().document;
+}
+
+function browserMatchMedia(): ((query: string) => { matches: boolean }) | undefined {
+  const runtime = browserRuntime();
+  return runtime.window?.matchMedia ?? runtime.matchMedia;
 }

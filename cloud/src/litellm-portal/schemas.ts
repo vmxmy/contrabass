@@ -33,13 +33,20 @@ export const UserPreferencesNotificationsSchema = z.object({
   keyCreation: z.boolean().default(true),
 });
 
+const DefaultUserPreferencesNotifications = {
+  budgetThresholdEnabled: true,
+  budgetThreshold: 0.8,
+  keyExpirySoon: true,
+  keyCreation: true,
+} satisfies z.infer<typeof UserPreferencesNotificationsSchema>;
+
 export const UserPreferencesSchema = z.object({
   theme: z.enum(["auto", "dark", "light"]).default("auto"),
   defaultTab: z.enum(["user", "admin"]).default("user"),
   defaultUsageWindow: z.enum(["6h", "24h", "48h", "7d", "30d", "12mo"]).default("30d"),
   language: z.enum(["auto", "zh-CN", "en"]).default("auto"),
   density: z.enum(["comfortable", "compact"]).default("comfortable"),
-  notifications: UserPreferencesNotificationsSchema.default({}),
+  notifications: UserPreferencesNotificationsSchema.default(DefaultUserPreferencesNotifications),
 });
 
 export const UserPreferencesPatchSchema = z.object({
