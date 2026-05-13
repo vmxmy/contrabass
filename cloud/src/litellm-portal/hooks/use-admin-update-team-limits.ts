@@ -34,6 +34,9 @@ export function useAdminUpdateTeamLimits() {
       return UpdateTeamLimitsResultSchema.parse(json);
     },
     onMutate: async (input) => {
+      // Dry-run is a server-side preview; do not mutate the cache so the
+      // ConfirmDialog does not silently change the UI before the operator commits.
+      if (input.dryRun === true) return { previous: undefined };
       await queryClient.cancelQueries({ queryKey: ADMIN_TEAMS_QUERY_KEY });
       const previous = queryClient.getQueryData<AdminTeams>(ADMIN_TEAMS_QUERY_KEY);
       queryClient.setQueryData<AdminTeams>(ADMIN_TEAMS_QUERY_KEY, (old) => {

@@ -217,6 +217,7 @@ export const AdminTeamSchema = z.object({
   alias: nullableString,
   models: z.array(z.string()),
   spend: nullableNumber,
+  maxBudget: nullableNumber,
   tpmLimit: nullableNumber,
   rpmLimit: nullableNumber,
 });

@@ -552,6 +552,73 @@ export async function deleteKeyById(
   });
 }
 
+/**
+ * Fetch a single key by id (for typed-confirmation checks and audit before/after snapshots).
+ * Returns `null` when LiteLLM responds with 404 or a non-record payload.
+ */
+export async function getKeyInfo(env: LiteLLMPortalEnv, keyId: string): Promise<LiteLLMKey | null> {
+  const params = new URLSearchParams({ key: keyId });
+  let response: Response;
+  try {
+    response = await litellmFetch(env, `/key/info?${params.toString()}`);
+  } catch (error) {
+    if (error instanceof LiteLLMRequestError && error.status === 404) return null;
+    throw error;
+  }
+  const payload = await response.json() as unknown;
+  if (!payload || typeof payload !== "object") return null;
+  const record = (payload as Record<string, unknown>).info ?? payload;
+  if (!record || typeof record !== "object") return null;
+  return normalizeKey(record as Record<string, unknown>, keyId);
+}
+
+/**
+ * Fetch a single team by id for audit before/after snapshots.
+ * Returns `null` when LiteLLM responds with 404.
+ */
+export async function getTeamInfo(env: LiteLLMPortalEnv, teamId: string): Promise<LiteLLMTeam | null> {
+  const params = new URLSearchParams({ team_id: teamId });
+  let response: Response;
+  try {
+    response = await litellmFetch(env, `/team/info?${params.toString()}`);
+  } catch (error) {
+    if (error instanceof LiteLLMRequestError && error.status === 404) return null;
+    throw error;
+  }
+  const payload = await response.json() as unknown;
+  if (!payload || typeof payload !== "object") return null;
+  const record = teamInfoRecord(payload) ?? (payload as Record<string, unknown>);
+  return normalizeTeam(record, teamId);
+}
+
+/**
+ * Fetch a single user by id for audit before/after snapshots and role/budget context.
+ * Returns `null` when LiteLLM responds with 404.
+ */
+export async function getUserInfo(
+  env: LiteLLMPortalEnv,
+  userId: string,
+): Promise<{ userId: string; role: string | null; maxBudget: number | null } | null> {
+  const params = new URLSearchParams({ user_id: userId });
+  let response: Response;
+  try {
+    response = await litellmFetch(env, `/v2/user/info?${params.toString()}`);
+  } catch (error) {
+    if (error instanceof LiteLLMRequestError && error.status === 404) return null;
+    throw error;
+  }
+  const payload = await response.json() as unknown;
+  if (!payload || typeof payload !== "object") return null;
+  const record = (payload as Record<string, unknown>).user ?? payload;
+  if (!record || typeof record !== "object") return null;
+  const r = record as Record<string, unknown>;
+  return {
+    userId: firstString(r, ["user_id", "userId", "id"]) ?? userId,
+    role: firstString(r, ["user_role", "userRole", "role"]) ?? null,
+    maxBudget: numberField(r, "max_budget") ?? numberField(r, "maxBudget") ?? null,
+  };
+}
+
 export function maskKey(key: string): string {
   if (key.length <= 10) {
     return `${key.slice(0, 2)}...`;

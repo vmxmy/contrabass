@@ -32,6 +32,9 @@ export function useAdminUpdateUser() {
       return UpdateUserResultSchema.parse(json);
     },
     onMutate: async (input) => {
+      // Dry-run is a server-side preview; do not mutate the cache so the
+      // ConfirmDialog does not silently change the UI before the operator commits.
+      if (input.dryRun === true) return { previous: undefined };
       await queryClient.cancelQueries({ queryKey: ADMIN_USERS_QUERY_KEY(1, 50) });
       const previous = queryClient.getQueryData<AdminUsers>(ADMIN_USERS_QUERY_KEY(1, 50));
       queryClient.setQueryData<AdminUsers>(ADMIN_USERS_QUERY_KEY(1, 50), (old) => {

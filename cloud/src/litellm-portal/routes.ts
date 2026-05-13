@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { z } from "zod";
 import type { LiteLLMPortalEnv, PortalIdentity } from "./types";
 import { applyAdminRateLimit } from "./security/rate-limit-middleware";
 import { authenticateRequest } from "./auth";
@@ -11,6 +12,9 @@ import {
   createKey,
   deleteKey,
   deleteKeyById,
+  getKeyInfo,
+  getTeamInfo,
+  getUserInfo,
   KeyAliasConflictError,
   listAllTeams,
   listAllUsers,
@@ -536,7 +540,7 @@ function writeOpsDisabledResponse<T extends object>(c: { json: (body: T, status?
 
 async function parseWriteBody<T>(
   c: { req: { json: () => Promise<unknown> }; json: (body: object, status?: number) => Response },
-  schema: { safeParse: (v: unknown) => { success: true; data: T } | { success: false; error: { issues: Array<{ path: (string | number)[]; message: string }> } } },
+  schema: z.ZodType<T>,
 ): Promise<{ ok: true; data: T } | { ok: false; response: Response }> {
   let rawBody: unknown;
   try {
@@ -547,11 +551,12 @@ async function parseWriteBody<T>(
   const parsed = schema.safeParse(rawBody);
   if (!parsed.success) {
     const firstIssue = parsed.error.issues[0];
+    const pathSegments = firstIssue?.path.map((segment) => String(segment)) ?? [];
     return {
       ok: false,
       response: c.json({
         error: "validation_error",
-        path: firstIssue?.path.join(".") ?? "",
+        path: pathSegments.join("."),
         message: firstIssue?.message ?? "invalid_request",
       }, 422),
     };
@@ -580,6 +585,9 @@ const adminDisableKeyApp = new Hono<HonoEnv>()
     const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
     const identity = c.get("identity");
 
+    const existing = await getKeyInfo(c.env, keyId);
+    if (!existing) return c.json({ error: "key_not_found" }, 404);
+
     if (!isDryRun) {
       await updateKeyBlocked(c.env, keyId, disabled, identity.email);
       auditWrite(c.env, {
@@ -588,7 +596,7 @@ const adminDisableKeyApp = new Hono<HonoEnv>()
         target: keyId,
         ip: c.req.header("cf-connecting-ip") ?? "unknown",
         ts: new Date().toISOString(),
-        before: JSON.stringify({ blocked: !disabled }),
+        before: JSON.stringify({ blocked: existing.blocked }),
         after: JSON.stringify({ blocked: disabled }),
         reason,
       });
@@ -618,6 +626,9 @@ const adminUpdateTeamLimitsApp = new Hono<HonoEnv>()
     const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
     const identity = c.get("identity");
 
+    const existing = await getTeamInfo(c.env, teamId);
+    if (!existing) return c.json({ error: "team_not_found" }, 404);
+
     if (!isDryRun) {
       await updateTeamLimits(c.env, teamId, { tpmLimit, rpmLimit, maxBudget }, identity.email);
       auditWrite(c.env, {
@@ -626,8 +637,16 @@ const adminUpdateTeamLimitsApp = new Hono<HonoEnv>()
         target: teamId,
         ip: c.req.header("cf-connecting-ip") ?? "unknown",
         ts: new Date().toISOString(),
-        before: JSON.stringify({}),
-        after: JSON.stringify({ tpmLimit: tpmLimit ?? null, rpmLimit: rpmLimit ?? null, maxBudget: maxBudget ?? null }),
+        before: JSON.stringify({
+          tpmLimit: existing.tpmLimit,
+          rpmLimit: existing.rpmLimit,
+          maxBudget: existing.maxBudget,
+        }),
+        after: JSON.stringify({
+          tpmLimit: tpmLimit ?? existing.tpmLimit,
+          rpmLimit: rpmLimit ?? existing.rpmLimit,
+          maxBudget: maxBudget ?? existing.maxBudget,
+        }),
         reason,
       });
     }
@@ -662,6 +681,9 @@ const adminUpdateUserApp = new Hono<HonoEnv>()
     const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
     const identity = c.get("identity");
 
+    const existing = await getUserInfo(c.env, userId);
+    if (!existing) return c.json({ error: "user_not_found" }, 404);
+
     if (!isDryRun) {
       await updateUser(c.env, userId, { role, maxBudget }, identity.email);
       auditWrite(c.env, {
@@ -670,8 +692,11 @@ const adminUpdateUserApp = new Hono<HonoEnv>()
         target: userId,
         ip: c.req.header("cf-connecting-ip") ?? "unknown",
         ts: new Date().toISOString(),
-        before: JSON.stringify({}),
-        after: JSON.stringify({ role: role ?? null, maxBudget: maxBudget ?? null }),
+        before: JSON.stringify({ role: existing.role, maxBudget: existing.maxBudget }),
+        after: JSON.stringify({
+          role: role ?? existing.role,
+          maxBudget: maxBudget ?? existing.maxBudget,
+        }),
         reason,
       });
     }
@@ -702,12 +727,26 @@ const adminDeleteKeyApp = new Hono<HonoEnv>()
     if (!parsed.ok) return parsed.response;
     const { reason, confirmAlias } = parsed.data;
 
-    if (!confirmAlias || confirmAlias.trim().length === 0) {
+    const submittedConfirm = confirmAlias?.trim() ?? "";
+    if (submittedConfirm.length === 0) {
       return c.json({ error: "confirm_alias_required" }, 400);
     }
 
     const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
     const identity = c.get("identity");
+
+    const existing = await getKeyInfo(c.env, keyId);
+    if (!existing) return c.json({ error: "key_not_found" }, 404);
+
+    // Typed-confirmation: the submitted string MUST match the key's alias (or, if
+    // the key has no alias, its public displayKey). This is the safety contract
+    // the UI's ConfirmDialog enforces server-side.
+    const expectedConfirm = (existing.alias && existing.alias.trim().length > 0)
+      ? existing.alias.trim()
+      : existing.displayKey?.trim() ?? "";
+    if (expectedConfirm.length === 0 || submittedConfirm !== expectedConfirm) {
+      return c.json({ error: "confirm_alias_mismatch" }, 403);
+    }
 
     if (!isDryRun) {
       await deleteKeyById(c.env, keyId, identity.email);
@@ -717,8 +756,14 @@ const adminDeleteKeyApp = new Hono<HonoEnv>()
         target: keyId,
         ip: c.req.header("cf-connecting-ip") ?? "unknown",
         ts: new Date().toISOString(),
-        before: JSON.stringify({ keyId, alias: confirmAlias }),
-        after: JSON.stringify({}),
+        before: JSON.stringify({
+          keyId,
+          alias: existing.alias,
+          displayKey: existing.displayKey,
+          userId: existing.userId,
+          teamId: existing.teamId,
+        }),
+        after: JSON.stringify({ deleted: true }),
         reason,
       });
     }

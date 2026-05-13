@@ -1886,6 +1886,9 @@ describe("litellm portal worker", () => {
           users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
         }));
       }
+      if (url.includes("/key/info?key=")) {
+        return Promise.resolve(Response.json({ info: { token: "key-abc", key_alias: "primary", blocked: false, user_id: "uid", team_id: "tid" } }));
+      }
       if (url.includes("/key/update")) {
         return Promise.resolve(Response.json({ status: "ok" }));
       }
@@ -1946,6 +1949,9 @@ describe("litellm portal worker", () => {
             users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
           });
         }
+        if (url.includes("/key/info?key=")) {
+          return Response.json({ info: { token: "key-abc", key_alias: "primary", blocked: false } });
+        }
         if (url.includes("/key/update")) {
           keyUpdateCalled = true;
           return Response.json({ status: "ok" });
@@ -1978,6 +1984,9 @@ describe("litellm portal worker", () => {
             users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
           });
         }
+        if (url.includes("/key/info?key=")) {
+          return Response.json({ info: { token: "key-abc", key_alias: "primary", blocked: false } });
+        }
         if (url.includes("/key/update")) {
           keyUpdateCalled = true;
           return Response.json({ status: "ok" });
@@ -2007,6 +2016,9 @@ describe("litellm portal worker", () => {
         return Promise.resolve(Response.json({
           users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
         }));
+      }
+      if (url.includes("/team/info?team_id=")) {
+        return Promise.resolve(Response.json({ team_info: { team_id: "team-1", team_alias: "ops", tpm_limit: null, rpm_limit: null, max_budget: null } }));
       }
       if (url.includes("/team/update")) {
         return Promise.resolve(Response.json({ status: "ok" }));
@@ -2066,6 +2078,9 @@ describe("litellm portal worker", () => {
             users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
           });
         }
+        if (url.includes("/team/info?team_id=")) {
+          return Response.json({ team_info: { team_id: "team-1", team_alias: "ops", tpm_limit: null, rpm_limit: null, max_budget: null } });
+        }
         if (url.includes("/team/update")) {
           teamUpdateBody = JSON.parse(String((init as RequestInit).body));
           return Response.json({ status: "ok" });
@@ -2099,6 +2114,9 @@ describe("litellm portal worker", () => {
         return Promise.resolve(Response.json({
           users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
         }));
+      }
+      if (url.includes("/v2/user/info?user_id=")) {
+        return Promise.resolve(Response.json({ user: { user_id: "user-123", user_role: "internal_user", max_budget: null } }));
       }
       if (url.includes("/user/update")) {
         return Promise.resolve(Response.json({ status: "ok" }));
@@ -2158,6 +2176,9 @@ describe("litellm portal worker", () => {
             users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
           });
         }
+        if (url.includes("/v2/user/info?user_id=")) {
+          return Response.json({ user: { user_id: "user-123", user_role: "internal_user", max_budget: null } });
+        }
         if (url.includes("/user/update")) {
           userUpdateBody = JSON.parse(String((init as RequestInit).body));
           return Response.json({ status: "ok" });
@@ -2189,6 +2210,9 @@ describe("litellm portal worker", () => {
         return Promise.resolve(Response.json({
           users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
         }));
+      }
+      if (url.includes("/key/info?key=")) {
+        return Promise.resolve(Response.json({ info: { token: "key-abc", key_alias: "my-key", blocked: false, user_id: "uid", team_id: "tid" } }));
       }
       if (url.includes("/key/delete")) {
         return Promise.resolve(Response.json({ deleted_keys: ["key-abc"] }));
@@ -2251,7 +2275,7 @@ describe("litellm portal worker", () => {
       expect(response.status).toBe(422);
     });
 
-    it("deletes a key (happy path) with confirmAlias present", async () => {
+    it("deletes a key (happy path) with confirmAlias matching the actual key alias", async () => {
       let deleteBody: Record<string, unknown> | undefined;
       globalThis.fetch = async (input, init) => {
         const url = String(input);
@@ -2259,6 +2283,9 @@ describe("litellm portal worker", () => {
           return Response.json({
             users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
           });
+        }
+        if (url.includes("/key/info?key=")) {
+          return Response.json({ info: { token: "key-abc", key_alias: "my-key", blocked: false } });
         }
         if (url.includes("/key/delete")) {
           deleteBody = JSON.parse(String((init as RequestInit).body));
@@ -2282,6 +2309,64 @@ describe("litellm portal worker", () => {
       expect(deleteBody?.keys).toEqual(["key-abc"]);
     });
 
+    it("returns 403 when confirmAlias does NOT match the real key alias (typed-confirm enforced server-side)", async () => {
+      let deleteKeyCallCount = 0;
+      globalThis.fetch = async (input) => {
+        const url = String(input);
+        if (url.includes("/user/list?user_email=admin")) {
+          return Response.json({
+            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
+          });
+        }
+        if (url.includes("/key/info?key=")) {
+          return Response.json({ info: { token: "key-abc", key_alias: "production-key", blocked: false } });
+        }
+        if (url.includes("/key/delete")) {
+          deleteKeyCallCount++;
+          return Response.json({ deleted_keys: ["key-abc"] });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/keys/key-abc", "admin@gz-zhiyun.com", {
+          method: "DELETE",
+          body: JSON.stringify({ reason: "security_incident", confirmAlias: "x" }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+      );
+
+      expect(response.status).toBe(403);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("confirm_alias_mismatch");
+      expect(deleteKeyCallCount).toBe(0);
+    });
+
+    it("returns 404 when the key does not exist (cannot guess alias to bypass typed-confirm)", async () => {
+      globalThis.fetch = async (input) => {
+        const url = String(input);
+        if (url.includes("/user/list?user_email=admin")) {
+          return Response.json({
+            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
+          });
+        }
+        if (url.includes("/key/info?key=")) {
+          return new Response("not found", { status: 404 });
+        }
+        return new Response("not found", { status: 404 });
+      };
+
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/admin/keys/key-missing", "admin@gz-zhiyun.com", {
+          method: "DELETE",
+          body: JSON.stringify({ reason: "security_incident", confirmAlias: "anything" }),
+        }),
+        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+      );
+
+      expect(response.status).toBe(404);
+    });
+
     it("dry-run skips deletion and returns dryRun=true", async () => {
       let deleteKeyCallCount = 0;
       globalThis.fetch = async (input) => {
@@ -2290,6 +2375,9 @@ describe("litellm portal worker", () => {
           return Response.json({
             users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
           });
+        }
+        if (url.includes("/key/info?key=")) {
+          return Response.json({ info: { token: "key-abc", key_alias: "my-key", blocked: false } });
         }
         if (url.includes("/key/delete")) {
           deleteKeyCallCount++;
@@ -2322,6 +2410,9 @@ describe("litellm portal worker", () => {
           return Response.json({
             users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
           });
+        }
+        if (url.includes("/key/info?key=")) {
+          return Response.json({ info: { token: "key-abc", key_alias: "primary", blocked: false } });
         }
         if (url.includes("/key/update")) {
           return Response.json({ status: "ok" });
