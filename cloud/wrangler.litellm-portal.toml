@@ -43,6 +43,10 @@ new_classes = ["RateLimitDO"]
 # store_id = "<your-secrets-store-id>"
 # secret_name = "ROLE_INVALIDATION_WEBHOOK_TOKEN"
 
+
+[triggers]
+crons = ["0 9 * * *"]
+
 [observability]
 enabled = true
 head_sampling_rate = 1.0
@@ -66,3 +70,9 @@ dataset = "portal-audit"
 binding = "ROLE_CACHE_KV"
 id = "8493d26272f84fe1bfa0c5bd6d564ad8"
 preview_id = "cba1b4b32c054bfba72439ef48f73cf6"
+
+# OWNER: run `wrangler kv namespace create user-prefs` and replace the placeholders before deploy.
+[[kv_namespaces]]
+binding = "USER_PREFS_KV"
+id = "__TBD_OWNER_FILLS_BEFORE_DEPLOY__"
+preview_id = "__TBD_OWNER_FILLS_BEFORE_DEPLOY__"
