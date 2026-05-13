@@ -182,6 +182,7 @@ function RootLayout() {
   const { data: preferences } = usePreferences();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const isAdmin = me?.role === "admin";
+  const appliedDefaultTabRef = React.useRef(false);
 
   // Hash-compat shim: redirect `/#admin` → `/admin` once, replacing history.
   // Remove this block after the compat period (see tasks.md 5.2).
@@ -192,10 +193,12 @@ function RootLayout() {
   }, [router]);
 
   useEffect(() => {
-    if (isAdmin && pathname === "/" && preferences?.defaultTab === "admin") {
+    if (appliedDefaultTabRef.current || me === undefined || preferences === undefined) return;
+    appliedDefaultTabRef.current = true;
+    if (isAdmin && pathname === "/" && preferences.defaultTab === "admin") {
       void router.navigate({ to: "/admin", replace: true });
     }
-  }, [isAdmin, pathname, preferences?.defaultTab, router]);
+  }, [isAdmin, me, pathname, preferences, router]);
 
   const platformName = me?.company ?? "智云AI管理平台";
 

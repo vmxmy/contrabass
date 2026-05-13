@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import worker, { handleLiteLLMPortalRequest, type LiteLLMPortalEnv } from "./index";
-import { sendEmail } from "./notifications";
+import { scanBudgetThresholds, sendEmail } from "./notifications";
 import { KVUserPrefsStore, sha256Hex } from "./preferences";
 import type { KVNamespace } from "./types";
 import { _clearRoleCacheForTests } from "./roles";
@@ -83,6 +83,20 @@ describe("MailChannels notifications", () => {
 });
 
 describe("cron budget threshold scanner", () => {
+  it("fails closed when the preferences KV binding is missing", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("fetch_should_not_run");
+    }) as typeof fetch;
+
+    await expect(scanBudgetThresholds(portalEnv({ USER_PREFS_KV: undefined }))).resolves.toEqual({
+      scannedUsers: 0,
+      emailedUsers: 0,
+      skippedUsers: 0,
+      failedUsers: 0,
+    });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
   it("scheduled handler emails threshold users once per calendar day", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-13T09:00:00.000Z"));
@@ -129,6 +143,41 @@ describe("cron budget threshold scanner", () => {
     expect(mailBodies).toHaveLength(1);
     expect(mailBodies[0]).toContain("over@gz-zhiyun.com");
     expect(mailBodies[0]).not.toContain("under@gz-zhiyun.com");
+  });
+
+  it("continues scanning when one MailChannels send fails", async () => {
+    const kv = new MemoryKV();
+    const mailBodies: string[] = [];
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url === "https://litellm.test/user/list?page=1&page_size=100") {
+        return Response.json({
+          users: [
+            { user_id: "first", user_email: "first@gz-zhiyun.com", spend: 81, max_budget: 100 },
+            { user_id: "second", user_email: "second@gz-zhiyun.com", spend: 90, max_budget: 100 },
+          ],
+          total_count: 2,
+        });
+      }
+      if (url === "https://api.mailchannels.net/tx/v1/send") {
+        const body = String(init?.body ?? "");
+        if (body.includes("first@gz-zhiyun.com")) {
+          return new Response("temporarily unavailable", { status: 503 });
+        }
+        mailBodies.push(body);
+        return new Response(null, { status: 202 });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    await expect(scanBudgetThresholds(portalEnv({ USER_PREFS_KV: kv }), new Date("2026-05-13T09:00:00.000Z"))).resolves.toMatchObject({
+      scannedUsers: 2,
+      emailedUsers: 1,
+      skippedUsers: 0,
+      failedUsers: 1,
+    });
+    expect(mailBodies).toHaveLength(1);
+    expect(mailBodies[0]).toContain("second@gz-zhiyun.com");
   });
 });
 

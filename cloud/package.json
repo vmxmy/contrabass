@@ -7,7 +7,7 @@
     "build": "wrangler deploy --dry-run --outdir dist",
     "build:litellm-portal": "node scripts/generate-litellm-portal-kumo-css.mjs && node scripts/build-litellm-portal-app.mjs && wrangler deploy --config wrangler.litellm-portal.toml --dry-run --outdir /tmp/litellm-portal-dist",
     "deploy": "wrangler deploy",
-    "deploy:litellm-portal": "node scripts/generate-litellm-portal-kumo-css.mjs && node scripts/build-litellm-portal-app.mjs && wrangler deploy --config wrangler.litellm-portal.toml",
+    "deploy:litellm-portal": "node scripts/assert-litellm-portal-ready.mjs && node scripts/generate-litellm-portal-kumo-css.mjs && node scripts/build-litellm-portal-app.mjs && wrangler deploy --config wrangler.litellm-portal.toml",
     "deploy:dry": "wrangler deploy --dry-run",
     "dev:litellm-portal": "concurrently -k \"vite\" \"wrangler dev --config wrangler.litellm-portal.toml\"",
     "generate:litellm-portal-app": "node scripts/build-litellm-portal-app.mjs",

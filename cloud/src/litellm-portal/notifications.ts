@@ -37,6 +37,7 @@ type ScanBudgetThresholdsResult = {
   scannedUsers: number;
   emailedUsers: number;
   skippedUsers: number;
+  failedUsers: number;
 };
 
 const MAILCHANNELS_URL = "https://api.mailchannels.net/tx/v1/send";
@@ -86,26 +87,31 @@ export async function scanBudgetThresholds(
   env: LiteLLMPortalEnv,
   now: Date = new Date(),
 ): Promise<ScanBudgetThresholdsResult> {
+  if (env.USER_PREFS_KV === undefined) {
+    return { scannedUsers: 0, emailedUsers: 0, skippedUsers: 0, failedUsers: 0 };
+  }
   const store = new KVUserPrefsStore(env.USER_PREFS_KV);
   const dateKey = now.toISOString().slice(0, 10);
   let page = 1;
   let scannedUsers = 0;
   let emailedUsers = 0;
   let skippedUsers = 0;
+  let failedUsers = 0;
 
   while (true) {
     const result = await listAllUsers(env, { page, size: CRON_PAGE_SIZE });
     scannedUsers += result.users.length;
 
     for (const user of result.users) {
+      const email = user.email.trim().toLowerCase();
       const spend = Number(user.spend ?? 0);
       const maxBudget = user.maxBudget;
-      if (maxBudget === null || maxBudget <= 0 || !Number.isFinite(spend)) {
+      if (!email.includes("@") || maxBudget === null || maxBudget <= 0 || !Number.isFinite(spend)) {
         skippedUsers += 1;
         continue;
       }
 
-      const preferences = await store.getForEmail(user.email);
+      const preferences = await store.getForEmail(email);
       if (!preferences.notifications.budgetThresholdEnabled) {
         skippedUsers += 1;
         continue;
@@ -113,14 +119,18 @@ export async function scanBudgetThresholds(
 
       const threshold = preferences.notifications.budgetThreshold;
       const ratio = spend / maxBudget;
-      if (ratio < threshold || await store.hasBudgetAlertForDate(user.email, dateKey)) {
+      if (ratio < threshold || await store.hasBudgetAlertForDate(email, dateKey)) {
         skippedUsers += 1;
         continue;
       }
 
-      await sendEmail(user.email, "budgetThreshold", { spend, maxBudget, threshold, ratio });
-      await store.markBudgetAlertForDate(user.email, dateKey);
-      emailedUsers += 1;
+      try {
+        await sendEmail(email, "budgetThreshold", { spend, maxBudget, threshold, ratio });
+        await store.markBudgetAlertForDate(email, dateKey);
+        emailedUsers += 1;
+      } catch {
+        failedUsers += 1;
+      }
     }
 
     if (result.users.length < CRON_PAGE_SIZE || page * result.size >= result.totalCount) {
@@ -129,7 +139,7 @@ export async function scanBudgetThresholds(
     page += 1;
   }
 
-  return { scannedUsers, emailedUsers, skippedUsers };
+  return { scannedUsers, emailedUsers, skippedUsers, failedUsers };
 }
 
 function renderBudgetThresholdEmail(data: BudgetThresholdEmailData): RenderedEmail {
