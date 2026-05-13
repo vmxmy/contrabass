@@ -189,6 +189,31 @@ const messages: Record<string, string> = {
   // resource & risk section labels
   "资源与权限": "资源与权限",
   "审计与风险": "审计与风险",
+
+  // AdminStatusHeader
+  "只读": "只读",
+  "样本视图": "样本视图",
+  "系统正常": "系统正常",
+
+  // AdminAuditFeed empty state
+  "尚未记录管理员操作，admin 写操作开启后此处会出现条目。":
+    "尚未记录管理员操作，admin 写操作开启后此处会出现条目。",
+
+  // AccountCell
+  "无邮箱": "无邮箱",
+
+  // ModelChips
+  "+N 更多": "+N 更多",
+
+  // TopModelsPanel
+  "高频模型排名": "高频模型排名",
+
+  // AdminGlobalUsage collapsible bucket table
+  "分时段用量明细": "分时段用量明细",
+  "展开或折叠分时段用量明细": "展开或折叠分时段用量明细",
+
+  // Audit detail labels
+  "原始数据": "原始数据",
 };
 
 export default messages;
