@@ -24,6 +24,7 @@ export type LiteLLMPortalEnv = {
   METRICS_AE?: AnalyticsEngineDataset;
   AUDIT_AE?: AnalyticsEngineDataset;
   ROLE_CACHE_KV?: KVNamespace;
+  USER_PREFS_KV?: KVNamespace;
   ROLE_INVALIDATION_WEBHOOK_TOKEN?: string;
   RATE_LIMIT_DO?: DurableObjectNamespace;
 };
