@@ -14,14 +14,16 @@ import React, { useEffect } from "react";
 import { Link, createRootRouteWithContext, Outlet, useRouter, useRouterState } from "@tanstack/react-router";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { Switch } from "@cloudflare/kumo/components/switch";
-import { Button } from "@cloudflare/kumo/components/button";
+import { Button, LinkButton } from "@cloudflare/kumo/components/button";
 import { Toasty } from "@cloudflare/kumo/components/toast";
 import { Loader } from "@cloudflare/kumo/components/loader";
 import { TooltipProvider } from "@cloudflare/kumo/components/tooltip";
 import { LinkProvider, type LinkComponentProps } from "@cloudflare/kumo/utils";
 import { QueryClient, QueryClientProvider, HydrationBoundary } from "@tanstack/react-query";
+import { Trans } from "@lingui/react/macro";
 import { PortalErrorBanner } from "../app";
 import { useMe } from "../hooks/use-me";
+import { applyThemePreference, useLegacyThemeMigration, usePreferences, useUpdatePreferences } from "../hooks/use-preferences";
 import type { RouterContext } from "../router";
 
 // ---------------------------------------------------------------------------
@@ -59,31 +61,35 @@ function getQueryClient(): QueryClient {
 // ---------------------------------------------------------------------------
 
 function HeaderActions() {
-  const readMode = (): "dark" | "light" =>
-    typeof document !== "undefined" && document.documentElement.dataset.mode === "dark"
-      ? "dark"
-      : "light";
-  const [mode, setMode] = React.useState<"dark" | "light">(readMode);
+  const { data: preferences } = usePreferences();
+  const updatePreferences = useUpdatePreferences();
+  const theme = preferences?.theme ?? "auto";
+  const [resolvedMode, setResolvedMode] = React.useState<"dark" | "light">(() => resolvedTheme(theme));
 
   useEffect(() => {
-    document.documentElement.dataset.mode = mode;
-    try {
-      localStorage.setItem("litellm-portal-mode", mode);
-    } catch {
-      // ignore — private mode etc.
-    }
-  }, [mode]);
+    const syncTheme = () => {
+      applyThemePreference(theme);
+      setResolvedMode(resolvedTheme(theme));
+    };
+    syncTheme();
+    if (theme !== "auto" || typeof window === "undefined") return;
+    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+    if (!media) return;
+    media.addEventListener("change", syncTheme);
+    return () => media.removeEventListener("change", syncTheme);
+  }, [theme]);
 
-  const isDark = mode === "dark";
+  const isDark = resolvedMode === "dark";
   return (
     <>
+      <LinkButton href="/preferences" variant="ghost"><Trans>偏好设置</Trans></LinkButton>
       <Switch
-        variant="neutral"
         controlFirst={false}
         checked={isDark}
-        onCheckedChange={(next: boolean) => setMode(next ? "dark" : "light")}
+        transitioning={updatePreferences.isPending}
+        onCheckedChange={(next: boolean) => updatePreferences.mutate({ theme: next ? "dark" : "light" })}
         aria-label={isDark ? "切换浅色模式" : "切换深色模式"}
-        label={isDark ? "深色" : "浅色"}
+        label={isDark ? <Trans>深色</Trans> : <Trans>浅色</Trans>}
       />
       <Button
         variant="outline"
@@ -93,10 +99,22 @@ function HeaderActions() {
           window.location.href = "/cdn-cgi/access/logout";
         }}
       >
-        退出登录
+        <Trans>退出登录</Trans>
       </Button>
     </>
   );
+}
+
+
+function resolvedTheme(theme: "auto" | "dark" | "light"): "dark" | "light" {
+  if (theme !== "auto") return theme;
+  if (typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches) {
+    return "dark";
+  }
+  if (typeof document !== "undefined" && document.documentElement.dataset.mode === "dark") {
+    return "dark";
+  }
+  return "light";
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +179,8 @@ function CommandPaletteFallback() {
 function RootLayout() {
   const router = useRouter();
   const { data: me } = useMe();
+  const { data: preferences } = usePreferences();
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
   const isAdmin = me?.role === "admin";
 
   // Hash-compat shim: redirect `/#admin` → `/admin` once, replacing history.
@@ -170,6 +190,12 @@ function RootLayout() {
       void router.navigate({ to: "/admin", replace: true });
     }
   }, [router]);
+
+  useEffect(() => {
+    if (isAdmin && pathname === "/" && preferences?.defaultTab === "admin") {
+      void router.navigate({ to: "/admin", replace: true });
+    }
+  }, [isAdmin, pathname, preferences?.defaultTab, router]);
 
   const platformName = me?.company ?? "智云AI管理平台";
 
@@ -216,6 +242,11 @@ function RootLayout() {
   );
 }
 
+function PreferencesBootstrap() {
+  useLegacyThemeMigration();
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // App shell that wraps the router provider with QueryClient + HydrationBoundary.
 // Exported so server-impl.tsx and the client bootstrap can import it.
@@ -231,6 +262,7 @@ export function AppShell({ dehydratedState, children }: AppShellProps) {
   return (
     <QueryClientProvider client={queryClient}>
       <HydrationBoundary state={dehydratedState}>
+        <PreferencesBootstrap />
         <Toasty>
           <TooltipProvider delay={300}>
             <LinkProvider component={KumoRouterLink}>

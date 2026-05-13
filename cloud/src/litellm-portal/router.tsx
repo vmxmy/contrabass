@@ -22,6 +22,7 @@ import {
 } from "@tanstack/react-router";
 import { rootRoute } from "./routes/__root";
 import { indexRoute } from "./routes/index";
+import { preferencesRoute } from "./routes/preferences";
 import { adminRoute } from "./routes/admin/route";
 import { adminIndexRoute } from "./routes/admin/index";
 import { adminUsersRoute } from "./routes/admin/users/route";
@@ -39,6 +40,7 @@ import { adminSettingsRoute } from "./routes/admin/settings";
 // Wire up parent/child relationships using `addChildren`.
 const routeTree = rootRoute.addChildren([
   indexRoute,
+  preferencesRoute,
   adminRoute.addChildren([
     adminIndexRoute,
     adminUsersRoute.addChildren([

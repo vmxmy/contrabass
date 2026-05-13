@@ -29,6 +29,7 @@ import type { UsageTimeseries } from "./chart";
 import { fmt, fmtInt } from "./lib/format";
 import { useToast } from "./hooks/use-toast";
 import { useDashboard } from "./hooks/use-dashboard";
+import { applyThemePreference, useLegacyThemeMigration, usePreferences, useUpdatePreferences } from "./hooks/use-preferences";
 import type { Dashboard } from "./schemas";
 
 export type InitialDashboardData = {
@@ -832,26 +833,33 @@ export function UsagePanel() {
 }
 
 export function HeaderActions() {
-  const readMode = (): "dark" | "light" => (typeof document !== "undefined" && document.documentElement.dataset.mode === "dark") ? "dark" : "light";
-  const [mode, setMode] = useState<"dark" | "light">(readMode);
+  const { data: preferences } = usePreferences();
+  const updatePreferences = useUpdatePreferences();
+  const theme = preferences?.theme ?? "auto";
+  const [resolvedMode, setResolvedMode] = useState<"dark" | "light">(() => resolvedTheme(theme));
 
   useEffect(() => {
-    document.documentElement.dataset.mode = mode;
-    try {
-      localStorage.setItem("litellm-portal-mode", mode);
-    } catch {
-      // ignore — private mode etc.
-    }
-  }, [mode]);
+    const syncTheme = () => {
+      applyThemePreference(theme);
+      setResolvedMode(resolvedTheme(theme));
+    };
+    syncTheme();
+    if (theme !== "auto" || typeof window === "undefined") return;
+    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+    if (!media) return;
+    media.addEventListener("change", syncTheme);
+    return () => media.removeEventListener("change", syncTheme);
+  }, [theme]);
 
-  const isDark = mode === "dark";
+  const isDark = resolvedMode === "dark";
   return (
     <>
       <Switch
         variant="neutral"
         controlFirst={false}
         checked={isDark}
-        onCheckedChange={(next: boolean) => setMode(next ? "dark" : "light")}
+        transitioning={updatePreferences.isPending}
+        onCheckedChange={(next: boolean) => updatePreferences.mutate({ theme: next ? "dark" : "light" })}
         aria-label={isDark ? "切换浅色模式" : "切换深色模式"}
         label={isDark ? "深色" : "浅色"}
       />
@@ -865,6 +873,17 @@ export function HeaderActions() {
       </Button>
     </>
   );
+}
+
+function resolvedTheme(theme: "auto" | "dark" | "light"): "dark" | "light" {
+  if (theme !== "auto") return theme;
+  if (typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches) {
+    return "dark";
+  }
+  if (typeof document !== "undefined" && document.documentElement.dataset.mode === "dark") {
+    return "dark";
+  }
+  return "light";
 }
 
 function StatTile({
@@ -1508,6 +1527,11 @@ export function PortalTabs({ tab, onSelect }: { tab: TabKey; onSelect: (next: Ta
   );
 }
 
+function PreferencesBootstrap() {
+  useLegacyThemeMigration();
+  return null;
+}
+
 type AppProps = {
   initialData?: InitialDashboardData | null;
   role?: PortalRole;
@@ -1558,6 +1582,7 @@ export function App({ initialData, role: initialRole, dehydratedState }: AppProp
   return (
     <QueryClientProvider client={queryClient}>
       <HydrationBoundary state={dehydratedState}>
+        <PreferencesBootstrap />
         <Toasty>
           <TooltipProvider delay={300}>
             <main className="container mx-auto px-4 py-10 lg:px-10 lg:py-16">
