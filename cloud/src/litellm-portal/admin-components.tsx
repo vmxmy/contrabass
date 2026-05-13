@@ -1,8 +1,6 @@
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Banner } from "@cloudflare/kumo/components/banner";
-import { Button } from "@cloudflare/kumo/components/button";
 import { Collapsible } from "@cloudflare/kumo/components/collapsible";
-import { DropdownMenu } from "@cloudflare/kumo/components/dropdown";
 import { Empty } from "@cloudflare/kumo/components/empty";
 import { Grid, GridItem } from "@cloudflare/kumo/components/grid";
 import { LayerCard } from "@cloudflare/kumo/components/layer-card";
@@ -74,6 +72,188 @@ function portalConfig(): Required<PortalConfig> {
 
 function text(value: unknown): string {
   return value == null || value === "" ? "—" : String(value);
+}
+
+// ---------------------------------------------------------------------------
+// Section 1: AdminStatusHeader
+// ---------------------------------------------------------------------------
+
+type AdminStatusSummary = {
+  riskCount?: number | null;
+  overBudgetUserCount?: number | null;
+  overBudgetTeamCount?: number | null;
+  unmanagedRoleCount?: number | null;
+  noTeamUserCount?: number | null;
+  limited?: boolean;
+};
+
+function deriveHealthSummary(summary: AdminStatusSummary): { message: string; tone: "success" | "warning" | "danger" } {
+  const overBudgetTeams = Number(summary.overBudgetTeamCount ?? 0);
+  const overBudgetUsers = Number(summary.overBudgetUserCount ?? 0);
+  const riskCount = Number(summary.riskCount ?? 0);
+  const unmanagedRoles = Number(summary.unmanagedRoleCount ?? 0);
+  const noTeamUsers = Number(summary.noTeamUserCount ?? 0);
+
+  if (overBudgetTeams > 0 || overBudgetUsers > 0) {
+    const parts: string[] = [];
+    if (overBudgetTeams > 0) parts.push(`${overBudgetTeams} 个团队超预算`);
+    if (overBudgetUsers > 0) parts.push(`${overBudgetUsers} 个用户超预算`);
+    const tone = riskCount >= 10 ? "danger" : "warning";
+    return { message: parts.join("，"), tone };
+  }
+
+  if (riskCount > 0) {
+    const parts: string[] = [];
+    if (unmanagedRoles > 0) parts.push(`${unmanagedRoles} 个未映射角色`);
+    if (noTeamUsers > 0) parts.push(`${noTeamUsers} 个用户未关联团队`);
+    return { message: parts.join("，") || `${riskCount} 个风险项`, tone: "warning" };
+  }
+
+  return { message: "系统正常", tone: "success" };
+}
+
+export function AdminStatusHeader({ summary, loading }: { summary: AdminStatusSummary; loading?: boolean }) {
+  const { message, tone } = loading ? { message: "", tone: "success" as const } : deriveHealthSummary(summary);
+  const healthVariant = tone === "success" ? "success" : tone === "danger" ? "danger" : "warning";
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-lg border border-kumo-line bg-kumo-elevated px-4 py-3">
+      <div className="flex flex-1 flex-wrap items-center gap-2">
+        {loading ? (
+          <SkeletonLine minWidth={160} maxWidth={280} blockHeight={16} />
+        ) : (
+          <Text size="sm" className={tone === "success" ? "text-kumo-success" : tone === "danger" ? "text-kumo-danger" : "text-kumo-warning"}>
+            {message}
+          </Text>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="neutral">只读</Badge>
+        <Badge variant="warning">仅管理员可见</Badge>
+        {summary.limited ? <Badge variant="info">样本视图</Badge> : null}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Section 4.1: AccountCell — identity rendering with fallback hierarchy
+// ---------------------------------------------------------------------------
+
+export function AccountCell({ email, userId }: { email: string | null | undefined; userId: string | null | undefined }) {
+  const hasEmail = email != null && email !== "";
+  const hasUserId = userId != null && userId !== "";
+
+  if (hasEmail) {
+    return (
+      <div>
+        <Tooltip content={email}>
+          <span className="block max-w-[200px] truncate font-mono text-kumo-default">{email}</span>
+        </Tooltip>
+        {hasUserId ? (
+          <span className="block max-w-[200px] truncate font-mono text-xs text-kumo-subtle">{userId}</span>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (hasUserId) {
+    return (
+      <div>
+        <span className="block max-w-[200px] truncate font-mono text-kumo-default">{userId}</span>
+        <Badge variant="neutral" className="mt-1 text-xs">无邮箱</Badge>
+      </div>
+    );
+  }
+
+  return <span className="font-mono text-kumo-subtle">(unknown)</span>;
+}
+
+// ---------------------------------------------------------------------------
+// Section 4.2: RoleBadge — role column rendering
+// ---------------------------------------------------------------------------
+
+function RoleBadge({ role }: { role: string | null | undefined }) {
+  if (role == null || role === "") return <span className="text-kumo-subtle">—</span>;
+  const lower = role.toLowerCase();
+  if (lower.includes("admin") || lower === "proxy_admin") {
+    return <Badge variant="danger">{role}</Badge>;
+  }
+  if (lower === "internal_user" || lower.includes("user")) {
+    return <Badge variant="info">{role}</Badge>;
+  }
+  return <Badge variant="neutral">{role}</Badge>;
+}
+
+// ---------------------------------------------------------------------------
+// Section 4.3: ModelChips — chip list with +N overflow and tooltip
+// ---------------------------------------------------------------------------
+
+const MAX_VISIBLE_MODELS = 3;
+
+function ModelChips({ models }: { models: string[] }) {
+  if (models.length === 0) return <span className="text-kumo-subtle">—</span>;
+
+  const visible = models.slice(0, MAX_VISIBLE_MODELS);
+  const overflow = models.slice(MAX_VISIBLE_MODELS);
+
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {visible.map((model) => (
+        <Badge key={model} variant="neutral" className="font-mono text-xs">{model}</Badge>
+      ))}
+      {overflow.length > 0 ? (
+        <Tooltip content={overflow.join(", ")}>
+          <Badge variant="info" className="cursor-default text-xs">+{overflow.length} 更多</Badge>
+        </Tooltip>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Section 3.3: TopModelsPanel — rank + share + spend
+// ---------------------------------------------------------------------------
+
+export function TopModelsPanel({ data, loading }: { data: UsageTimeseries | null; loading: boolean }) {
+  if (loading) {
+    return (
+      <div className="flex flex-col gap-3">
+        {Array.from({ length: 3 }, (_, index) => (
+          <div key={index} className="rounded-lg bg-kumo-recessed p-4">
+            <SkeletonLine minWidth={120} maxWidth={220} blockHeight={16} />
+            <SkeletonLine className="mt-2" minWidth={180} maxWidth={260} blockHeight={13} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  const models = data?.topModels ?? [];
+  if (models.length === 0) {
+    return <Text variant="secondary">暂无模型用量拆分。</Text>;
+  }
+
+  const totalSpend = models.reduce((sum, m) => sum + m.spend, 0);
+
+  return (
+    <div className="flex flex-col gap-2">
+      {models.map((model, index) => {
+        const share = totalSpend > 0 ? ((model.spend / totalSpend) * 100).toFixed(1) : "0.0";
+        return (
+          <div key={model.model} className="rounded-lg bg-kumo-recessed p-4 transition-colors hover:bg-kumo-tint">
+            <div className="flex items-center gap-2">
+              <Badge variant="neutral" className="shrink-0 font-mono text-xs">#{index + 1}</Badge>
+              <Text variant="mono" className="truncate font-semibold">{model.model}</Text>
+            </div>
+            <Text variant="secondary" size="xs" as="p" className="mt-2">
+              {fmt(model.spend)} · {share}% · {fmtInt(model.totalTokens)} tokens
+            </Text>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function StatTile({
@@ -237,39 +417,6 @@ function UsageBucketsTable({ data, loading }: { data: UsageTimeseries | null; lo
         })}
       </Table.Body>
     </Table>
-  );
-}
-
-function TopModels({ data, loading }: { data: UsageTimeseries | null; loading: boolean }) {
-  if (loading) {
-    return (
-      <div className="flex flex-col gap-3">
-        {Array.from({ length: 3 }, (_, index) => (
-          <div key={index} className="rounded-lg bg-kumo-recessed p-5">
-            <SkeletonLine minWidth={120} maxWidth={220} blockHeight={18} />
-            <SkeletonLine className="mt-3" minWidth={180} maxWidth={260} blockHeight={14} />
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  const models = data?.topModels ?? [];
-  if (models.length === 0) {
-    return <Text variant="secondary">暂无模型用量拆分。</Text>;
-  }
-
-  return (
-    <div className="flex flex-col gap-3">
-      {models.map((model) => (
-        <div key={model.model} className="rounded-lg bg-kumo-recessed p-5 transition-colors hover:bg-kumo-tint">
-          <Text variant="mono" as="p" className="truncate font-semibold">{model.model}</Text>
-          <Text variant="secondary" size="xs" as="p" className="mt-2">
-            {fmt(model.spend)} · {fmtInt(model.totalTokens)} tokens · {fmtInt(model.requests)} 请求
-          </Text>
-        </div>
-      ))}
-    </div>
   );
 }
 
@@ -443,8 +590,19 @@ export function AdminHeroStats() {
     ? `已采样 ${fmtInt(summary.sampledUserCount)} / 共 ${fmtInt(summary.userCount)} 用户`
     : `覆盖 ${fmtInt(summary.sampledUserCount ?? summary.userCount)} 个用户`;
 
+  const budgetPct = summary.totalBudget != null && summary.totalBudget > 0 && summary.totalSpend != null
+    ? Math.min(100, Math.round((summary.totalSpend / summary.totalBudget) * 100))
+    : null;
+
+  const riskCount = Number(summary.riskCount ?? 0);
+  const riskAccent: "success" | "warning" | "warning" | "brand" = riskCount === 0 ? "success" : "warning";
+  const riskTileAccent: "success" | "warning" | "info" | "brand" = riskCount === 0 ? "success" : "warning";
+
+  const overBudgetCount = Number(summary.overBudgetUserCount || 0) + Number(summary.overBudgetTeamCount || 0);
+
   return (
     <div className="space-y-4">
+      <AdminStatusHeader summary={summary} loading={loading} />
       {error ? (
         <Banner variant="error" title="全局概览加载失败" description={error} />
       ) : null}
@@ -473,7 +631,9 @@ export function AdminHeroStats() {
               <>
                 <Text variant="heading1" as="p" className="mt-4 leading-tight">{fmt(summary.totalSpend)}</Text>
                 <Text variant="secondary" as="p" className="mt-3">
-                  预算 {summary.totalBudget == null ? "—" : fmt(summary.totalBudget)} · 团队花费 {fmt(summary.teamSpend)}
+                  {budgetPct != null
+                    ? `已用 ${budgetPct}% · 剩余 ${fmt(summary.totalBudget != null && summary.totalSpend != null ? summary.totalBudget - summary.totalSpend : null)}`
+                    : `预算 ${summary.totalBudget == null ? "—" : fmt(summary.totalBudget)} · 团队花费 ${fmt(summary.teamSpend)}`}
                 </Text>
               </>
             )}
@@ -489,14 +649,14 @@ export function AdminHeroStats() {
                   {fmtInt(summary.teamCount)}
                 </Text>
                 <Text variant="secondary" as="p" className="mt-3">
-                  {fmtInt(summary.noTeamUserCount)} 个用户未关联团队
+                  {fmtInt(summary.userCount)} 个用户 · {fmtInt(summary.noTeamUserCount)} 个未关联团队
                 </Text>
               </>
             )}
           </StatTile>
         </GridItem>
         <GridItem>
-          <StatTile accent="warning" label="风险雷达">
+          <StatTile accent={riskTileAccent} label="风险雷达">
             {loading ? (
               <SkeletonLine className="mt-4" minWidth={96} maxWidth={160} blockHeight={32} />
             ) : (
@@ -505,7 +665,13 @@ export function AdminHeroStats() {
                   {fmtInt(summary.riskCount)}
                 </Text>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <Text variant="secondary">{fmtInt(Number(summary.overBudgetUserCount || 0) + Number(summary.overBudgetTeamCount || 0))} 个超预算对象</Text>
+                  {riskCount === 0 ? (
+                    <Badge variant="success">无风险</Badge>
+                  ) : overBudgetCount > 0 ? (
+                    <Badge variant="danger">{overBudgetCount} 个超预算对象</Badge>
+                  ) : (
+                    <Badge variant="warning">{riskCount} 个风险项</Badge>
+                  )}
                   {summary.limited ? <Badge variant="warning">样本视图</Badge> : null}
                 </div>
               </>
@@ -577,36 +743,25 @@ export function AdminUsersTable() {
           <Table className="w-full text-left text-sm text-kumo-default">
             <Table.Header>
               <Table.Row className="border-b border-kumo-line">
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">邮箱</Table.Head>
+                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">账户</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">角色</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">累计消费</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">团队数</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">最大预算</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle"><span className="sr-only">操作</span></Table.Head>
               </Table.Row>
             </Table.Header>
             <Table.Body>
               {data.users.map((user) => (
                 <Table.Row key={user.userId} className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
-                  <Table.Cell className="py-3 pl-5 pr-3 font-mono text-kumo-default">
-                    <Tooltip content={user.email}>
-                      <span className="block max-w-[200px] truncate">{text(user.email)}</span>
-                    </Tooltip>
+                  <Table.Cell className="py-3 pl-5 pr-3">
+                    <AccountCell email={user.email} userId={user.userId} />
                   </Table.Cell>
-                  <Table.Cell className="py-3 pr-3 text-kumo-subtle">{text(user.role)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3">
+                    <RoleBadge role={user.role} />
+                  </Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmt(user.spend)}</Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmtInt(user.teamIds.length)}</Table.Cell>
-                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{user.maxBudget == null ? "—" : fmt(user.maxBudget)}</Table.Cell>
-                  <Table.Cell className="py-3 pr-5 text-right">
-                    <DropdownMenu>
-                      <DropdownMenu.Trigger aria-label="更多操作" className="rounded px-2 py-1 text-sm text-kumo-subtle hover:bg-kumo-fill hover:text-kumo-default">
-                        ⋯
-                      </DropdownMenu.Trigger>
-                      <DropdownMenu.Content>
-                        <DropdownMenu.Item onClick={() => {}}>查看详情</DropdownMenu.Item>
-                      </DropdownMenu.Content>
-                    </DropdownMenu>
-                  </Table.Cell>
+                  <Table.Cell className="py-3 pr-5 text-right font-mono text-kumo-default">{user.maxBudget == null ? "—" : fmt(user.maxBudget)}</Table.Cell>
                 </Table.Row>
               ))}
             </Table.Body>
@@ -673,7 +828,6 @@ export function AdminTeamsTable() {
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">消费</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">TPM</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">RPM</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle"><span className="sr-only">操作</span></Table.Head>
               </Table.Row>
             </Table.Header>
             <Table.Body>
@@ -685,20 +839,12 @@ export function AdminTeamsTable() {
                     </Tooltip>
                   </Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-kumo-default">{text(team.alias)}</Table.Cell>
-                  <Table.Cell className="py-3 pr-3 text-kumo-subtle">{team.models.length > 0 ? team.models.join(", ") : "—"}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3">
+                    <ModelChips models={team.models} />
+                  </Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmt(team.spend)}</Table.Cell>
                   <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{team.tpmLimit == null ? "—" : fmtInt(team.tpmLimit)}</Table.Cell>
-                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{team.rpmLimit == null ? "—" : fmtInt(team.rpmLimit)}</Table.Cell>
-                  <Table.Cell className="py-3 pr-5 text-right">
-                    <DropdownMenu>
-                      <DropdownMenu.Trigger aria-label="更多操作" className="rounded px-2 py-1 text-sm text-kumo-subtle hover:bg-kumo-fill hover:text-kumo-default">
-                        ⋯
-                      </DropdownMenu.Trigger>
-                      <DropdownMenu.Content>
-                        <DropdownMenu.Item onClick={() => {}}>查看详情</DropdownMenu.Item>
-                      </DropdownMenu.Content>
-                    </DropdownMenu>
-                  </Table.Cell>
+                  <Table.Cell className="py-3 pr-5 text-right font-mono text-kumo-default">{team.rpmLimit == null ? "—" : fmtInt(team.rpmLimit)}</Table.Cell>
                 </Table.Row>
               ))}
             </Table.Body>
@@ -828,7 +974,6 @@ export function AdminGlobalUsage() {
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">
             <Text variant="heading3" as="p">全局 Token 用量趋势</Text>
-            <span className="rounded-full bg-kumo-info-tint px-2.5 py-1 text-xs font-semibold text-kumo-info">Brush native</span>
             <span className="rounded-full bg-kumo-success-tint px-2.5 py-1 text-xs font-semibold text-kumo-success">{grainStatus}</span>
           </div>
           <Text variant="secondary" as="p" className="leading-relaxed">{windowText}</Text>
@@ -842,7 +987,7 @@ export function AdminGlobalUsage() {
             <div className="flex flex-wrap gap-2" role="group" aria-label="时间范围预设">
               {presets.map((preset) => (
                 <button
-                  key={preset.windowKey}
+                  key={`${preset.grain}-${preset.windowKey}`}
                   type="button"
                   className={controlPillClass(preset.windowKey === windowKey)}
                   aria-pressed={preset.windowKey === windowKey}
@@ -887,22 +1032,34 @@ export function AdminGlobalUsage() {
           </div>
         </div>
       </div>
+      <div className="p-8">
+        {error ? (
+          <Banner variant="error" title="全局用量加载失败" description={error} />
+        ) : null}
+        <UsageSummary data={data} loading={loading} />
+      </div>
       <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr]">
-        <div className="space-y-8 p-8">
-          {error ? (
-            <Banner variant="error" title="全局用量加载失败" description={error} />
-          ) : null}
-          <UsageSummary data={data} loading={loading} />
+        <div className="space-y-8 px-8 pb-8">
           <React.Suspense fallback={<UsageChartFallback />}>
             <LazyUsageChart data={data} error={error} loading={loading} onTimeRangeChange={handleChartRangeChange} />
           </React.Suspense>
-          <div className="overflow-x-auto">
-            <UsageBucketsTable data={data} loading={loading} />
-          </div>
+          <Collapsible.Root defaultOpen={false}>
+            <div className="flex items-center justify-between border-b border-kumo-line pb-3">
+              <Text variant="secondary" size="sm" className="font-semibold">分时段用量明细</Text>
+              <Collapsible.DefaultTrigger className="text-sm font-medium text-kumo-brand hover:text-kumo-brand-hover">
+                <span className="sr-only">展开或折叠分时段用量明细</span>
+              </Collapsible.DefaultTrigger>
+            </div>
+            <Collapsible.Panel>
+              <div className="overflow-x-auto pt-4">
+                <UsageBucketsTable data={data} loading={loading} />
+              </div>
+            </Collapsible.Panel>
+          </Collapsible.Root>
         </div>
         <div className="border-t border-kumo-line p-8 md:border-l md:border-t-0">
           <Text bold as="p" className="mb-5">高频模型</Text>
-          <TopModels data={data} loading={loading} />
+          <TopModelsPanel data={data} loading={loading} />
         </div>
       </div>
       {activePreset ? (
@@ -970,7 +1127,13 @@ export function AdminAuditFeed() {
       ) : error ? (
         <AdminErrorBanner message={error} />
       ) : !data || data.events.length === 0 ? (
-        <Empty size="sm" title="暂无审计日志" />
+        <div className="p-6">
+          <Empty
+            size="sm"
+            title="暂无审计日志"
+            description="尚未记录管理员操作，admin 写操作开启后此处会出现条目。"
+          />
+        </div>
       ) : (
         <div className="overflow-x-auto">
           <Table className="w-full text-left text-sm text-kumo-default">
@@ -982,7 +1145,6 @@ export function AdminAuditFeed() {
                 <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">对象类型</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">对象 ID</Table.Head>
                 <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">详情</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle"><span className="sr-only">操作</span></Table.Head>
               </Table.Row>
             </Table.Header>
             <Table.Body>
@@ -1002,7 +1164,7 @@ export function AdminAuditFeed() {
                         <span className="block max-w-[120px] truncate">{text(event.objectId)}</span>
                       </Tooltip>
                     </Table.Cell>
-                    <Table.Cell className="py-3 pr-3">
+                    <Table.Cell className="py-3 pr-5">
                       <button
                         type="button"
                         className="text-xs font-semibold text-kumo-brand hover:text-kumo-brand-hover"
@@ -1012,23 +1174,31 @@ export function AdminAuditFeed() {
                         {expandedId === event.id ? "收起" : "展开"}
                       </button>
                     </Table.Cell>
-                    <Table.Cell className="py-3 pr-5 text-right">
-                      <DropdownMenu>
-                        <DropdownMenu.Trigger aria-label="更多操作">
-                          <Button variant="ghost" size="xs">⋯</Button>
-                        </DropdownMenu.Trigger>
-                        <DropdownMenu.Content>
-                          <DropdownMenu.Item onClick={() => {}}>查看详情</DropdownMenu.Item>
-                        </DropdownMenu.Content>
-                      </DropdownMenu>
-                    </Table.Cell>
                   </Table.Row>
                   {expandedId === event.id ? (
                     <Table.Row className="border-b border-kumo-fill bg-kumo-recessed">
-                      <Table.Cell colSpan={7} className="px-5 py-4">
-                        <div className="space-y-3 text-xs">
+                      <Table.Cell colSpan={6} className="px-5 py-4">
+                        <div className="space-y-4 text-xs">
+                          <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3">
+                            <div>
+                              <dt className="font-semibold uppercase tracking-wider text-kumo-subtle">操作者</dt>
+                              <dd className="mt-1 font-mono text-kumo-default">{text(event.actorUserEmail ?? event.actorUserId)}</dd>
+                            </div>
+                            <div>
+                              <dt className="font-semibold uppercase tracking-wider text-kumo-subtle">操作</dt>
+                              <dd className="mt-1 text-kumo-default">{text(event.action)}</dd>
+                            </div>
+                            <div>
+                              <dt className="font-semibold uppercase tracking-wider text-kumo-subtle">对象</dt>
+                              <dd className="mt-1 font-mono text-kumo-default">{text(event.objectType)} {text(event.objectId)}</dd>
+                            </div>
+                            <div>
+                              <dt className="font-semibold uppercase tracking-wider text-kumo-subtle">时间</dt>
+                              <dd className="mt-1 font-mono text-kumo-subtle">{event.createdAt ? event.createdAt.slice(0, 19).replace("T", " ") : "—"}</dd>
+                            </div>
+                          </dl>
                           <div>
-                            <Text variant="secondary" size="xs" className="mb-1 font-semibold uppercase tracking-wider">变更后</Text>
+                            <Text variant="secondary" size="xs" className="mb-1 font-semibold uppercase tracking-wider">原始数据</Text>
                             <pre className="overflow-x-auto rounded-lg bg-kumo-base p-3 font-mono text-kumo-default ring-1 ring-kumo-line">{JSON.stringify(event, null, 2)}</pre>
                           </div>
                         </div>
