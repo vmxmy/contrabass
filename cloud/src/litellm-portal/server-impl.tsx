@@ -11,7 +11,10 @@ import { setupI18n } from "./i18n/setup";
 import { DASHBOARD_QUERY_KEY } from "./hooks/use-dashboard";
 import { ME_QUERY_KEY } from "./hooks/use-me";
 import { DashboardSchema, MeSchema } from "./schemas";
+import { KVUserPrefsStore } from "./preferences";
 import { createPortalRouter, createMemoryHistory } from "./router";
+
+const PREFERENCES_QUERY_KEY = ["me", "preferences"] as const;
 
 export async function renderPortalSSR(
   env: LiteLLMPortalEnv,
@@ -37,6 +40,7 @@ export async function renderPortalSSR(
   // Prefetch into a server-side QueryClient so the client can rehydrate without
   // re-fetching on first paint.
   let dehydratedState: unknown = undefined;
+  let initialTheme: "auto" | "dark" | "light" = "auto";
   const serverQueryClient = new QueryClient({
     defaultOptions: { queries: { staleTime: 60_000 } },
   });
@@ -61,6 +65,10 @@ export async function renderPortalSSR(
         if (meParsed.success) {
           serverQueryClient.setQueryData(ME_QUERY_KEY, meParsed.data);
         }
+
+        const preferences = await new KVUserPrefsStore(env.USER_PREFS_KV).getForEmail(identity.email);
+        serverQueryClient.setQueryData(PREFERENCES_QUERY_KEY, preferences);
+        initialTheme = preferences.theme;
       }
 
       dehydratedState = dehydrate(serverQueryClient);
@@ -119,7 +127,7 @@ export async function renderPortalSSR(
       { i18n },
       React.createElement(
         Shell,
-        { title, nonce, initialData: shellData },
+        { title, nonce, initialData: shellData, initialTheme },
         React.createElement(
           AppShell,
           { dehydratedState },

@@ -13,6 +13,7 @@ import {
 import { useAdminAudit } from "../hooks/use-admin-audit";
 import { useAdminTeams } from "../hooks/use-admin-teams";
 import { useAdminUsers } from "../hooks/use-admin-users";
+import { useUpdatePreferences } from "../hooks/use-preferences";
 
 export type PortalCommandPaletteEntry = {
   id: string;
@@ -46,17 +47,6 @@ function entryMatches(entry: PortalCommandPaletteEntry, query: string): boolean 
     .some((value) => value.toLocaleLowerCase().includes(trimmed));
 }
 
-function toggleTheme() {
-  const root = document.documentElement;
-  const next = root.dataset.mode === "dark" ? "light" : "dark";
-  root.dataset.mode = next;
-  try {
-    window.localStorage.setItem("litellm-portal-mode", next);
-  } catch {
-    // Ignore private browsing / denied storage.
-  }
-}
-
 function logout() {
   window.location.href = "/cdn-cgi/access/logout";
 }
@@ -67,6 +57,7 @@ function openCreateKey() {
 
 export function PortalCommandPalette() {
   const router = useRouter();
+  const updatePreferences = useUpdatePreferences();
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const usersQuery = useAdminUsers(1, 50);
@@ -83,6 +74,11 @@ export function PortalCommandPalette() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
+
+  const toggleTheme = React.useCallback(() => {
+    const current = document.documentElement.dataset.mode === "dark" ? "dark" : "light";
+    updatePreferences.mutate({ theme: current === "dark" ? "light" : "dark" });
+  }, [updatePreferences]);
 
   const groups = React.useMemo<PortalCommandPaletteGroup[]>(() => {
     const jumpItems: PortalCommandPaletteEntry[] = [
@@ -149,7 +145,7 @@ export function PortalCommandPalette() {
       { id: "jump", label: t`跳转`, items: jumpItems },
       { id: "action", label: t`操作`, items: actionItems },
     ];
-  }, [auditQuery.data?.events, teamsQuery.data?.teams, usersQuery.data?.users]);
+  }, [auditQuery.data?.events, teamsQuery.data?.teams, toggleTheme, usersQuery.data?.users]);
 
   const filteredGroups = React.useMemo(
     () => groups
