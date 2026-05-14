@@ -20,6 +20,12 @@ import type { ClientErrorPayload } from "./observability/client-error";
 import { scanBudgetThresholds } from "./notifications";
 import { handleLiteLLMSyncBatch } from "./sync/queue-consumer";
 import type { SyncMessage } from "./durable/schemas";
+import {
+  handleLoginGet,
+  handleLoginPost,
+  handleMagicCallback,
+  handleLogout,
+} from "./auth/login-routes";
 
 export type { LiteLLMPortalEnv } from "./types";
 export { RateLimitDO } from "./security/rate-limit-do";
@@ -35,6 +41,14 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
 
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: securityHeaders() });
+  }
+
+  // Auth-bypass routes (only when DO SoT is enabled)
+  if (env.PORTAL_DO_SOT_ENABLED === "true") {
+    if (url.pathname === "/login" && request.method === "GET")  return handleLoginGet(request, env);
+    if (url.pathname === "/login" && request.method === "POST") return handleLoginPost(request, env);
+    if (url.pathname === "/magic-callback" && request.method === "GET") return handleMagicCallback(request, env);
+    if (url.pathname === "/logout" && request.method === "POST") return handleLogout(request, env);
   }
 
   // Serve the portal SPA shell for all non-asset GET requests so that
