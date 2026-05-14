@@ -44,6 +44,8 @@ import {
   AdminUsersSchema,
   AdminTeamsSchema,
   AdminAuditSchema,
+  type AdminTeams,
+  type AdminUsers,
   AdminSummarySchema,
   UsageSchema,
   UsageTimeseriesSchema,
@@ -65,6 +67,105 @@ import { auditWrite } from "./observability/audit";
 import type { LiteLLMKey, LiteLLMTeam, JsonValue } from "./types";
 
 type HonoEnv = { Bindings: LiteLLMPortalEnv; Variables: { identity: PortalIdentity } };
+
+// ---------------------------------------------------------------------------
+// DO stub types (inline — avoids dragging DO modules into vitest transform)
+// ---------------------------------------------------------------------------
+
+type IndexDOAdminStub = {
+  listTeams(): Promise<Array<{ id: string; alias: string }>>;
+  listAllUsers(opts?: { limit?: number; cursor?: string }): Promise<{
+    users: Array<{
+      userId: string;
+      email: string;
+      role: "admin" | "user";
+      teamId: string | null;
+      maxBudget?: number;
+      createdAt: string;
+    }>;
+    cursor: string | undefined;
+  }>;
+};
+
+type TeamConfigDOAdminStub = {
+  getTeam(): Promise<{
+    id: string;
+    alias: string;
+    models: string[];
+    maxBudget?: number;
+    tpmLimit?: number;
+    rpmLimit?: number;
+    blocked: boolean;
+  } | null>;
+};
+
+// ---------------------------------------------------------------------------
+// DO-path helpers for flag-gated admin endpoints
+// ---------------------------------------------------------------------------
+
+async function adminTeamsFromDO(env: LiteLLMPortalEnv): Promise<AdminTeams> {
+  if (!env.INDEX_DO) return { teams: [] };
+  const idx = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOAdminStub;
+  const entries = await idx.listTeams();
+
+  const teams: AdminTeams["teams"] = await Promise.all(
+    entries.map(async (entry) => {
+      let teamRecord: Awaited<ReturnType<TeamConfigDOAdminStub["getTeam"]>> = null;
+      if (env.TEAM_CONFIG_DO) {
+        const stub = env.TEAM_CONFIG_DO.get(
+          env.TEAM_CONFIG_DO.idFromName(entry.id),
+        ) as unknown as TeamConfigDOAdminStub;
+        teamRecord = await stub.getTeam();
+      }
+      return {
+        id: entry.id,
+        alias: teamRecord?.alias ?? entry.alias ?? null,
+        models: teamRecord?.models ?? [],
+        spend: null,
+        maxBudget: teamRecord?.maxBudget ?? null,
+        tpmLimit: teamRecord?.tpmLimit ?? null,
+        rpmLimit: teamRecord?.rpmLimit ?? null,
+      };
+    }),
+  );
+
+  return AdminTeamsSchema.parse({ teams });
+}
+
+async function adminUsersFromDO(
+  env: LiteLLMPortalEnv,
+  opts: { page: number; size: number },
+): Promise<AdminUsers> {
+  if (!env.INDEX_DO) return { users: [], totalCount: 0, page: opts.page, size: opts.size };
+  const idx = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOAdminStub;
+
+  // Collect enough pages to serve the requested page
+  const targetOffset = (opts.page - 1) * opts.size;
+  let collected: Array<{ userId: string; email: string; role: string; teamId: string | null; maxBudget?: number }> = [];
+  let cursor: string | undefined;
+
+  // Walk storage pages until we have enough records for offset + size
+  while (collected.length < targetOffset + opts.size) {
+    const batch = await idx.listAllUsers({ limit: 200, cursor });
+    collected = collected.concat(batch.users);
+    cursor = batch.cursor;
+    if (cursor == null) break;
+  }
+
+  const totalCount = collected.length;
+  const page = collected.slice(targetOffset, targetOffset + opts.size);
+
+  const users = page.map((u) => ({
+    userId: u.userId,
+    email: u.email,
+    spend: null,
+    maxBudget: u.maxBudget ?? null,
+    teamIds: u.teamId != null ? [u.teamId] : [],
+    role: u.role,
+  }));
+
+  return AdminUsersSchema.parse({ users, totalCount, page: opts.page, size: opts.size });
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -491,6 +592,9 @@ const adminUsersApp = new Hono<HonoEnv>()
     const url = new URL(c.req.url);
     const page = sanitizeIntParam(url.searchParams.get("page"), 1);
     const size = sanitizeIntParam(url.searchParams.get("size"), 50);
+    if (c.env.PORTAL_DO_SOT_ENABLED === "true") {
+      return c.json(await adminUsersFromDO(c.env, { page, size }));
+    }
     const result = await listAllUsers(c.env, { page, size });
     return c.json(AdminUsersSchema.parse({
       users: result.users.map((u) => ({
@@ -512,6 +616,9 @@ const adminTeamsApp = new Hono<HonoEnv>()
   .use("/admin/*", applyAdminRateLimit)
   .use("/admin/*", requireAdmin)
   .get("/admin/teams", async (c) => {
+    if (c.env.PORTAL_DO_SOT_ENABLED === "true") {
+      return c.json(await adminTeamsFromDO(c.env));
+    }
     const teams = await listAllTeams(c.env);
     return c.json(AdminTeamsSchema.parse({ teams: teams.map(publicTeam) }));
   });
