@@ -65,6 +65,14 @@ new_classes = ["IndexDO", "TeamConfigDO"]
 binding = "LITELLM_SYNC_QUEUE"
 queue = "litellm-sync"
 
+# Dead-letter queue: messages here came from litellm-sync after max_retries
+# exhausted, or were written here explicitly by the consumer Worker.
+# See openspec change portal-do-config-source-of-truth, capability
+# portal-litellm-config-sync.
+[[queues.producers]]
+binding = "LITELLM_SYNC_DLQ"
+queue = "litellm-sync-dlq"
+
 [[queues.consumers]]
 queue = "litellm-sync"
 max_batch_size = 10
