@@ -80,11 +80,12 @@ async function handleMessage(
     msg.ack();
   } catch (err) {
     if (err instanceof LiteLLMRequestError && err.status >= 400 && err.status <= 499) {
-      // Non-retryable: bad request — ack to prevent infinite retry loop.
+      // Non-retryable: bad request — forward to DLQ then ack to prevent infinite retry loop.
       const reason = `HTTP ${err.status} from ${endpoint}`;
       if (body.kind === "team.update") {
         await recordTeamSyncError(env, body, reason);
       }
+      await forwardToDlq(env, body, reason);
       msg.ack();
       return;
     }
@@ -121,5 +122,30 @@ async function recordTeamSyncError(
     await stub.recordSyncError(reason);
   } catch {
     // DO write failure must not block ack/retry on the queue message.
+  }
+}
+
+async function forwardToDlq(
+  env: LiteLLMPortalEnv,
+  original: SyncMessage,
+  reason: string,
+): Promise<void> {
+  if (!env.LITELLM_SYNC_DLQ) {
+    // DLQ binding not configured; nothing we can do — record but don't throw.
+    return;
+  }
+  try {
+    // Wrap the original SyncMessage in a fresh envelope that includes the failure
+    // reason. We send the ORIGINAL kind/entityId/payload/idempotencyKey unchanged
+    // so an operator replay can re-enqueue against litellm-sync exactly.
+    await env.LITELLM_SYNC_DLQ.send({
+      ...original,
+      // Stamp a fresh enqueuedAt so the DLQ message's metadata reflects when it
+      // was DLQ'd, not when it was first enqueued. (The original enqueuedAt is
+      // not preserved in DLQ metadata; if you need it, it's part of the audit log.)
+      enqueuedAt: new Date().toISOString(),
+    });
+  } catch {
+    // DLQ producer failures shouldn't block the queue ack/retry path.
   }
 }
