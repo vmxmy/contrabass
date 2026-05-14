@@ -1,5 +1,5 @@
 import type { LiteLLMPortalEnv, LiteLLMTeam } from "../types";
-import type { TeamRecord } from "../durable/schemas";
+import type { TeamRecord, UserRecord } from "../durable/schemas";
 import type { TeamConfigDO } from "../durable/team-config-do";
 import type { IndexDO } from "../durable/index-do";
 import { litellmFetch, extractRecords } from "../litellm";
@@ -165,4 +165,143 @@ export async function importTeams(env: LiteLLMPortalEnv): Promise<ImportTeamsRes
   await indexStub.setTeamsList(teamsList);
 
   return { scannedTeams, insertedTeams, errors, limited };
+}
+
+/** Result summary of the user import phase. */
+export type ImportUsersResult = {
+  scannedUsers: number;
+  insertedUsers: number;
+  errors: Array<{ userId: string; reason: string }>;
+  limited: boolean;
+};
+
+/** Walk all pages of LiteLLM /user/list and seed:
+ *  - IndexDO.user:{userId} (the UserRecord)
+ *  - IndexDO.email:{lc(email)} (the pointer; written atomically with user via IndexDO.putUser)
+ *  - For each user with non-empty teamIds: TeamConfigDO.upsertMember on each referenced team
+ *
+ *  Idempotent. Bounded scan at 100 pages.
+ *
+ *  Does NOT apply BOOTSTRAP_ADMIN_EMAILS (T-6.3's job).
+ *  Does NOT mark meta:imported (T-6.4's job).
+ *
+ *  Role mapping (from LiteLLM.role → DO UserRecord.role):
+ *    "proxy_admin" | "proxy_admin_viewer"  -> "admin"
+ *    everything else (including null/undefined) -> "user"
+ */
+export async function importUsers(env: LiteLLMPortalEnv): Promise<ImportUsersResult> {
+  if (!env.INDEX_DO) {
+    throw new Error("importUsers: binding INDEX_DO is not configured");
+  }
+  if (!env.TEAM_CONFIG_DO) {
+    throw new Error("importUsers: binding TEAM_CONFIG_DO is not configured");
+  }
+  if (!env.LITELLM_BASE_URL?.trim()) {
+    throw new Error("importUsers: env.LITELLM_BASE_URL is not configured");
+  }
+  if (!env.LITELLM_MASTER_KEY?.trim()) {
+    throw new Error("importUsers: env.LITELLM_MASTER_KEY is not configured");
+  }
+
+  const errors: Array<{ userId: string; reason: string }> = [];
+  let scannedUsers = 0;
+  let insertedUsers = 0;
+  let limited = false;
+
+  const indexStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDO;
+
+  for (let page = 1; page <= PAGE_CAP; page++) {
+    const response = await litellmFetch(env, `/user/list?page=${page}`);
+    const body = await readJson(response);
+    const records = extractRecords(body);
+
+    if (records.length === 0) {
+      break;
+    }
+
+    for (const record of records) {
+      const userId =
+        (typeof record.user_id === "string" && record.user_id.trim().length > 0
+          ? record.user_id.trim()
+          : undefined) ??
+        (typeof record.id === "string" && record.id.trim().length > 0
+          ? record.id.trim()
+          : undefined) ??
+        "";
+
+      if (userId === "") {
+        errors.push({ userId: "(unknown)", reason: "user record has no user_id or id field" });
+        continue;
+      }
+
+      scannedUsers++;
+
+      try {
+        if (typeof record.email !== "string" || record.email.trim().length === 0) {
+          throw new Error("user record has no valid email field");
+        }
+        const email = record.email.trim();
+
+        const role: "admin" | "user" =
+          record.role === "proxy_admin" || record.role === "proxy_admin_viewer" ? "admin" : "user";
+
+        const teamIds: string[] = Array.isArray(record.team_ids)
+          ? (record.team_ids as unknown[]).filter((t): t is string => typeof t === "string")
+          : Array.isArray(record.teamIds)
+            ? (record.teamIds as unknown[]).filter((t): t is string => typeof t === "string")
+            : [];
+
+        const maxBudget: number | undefined =
+          typeof record.max_budget === "number" && Number.isFinite(record.max_budget)
+            ? record.max_budget
+            : typeof record.maxBudget === "number" && Number.isFinite(record.maxBudget)
+              ? record.maxBudget
+              : undefined;
+
+        const rawCreatedAt =
+          typeof record.created_at === "string" && record.created_at.trim().length > 0
+            ? record.created_at.trim()
+            : typeof record.createdAt === "string" && record.createdAt.trim().length > 0
+              ? record.createdAt.trim()
+              : null;
+        const createdAt =
+          rawCreatedAt != null && Number.isFinite(new Date(rawCreatedAt).getTime())
+            ? rawCreatedAt
+            : new Date().toISOString();
+
+        const teamId: string | null = teamIds.length > 0 ? teamIds[0] : null;
+
+        const userRecord: UserRecord = {
+          userId,
+          email,
+          role,
+          teamId,
+          ...(maxBudget !== undefined ? { maxBudget } : {}),
+          createdAt,
+        };
+
+        await indexStub.putUser(userRecord);
+
+        for (const tid of teamIds) {
+          const teamStub = env.TEAM_CONFIG_DO.get(
+            env.TEAM_CONFIG_DO.idFromName(tid),
+          ) as unknown as TeamConfigDO;
+          await teamStub.upsertMember({ userId, role });
+        }
+
+        insertedUsers++;
+      } catch (err) {
+        errors.push({
+          userId,
+          reason: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    if (page === PAGE_CAP) {
+      limited = true;
+    }
+  }
+
+  return { scannedUsers, insertedUsers, errors, limited };
 }
