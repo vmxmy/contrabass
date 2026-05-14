@@ -85,8 +85,14 @@ async function handleMessage(
       if (body.kind === "team.update") {
         await recordTeamSyncError(env, body, reason);
       }
-      await forwardToDlq(env, body, reason);
-      msg.ack();
+      const forwarded = await forwardToDlq(env, body, reason);
+      if (forwarded) {
+        msg.ack();
+      } else {
+        // DLQ failure — let Cloudflare retry. After max_retries, Cloudflare's
+        // configured dead_letter_queue will catch it.
+        msg.retry();
+      }
       return;
     }
 
@@ -128,11 +134,11 @@ async function recordTeamSyncError(
 async function forwardToDlq(
   env: LiteLLMPortalEnv,
   original: SyncMessage,
-  reason: string,
-): Promise<void> {
+  _reason: string,
+): Promise<boolean> {
   if (!env.LITELLM_SYNC_DLQ) {
-    // DLQ binding not configured; nothing we can do — record but don't throw.
-    return;
+    console.error("[queue-consumer] DLQ binding LITELLM_SYNC_DLQ not configured");
+    return false;
   }
   try {
     // Wrap the original SyncMessage in a fresh envelope that includes the failure
@@ -145,7 +151,9 @@ async function forwardToDlq(
       // not preserved in DLQ metadata; if you need it, it's part of the audit log.)
       enqueuedAt: new Date().toISOString(),
     });
-  } catch {
-    // DLQ producer failures shouldn't block the queue ack/retry path.
+    return true;
+  } catch (err) {
+    console.error("[queue-consumer] DLQ send failed:", err);
+    return false;
   }
 }

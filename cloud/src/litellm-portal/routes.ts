@@ -127,7 +127,7 @@ type TeamConfigDOWriteStub = {
     blocked: boolean;
     budgetDuration?: string;
     budgetResetAt?: string;
-  }): Promise<void>;
+  }, idempotencyKey?: string): Promise<void>;
   getSyncMetadata(): Promise<{
     lastSyncedAt: string | null;
     lastSyncError: string | null;
@@ -267,7 +267,8 @@ async function adminUpdateTeamLimitsDO(
       dryRun: true,
     });
   }
-  await teamConfigStub.putTeam(updated);
+  const idempotencyKey = `team.update:${teamId}:${Date.now()}-${crypto.randomUUID()}`;
+  await teamConfigStub.putTeam(updated, idempotencyKey);
   const enqueueResult = await enqueueSync(env, {
     kind: "team.update",
     entityId: teamId,
@@ -277,6 +278,7 @@ async function adminUpdateTeamLimitsDO(
       tpm_limit: updated.tpmLimit,
       rpm_limit: updated.rpmLimit,
     },
+    idempotencyKey,
   });
   const meta = await teamConfigStub.getSyncMetadata();
   return c.json({

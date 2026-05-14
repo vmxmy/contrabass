@@ -87,7 +87,32 @@ describe("TeamConfigDO", () => {
     expect((data.get("spend:current") as { currentSpend: number }).currentSpend).toBe(12.5);
   });
 
-  it("recordSyncSuccess clears dirty + error, sets lastSyncedAt and lastIdempotencyKey", async () => {
+  it("recordSyncSuccess clears dirty + error when key matches pending", async () => {
+    const { obj, data } = makeDO();
+    data.set("meta:dirty", true);
+    data.set("meta:pendingIdempotencyKey", "idem-1");
+    data.set("meta:lastSyncError", "oops");
+    await obj.recordSyncSuccess("idem-1");
+    expect(data.get("meta:dirty")).toBe(false);
+    expect(data.get("meta:pendingIdempotencyKey")).toBeUndefined();
+    expect(data.get("meta:lastSyncError")).toBeUndefined();
+    expect(data.get("meta:lastSyncedAt")).toBeTypeOf("string");
+    expect(data.get("meta:lastIdempotencyKey")).toBe("idem-1");
+  });
+
+  it("recordSyncSuccess leaves dirty=true when key does not match pending (stale success)", async () => {
+    const { obj, data } = makeDO();
+    data.set("meta:dirty", true);
+    data.set("meta:pendingIdempotencyKey", "idem-newer");
+    await obj.recordSyncSuccess("idem-older");
+    // dirty must stay true because idem-newer is still unsynced
+    expect(data.get("meta:dirty")).toBe(true);
+    expect(data.get("meta:pendingIdempotencyKey")).toBe("idem-newer");
+    // lastIdempotencyKey still updated (records which sync succeeded)
+    expect(data.get("meta:lastIdempotencyKey")).toBe("idem-older");
+  });
+
+  it("recordSyncSuccess clears dirty when no pendingIdempotencyKey (legacy path)", async () => {
     const { obj, data } = makeDO();
     data.set("meta:dirty", true);
     data.set("meta:lastSyncError", "oops");

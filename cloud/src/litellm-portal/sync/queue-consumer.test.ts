@@ -162,6 +162,42 @@ describe("handleLiteLLMSyncBatch", () => {
     expect(teamStub.recordSyncError).not.toHaveBeenCalled();
   });
 
+  it("4xx with DLQ failure → retry instead of ack", async () => {
+    const { env, teamStub } = makeEnv();
+    // Override DLQ send to throw
+    (env.LITELLM_SYNC_DLQ as unknown as { send: ReturnType<typeof vi.fn> }).send = vi.fn().mockRejectedValue(new Error("DLQ unavailable"));
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response("bad request", { status: 400 }));
+    const msg = makeMsg({
+      kind: "team.update",
+      entityId: "team-1",
+      payload: {},
+      idempotencyKey: "idem-dlq-fail",
+      enqueuedAt: NOW,
+    });
+    await handleLiteLLMSyncBatch({ messages: [msg] } as unknown as MessageBatch<SyncMessage>, env);
+    expect(teamStub.recordSyncError).toHaveBeenCalled();
+    expect(msg.retry).toHaveBeenCalled();
+    expect(msg.ack).not.toHaveBeenCalled();
+  });
+
+  it("4xx with missing DLQ binding → retry instead of ack", async () => {
+    const { env, teamStub } = makeEnv();
+    // Remove DLQ binding
+    (env as unknown as { LITELLM_SYNC_DLQ: undefined }).LITELLM_SYNC_DLQ = undefined;
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response("bad request", { status: 400 }));
+    const msg = makeMsg({
+      kind: "team.update",
+      entityId: "team-1",
+      payload: {},
+      idempotencyKey: "idem-no-dlq",
+      enqueuedAt: NOW,
+    });
+    await handleLiteLLMSyncBatch({ messages: [msg] } as unknown as MessageBatch<SyncMessage>, env);
+    expect(teamStub.recordSyncError).toHaveBeenCalled();
+    expect(msg.retry).toHaveBeenCalled();
+    expect(msg.ack).not.toHaveBeenCalled();
+  });
+
   it("batch independence: failure on msg1 does not skip msg2", async () => {
     const { env } = makeEnv();
     let count = 0;
