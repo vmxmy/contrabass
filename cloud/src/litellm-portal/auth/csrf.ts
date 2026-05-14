@@ -9,7 +9,10 @@ export function checkCsrf(request: Request, env: LiteLLMPortalEnv): Response | n
   const method = request.method.toUpperCase();
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return null;
 
+  // Internal webhook paths authenticate via shared secret, not browser session.
   const requestUrl = new URL(request.url);
+  if (requestUrl.pathname.startsWith("/_internal/")) return null;
+
   const expectedOrigin = `${requestUrl.protocol}//${requestUrl.host}`;
 
   const origin = request.headers.get("Origin");
