@@ -64,6 +64,7 @@ import {
   AdminDeleteKeyResultSchema,
 } from "./schemas";
 import { auditWrite } from "./observability/audit";
+import { enqueueSync } from "./sync/queue-producer";
 import type { LiteLLMKey, LiteLLMTeam, JsonValue } from "./types";
 
 type HonoEnv = { Bindings: LiteLLMPortalEnv; Variables: { identity: PortalIdentity } };
@@ -97,6 +98,55 @@ type TeamConfigDOAdminStub = {
     rpmLimit?: number;
     blocked: boolean;
   } | null>;
+};
+
+type TeamConfigDOWriteStub = {
+  getTeam(): Promise<{
+    id: string;
+    alias: string;
+    models: string[];
+    maxBudget?: number;
+    tpmLimit?: number;
+    rpmLimit?: number;
+    blocked: boolean;
+    budgetDuration?: string;
+    budgetResetAt?: string;
+  } | null>;
+  putTeam(record: {
+    id: string;
+    alias: string;
+    models: string[];
+    maxBudget?: number;
+    tpmLimit?: number;
+    rpmLimit?: number;
+    blocked: boolean;
+    budgetDuration?: string;
+    budgetResetAt?: string;
+  }): Promise<void>;
+  getSyncMetadata(): Promise<{
+    lastSyncedAt: string | null;
+    lastSyncError: string | null;
+    dirty: boolean;
+  }>;
+};
+
+type IndexDOWriteStub = {
+  getUserByEmail(email: string): Promise<{
+    userId: string;
+    email: string;
+    role: "admin" | "user";
+    teamId: string | null;
+    maxBudget?: number;
+    createdAt: string;
+  } | null>;
+  putUser(record: {
+    userId: string;
+    email: string;
+    role: "admin" | "user";
+    teamId: string | null;
+    maxBudget?: number;
+    createdAt: string;
+  }): Promise<void>;
 };
 
 // ---------------------------------------------------------------------------
@@ -165,6 +215,87 @@ async function adminUsersFromDO(
   }));
 
   return AdminUsersSchema.parse({ users, totalCount, page: opts.page, size: opts.size });
+}
+
+// ---------------------------------------------------------------------------
+// DO-first write helpers for flag-gated admin endpoints (PDCSOT-55)
+// ---------------------------------------------------------------------------
+
+async function adminUpdateTeamLimitsDO(
+  env: LiteLLMPortalEnv,
+  c: Context<HonoEnv>,
+  teamId: string,
+  body: { tpmLimit?: number | null; rpmLimit?: number | null; maxBudget?: number | null },
+): Promise<Response> {
+  if (!env.TEAM_CONFIG_DO) return c.json({ error: "team_config_do_unavailable" }, 503);
+  const teamConfigStub = env.TEAM_CONFIG_DO.get(
+    env.TEAM_CONFIG_DO.idFromName(teamId),
+  ) as unknown as TeamConfigDOWriteStub;
+  const currentTeam = await teamConfigStub.getTeam();
+  if (!currentTeam) return c.json({ error: "team_not_found" }, 404);
+  const updated = {
+    ...currentTeam,
+    ...(body.maxBudget !== undefined && body.maxBudget !== null ? { maxBudget: body.maxBudget } : {}),
+    ...(body.tpmLimit !== undefined && body.tpmLimit !== null ? { tpmLimit: body.tpmLimit } : {}),
+    ...(body.rpmLimit !== undefined && body.rpmLimit !== null ? { rpmLimit: body.rpmLimit } : {}),
+  };
+  await teamConfigStub.putTeam(updated);
+  const enqueueResult = await enqueueSync(env, {
+    kind: "team.update",
+    entityId: teamId,
+    payload: {
+      team_id: teamId,
+      max_budget: updated.maxBudget,
+      tpm_limit: updated.tpmLimit,
+      rpm_limit: updated.rpmLimit,
+    },
+  });
+  const meta = await teamConfigStub.getSyncMetadata();
+  return c.json({
+    team: updated,
+    lastSyncedAt: meta.lastSyncedAt,
+    lastSyncError: meta.lastSyncError,
+    dirty: meta.dirty,
+    enqueued: enqueueResult.delivered,
+  });
+}
+
+async function adminUpdateUserDO(
+  env: LiteLLMPortalEnv,
+  c: Context<HonoEnv>,
+  userId: string,
+  body: { role?: string | null; maxBudget?: number | null },
+): Promise<Response> {
+  if (!env.INDEX_DO) return c.json({ error: "index_do_unavailable" }, 503);
+  const idxStub = env.INDEX_DO.get(
+    env.INDEX_DO.idFromName("index"),
+  ) as unknown as IndexDOWriteStub;
+  const currentUser = await idxStub.getUserByEmail(userId);
+  if (!currentUser) return c.json({ error: "user_not_found" }, 404);
+  const updatedRole: "admin" | "user" = (body.role === "proxy_admin" || body.role === "proxy_admin_viewer")
+    ? "admin"
+    : (body.role != null ? "user" : currentUser.role);
+  const updated = {
+    ...currentUser,
+    role: updatedRole,
+    ...(body.maxBudget !== undefined && body.maxBudget !== null ? { maxBudget: body.maxBudget } : {}),
+  };
+  await idxStub.putUser(updated);
+  const enqueueResult = await enqueueSync(env, {
+    kind: "user.update",
+    entityId: userId,
+    payload: {
+      user_id: userId,
+      user_role: body.role ?? undefined,
+      max_budget: updated.maxBudget,
+    },
+  });
+  return c.json({
+    userId: updated.userId,
+    role: updated.role,
+    maxBudget: updated.maxBudget ?? null,
+    enqueued: enqueueResult.delivered,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -804,6 +935,10 @@ const adminUpdateTeamLimitsApp = new Hono<HonoEnv>()
     if (!parsed.ok) return parsed.response;
     const { reason, tpmLimit, rpmLimit, maxBudget } = parsed.data;
 
+    if (c.env.PORTAL_DO_SOT_ENABLED === "true") {
+      return adminUpdateTeamLimitsDO(c.env, c, teamId, { tpmLimit, rpmLimit, maxBudget });
+    }
+
     const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
     const identity = c.get("identity");
 
@@ -858,6 +993,10 @@ const adminUpdateUserApp = new Hono<HonoEnv>()
     const parsed = await parseWriteBody(c, UpdateUserBodySchema);
     if (!parsed.ok) return parsed.response;
     const { reason, role, maxBudget } = parsed.data;
+
+    if (c.env.PORTAL_DO_SOT_ENABLED === "true") {
+      return adminUpdateUserDO(c.env, c, userId, { role, maxBudget });
+    }
 
     const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
     const identity = c.get("identity");
