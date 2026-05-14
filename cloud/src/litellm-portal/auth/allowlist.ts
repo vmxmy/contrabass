@@ -1,9 +1,11 @@
 import type { LiteLLMPortalEnv } from "../types";
 
 /** Parse the env var into a normalized lowercase domain array.
- *  Splits on "," and trims whitespace. Returns [] if the var is undefined or empty. */
+ *  Splits on "," and trims whitespace. Returns [] if the var is undefined or empty.
+ *  Falls back to the legacy LITELLM_PORTAL_ALLOWED_EMAIL_DOMAIN (single domain) if
+ *  PORTAL_ALLOWED_EMAIL_DOMAINS is unset — supports the cutover window. */
 export function parseAllowedDomains(env: LiteLLMPortalEnv): string[] {
-  const raw = env.PORTAL_ALLOWED_EMAIL_DOMAINS;
+  const raw = env.PORTAL_ALLOWED_EMAIL_DOMAINS ?? env.LITELLM_PORTAL_ALLOWED_EMAIL_DOMAIN;
   if (!raw) {
     return [];
   }

@@ -13,6 +13,9 @@ CLOUDFLARE_ACCESS_TEAM_DOMAIN = "https://ziikoo.cloudflareaccess.com"
 CLOUDFLARE_ACCESS_AUD = "b791adb332e76931e51a12fb2191d9a888e35d553a6ffd16c27f18ad962cc084"
 LITELLM_PORTAL_ALLOWED_EMAIL_DOMAIN = "gz-zhiyun.com"
 LITELLM_PORTAL_ALLOWED_EMAILS = "blueyang@gmail.com,xu@ziikoo.com"
+# Canonical var read by allowlist.ts (PORTAL_DO_SOT_ENABLED path).
+# allowlist.ts falls back to LITELLM_PORTAL_ALLOWED_EMAIL_DOMAIN during cutover.
+PORTAL_ALLOWED_EMAIL_DOMAINS = "gz-zhiyun.com"
 LITELLM_BASE_URL = "https://litellm.ziikoo.com"
 LITELLM_PORTAL_COMPANY_NAME = "gz-zhiyun"
 LITELLM_PORTAL_DISPLAY_NAME = "智云AI管理平台"
@@ -57,6 +60,13 @@ new_classes = ["IndexDO", "TeamConfigDO"]
 # secret_name = "ROLE_INVALIDATION_WEBHOOK_TOKEN"
 
 
+# ---------------------------------------------------------------------------
+# DEPLOY RUNBOOK — Queues must be created BEFORE first deploy:
+#   npx wrangler queues create litellm-sync
+#   npx wrangler queues create litellm-sync-dlq
+# Wrangler does NOT auto-create Queue resources; deploying before creation
+# causes a binding error and the Worker will fail to start.
+# ---------------------------------------------------------------------------
 # Cloudflare Queue: litellm-sync — admin writes enqueue here after the DO
 # commit. A consumer Worker (T-4.4 / PDCSOT-35) drains and pushes to LiteLLM
 # admin endpoints with retries and a DLQ. See openspec change
@@ -73,6 +83,13 @@ queue = "litellm-sync"
 binding = "LITELLM_SYNC_DLQ"
 queue = "litellm-sync-dlq"
 
+# ---------------------------------------------------------------------------
+# DEPLOY RUNBOOK — Consumer settings:
+#   max_retries = 5: Wrangler retries failed messages up to 5 times before
+#     forwarding to dead_letter_queue = "litellm-sync-dlq".
+#   dead_letter_queue: must already exist (created via wrangler queues create
+#     litellm-sync-dlq above) before this consumer is deployed.
+# ---------------------------------------------------------------------------
 [[queues.consumers]]
 queue = "litellm-sync"
 max_batch_size = 10

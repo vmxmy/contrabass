@@ -90,6 +90,12 @@
 
 ## 11. Cutover and rollback verification
 
+- [ ] 11.0 **Pre-deploy (one-time):** Create Cloudflare Queue resources before the first deploy — Wrangler does NOT auto-create them and the Worker will fail to start if they are missing:
+  ```
+  npx wrangler queues create litellm-sync --config wrangler.litellm-portal.toml
+  npx wrangler queues create litellm-sync-dlq --config wrangler.litellm-portal.toml
+  ```
+  Confirm both queues appear in the Cloudflare dashboard (Workers & Pages → Queues) before proceeding.
 - [ ] 11.1 Pre-cutover: deploy with `PORTAL_DO_SOT_ENABLED=false`. Verify CF Access still gates the portal.
 - [ ] 11.2 In the maintenance window: flip `PORTAL_DO_SOT_ENABLED=true`, redeploy, allow `IndexDO.init()` to run, check `meta:imported=true`, verify team and user counts match LiteLLM.
 - [ ] 11.3 Smoke: a `BOOTSTRAP_ADMIN_EMAILS` user receives a magic link, logs in, lands as `role=admin`.
