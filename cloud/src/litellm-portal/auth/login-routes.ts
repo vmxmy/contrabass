@@ -166,8 +166,72 @@ export async function handleLoginGet(_request: Request, _env: LiteLLMPortalEnv):
   return htmlResp(loginPage());
 }
 
+// ---------------------------------------------------------------------------
+// Login rate-limit helper
+// Max 3 magic-link sends per email per 5 minutes,
+// max 10 per IP per 5 minutes.
+// Uses RATE_LIMIT_DO when available; falls back to a per-isolate in-memory
+// map as a soft brake (note: in-memory state is not shared across isolates).
+// ---------------------------------------------------------------------------
+
+const LOGIN_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+const LOGIN_MAX_PER_EMAIL = 3;
+const LOGIN_MAX_PER_IP = 10;
+
+// Per-isolate fallback store: key → sorted array of timestamps
+const _loginRateLimitStore = new Map<string, number[]>();
+
+function _checkMemoryLimit(key: string, max: number, windowMs: number): boolean {
+  const now = Date.now();
+  const windowStart = now - windowMs;
+  const timestamps = (_loginRateLimitStore.get(key) ?? []).filter((ts) => ts > windowStart);
+  if (timestamps.length >= max) {
+    _loginRateLimitStore.set(key, timestamps);
+    return false;
+  }
+  timestamps.push(now);
+  _loginRateLimitStore.set(key, timestamps);
+  return true;
+}
+
+async function checkLoginRateLimit(
+  env: LiteLLMPortalEnv,
+  email: string,
+  ip: string,
+): Promise<boolean> {
+  const emailKey = `login:email:${email.toLowerCase()}`;
+  const ipKey = `login:ip:${ip}`;
+
+  if (env.RATE_LIMIT_DO) {
+    const doId = env.RATE_LIMIT_DO.idFromName("login-rate-limit");
+    const stub = env.RATE_LIMIT_DO.get(doId);
+    const params = `windowMs=${LOGIN_WINDOW_MS}`;
+
+    const [emailResp, ipResp] = await Promise.all([
+      stub.fetch(
+        new Request(
+          `https://rate-limit-do/check?key=${encodeURIComponent(emailKey)}&${params}&max=${LOGIN_MAX_PER_EMAIL}`,
+        ),
+      ),
+      stub.fetch(
+        new Request(
+          `https://rate-limit-do/check?key=${encodeURIComponent(ipKey)}&${params}&max=${LOGIN_MAX_PER_IP}`,
+        ),
+      ),
+    ]);
+
+    return emailResp.status !== 429 && ipResp.status !== 429;
+  }
+
+  // Fallback: in-memory per-isolate soft brake
+  const emailOk = _checkMemoryLimit(emailKey, LOGIN_MAX_PER_EMAIL, LOGIN_WINDOW_MS);
+  const ipOk = _checkMemoryLimit(ipKey, LOGIN_MAX_PER_IP, LOGIN_WINDOW_MS);
+  return emailOk && ipOk;
+}
+
 export async function handleLoginPost(request: Request, env: LiteLLMPortalEnv): Promise<Response> {
   await ensurePortalDOInitialized(env);
+
   let email: string;
   try {
     const form = await request.formData();
@@ -177,36 +241,49 @@ export async function handleLoginPost(request: Request, env: LiteLLMPortalEnv): 
     return htmlResp(loginPage("Invalid email"), 400);
   }
 
+  // Genuinely malformed input — still 400 so the UX can correct it.
   if (!email || !email.includes("@") || email.length > 320) {
     return htmlResp(loginPage("Invalid email"), 400);
   }
 
+  // From here on: ALWAYS return the same generic 200 "check inbox" response
+  // regardless of allow-list / rate-limit / send-failure outcome. The reason
+  // is logged server-side only.
+  const genericSuccess = htmlResp(loginPage(undefined, email));
+
+  // Allow-list check (silent — failure indistinguishable from success to caller)
   if (!isEmailAllowed(email, env)) {
-    return htmlResp(loginPage("Sign-in is not available for this email"), 403);
+    console.warn("[login] email not in allow-list:", email);
+    return genericSuccess;
   }
 
-  let token: string;
-  try {
-    token = await issueMagicLink(env, email);
-  } catch {
-    return htmlResp(loginPage("Could not send the magic link. Please try again later."), 500);
+  // Rate-limit check (silent on exceed)
+  const clientIp =
+    request.headers.get("CF-Connecting-IP") ??
+    request.headers.get("X-Forwarded-For") ??
+    "unknown";
+  const allowed = await checkLoginRateLimit(env, email, clientIp);
+  if (!allowed) {
+    console.warn("[login] rate-limit exceeded for:", email, clientIp);
+    return genericSuccess;
   }
 
-  const requestUrl = new URL(request.url);
-  const origin = requestUrl.origin;
-  const link = `${origin}/magic-callback?token=${encodeURIComponent(token)}`;
-
+  // Issue token + send
   try {
+    const token = await issueMagicLink(env, email);
+    const requestUrl = new URL(request.url);
+    const link = `${requestUrl.origin}/magic-callback?token=${encodeURIComponent(token)}`;
     await sendMagicLink(env, {
       email,
       link,
       companyName: env.LITELLM_PORTAL_COMPANY_NAME ?? "the portal",
     });
-  } catch {
-    return htmlResp(loginPage("Could not send the magic link. Please try again later."), 500);
+  } catch (err) {
+    console.error("[login] magic-link issue or send failed:", err);
+    // Still return generic success — don't leak server state.
   }
 
-  return htmlResp(loginPage(undefined, email));
+  return genericSuccess;
 }
 
 export async function handleMagicCallback(request: Request, env: LiteLLMPortalEnv): Promise<Response> {
