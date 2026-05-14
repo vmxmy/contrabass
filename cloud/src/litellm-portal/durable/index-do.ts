@@ -9,6 +9,12 @@ import {
   type AuditEvent,
 } from "./schemas";
 import type { LiteLLMPortalEnv } from "../types";
+import {
+  importTeams,
+  importUsers,
+  applyBootstrapAdmins,
+  finalizeImport,
+} from "../sync/litellm-importer";
 
 // ---------------------------------------------------------------------------
 // Local schemas
@@ -180,11 +186,33 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
   }
 
   // -------------------------------------------------------------------------
-  // Init stub (T-2.4 / T-6.5 will wire the actual importer)
+  // Init: one-shot LiteLLM import orchestration (PDCSOT-46 / T-6.5)
   // -------------------------------------------------------------------------
 
   async init(): Promise<{ ok: true; imported: boolean }> {
-    return { ok: true, imported: await this.isImported() };
+    if (await this.isImported()) {
+      return { ok: true, imported: true };
+    }
+
+    const teams = await importTeams(this.env);
+    const users = await importUsers(this.env);
+    const bootstrap = await applyBootstrapAdmins(this.env);
+
+    await finalizeImport(this.env, {
+      teamCount: teams.insertedTeams,
+      userCount: users.insertedUsers,
+      bootstrapAdmins: {
+        configured: bootstrap.configuredEmails,
+        promoted: bootstrap.promotedToAdmin,
+        absentFromIndex: bootstrap.absentFromIndex.length,
+      },
+      errors: [
+        ...teams.errors.map((e) => ({ entityId: e.teamId, reason: e.reason })),
+        ...users.errors.map((e) => ({ entityId: e.userId, reason: e.reason })),
+      ],
+    });
+
+    return { ok: true, imported: true };
   }
 
   // -------------------------------------------------------------------------
