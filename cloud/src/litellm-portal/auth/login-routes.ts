@@ -9,15 +9,41 @@ import { issueSession, buildSessionCookieHeader, clearSessionHeader } from "./se
 
 type IndexDOInitStub = { init(): Promise<{ ok: true; imported: boolean }> };
 
+// Singleflight + failure-backoff state for ensurePortalDOInitialized.
+// A single isolate may receive many concurrent requests; without singleflight
+// each one would independently drive an expensive IndexDO.init() import.
+let _initInFlight: Promise<void> | null = null;
+let _initFailedAt: number | null = null;
+const INIT_BACKOFF_MS = 30_000; // 30 s cooldown after a failure
+
 async function ensurePortalDOInitialized(env: LiteLLMPortalEnv): Promise<void> {
   if (env.PORTAL_DO_SOT_ENABLED !== "true" || !env.INDEX_DO) return;
-  try {
-    const idxStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOInitStub;
-    await idxStub.init();
-  } catch (err) {
-    // Don't block login on init failure; log + continue. UI will show empty state until ops re-trigger init.
-    console.error("[auth] IndexDO.init() failed:", err);
+
+  // Backoff: if init failed recently, skip to avoid hammering the DO.
+  if (_initFailedAt !== null && Date.now() - _initFailedAt < INIT_BACKOFF_MS) return;
+
+  // Singleflight: share one in-flight init promise across concurrent callers.
+  if (_initInFlight !== null) {
+    await _initInFlight;
+    return;
   }
+
+  const indexDO = env.INDEX_DO;
+  _initInFlight = (async () => {
+    try {
+      const idxStub = indexDO.get(indexDO.idFromName("index")) as unknown as IndexDOInitStub;
+      await idxStub.init();
+      _initFailedAt = null;
+    } catch (err) {
+      _initFailedAt = Date.now();
+      // Don't block login on init failure; log + continue. UI will show empty state until ops re-trigger init.
+      console.error("[auth] IndexDO.init() failed:", err);
+    } finally {
+      _initInFlight = null;
+    }
+  })();
+
+  await _initInFlight;
 }
 
 type IndexDOStub = {
@@ -230,8 +256,7 @@ async function checkLoginRateLimit(
 }
 
 export async function handleLoginPost(request: Request, env: LiteLLMPortalEnv): Promise<Response> {
-  await ensurePortalDOInitialized(env);
-
+  // Step 1: parse form body
   let email: string;
   try {
     const form = await request.formData();
@@ -241,7 +266,7 @@ export async function handleLoginPost(request: Request, env: LiteLLMPortalEnv): 
     return htmlResp(loginPage("Invalid email"), 400);
   }
 
-  // Genuinely malformed input — still 400 so the UX can correct it.
+  // Step 2: validate email format — return 400 so the UX can correct it.
   if (!email || !email.includes("@") || email.length > 320) {
     return htmlResp(loginPage("Invalid email"), 400);
   }
@@ -251,13 +276,13 @@ export async function handleLoginPost(request: Request, env: LiteLLMPortalEnv): 
   // is logged server-side only.
   const genericSuccess = htmlResp(loginPage(undefined, email));
 
-  // Allow-list check (silent — failure indistinguishable from success to caller)
+  // Step 3: allow-list check (silent — failure indistinguishable from success to caller)
   if (!isEmailAllowed(email, env)) {
     console.warn("[login] email not in allow-list:", email);
     return genericSuccess;
   }
 
-  // Rate-limit check (silent on exceed)
+  // Step 4: rate-limit check (silent on exceed)
   const clientIp =
     request.headers.get("CF-Connecting-IP") ??
     request.headers.get("X-Forwarded-For") ??
@@ -267,6 +292,9 @@ export async function handleLoginPost(request: Request, env: LiteLLMPortalEnv): 
     console.warn("[login] rate-limit exceeded for:", email, clientIp);
     return genericSuccess;
   }
+
+  // Step 5: trigger IndexDO init now that cheap rejections have passed
+  await ensurePortalDOInitialized(env);
 
   // Issue token + send
   try {
@@ -287,9 +315,16 @@ export async function handleLoginPost(request: Request, env: LiteLLMPortalEnv): 
 }
 
 export async function handleMagicCallback(request: Request, env: LiteLLMPortalEnv): Promise<Response> {
-  await ensurePortalDOInitialized(env);
   const url = new URL(request.url);
   const token = url.searchParams.get("token");
+
+  // Reject obviously invalid tokens before triggering IndexDO init.
+  if (!token || token.length < 8) {
+    return htmlResp(expiredLinkPage(), 400);
+  }
+
+  // Token shape looks plausible — initialize DO before verifying.
+  await ensurePortalDOInitialized(env);
 
   const result = await verifyMagicLink(env, token);
   if (result === null) {
