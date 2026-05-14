@@ -18,6 +18,7 @@ import { recordAudit } from "./observability/audit";
 import { checkClientErrorRateLimit, recordClientError } from "./observability/client-error";
 import type { ClientErrorPayload } from "./observability/client-error";
 import { scanBudgetThresholds } from "./notifications";
+import { runSpendSnapshotTick } from "./sync/spend-snapshot-cron";
 import { handleLiteLLMSyncBatch } from "./sync/queue-consumer";
 import type { SyncMessage } from "./durable/schemas";
 import {
@@ -224,8 +225,10 @@ export default {
       ctx.waitUntil(scanBudgetThresholds(env));
       return;
     }
-    // "* * * * *" — reserved for the spend-snapshot mirror (PDCSOT-39 / T-5.2);
-    // no handler yet. Intentional no-op to avoid blocking the cron registration.
+    if (controller.cron === "* * * * *") {
+      ctx.waitUntil(runSpendSnapshotTick(env));
+      return;
+    }
   },
   async queue(batch, env, _ctx) {
     await handleLiteLLMSyncBatch(batch as MessageBatch<SyncMessage>, env);
