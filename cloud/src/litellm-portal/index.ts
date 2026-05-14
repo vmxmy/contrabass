@@ -21,6 +21,8 @@ import { scanBudgetThresholds } from "./notifications";
 
 export type { LiteLLMPortalEnv } from "./types";
 export { RateLimitDO } from "./security/rate-limit-do";
+export { IndexDO } from "./durable/index-do";
+export { TeamConfigDO } from "./durable/team-config-do";
 
 const portalChunkByFileName = new Map<string, { fileName: string; js: string }>(
   portalBundleChunks.map((chunk) => [chunk.fileName, chunk]),

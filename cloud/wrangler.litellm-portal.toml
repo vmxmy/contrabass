@@ -21,9 +21,22 @@ LITELLM_PORTAL_DISPLAY_NAME = "智云AI管理平台"
 name = "RATE_LIMIT_DO"
 class_name = "RateLimitDO"
 
+# IndexDO + TeamConfigDO — see openspec change portal-do-config-source-of-truth.
+[[durable_objects.bindings]]
+name = "INDEX_DO"
+class_name = "IndexDO"
+
+[[durable_objects.bindings]]
+name = "TEAM_CONFIG_DO"
+class_name = "TeamConfigDO"
+
 [[migrations]]
 tag = "v1"
 new_classes = ["RateLimitDO"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["IndexDO", "TeamConfigDO"]
 
 # ---------------------------------------------------------------------------
 # Workers Secret Store (opt-in — requires manual provisioning)
