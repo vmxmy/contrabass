@@ -305,3 +305,61 @@ export async function importUsers(env: LiteLLMPortalEnv): Promise<ImportUsersRes
 
   return { scannedUsers, insertedUsers, errors, limited };
 }
+
+/** Result summary of the bootstrap-admin pass. */
+export type ApplyBootstrapAdminsResult = {
+  configuredEmails: number;
+  promotedToAdmin: number;
+  absentFromIndex: string[];
+};
+
+/** Walk env.BOOTSTRAP_ADMIN_EMAILS (comma-separated, case-insensitive) and,
+ *  for every email already known to IndexDO (from importUsers), set role=admin.
+ *
+ *  Emails NOT in IndexDO are returned in absentFromIndex — they'll be elevated
+ *  at first-login via the magic-link flow (PDCSOT-47 / T-6.6).
+ *
+ *  Idempotent. Safe to re-run.
+ */
+export async function applyBootstrapAdmins(env: LiteLLMPortalEnv): Promise<ApplyBootstrapAdminsResult> {
+  if (!env.INDEX_DO) {
+    throw new Error("applyBootstrapAdmins: binding INDEX_DO is not configured");
+  }
+
+  if (!env.BOOTSTRAP_ADMIN_EMAILS?.trim()) {
+    return { configuredEmails: 0, promotedToAdmin: 0, absentFromIndex: [] };
+  }
+
+  const emails = [
+    ...new Set(
+      env.BOOTSTRAP_ADMIN_EMAILS.split(",")
+        .map((e) => e.trim().toLowerCase())
+        .filter((e) => e.length > 0),
+    ),
+  ];
+
+  const configuredEmails = emails.length;
+  let promotedToAdmin = 0;
+  const absentFromIndex: string[] = [];
+
+  const idxStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDO;
+
+  for (const email of emails) {
+    const user = await idxStub.getUserByEmail(email);
+
+    if (user === null) {
+      absentFromIndex.push(email);
+      continue;
+    }
+
+    if (user.role === "admin") {
+      continue;
+    }
+
+    const updatedRecord: UserRecord = { ...user, role: "admin" };
+    await idxStub.putUser(updatedRecord);
+    promotedToAdmin++;
+  }
+
+  return { configuredEmails, promotedToAdmin, absentFromIndex };
+}
