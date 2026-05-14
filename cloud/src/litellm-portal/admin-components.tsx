@@ -1279,6 +1279,59 @@ export function AdminSection({ role }: { role: PortalRole }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Section 5: SyncStatusBadge — per-row DO sync state indicator
+// ---------------------------------------------------------------------------
+
+export type SyncStatusBadgeProps = {
+  lastSyncedAt?: string | null;
+  lastSyncError?: string | null;
+  dirty?: boolean;
+};
+
+function relativeTime(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(diffMs) || diffMs < 0) return "just now";
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 60) return "just now";
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay}d ago`;
+}
+
+export function SyncStatusBadge({ lastSyncedAt, lastSyncError, dirty }: SyncStatusBadgeProps): JSX.Element | null {
+  if (lastSyncError) {
+    return (
+      <Tooltip content={lastSyncError}>
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-kumo-danger" title={lastSyncError}>
+          <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-kumo-danger" aria-hidden="true" />
+          Sync failed
+        </span>
+      </Tooltip>
+    );
+  }
+  if (dirty) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-kumo-warning" title="A change is queued for sync to LiteLLM.">
+        <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-kumo-warning" aria-hidden="true" />
+        Syncing…
+      </span>
+    );
+  }
+  if (lastSyncedAt) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-kumo-success" title={`Last synced at ${lastSyncedAt}`}>
+        <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-kumo-success" aria-hidden="true" />
+        Synced {relativeTime(lastSyncedAt)}
+      </span>
+    );
+  }
+  return null;
+}
+
 type TabKey = "user" | "admin";
 
 let portalRolePromise: Promise<PortalRole> | null = null;
