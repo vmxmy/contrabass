@@ -1,11 +1,41 @@
 import type { AccessJwtPayload, AccessJwk, AccessJwksResponse, AuthResult, LiteLLMPortalEnv, PortalPrincipal } from "./types";
+import { verifySession, SESSION_COOKIE_NAME } from "./auth/session";
 import { csv } from "./utils";
 
 const DEFAULT_ALLOWED_EMAIL_DOMAIN = "gz-zhiyun.com";
 const ACCESS_JWKS_CACHE_MS = 5 * 60 * 1000;
 const accessJwksCache = new Map<string, { expiresAt: number; keys: AccessJwk[] }>();
 
+async function authenticateViaSession(request: Request, env: LiteLLMPortalEnv): Promise<AuthResult> {
+  const cookieHeader = request.headers.get("Cookie") ?? "";
+  const parts = cookieHeader.split(";").map((p) => p.trim());
+  const target = `${SESSION_COOKIE_NAME}=`;
+  const entry = parts.find((p) => p.startsWith(target));
+  if (entry === undefined) {
+    return { ok: false, status: 401, error: "missing_session_cookie" };
+  }
+  const value = entry.slice(target.length);
+  const payload = await verifySession(env, value);
+  if (payload === null) {
+    return { ok: false, status: 401, error: "invalid_session" };
+  }
+  const atIdx = payload.email.indexOf("@");
+  const domain = atIdx === -1 ? "" : payload.email.slice(atIdx + 1).toLowerCase();
+  return {
+    ok: true,
+    principal: {
+      email: payload.email,
+      userId: payload.userId,
+      domain,
+    },
+  };
+}
+
 export async function authenticateRequest(request: Request, env: LiteLLMPortalEnv): Promise<AuthResult> {
+  if (env.PORTAL_DO_SOT_ENABLED === "true") {
+    return authenticateViaSession(request, env);
+  }
+
   const allowedDomain = allowedEmailDomain(env);
   const allowedEmails = configuredAllowedEmails(env);
   const devEmail = request.headers.get("x-litellm-portal-dev-email");
