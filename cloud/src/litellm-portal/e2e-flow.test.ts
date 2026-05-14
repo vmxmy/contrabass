@@ -8,7 +8,9 @@
  *     issueMagicLink → verifyMagicLink → issueSession → verifySession
  *
  *   [Test 2] admin write → queue:
- *     Simulates what adminUpdateTeamLimitsDO does: DO putTeam + enqueueSync
+ *     Sends an authenticated app.fetch PATCH through the full HTTP path
+ *     (routing → applyAuthMiddleware → CSRF → body-parsing → dryRun →
+ *     adminUpdateTeamLimitsDO → DO putTeam + enqueueSync).
  *     Captures the SyncMessage sent to LITELLM_SYNC_QUEUE.send.
  *
  *   [Test 3] queue consumer → DO sync metadata update:
@@ -21,8 +23,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { issueMagicLink, verifyMagicLink } from "./auth/magic-link";
 import { issueSession, verifySession, SESSION_COOKIE_NAME } from "./auth/session";
-import { enqueueSync } from "./sync/queue-producer";
 import { handleLiteLLMSyncBatch } from "./sync/queue-consumer";
+import { app } from "./routes";
+import { _clearRoleCacheForTests } from "./roles";
 import type { LiteLLMPortalEnv } from "./types";
 import type { SyncMessage } from "./durable/schemas";
 
@@ -56,6 +59,12 @@ function makeMockIndexDO() {
     getUserByEmail: async (email: string) => users.get(email.toLowerCase()) ?? null,
     putUser: async (record: { userId: string; email: string; role: "admin" | "user"; teamId: string | null; createdAt: string }) => {
       users.set(record.email.toLowerCase(), record);
+    },
+    getUserById: async (userId: string) => {
+      for (const u of users.values()) {
+        if (u.userId === userId) return u;
+      }
+      return null;
     },
     isImported: async () => true,
     markImported: async () => {},
@@ -198,11 +207,14 @@ describe("magic-link round-trip (login → callback → session)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test suite 2: Admin write → DO + queue
+// Test suite 2: Admin write → DO + queue (via real HTTP path)
 // ---------------------------------------------------------------------------
 
 describe("admin write → DO putTeam + LITELLM_SYNC_QUEUE.send", () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    _clearRoleCacheForTests();
+  });
 
   it("PATCH team limits: writes to TeamConfigDO and enqueues a team.update SyncMessage", async () => {
     const idx = makeMockIndexDO();
@@ -210,7 +222,7 @@ describe("admin write → DO putTeam + LITELLM_SYNC_QUEUE.send", () => {
     const queueSend = vi.fn().mockResolvedValue(undefined);
     const env = makeBaseEnv(idx, teamDo, queueSend);
 
-    const teamId = "t1";
+    const teamId = "team-001";
     const seedRecord: TeamRecord = {
       id: teamId,
       alias: "Team One",
@@ -219,38 +231,52 @@ describe("admin write → DO putTeam + LITELLM_SYNC_QUEUE.send", () => {
     };
     teamDo.stub._seed(seedRecord);
 
-    // Simulate adminUpdateTeamLimitsDO: read current, merge, putTeam, enqueueSync
-    const currentTeam = await teamDo.stub.getTeam();
-    expect(currentTeam).not.toBeNull();
-
-    const limits = { tpmLimit: 10000, rpmLimit: 500, maxBudget: 100 };
-    const updated = {
-      ...currentTeam!,
-      ...limits,
-    };
-    await teamDo.stub.putTeam(updated);
-
-    const enqueueResult = await enqueueSync(env, {
-      kind: "team.update",
-      entityId: teamId,
-      payload: {
-        team_id: teamId,
-        max_budget: updated.maxBudget,
-        tpm_limit: updated.tpmLimit,
-        rpm_limit: updated.rpmLimit,
-      },
+    // Seed the admin user in IndexDO so getRoleViaIndexDO returns "admin"
+    await idx.stub.putUser({
+      userId: ALLOWED_EMAIL.toLowerCase(),
+      email: ALLOWED_EMAIL.toLowerCase(),
+      role: "admin",
+      teamId: null,
+      createdAt: new Date().toISOString(),
     });
 
-    // Assert DO write
-    expect(teamDo.stub.putTeam).toHaveBeenCalledWith(expect.objectContaining({
-      id: teamId,
-      tpmLimit: 10000,
-      rpmLimit: 500,
-      maxBudget: 100,
-    }));
+    // Forge a signed session cookie for the admin user
+    const sessionValue = await issueSession(env, {
+      email: ALLOWED_EMAIL.toLowerCase(),
+      userId: ALLOWED_EMAIL.toLowerCase(),
+    });
 
-    // Assert queue send
-    expect(enqueueResult.delivered).toBe(true);
+    // Exercise the full HTTP path: routing → applyAuthMiddleware → CSRF (Origin) →
+    // body-parsing → adminUpdateTeamLimitsDO → DO putTeam + enqueueSync
+    const response = await app.fetch(
+      new Request(`https://portal.test/api/admin/teams/${teamId}/limits`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "Cookie": `${SESSION_COOKIE_NAME}=${sessionValue}`,
+          "Origin": "https://portal.test",
+        },
+        body: JSON.stringify({ reason: "e2e-test", maxBudget: 100, tpmLimit: 10000, rpmLimit: 500 }),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body.enqueued).toBe(true);
+
+    // Assert DO write: putTeam was called with merged limits
+    expect(teamDo.stub.putTeam).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: teamId,
+        tpmLimit: 10000,
+        rpmLimit: 500,
+        maxBudget: 100,
+      }),
+      expect.any(String),
+    );
+
+    // Assert queue send: one team.update SyncMessage enqueued
     expect(queueSend).toHaveBeenCalledTimes(1);
     const sentMessage = queueSend.mock.calls[0][0] as SyncMessage;
     expect(sentMessage.kind).toBe("team.update");
@@ -337,19 +363,30 @@ describe("queue consumer → TeamConfigDO.recordSyncSuccess (PDCSOT-72 full flow
     });
     const env = makeBaseEnv(idx, teamDo, queueSend);
 
+    // Seed the admin user in IndexDO for role resolution
+    const email = ALLOWED_EMAIL.toLowerCase();
+    await idx.stub.putUser({
+      userId: email,
+      email,
+      role: "admin",
+      teamId: null,
+      createdAt: new Date().toISOString(),
+    });
+    _clearRoleCacheForTests();
+
     // Issue magic link
     const token = await issueMagicLink(env, ALLOWED_EMAIL);
     const verifyResult = await verifyMagicLink(env, token);
     expect(verifyResult).not.toBeNull();
 
     // Issue session
-    const email = ALLOWED_EMAIL.toLowerCase();
     const sessionValue = await issueSession(env, { email, userId: email });
     const payload = await verifySession(env, sessionValue);
     expect(payload?.email).toBe(email);
 
     // -----------------------------------------------------------------------
-    // Phase B: Admin write — PUT to TeamConfigDO + enqueue SyncMessage
+    // Phase B: Admin write via full HTTP path — routing → auth → CSRF →
+    // body-parsing → adminUpdateTeamLimitsDO → DO putTeam + enqueueSync
     // -----------------------------------------------------------------------
     const teamId = "t1";
     teamDo.stub._seed({
@@ -359,17 +396,22 @@ describe("queue consumer → TeamConfigDO.recordSyncSuccess (PDCSOT-72 full flow
       blocked: false,
     });
 
-    const currentTeam = await teamDo.stub.getTeam();
-    const updated = { ...currentTeam!, tpmLimit: 10000, rpmLimit: 500, maxBudget: 100 };
-    await teamDo.stub.putTeam(updated);
+    const patchResponse = await app.fetch(
+      new Request(`https://portal.test/api/admin/teams/${teamId}/limits`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "Cookie": `${SESSION_COOKIE_NAME}=${sessionValue}`,
+          "Origin": "https://portal.test",
+        },
+        body: JSON.stringify({ reason: "e2e-test", maxBudget: 100, tpmLimit: 10000, rpmLimit: 500 }),
+      }),
+      env,
+    );
 
-    const enqueueResult = await enqueueSync(env, {
-      kind: "team.update",
-      entityId: teamId,
-      payload: { team_id: teamId, max_budget: 100, tpm_limit: 10000, rpm_limit: 500 },
-    });
-
-    expect(enqueueResult.delivered).toBe(true);
+    expect(patchResponse.status).toBe(200);
+    const patchBody = await patchResponse.json() as Record<string, unknown>;
+    expect(patchBody.enqueued).toBe(true);
     expect(capturedSyncMessage).not.toBeNull();
 
     // -----------------------------------------------------------------------
@@ -402,6 +444,7 @@ describe("queue consumer → TeamConfigDO.recordSyncSuccess (PDCSOT-72 full flow
     // TeamConfigDO.putTeam was called with the correct limits
     expect(teamDo.stub.putTeam).toHaveBeenCalledWith(
       expect.objectContaining({ tpmLimit: 10000, rpmLimit: 500, maxBudget: 100 }),
+      expect.any(String),
     );
   });
 });
