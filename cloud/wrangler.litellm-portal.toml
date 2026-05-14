@@ -44,8 +44,10 @@ new_classes = ["RateLimitDO"]
 # secret_name = "ROLE_INVALIDATION_WEBHOOK_TOKEN"
 
 
+# Spend snapshot mirror — pulls LiteLLM /team/info into TeamConfigDO every minute.
+# See openspec change portal-do-config-source-of-truth, capability portal-litellm-config-sync.
 [triggers]
-crons = ["0 9 * * *"]
+crons = ["0 9 * * *", "* * * * *"]
 
 [observability]
 enabled = true
