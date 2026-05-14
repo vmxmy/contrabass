@@ -226,7 +226,11 @@ export default {
       return;
     }
     if (controller.cron === "* * * * *") {
-      ctx.waitUntil(runSpendSnapshotTick(env));
+      if (env.PORTAL_DO_SOT_ENABLED === "true") {
+        ctx.waitUntil(runSpendSnapshotTick(env));
+      }
+      // flag=false: intentional no-op until cutover. The cron is still registered
+      // (for stability) but does no DO/LiteLLM work.
       return;
     }
   },
