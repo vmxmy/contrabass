@@ -27,6 +27,7 @@ import {
   handleMagicCallback,
   handleLogout,
 } from "./auth/login-routes";
+import { checkCsrf } from "./auth/csrf";
 
 export type { LiteLLMPortalEnv } from "./types";
 export { RateLimitDO } from "./security/rate-limit-do";
@@ -43,6 +44,9 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: securityHeaders() });
   }
+
+  const csrfReject = checkCsrf(request, env);
+  if (csrfReject) return csrfReject;
 
   // Auth-bypass routes (login/magic-callback only when flag=true; logout always)
   if (url.pathname === "/logout" && request.method === "POST") return handleLogout(request, env);
