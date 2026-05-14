@@ -4,6 +4,38 @@ import { issueMagicLink, sendMagicLink, verifyMagicLink } from "./magic-link";
 import { issueSession, buildSessionCookieHeader, clearSessionHeader } from "./session";
 
 // ---------------------------------------------------------------------------
+// Inline IndexDO stub type (avoids pulling DO module into test transform chain)
+// ---------------------------------------------------------------------------
+
+type IndexDOStub = {
+  getUserByEmail(email: string): Promise<{
+    userId: string;
+    email: string;
+    role: "admin" | "user";
+    teamId: string | null;
+    maxBudget?: number;
+    createdAt: string;
+  } | null>;
+  putUser(record: {
+    userId: string;
+    email: string;
+    role: "admin" | "user";
+    teamId: string | null;
+    maxBudget?: number;
+    createdAt: string;
+  }): Promise<void>;
+};
+
+function parseBootstrapAdminEmails(env: LiteLLMPortalEnv): Set<string> {
+  if (!env.BOOTSTRAP_ADMIN_EMAILS?.trim()) return new Set();
+  return new Set(
+    env.BOOTSTRAP_ADMIN_EMAILS.split(",")
+      .map((e) => e.trim().toLowerCase())
+      .filter((e) => e.length > 0),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // HTML helpers
 // ---------------------------------------------------------------------------
 
@@ -173,11 +205,38 @@ export async function handleMagicCallback(request: Request, env: LiteLLMPortalEn
   }
 
   const { email } = result;
-  const userId = email;
+  const emailLc = email.toLowerCase();
+
+  let userId: string;
+  try {
+    if (!env.INDEX_DO) {
+      return htmlResp(expiredLinkPage(), 500);
+    }
+    const idxStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOStub;
+    const existing = await idxStub.getUserByEmail(emailLc);
+
+    if (existing) {
+      userId = existing.userId;
+    } else {
+      const bootstrap = parseBootstrapAdminEmails(env);
+      const role: "admin" | "user" = bootstrap.has(emailLc) ? "admin" : "user";
+      const newRecord = {
+        userId: emailLc,
+        email: emailLc,
+        role,
+        teamId: null,
+        createdAt: new Date().toISOString(),
+      };
+      await idxStub.putUser(newRecord);
+      userId = newRecord.userId;
+    }
+  } catch {
+    return htmlResp(expiredLinkPage(), 500);
+  }
 
   let sessionValue: string;
   try {
-    sessionValue = await issueSession(env, { email, userId });
+    sessionValue = await issueSession(env, { email: emailLc, userId });
   } catch {
     return htmlResp(expiredLinkPage(), 500);
   }
