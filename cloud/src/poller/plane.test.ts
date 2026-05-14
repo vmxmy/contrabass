@@ -128,7 +128,7 @@ describe("normalizePlaneIssue", () => {
   });
 
   it("maps backlog/unstarted to unclaimed state", () => {
-    const base = { id: "x", sequence_id: "1", name: "t", state: {} };
+    const base = { id: "x", sequence_id: "1", name: "t", state: "" };
     expect(normalizePlaneIssue({ ...base, state: { id: "s1", name: "Backlog", group: "backlog" } }, "s1", "backlog", "acme", "proj-1").state).toBe("unclaimed");
     expect(normalizePlaneIssue({ ...base, state: { id: "s2", name: "Todo", group: "unstarted" } }, "s2", "unstarted", "acme", "proj-1").state).toBe("unclaimed");
   });
@@ -146,7 +146,7 @@ describe("normalizePlaneIssue", () => {
   });
 
   it("maps priority strings to numbers", () => {
-    const base = { id: "x", sequence_id: "1", name: "t", state: {} };
+    const base = { id: "x", sequence_id: "1", name: "t", state: "" };
     expect(normalizePlaneIssue({ ...base, priority: "urgent" }, "s", "started", "acme", "proj-1").priority).toBe(1);
     expect(normalizePlaneIssue({ ...base, priority: "high" }, "s", "started", "acme", "proj-1").priority).toBe(2);
     expect(normalizePlaneIssue({ ...base, priority: "medium" }, "s", "started", "acme", "proj-1").priority).toBe(3);
