@@ -136,7 +136,7 @@ type TeamConfigDOWriteStub = {
 };
 
 type IndexDOWriteStub = {
-  getUserByEmail(email: string): Promise<{
+  getUserById(userId: string): Promise<{
     userId: string;
     email: string;
     role: "admin" | "user";
@@ -242,6 +242,7 @@ async function adminUpdateTeamLimitsDO(
   c: Context<HonoEnv>,
   teamId: string,
   body: { tpmLimit?: number | null; rpmLimit?: number | null; maxBudget?: number | null },
+  isDryRun: boolean,
 ): Promise<Response> {
   if (!env.TEAM_CONFIG_DO) return c.json({ error: "team_config_do_unavailable" }, 503);
   const teamConfigStub = env.TEAM_CONFIG_DO.get(
@@ -255,6 +256,17 @@ async function adminUpdateTeamLimitsDO(
     ...(body.tpmLimit !== undefined && body.tpmLimit !== null ? { tpmLimit: body.tpmLimit } : {}),
     ...(body.rpmLimit !== undefined && body.rpmLimit !== null ? { rpmLimit: body.rpmLimit } : {}),
   };
+  if (isDryRun) {
+    const meta = await teamConfigStub.getSyncMetadata();
+    return c.json({
+      team: updated,
+      lastSyncedAt: meta.lastSyncedAt,
+      lastSyncError: meta.lastSyncError,
+      dirty: meta.dirty,
+      enqueued: false,
+      dryRun: true,
+    });
+  }
   await teamConfigStub.putTeam(updated);
   const enqueueResult = await enqueueSync(env, {
     kind: "team.update",
@@ -281,12 +293,13 @@ async function adminUpdateUserDO(
   c: Context<HonoEnv>,
   userId: string,
   body: { role?: string | null; maxBudget?: number | null },
+  isDryRun: boolean,
 ): Promise<Response> {
   if (!env.INDEX_DO) return c.json({ error: "index_do_unavailable" }, 503);
   const idxStub = env.INDEX_DO.get(
     env.INDEX_DO.idFromName("index"),
   ) as unknown as IndexDOWriteStub;
-  const currentUser = await idxStub.getUserByEmail(userId);
+  const currentUser = await idxStub.getUserById(userId);
   if (!currentUser) return c.json({ error: "user_not_found" }, 404);
   const updatedRole: "admin" | "user" = (body.role === "proxy_admin" || body.role === "proxy_admin_viewer")
     ? "admin"
@@ -296,6 +309,15 @@ async function adminUpdateUserDO(
     role: updatedRole,
     ...(body.maxBudget !== undefined && body.maxBudget !== null ? { maxBudget: body.maxBudget } : {}),
   };
+  if (isDryRun) {
+    return c.json({
+      userId: updated.userId,
+      role: updated.role,
+      maxBudget: updated.maxBudget ?? null,
+      enqueued: false,
+      dryRun: true,
+    });
+  }
   await idxStub.putUser(updated);
   const enqueueResult = await enqueueSync(env, {
     kind: "user.update",
@@ -903,6 +925,10 @@ const adminDisableKeyApp = new Hono<HonoEnv>()
   .patch("/admin/keys/:keyId/disable", async (c) => {
     if (!isWriteOpsEnabled(c.env)) return writeOpsDisabledResponse(c);
 
+    if (c.env.PORTAL_DO_SOT_ENABLED === "true") {
+      return c.json({ error: "key_writes_under_do_sot_not_yet_implemented" }, 501);
+    }
+
     const keyId = decodeURIComponent(c.req.param("keyId") ?? "").trim();
     if (!keyId) return c.json({ error: "key_id_required" }, 400);
 
@@ -951,11 +977,12 @@ const adminUpdateTeamLimitsApp = new Hono<HonoEnv>()
     if (!parsed.ok) return parsed.response;
     const { reason, tpmLimit, rpmLimit, maxBudget } = parsed.data;
 
+    const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
+
     if (c.env.PORTAL_DO_SOT_ENABLED === "true") {
-      return adminUpdateTeamLimitsDO(c.env, c, teamId, { tpmLimit, rpmLimit, maxBudget });
+      return adminUpdateTeamLimitsDO(c.env, c, teamId, { tpmLimit, rpmLimit, maxBudget }, isDryRun);
     }
 
-    const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
     const identity = c.get("identity");
 
     const existing = await getTeamInfo(c.env, teamId);
@@ -1010,11 +1037,12 @@ const adminUpdateUserApp = new Hono<HonoEnv>()
     if (!parsed.ok) return parsed.response;
     const { reason, role, maxBudget } = parsed.data;
 
+    const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
+
     if (c.env.PORTAL_DO_SOT_ENABLED === "true") {
-      return adminUpdateUserDO(c.env, c, userId, { role, maxBudget });
+      return adminUpdateUserDO(c.env, c, userId, { role, maxBudget }, isDryRun);
     }
 
-    const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
     const identity = c.get("identity");
 
     const existing = await getUserInfo(c.env, userId);
@@ -1055,6 +1083,10 @@ const adminDeleteKeyApp = new Hono<HonoEnv>()
   .use("/admin/*", requireAdmin)
   .delete("/admin/keys/:keyId", async (c) => {
     if (!isWriteOpsEnabled(c.env)) return writeOpsDisabledResponse(c);
+
+    if (c.env.PORTAL_DO_SOT_ENABLED === "true") {
+      return c.json({ error: "key_writes_under_do_sot_not_yet_implemented" }, 501);
+    }
 
     const keyId = decodeURIComponent(c.req.param("keyId") ?? "").trim();
     if (!keyId) return c.json({ error: "key_id_required" }, 400);

@@ -57,6 +57,9 @@ function makeIndexDOStub() {
     getUserByEmail: vi.fn(async (email: string) =>
       USERS_DATA.find((u) => u.email === email) ?? null,
     ),
+    getUserById: vi.fn(async (userId: string) =>
+      USERS_DATA.find((u) => u.userId === userId) ?? null,
+    ),
     putUser: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -375,6 +378,7 @@ describe("DO-path admin routes (PORTAL_DO_SOT_ENABLED=true)", () => {
         }
         return null;
       });
+      smartIndexStub.getUserById = vi.fn(async (_userId: string) => null);
       const envWithSmartStub = makeFlagOnEnv(smartIndexStub, teamStub);
 
       const res = await app.fetch(
