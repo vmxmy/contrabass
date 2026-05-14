@@ -902,7 +902,7 @@ const adminDisableKeyApp = new Hono<HonoEnv>()
 
     if (!isDryRun) {
       await updateKeyBlocked(c.env, keyId, disabled, identity.email);
-      auditWrite(c.env, {
+      await auditWrite(c.env, {
         actor: identity.email,
         action: disabled ? "admin_key_disable" : "admin_key_enable",
         target: keyId,
@@ -947,7 +947,7 @@ const adminUpdateTeamLimitsApp = new Hono<HonoEnv>()
 
     if (!isDryRun) {
       await updateTeamLimits(c.env, teamId, { tpmLimit, rpmLimit, maxBudget }, identity.email);
-      auditWrite(c.env, {
+      await auditWrite(c.env, {
         actor: identity.email,
         action: "admin_team_limits_update",
         target: teamId,
@@ -1006,7 +1006,7 @@ const adminUpdateUserApp = new Hono<HonoEnv>()
 
     if (!isDryRun) {
       await updateUser(c.env, userId, { role, maxBudget }, identity.email);
-      auditWrite(c.env, {
+      await auditWrite(c.env, {
         actor: identity.email,
         action: "admin_user_update",
         target: userId,
@@ -1070,7 +1070,7 @@ const adminDeleteKeyApp = new Hono<HonoEnv>()
 
     if (!isDryRun) {
       await deleteKeyById(c.env, keyId, identity.email);
-      auditWrite(c.env, {
+      await auditWrite(c.env, {
         actor: identity.email,
         action: "admin_key_delete",
         target: keyId,
