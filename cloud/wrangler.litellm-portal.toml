@@ -44,6 +44,21 @@ new_classes = ["RateLimitDO"]
 # secret_name = "ROLE_INVALIDATION_WEBHOOK_TOKEN"
 
 
+# Cloudflare Queue: litellm-sync — admin writes enqueue here after the DO
+# commit. A consumer Worker (T-4.4 / PDCSOT-35) drains and pushes to LiteLLM
+# admin endpoints with retries and a DLQ. See openspec change
+# portal-do-config-source-of-truth, capability portal-litellm-config-sync.
+[[queues.producers]]
+binding = "LITELLM_SYNC_QUEUE"
+queue = "litellm-sync"
+
+[[queues.consumers]]
+queue = "litellm-sync"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5
+dead_letter_queue = "litellm-sync-dlq"
+
 # Spend snapshot mirror — pulls LiteLLM /team/info into TeamConfigDO every minute.
 # See openspec change portal-do-config-source-of-truth, capability portal-litellm-config-sync.
 [triggers]
