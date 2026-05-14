@@ -260,9 +260,14 @@ export async function sendMagicLink(
     ],
   };
 
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (env.MAILCHANNELS_API_KEY) {
+    headers["X-Api-Key"] = env.MAILCHANNELS_API_KEY;
+  }
+
   const response = await fetch("https://api.mailchannels.net/tx/v1/send", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(payload),
   });
 
