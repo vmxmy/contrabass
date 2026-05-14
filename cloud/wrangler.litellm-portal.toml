@@ -19,9 +19,20 @@ PORTAL_ALLOWED_EMAIL_DOMAINS = "gz-zhiyun.com"
 # Cutover flag — when "true", admin routes use DO as source of truth and the
 # Worker requires its own session cookie (CF Access JWT is no longer trusted).
 PORTAL_DO_SOT_ENABLED = "true"
+# From address for magic-link emails. Must be on a Cloudflare Email Sending
+# verified domain (ziikoo.com is onboarded — see Compute → Email Service).
+PORTAL_MAIL_FROM = "noreply@ziikoo.com"
 LITELLM_BASE_URL = "https://litellm.ziikoo.com"
 LITELLM_PORTAL_COMPANY_NAME = "gz-zhiyun"
 LITELLM_PORTAL_DISPLAY_NAME = "智云AI管理平台"
+
+# Cloudflare Email Service Workers binding — outbound transactional mail.
+# remote = true is required to reach the real send service (paid Workers plan).
+# Sender domain (ziikoo.com) must be onboarded in Compute → Email Service →
+# Email Sending. Paid plan removes the recipient whitelist requirement.
+[[send_email]]
+name = "EMAIL"
+remote = true
 
 [[durable_objects.bindings]]
 name = "RATE_LIMIT_DO"
