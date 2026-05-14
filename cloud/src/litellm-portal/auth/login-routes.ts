@@ -250,12 +250,19 @@ export async function handleMagicCallback(request: Request, env: LiteLLMPortalEn
   });
 }
 
-export function handleLogout(_request: Request, _env: LiteLLMPortalEnv): Response {
+export function handleLogout(_request: Request, env: LiteLLMPortalEnv): Response {
+  if (env.PORTAL_DO_SOT_ENABLED === "true") {
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: "/login",
+        "Set-Cookie": clearSessionHeader(),
+      },
+    });
+  }
+  // Legacy: hand off to Cloudflare Access logout (CF manages its own session cookies)
   return new Response(null, {
     status: 302,
-    headers: {
-      Location: "/login",
-      "Set-Cookie": clearSessionHeader(),
-    },
+    headers: { Location: "/cdn-cgi/access/logout" },
   });
 }
