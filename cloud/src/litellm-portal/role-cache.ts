@@ -11,7 +11,7 @@ const KV_TTL_S = 5 * 60; // 5 minutes
 const KV_ERROR_COOLDOWN_MS = 60 * 1000; // log KV errors at most once per minute
 
 // ---------------------------------------------------------------------------
-// In-memory layer
+// LiteLLM path — in-memory + KV + singleflight
 // ---------------------------------------------------------------------------
 
 type MemEntry = {
@@ -22,19 +22,11 @@ type MemEntry = {
 
 let memCache = new Map<string, MemEntry>();
 
-// ---------------------------------------------------------------------------
-// KV value shape
-// ---------------------------------------------------------------------------
-
 type KVValue = {
   role: PortalRole;
   litellmUserId: string;
   savedAt: number;
 };
-
-// ---------------------------------------------------------------------------
-// KV error rate-limit: log once per cooldown
-// ---------------------------------------------------------------------------
 
 let kvErrorLoggedAt = 0;
 
@@ -46,15 +38,7 @@ function logKvErrorOnce(err: unknown): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Singleflight: deduplicate concurrent origin fetches for same email
-// ---------------------------------------------------------------------------
-
 const inFlight = new Map<string, Promise<{ role: PortalRole; litellmUserId: string }>>();
-
-// ---------------------------------------------------------------------------
-// LiteLLM origin fetch (extracted so singleflight can wrap it)
-// ---------------------------------------------------------------------------
 
 function extractUsers(body: unknown): Record<string, unknown>[] {
   if (!isRecord(body)) return [];
@@ -98,11 +82,7 @@ async function fetchFromOrigin(
   return { role, litellmUserId };
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-export async function getRole(
+async function getRoleViaLiteLLM(
   env: LiteLLMPortalEnv,
   email: string,
 ): Promise<{ role: PortalRole; litellmUserId: string }> {
@@ -119,17 +99,15 @@ export async function getRole(
       if (raw !== null) {
         const parsed = JSON.parse(raw) as KVValue;
         const result = { role: parsed.role, litellmUserId: parsed.litellmUserId };
-        // Populate memory from KV hit
         memCache.set(email, { ...result, expiresAt: Date.now() + MEM_TTL_MS });
         return result;
       }
     } catch (err) {
       logKvErrorOnce(err);
-      // Fall through to origin
     }
   }
 
-  // Tier 3: origin (singleflight to prevent stampede)
+  // Tier 3: origin (singleflight)
   const existing = inFlight.get(email);
   if (existing !== undefined) {
     return existing;
@@ -138,7 +116,6 @@ export async function getRole(
   const promise = fetchFromOrigin(env, email).then(
     async (result) => {
       inFlight.delete(email);
-      // Write through to both layers
       memCache.set(email, { ...result, expiresAt: Date.now() + MEM_TTL_MS });
       if (env.ROLE_CACHE_KV !== undefined) {
         const kvValue: KVValue = { ...result, savedAt: Date.now() };
@@ -162,8 +139,62 @@ export async function getRole(
   return promise;
 }
 
+// ---------------------------------------------------------------------------
+// IndexDO path — 30-second in-process memory cache
+// ---------------------------------------------------------------------------
+
+/** Minimal RPC surface we need from IndexDO without dragging in the DO module. */
+type IndexDOStub = {
+  getUserByEmail(email: string): Promise<{ role: "admin" | "user" } | null>;
+};
+
+type DOCacheEntry = { role: PortalRole; expiresAt: number };
+const doCache = new Map<string, DOCacheEntry>();
+
+async function getRoleViaIndexDO(env: LiteLLMPortalEnv, email: string): Promise<PortalRole> {
+  const key = email.toLowerCase();
+  const now = Date.now();
+  const cached = doCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.role;
+
+  if (!env.INDEX_DO) return "none";
+  const idxStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOStub;
+  const user = await idxStub.getUserByEmail(key);
+  const role: PortalRole = user == null ? "none" : (user.role as PortalRole);
+  doCache.set(key, { role, expiresAt: now + MEM_TTL_MS });
+  return role;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/** Resolve the portal role for an email.
+ *  When PORTAL_DO_SOT_ENABLED="true": sources from IndexDO with a 30s in-process cache.
+ *  Otherwise: sources from LiteLLM /user/list with in-process + KV + singleflight caching. */
+export async function getRoleForEmail(env: LiteLLMPortalEnv, email: string): Promise<PortalRole> {
+  if (env.PORTAL_DO_SOT_ENABLED === "true") {
+    return getRoleViaIndexDO(env, email);
+  }
+  const { role } = await getRoleViaLiteLLM(env, email);
+  return role;
+}
+
+export async function getRole(
+  env: LiteLLMPortalEnv,
+  email: string,
+): Promise<{ role: PortalRole; litellmUserId: string }> {
+  if (env.PORTAL_DO_SOT_ENABLED === "true") {
+    const role = await getRoleViaIndexDO(env, email);
+    return { role, litellmUserId: email };
+  }
+  return getRoleViaLiteLLM(env, email);
+}
+
 export async function invalidateRole(env: LiteLLMPortalEnv, email: string): Promise<void> {
+  // Clear both caches regardless of flag so a flag flip during a session stays consistent.
   memCache.delete(email);
+  doCache.delete(email.toLowerCase());
   if (env.ROLE_CACHE_KV !== undefined) {
     try {
       await env.ROLE_CACHE_KV.delete(`role:${email}`);
@@ -173,12 +204,17 @@ export async function invalidateRole(env: LiteLLMPortalEnv, email: string): Prom
   }
 }
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
+/** Test helper: clear the in-process cache. Used by unit tests / hot reload. */
+export function clearRoleCache(): void {
+  memCache = new Map();
+  kvErrorLoggedAt = 0;
+  inFlight.clear();
+  doCache.clear();
+}
 
 export function _resetMemoryRoleCacheForTests(): void {
   memCache = new Map();
   kvErrorLoggedAt = 0;
   inFlight.clear();
+  doCache.clear();
 }
