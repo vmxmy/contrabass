@@ -201,7 +201,12 @@ async function handleClientError(request: Request, env: LiteLLMPortalEnv): Promi
 
 export default {
   fetch: handleLiteLLMPortalRequest,
-  async scheduled(_controller, env, ctx) {
-    ctx.waitUntil(scanBudgetThresholds(env));
+  async scheduled(controller, env, ctx) {
+    if (controller.cron === "0 9 * * *") {
+      ctx.waitUntil(scanBudgetThresholds(env));
+      return;
+    }
+    // "* * * * *" — reserved for the spend-snapshot mirror (PDCSOT-39 / T-5.2);
+    // no handler yet. Intentional no-op to avoid blocking the cron registration.
   },
 } satisfies ExportedHandler<LiteLLMPortalEnv>;
