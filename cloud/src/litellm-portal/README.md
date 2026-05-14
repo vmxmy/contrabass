@@ -1,62 +1,134 @@
 # Litellm Portal
 
-A Cloudflare Worker that fronts the upstream LiteLLM proxy. After openspec change `portal-do-config-source-of-truth`, the portal uses Durable Objects as the single source of truth for team / user / role / budget, plus a Cloudflare Queue (`litellm-sync`) that materializes desired state into LiteLLM with retries and a DLQ, plus a 1-minute scheduled mirror that pulls spend snapshots back. Authentication is email magic-link login (replacing Cloudflare Access).
+A Cloudflare Worker serving the admin portal at `zhiyun.ziikoo.com`. The Worker is the only public entrypoint — there is no Cloudflare Access in front of it. Authentication is email magic-link. Durable Objects are the source of truth for teams, users, roles, and budgets. LiteLLM is the inference data plane and a downstream materialization target; it is not the control plane.
 
-## Environment variables and secrets
+## Architecture
 
-| Name | Type (secret/var) | Required when | Set via | Example |
-|---|---|---|---|---|
-| `PORTAL_SESSION_SECRET` | secret | `PORTAL_DO_SOT_ENABLED="true"` | `wrangler secret put PORTAL_SESSION_SECRET --config wrangler.litellm-portal.toml` | random ≥32 byte string |
-| `PORTAL_MAGIC_LINK_SECRET` | secret | `PORTAL_DO_SOT_ENABLED="true"` | `wrangler secret put PORTAL_MAGIC_LINK_SECRET --config wrangler.litellm-portal.toml` | random ≥32 byte string |
-| `PORTAL_ALLOWED_EMAIL_DOMAINS` | var | always | `[vars]` in `wrangler.litellm-portal.toml` | `"gz-zhiyun.com,partner.example"` |
-| `BOOTSTRAP_ADMIN_EMAILS` | var | first deploy and any future bootstrap-admin additions | `[vars]` in `wrangler.litellm-portal.toml` | `"alice@gz-zhiyun.com,bob@gz-zhiyun.com"` |
-| `PORTAL_DO_SOT_ENABLED` | var | feature flag — set `"false"` until cutover | `[vars]` in `wrangler.litellm-portal.toml` | `"false"` |
+```
+browser → Worker (zhiyun.ziikoo.com)
+               │
+               ├─ auth: magic-link email (Cloudflare Email Service)
+               │         HMAC-signed token, 15-min TTL, single-use
+               │         session cookie: HS256, 7-day TTL, HttpOnly/Secure/SameSite=Lax
+               │
+               ├─ state: IndexDO (singleton) + TeamConfigDO (per-team)
+               │         source of truth for teams / users / roles / budgets
+               │
+               ├─ sync:  admin write → DO commit → enqueue to litellm-sync
+               │         queue consumer → LiteLLM admin API (max 5 retries)
+               │         terminal failure → litellm-sync-dlq + meta:lastSyncError
+               │
+               └─ cron:  * * * * *  — spend snapshot: LiteLLM /team/info → TeamConfigDO
+                         0 9 * * *  — daily budget-threshold email scan
+```
 
-The following pre-change fields remain required and are unchanged:
+- `IndexDO` (singleton, id `"index"`) — team list, `email→user` index, magic-link nonces, bootstrap state, audit log.
+- `TeamConfigDO` (id = teamId) — team metadata, members, keys, spend snapshot, sync metadata (`meta:lastSyncedAt`, `meta:lastSyncError`, `meta:dirty`).
+- `BOOTSTRAP_ADMIN_EMAILS` secret seeds the initial admin accounts on first `IndexDO.init()`.
 
-| Name | Type (secret/var) | Notes |
+## Auth flow
+
+1. User POSTs email to `POST /login`.
+2. Worker validates email format and domain against `PORTAL_ALLOWED_EMAIL_DOMAINS`; rate-limit: 3 requests/email/5 min, 10 requests/IP/5 min.
+3. `ensurePortalDOInitialized` (singleflight + 30 s failure backoff) ensures `IndexDO` is seeded.
+4. `issueMagicLink(env, email)` — HMAC-signed token stored as a nonce in `IndexDO`.
+5. Cloudflare Email Service sends a "Sign in" email to the user with a `/magic-callback?token=…` link (15-min TTL).
+6. User clicks the link → Worker verifies HMAC signature + single-use + TTL → upserts `UserRecord` in `IndexDO` → sets session cookie → redirects to `/`.
+
+## Sync flow
+
+1. Admin write handler commits the change to DO.
+2. `enqueueSync(env, { kind, entityId, payload, idempotencyKey })` sends a `SyncMessage` to `LITELLM_SYNC_QUEUE`.
+3. Queue consumer dispatches to the appropriate LiteLLM admin endpoint.
+   - 4xx response → forward to `litellm-sync-dlq` (non-retryable).
+   - 5xx response → retry (up to `max_retries = 5` with Cloudflare Queue backoff).
+4. On success, `recordSyncSuccess(idempotencyKey)` clears `meta:dirty` only if the key matches the pending sync entry — prevents stale-success races.
+5. Spend cron (`* * * * *`) walks team IDs from `IndexDO`, calls LiteLLM `/team/info` per team, writes `spend:current` to each `TeamConfigDO`. UI reads spend strictly from DO.
+
+## Required bindings
+
+### Durable Objects
+
+| Binding | Class | Notes |
 |---|---|---|
-| `LITELLM_BASE_URL` | var | Base URL of the upstream LiteLLM proxy (e.g. `https://litellm.ziikoo.com`) |
-| `LITELLM_MASTER_KEY` | secret | Master key for LiteLLM admin endpoints — provision via `wrangler secrets-store secret put LITELLM_MASTER_KEY` |
+| `INDEX_DO` | `IndexDO` | Singleton (id `"index"`). Team list, user index, nonces, audit log. |
+| `TEAM_CONFIG_DO` | `TeamConfigDO` | Per-team (id = teamId). Metadata, members, spend snapshot, sync state. |
+| `RATE_LIMIT_DO` | `RateLimitDO` | Per-IP / per-email rate limiting for login endpoints. |
 
-## Cloudflare bindings
+### Queues
 
-All bindings are declared in `wrangler.litellm-portal.toml`. The new bindings introduced by `portal-do-config-source-of-truth` are:
+| Binding | Queue name | Role |
+|---|---|---|
+| `LITELLM_SYNC_QUEUE` | `litellm-sync` | Producer. Enqueued on every admin write. |
+| `LITELLM_SYNC_DLQ` | `litellm-sync-dlq` | Producer. Written on terminal sync failure. |
 
-- `INDEX_DO` (singleton IndexDO Durable Object) — class `IndexDO` — owns the team list, `email→user` index, magic-link nonces, bootstrap admin state, and audit log.
-- `TEAM_CONFIG_DO` (per-team TeamConfigDO Durable Object) — class `TeamConfigDO` — owns team metadata, members, keys, spend snapshot, and sync metadata per team (id = teamId).
-- `LITELLM_SYNC_QUEUE` (queue producer for `litellm-sync`) — consumed by the worker's `queue()` handler; each admin write enqueues a `SyncMessage` after the DO commit to materialize desired state into LiteLLM with retries.
-- `LITELLM_SYNC_DLQ` (queue producer for `litellm-sync-dlq`) — written to on terminal sync failure after all retries are exhausted; `meta:lastSyncError` is also written on the corresponding DO row.
+Also configure a queue consumer for `litellm-sync` with `max_retries = 5` and a DLQ pointing to `litellm-sync-dlq`.
 
-## Cron triggers
+### Email
 
-Configured under `[triggers]` in `wrangler.litellm-portal.toml`. Dispatch is implemented in `src/litellm-portal/index.ts`'s `scheduled()` handler via `controller.cron`:
+`[[send_email]]` binding named `EMAIL` with `remote = true`. The sender domain (`ziikoo.com`) must be onboarded in Cloudflare Compute → Email Service → Email Sending.
 
-- `"0 9 * * *"` — daily 09:00 UTC, fires the `scanBudgetThresholds` budget-warning email scan.
-- `"* * * * *"` — every minute, reserved for the spend snapshot mirror (PDCSOT-39 / T-5.2 will land the handler). Currently a no-op placeholder so the cron schedule is registered before the handler is implemented.
+### KV
 
-## MailChannels DNS prerequisites
+| Binding | Notes |
+|---|---|
+| `USER_PREFS_KV` | Stores per-user UI preferences. |
 
-For magic-link delivery via MailChannels (`https://api.mailchannels.net/tx/v1/send`), the sender domain MUST have:
+### Analytics Engine
 
-- An SPF TXT record permitting MailChannels: `v=spf1 include:relay.mailchannels.net ~all` (or include alongside any existing SPF policy).
-- A DKIM record published in the sender domain's DNS, with the public key matching the key configured in the MailChannels dashboard.
-- Optionally, a DMARC TXT record (`v=DMARC1; p=quarantine; rua=mailto:...`) for delivery reliability.
+| Binding | Notes |
+|---|---|
+| `METRICS_AE` | Request and usage metrics. |
+| `AUDIT_AE` | Admin-action audit events. |
 
-The current `from` address defaults to `no-reply@gz-zhiyun.com`. If you change it, update the SPF/DKIM records on the new sender domain too.
+## Required secrets and vars
 
-## Cutover sequence
+| Name | Kind | Notes |
+|---|---|---|
+| `LITELLM_MASTER_KEY` | secret | Master key for LiteLLM admin endpoints. |
+| `PORTAL_SESSION_SECRET` | secret | Signs session cookies (HS256). Rotate to invalidate all sessions. |
+| `PORTAL_MAGIC_LINK_SECRET` | secret | Signs magic-link tokens (HMAC). |
+| `BOOTSTRAP_ADMIN_EMAILS` | secret | Comma-separated list of emails granted `role=admin` on first `IndexDO.init()`. |
+| `ROLE_INVALIDATION_WEBHOOK_TOKEN` | secret | Authenticates role-invalidation webhook calls. |
+| `PORTAL_ALLOWED_EMAIL_DOMAINS` | var | Comma-separated allowed email domains, e.g. `"gz-zhiyun.com"`. |
+| `PORTAL_MAIL_FROM` | var | Sender address for magic-link emails, e.g. `"no-reply@ziikoo.com"`. |
+| `LITELLM_BASE_URL` | var | Base URL of the upstream LiteLLM proxy, e.g. `"https://litellm.ziikoo.com"`. |
+| `LITELLM_PORTAL_COMPANY_NAME` | var | Company name shown in the portal UI. |
+| `LITELLM_PORTAL_DISPLAY_NAME` | var | Portal display name shown in email subjects. |
 
-Brief checklist (the detailed runbook lives in `openspec/changes/portal-do-config-source-of-truth/design.md` § Migration Plan):
+## Deploy
 
-1. Deploy the worker with `PORTAL_DO_SOT_ENABLED="false"`. Cloudflare Access continues to gate the portal.
-2. During a ≤30-minute maintenance window: flip `PORTAL_DO_SOT_ENABLED="true"`, redeploy.
-3. On first request, `IndexDO.init()` imports the existing LiteLLM users/teams into DO. `meta:imported = true` afterwards.
-4. Smoke-test: bootstrap admin login via magic link, an admin write that flows DO → Queue → LiteLLM, and one tick of the spend snapshot cron.
-5. Detach Cloudflare Access from the hostname.
-6. Cleanup commits (PDCSOT-80..84) remove dead CF Access code paths.
+```bash
+# Pre-create queues (idempotent — wrangler does NOT auto-create)
+wrangler queues create litellm-sync
+wrangler queues create litellm-sync-dlq
 
-Rollback: redeploy previous build and re-attach Cloudflare Access policy in the Cloudflare dashboard. DO state is left in place (`meta:imported` stays true).
+# Set secrets (interactive)
+wrangler secret put LITELLM_MASTER_KEY        --config cloud/wrangler.litellm-portal.toml
+wrangler secret put PORTAL_SESSION_SECRET     --config cloud/wrangler.litellm-portal.toml
+wrangler secret put PORTAL_MAGIC_LINK_SECRET  --config cloud/wrangler.litellm-portal.toml
+wrangler secret put BOOTSTRAP_ADMIN_EMAILS    --config cloud/wrangler.litellm-portal.toml
+wrangler secret put ROLE_INVALIDATION_WEBHOOK_TOKEN --config cloud/wrangler.litellm-portal.toml
+
+# Build + deploy (uses pre-bundle pipeline due to lingui macros)
+cd cloud && bun run deploy:litellm-portal
+```
+
+## Email prerequisites
+
+The sender domain (`ziikoo.com`) must be onboarded in Cloudflare Compute → Email Service → Email Sending. Cloudflare Email Service handles SPF/DKIM automatically for domains managed in Cloudflare DNS. If using a domain external to Cloudflare, add the Cloudflare-provided SPF include and DKIM record manually before deploying.
+
+## Removed since previous version
+
+The following items were removed as part of the magic-link + DO source-of-truth cutover and must not be re-introduced:
+
+- **Cloudflare Access** — `Cf-Access-Jwt-Assertion` header validation, JWKS verification, `/cdn-cgi/access/logout`. Replaced by magic-link auth and signed session cookies.
+- **`role-cache.ts` LiteLLM-projection path** — three-tier memory → KV → LiteLLM role lookup. Replaced by `IndexDO` lookup with in-process cache.
+- **`ROLE_CACHE_KV` binding** — removed in T-12.3.
+- **`x-litellm-portal-dev-email` test header** — replaced by a signed session cookie test helper.
+- **`PORTAL_DO_SOT_ENABLED` feature flag** — the DO source-of-truth path is always active; the flag is gone.
+- **MailChannels** — `https://api.mailchannels.net/tx/v1/send`. Replaced by Cloudflare Email Service (`[[send_email]]` binding).
+- **`CLOUDFLARE_ACCESS_AUD`, `CLOUDFLARE_ACCESS_TEAM_DOMAIN`, `LITELLM_PORTAL_ALLOWED_EMAIL_DOMAIN`, `LITELLM_PORTAL_ALLOWED_EMAILS`, `LITELLM_PORTAL_DEV_AUTH`** — removed env vars from the pre-cutover configuration.
 
 ## See also
 
