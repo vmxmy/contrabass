@@ -1,3 +1,5 @@
+import type { SyncMessage } from "./durable/schemas";
+
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 export interface AnalyticsEngineDataset {
@@ -44,6 +46,21 @@ export type LiteLLMPortalEnv = {
    *  Cloudflare Access + LiteLLM path to magic-link + Durable Objects.
    *  Default "false" until cutover. */
   PORTAL_DO_SOT_ENABLED?: "true" | "false";
+  /** Singleton IndexDO owning team list, email→user index, magic-link nonces,
+   *  bootstrap admins, and audit log. See openspec change
+   *  `portal-do-config-source-of-truth` capability `portal-config-source-of-truth`. */
+  INDEX_DO?: DurableObjectNamespace;
+  /** Per-team TeamConfigDO (id = teamId) owning team metadata, members, keys,
+   *  spend snapshot, and sync metadata. See openspec change
+   *  `portal-do-config-source-of-truth`. */
+  TEAM_CONFIG_DO?: DurableObjectNamespace;
+  /** Producer binding for the `litellm-sync` Cloudflare Queue. Each admin
+   *  write enqueues a SyncMessage after the DO commit; a consumer Worker
+   *  materializes the desired state into LiteLLM with retries + DLQ. */
+  LITELLM_SYNC_QUEUE?: Queue<SyncMessage>;
+  /** Producer binding for the `litellm-sync-dlq` dead-letter queue. The
+   *  consumer forwards messages here on terminal failure. */
+  LITELLM_SYNC_DLQ?: Queue<SyncMessage>;
 };
 
 export type PortalPrincipal = {
