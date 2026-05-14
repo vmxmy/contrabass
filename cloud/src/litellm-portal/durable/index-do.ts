@@ -91,6 +91,15 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
     return UserRecordSchema.parse(raw);
   }
 
+  async getUserById(userId: string): Promise<UserRecord | null> {
+    if (typeof userId !== "string" || userId.length === 0) {
+      throw new Error("getUserById: userId must be a non-empty string");
+    }
+    const raw = await this.ctx.storage.get<unknown>(userKey(userId));
+    if (raw == null) return null;
+    return UserRecordSchema.parse(raw);
+  }
+
   async putUser(record: UserRecord): Promise<void> {
     const parsed = UserRecordSchema.parse(record);
     const pointer = EmailPointerSchema.parse({
