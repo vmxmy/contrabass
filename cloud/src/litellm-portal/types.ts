@@ -36,6 +36,10 @@ export type LiteLLMPortalEnv = {
   /** HMAC secret used to sign 15-minute magic-link tokens.
    *  Required when PORTAL_DO_SOT_ENABLED is "true". */
   PORTAL_MAGIC_LINK_SECRET?: string;
+  /** MailChannels paid-plan API key. Sent as X-Api-Key on every send.
+   *  Required since MailChannels removed free relay for Cloudflare Workers
+   *  (2024-06). Provision via `wrangler secret put MAILCHANNELS_API_KEY`. */
+  MAILCHANNELS_API_KEY?: string;
   /** Comma-separated list of allowed email domains for magic-link login.
    *  Match is case-insensitive. Example: "gz-zhiyun.com,partner.example". */
   PORTAL_ALLOWED_EMAIL_DOMAINS?: string;
