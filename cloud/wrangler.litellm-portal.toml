@@ -16,6 +16,9 @@ LITELLM_PORTAL_ALLOWED_EMAILS = "blueyang@gmail.com,xu@ziikoo.com"
 # Canonical var read by allowlist.ts (PORTAL_DO_SOT_ENABLED path).
 # allowlist.ts falls back to LITELLM_PORTAL_ALLOWED_EMAIL_DOMAIN during cutover.
 PORTAL_ALLOWED_EMAIL_DOMAINS = "gz-zhiyun.com"
+# Cutover flag — when "true", admin routes use DO as source of truth and the
+# Worker requires its own session cookie (CF Access JWT is no longer trusted).
+PORTAL_DO_SOT_ENABLED = "true"
 LITELLM_BASE_URL = "https://litellm.ziikoo.com"
 LITELLM_PORTAL_COMPANY_NAME = "gz-zhiyun"
 LITELLM_PORTAL_DISPLAY_NAME = "智云AI管理平台"
