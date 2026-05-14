@@ -211,24 +211,25 @@ export async function verifyMagicLink(
 // sendMagicLink
 // ---------------------------------------------------------------------------
 
-/** Send a magic-link email via MailChannels.
- *  POSTs to https://api.mailchannels.net/tx/v1/send.
- *  On a non-2xx response, throws an Error so the caller can return 5xx
- *  to the user. Never swallows transport errors. */
+/** Send a magic-link email via Resend.
+ *  POSTs to https://api.resend.com/emails with Bearer auth.
+ *  Requires env.RESEND_API_KEY. From-address domain must be verified in Resend
+ *  (or fall back to onboarding@resend.dev for initial smoke tests).
+ *  On a non-2xx response, throws an Error so the caller can return 5xx. */
 export async function sendMagicLink(
   env: LiteLLMPortalEnv,
   options: {
-    /** Recipient email address. */
     email: string;
-    /** Absolute URL the user clicks to consume the magic-link nonce. */
     link: string;
-    /** From address. Should match a DNS-verified sender domain. */
     from?: string;
-    /** Optional company / display name for the email body. */
     companyName?: string;
   },
 ): Promise<void> {
-  const fromEmail = options.from ?? "no-reply@gz-zhiyun.com"; // TODO: replace with a configurable env var in a follow-up
+  if (!env.RESEND_API_KEY) {
+    throw new Error("Resend send failed: RESEND_API_KEY not configured");
+  }
+
+  const fromEmail = options.from ?? env.PORTAL_MAIL_FROM ?? "no-reply@gz-zhiyun.com";
   const fromName = env.LITELLM_PORTAL_DISPLAY_NAME ?? "Portal Sign-in";
   const companyName = options.companyName ?? "the portal";
   const subject = `Sign in to ${companyName}`;
@@ -251,23 +252,19 @@ export async function sendMagicLink(
   ].join("\n");
 
   const payload = {
-    personalizations: [{ to: [{ email: options.email }] }],
-    from: { email: fromEmail, name: fromName },
+    from: `${fromName} <${fromEmail}>`,
+    to: [options.email],
     subject,
-    content: [
-      { type: "text/plain", value: plainBody },
-      { type: "text/html", value: htmlBody },
-    ],
+    html: htmlBody,
+    text: plainBody,
   };
 
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (env.MAILCHANNELS_API_KEY) {
-    headers["X-Api-Key"] = env.MAILCHANNELS_API_KEY;
-  }
-
-  const response = await fetch("https://api.mailchannels.net/tx/v1/send", {
+  const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
-    headers,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${env.RESEND_API_KEY}`,
+    },
     body: JSON.stringify(payload),
   });
 
@@ -276,8 +273,6 @@ export async function sendMagicLink(
       .text()
       .then((t) => t.slice(0, 200))
       .catch(() => "");
-    throw new Error(
-      `MailChannels send failed: HTTP ${response.status} — ${snippet}`,
-    );
+    throw new Error(`Resend send failed: HTTP ${response.status} — ${snippet}`);
   }
 }
