@@ -387,7 +387,7 @@ async function createTeamConfig(context: Context<WorkerRouterEnv>): Promise<Resp
   }
 
   const principal = context.get("principal");
-  if ("issued" in principal && principal.teamId !== teamId) {
+  if (isIssuedWorkerPrincipal(principal) && principal.teamId !== teamId) {
     return errorResponse("team_forbidden", 403);
   }
   if (context.env.CONTROL_PLANE_DB === undefined) {
@@ -462,7 +462,7 @@ async function getTeamConfigByHash(context: Context<WorkerRouterEnv>): Promise<R
   }
 
   const principal = context.get("principal");
-  if ("issued" in principal && principal.teamId !== teamId) {
+  if (isIssuedWorkerPrincipal(principal) && principal.teamId !== teamId) {
     return errorResponse("team_forbidden", 403);
   }
   if (context.env.CONTROL_PLANE_DB === undefined) {
@@ -499,7 +499,7 @@ async function activateTeamConfigVersion(context: Context<WorkerRouterEnv>): Pro
   }
 
   const principal = context.get("principal");
-  if ("issued" in principal && principal.teamId !== teamId) {
+  if (isIssuedWorkerPrincipal(principal) && principal.teamId !== teamId) {
     return errorResponse("team_forbidden", 403);
   }
   if (context.env.CONTROL_PLANE_DB === undefined) {
@@ -558,7 +558,7 @@ async function getTeamConfigDiff(context: Context<WorkerRouterEnv>): Promise<Res
   }
 
   const principal = context.get("principal");
-  if ("issued" in principal && principal.teamId !== teamId) {
+  if (isIssuedWorkerPrincipal(principal) && principal.teamId !== teamId) {
     return errorResponse("team_forbidden", 403);
   }
   if (context.env.CONTROL_PLANE_DB === undefined) {
@@ -1302,7 +1302,7 @@ function configInvalidResponse(details: ConfigValidationDetail[]): Response {
 }
 
 function defaultConfigActor(principal: AuthPrincipal): string {
-  if ("issued" in principal) {
+  if (isIssuedWorkerPrincipal(principal)) {
     return `worker:${principal.workerId}`;
   }
   return principal.kind === "dashboard-session" ? "dashboard" : "api";
