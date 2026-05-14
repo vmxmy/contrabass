@@ -18,6 +18,8 @@ import { recordAudit } from "./observability/audit";
 import { checkClientErrorRateLimit, recordClientError } from "./observability/client-error";
 import type { ClientErrorPayload } from "./observability/client-error";
 import { scanBudgetThresholds } from "./notifications";
+import { handleLiteLLMSyncBatch } from "./sync/queue-consumer";
+import type { SyncMessage } from "./durable/schemas";
 
 export type { LiteLLMPortalEnv } from "./types";
 export { RateLimitDO } from "./security/rate-limit-do";
@@ -210,5 +212,8 @@ export default {
     }
     // "* * * * *" — reserved for the spend-snapshot mirror (PDCSOT-39 / T-5.2);
     // no handler yet. Intentional no-op to avoid blocking the cron registration.
+  },
+  async queue(batch, env, _ctx) {
+    await handleLiteLLMSyncBatch(batch as MessageBatch<SyncMessage>, env);
   },
 } satisfies ExportedHandler<LiteLLMPortalEnv>;
