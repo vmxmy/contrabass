@@ -1,0 +1,1620 @@
+# Agent-ready work item list for OpenSpec change: portal-do-config-source-of-truth
+#
+# This file is the canonical machine-readable expansion of tasks.md. It maps 1:1
+# onto Plane work items (epic + sub-issue + blocks relation) and carries enough
+# context for an autonomous agent to complete each sub-task without re-deriving
+# the design.
+#
+# Field reference:
+#   id                 unique within this file (T-X.Y for tasks, EPIC-X for epics)
+#   parent             id of parent epic (tasks only)
+#   blocks             ids this work item must complete BEFORE
+#   blocked_by         ids that must complete before this work item starts
+#   serializes_with    ids that write the same file (cannot run truly parallel)
+#   affected_files     paths relative to repo root
+#   affected_symbols   functions/classes/exports the task creates or edits
+#   spec_refs          openspec capability + requirement title that this task satisfies
+#   acceptance         testable bullets the task is "done" when satisfied
+#   definition_of_done evidence the agent must produce
+#   verification_cmd   shell command(s) to run; must exit 0
+#   estimate           XS / S / M / L / XL (XS≈<1h, S≈1–3h, M≈half day, L≈1d, XL≈2d+)
+#   priority           urgent / high / medium / low
+#   labels             plane labels for filtering
+#   agent_hint         freeform note: traps, references, "look at file X first"
+
+project:
+  name: portal-do-config-source-of-truth
+  change_dir: cloud/src/litellm-portal/openspec/changes/portal-do-config-source-of-truth
+  worktree: /Users/xumingyang/github/contrabass-portal-do-sot
+  branch: feat/portal-do-config-sot
+  base_ref: main
+  scale_envelope:
+    users_max: 500
+    teams_max: 50
+    session_ttl: 7d
+    magic_link_ttl: 15min
+    spend_staleness: 60s
+    cutover_window: 30min
+
+labels:
+  - { id: infra,        color: "#6B7280", desc: "wrangler, bindings, env, schemas" }
+  - { id: durable-obj,  color: "#6366F1", desc: "IndexDO / TeamConfigDO" }
+  - { id: auth,         color: "#10B981", desc: "magic-link, session, allow-list, login UI" }
+  - { id: sync,         color: "#F59E0B", desc: "queue producer/consumer, DLQ" }
+  - { id: cron,         color: "#06B6D4", desc: "spend snapshot scheduler" }
+  - { id: bootstrap,    color: "#EC4899", desc: "BOOTSTRAP_ADMIN_EMAILS, one-shot import" }
+  - { id: routes,       color: "#8B5CF6", desc: "/api/admin/* refactor" }
+  - { id: ui,           color: "#0EA5E9", desc: "React SPA, login page, badges" }
+  - { id: tests,        color: "#84CC16", desc: "unit + miniflare + e2e" }
+  - { id: cutover,      color: "#EF4444", desc: "deploy + maintenance window + rollback" }
+  - { id: cleanup,      color: "#737373", desc: "post-cutover dead-code removal" }
+
+# =============================================================================
+# EPICS (one per tasks.md section)
+# =============================================================================
+epics:
+  - id: EPIC-1
+    name: "1. Schemas and types"
+    description: |
+      Land schemas and type bindings so every later module compiles. No
+      runtime behavior change in this epic.
+    labels: [infra]
+    priority: high
+
+  - id: EPIC-2
+    name: "2. Durable Objects: IndexDO + TeamConfigDO"
+    description: |
+      Define and register the DO classes that own all team/user/role/budget
+      state plus the singleton index. After this epic, wrangler can deploy
+      a build that contains the DO classes; no handler is wired to them yet.
+    labels: [durable-obj, infra]
+    priority: high
+
+  - id: EPIC-3
+    name: "3. Auth: magic-link + session + allow-list"
+    description: |
+      Replace Cloudflare Access with a Worker-owned email magic-link flow
+      and signed session cookies. Gated behind PORTAL_DO_SOT_ENABLED until
+      cutover.
+    labels: [auth]
+    priority: high
+
+  - id: EPIC-4
+    name: "4. Sync: queue producer + consumer + DLQ"
+    description: |
+      Land the Cloudflare Queue producer used by admin writes and the
+      consumer Worker that materializes DO state into LiteLLM with retries
+      and a DLQ.
+    labels: [sync, infra]
+    priority: high
+
+  - id: EPIC-5
+    name: "5. Spend snapshot cron"
+    description: |
+      Scheduled Worker that walks every team and writes spend:current to
+      TeamConfigDO ≤60s after LiteLLM records consumption.
+    labels: [cron, sync]
+    priority: medium
+
+  - id: EPIC-6
+    name: "6. Bootstrap + one-shot LiteLLM import"
+    description: |
+      Idempotent IndexDO.init() that imports current LiteLLM users/teams
+      exactly once, and a BOOTSTRAP_ADMIN_EMAILS path that always lands
+      configured emails as admins.
+    labels: [bootstrap]
+    priority: high
+
+  - id: EPIC-7
+    name: "7. Wrangler bindings + secrets"
+    description: |
+      Consolidated wrangler config: DO bindings, queues producer/consumer,
+      DLQ, cron trigger, removed CF Access env vars, new secrets documented.
+    labels: [infra]
+    priority: high
+
+  - id: EPIC-8
+    name: "8. Route refactor (DO-sourced reads, DO-first writes)"
+    description: |
+      Rewire every /api/admin/* handler in routes.ts to read from DO and
+      write DO-first + enqueue. Gated by PORTAL_DO_SOT_ENABLED.
+    labels: [routes]
+    priority: high
+
+  - id: EPIC-9
+    name: "9. UI: /login, /logout, sync badges"
+    description: |
+      Add the login surface, the magic-callback surface, the sync-status
+      badge, and the awaiting-team-assignment empty state.
+    labels: [ui]
+    priority: high
+
+  - id: EPIC-10
+    name: "10. Tests"
+    description: |
+      Unit + miniflare + e2e coverage for every new module and a route
+      regression pass over /api/admin/*.
+    labels: [tests]
+    priority: high
+
+  - id: EPIC-11
+    name: "11. Cutover + rollback verification"
+    description: |
+      Pre-cutover deploy, maintenance-window flip, smoke checklist, CF
+      Access policy detach, and a documented rollback drill.
+    labels: [cutover]
+    priority: urgent
+
+  - id: EPIC-12
+    name: "12. Cleanup (follow-up commit)"
+    description: |
+      Delete dead CF Access code, the role-cache LiteLLM projection, the
+      dev-auth test shim, and update portal docs.
+    labels: [cleanup]
+    priority: low
+
+# =============================================================================
+# TASKS
+# =============================================================================
+tasks:
+
+  # ---------------------------------------------------------------------------
+  # EPIC-1: Schemas and types
+  # ---------------------------------------------------------------------------
+  - id: T-1.1
+    parent: EPIC-1
+    name: "Define Zod schemas in durable/schemas.ts"
+    blocked_by: []
+    blocks: [T-2.1, T-2.2, T-4.3, T-6.1]
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/durable/schemas.ts (new)
+    affected_symbols:
+      - TeamRecord, UserRecord, KeyRecord, SpendSnapshot, MagicLinkNonce, AuditEvent, SyncMessage
+    spec_refs:
+      - portal-config-source-of-truth#"Durable Objects are the single source of truth for team/user/role/budget"
+    acceptance:
+      - One Zod schema per entity listed under design.md §5
+      - Each schema exports an `infer` type with the same name as the entity
+      - Schemas cover the storage-key payloads (team, members:{userId}, keys:{keyId}, spend:current, audit:{ts}:{id})
+      - SyncMessage carries fields { kind, entityId, payload, idempotencyKey, enqueuedAt }
+    definition_of_done:
+      - File exists at the listed path
+      - tsc passes for the file
+      - Imports work from durable/index-do.ts (after T-2.1)
+    verification_cmd: |
+      cd cloud/src/litellm-portal && npx tsc --noEmit
+    estimate: S
+    priority: high
+    labels: [infra, durable-obj]
+    agent_hint: |
+      Pure shape work. No I/O, no DO references. Look at existing schemas.ts
+      (top-level) for the zod style the codebase uses.
+
+  - id: T-1.2
+    parent: EPIC-1
+    name: "Remove CF Access env fields from types.ts"
+    blocked_by: []
+    blocks: [T-12.1]
+    serializes_with: [T-1.3, T-1.4]
+    affected_files:
+      - cloud/src/litellm-portal/types.ts
+    affected_symbols:
+      - CLOUDFLARE_ACCESS_AUD, CLOUDFLARE_ACCESS_TEAM_DOMAIN
+      - LITELLM_PORTAL_ALLOWED_EMAIL_DOMAIN, LITELLM_PORTAL_ALLOWED_EMAILS
+      - LITELLM_PORTAL_DEV_AUTH
+    spec_refs:
+      - portal-magic-link-auth#"Email magic-link login replaces Cloudflare Access"
+    acceptance:
+      - All five named fields removed from the Env interface
+      - No compiler reference to them remains in src/litellm-portal
+    definition_of_done:
+      - grep -r "CLOUDFLARE_ACCESS\|LITELLM_PORTAL_DEV_AUTH" returns only docs/test shim usages flagged by T-12.1/T-12.4
+      - tsc compiles
+    verification_cmd: |
+      cd cloud/src/litellm-portal && npx tsc --noEmit && \
+      ! grep -nR "CLOUDFLARE_ACCESS\|LITELLM_PORTAL_DEV_AUTH" --include="*.ts" --include="*.tsx" . | grep -v ".test." | grep -v "app.generated"
+    estimate: XS
+    priority: high
+    labels: [infra]
+    agent_hint: |
+      Tests still reference these via shim; do NOT touch test files in this
+      task — see T-12.4 for the test shim removal.
+
+  - id: T-1.3
+    parent: EPIC-1
+    name: "Add new auth + bootstrap env fields to types.ts"
+    blocked_by: []
+    blocks: [T-3.2, T-3.3, T-3.4, T-6.3]
+    serializes_with: [T-1.2, T-1.4]
+    affected_files:
+      - cloud/src/litellm-portal/types.ts
+    affected_symbols:
+      - PORTAL_SESSION_SECRET, PORTAL_MAGIC_LINK_SECRET, PORTAL_ALLOWED_EMAIL_DOMAINS
+      - BOOTSTRAP_ADMIN_EMAILS, PORTAL_DO_SOT_ENABLED
+    spec_refs:
+      - portal-magic-link-auth#"Email allow-list is configurable and case-insensitive"
+      - portal-bootstrap-import#"Bootstrap admin emails are honored at import time"
+    acceptance:
+      - All five env vars typed `string` (secrets typed as `string`, flag typed as `"true"|"false"`)
+      - Default values documented in inline JSDoc
+    definition_of_done:
+      - tsc compiles
+      - The Env interface exports the names
+    verification_cmd: |
+      cd cloud/src/litellm-portal && npx tsc --noEmit
+    estimate: XS
+    priority: high
+    labels: [infra]
+
+  - id: T-1.4
+    parent: EPIC-1
+    name: "Add DO + Queue bindings to types.ts"
+    blocked_by: []
+    blocks: [T-2.6, T-4.1]
+    serializes_with: [T-1.2, T-1.3]
+    affected_files:
+      - cloud/src/litellm-portal/types.ts
+    affected_symbols:
+      - INDEX_DO (DurableObjectNamespace)
+      - TEAM_CONFIG_DO (DurableObjectNamespace)
+      - LITELLM_SYNC_QUEUE (Queue<SyncMessage>)
+      - LITELLM_SYNC_DLQ (Queue<SyncMessage>)
+    spec_refs:
+      - portal-config-source-of-truth#"DO partitioning uses per-team TeamConfigDO plus singleton IndexDO"
+      - portal-litellm-config-sync#"Queue consumer materializes DO state into LiteLLM with retry and DLQ"
+    acceptance:
+      - Bindings typed against @cloudflare/workers-types
+      - LITELLM_SYNC_QUEUE typed with SyncMessage from durable/schemas.ts
+    definition_of_done: [tsc compiles]
+    verification_cmd: cd cloud/src/litellm-portal && npx tsc --noEmit
+    estimate: XS
+    priority: high
+    labels: [infra]
+
+  - id: T-1.5
+    parent: EPIC-1
+    name: "Pick stable field names for sync metadata on admin payloads"
+    blocked_by: [T-1.1]
+    blocks: [T-8.5]
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/schemas.ts
+    affected_symbols:
+      - lastSyncedAt, lastSyncError, dirty
+    spec_refs:
+      - portal-litellm-config-sync#"Sync status is exposed on admin payloads"
+    acceptance:
+      - Field names finalized and added to AdminTeamSchema / AdminUserSchema / AdminKeySchema
+      - Existing fields (`spend`, `maxBudget`, etc.) untouched
+    definition_of_done:
+      - Frontend types regenerate (run app build script) without conflicts
+    verification_cmd: |
+      cd cloud/src/litellm-portal && npx tsc --noEmit && \
+      bun run --filter=cloud build:portal:client
+    estimate: XS
+    priority: medium
+    labels: [infra, routes]
+
+  # ---------------------------------------------------------------------------
+  # EPIC-2: Durable Objects
+  # ---------------------------------------------------------------------------
+  - id: T-2.1
+    parent: EPIC-2
+    name: "Implement IndexDO storage layout and accessors"
+    blocked_by: [T-1.1, T-1.4]
+    blocks: [T-2.3, T-2.4, T-2.6, T-3.6, T-3.8, T-6.5, T-8.1]
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/durable/index-do.ts (new)
+    affected_symbols:
+      - class IndexDO extends DurableObject
+      - getTeamsList, listEmails, getUserByEmail, putUser, listMagicLinkNonce, consumeNonce, appendAudit
+    spec_refs:
+      - portal-config-source-of-truth#"DO partitioning uses per-team TeamConfigDO plus singleton IndexDO"
+      - portal-config-source-of-truth#"IndexDO holds cross-team indexes"
+    acceptance:
+      - Storage keys exactly as listed in design.md §5: teams:list, email:{lc}, user:{userId}, nonce:{token}, audit:{ts}:{id}, meta:imported, meta:bootstrapAdmins
+      - All public methods validate inputs with the Zod schemas from T-1.1
+      - DO uses transactional storage (this.state.storage.transaction) for multi-key writes
+    definition_of_done:
+      - tsc compiles
+      - Wrangler `dev` boots without errors (verified via T-2.6)
+    verification_cmd: |
+      cd cloud/src/litellm-portal && npx tsc --noEmit
+    estimate: M
+    priority: high
+    labels: [durable-obj]
+    agent_hint: |
+      Use one Storage instance per DO; do NOT cache references across requests.
+      Keep IndexDO methods small + named; tests will hit them directly.
+
+  - id: T-2.2
+    parent: EPIC-2
+    name: "Implement TeamConfigDO storage layout and accessors"
+    blocked_by: [T-1.1, T-1.4]
+    blocks: [T-2.6, T-4.4, T-5.3, T-6.1, T-8.2]
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/durable/team-config-do.ts (new)
+    affected_symbols:
+      - class TeamConfigDO extends DurableObject
+      - getTeam, putTeam, listMembers, upsertMember, removeMember, listKeys, upsertKey, deleteKey, getSpend, putSpend, markDirty, clearDirty
+    spec_refs:
+      - portal-config-source-of-truth#"Per-team DO holds team-local state"
+      - portal-config-source-of-truth#"DO writes carry sync metadata"
+    acceptance:
+      - Storage keys: team, members:{userId}, keys:{keyId}, spend:current, meta:lastSyncedAt, meta:lastSyncError, meta:dirty
+      - putTeam / upsertMember / upsertKey / deleteKey all set meta:dirty=true atomically
+      - Read methods never touch meta:* writes
+    definition_of_done: [tsc compiles, methods unit-tested in T-10.5]
+    verification_cmd: cd cloud/src/litellm-portal && npx tsc --noEmit
+    estimate: M
+    priority: high
+    labels: [durable-obj]
+
+  - id: T-2.3
+    parent: EPIC-2
+    name: "Add IndexDO alarm handler that expires nonce:{token} after 15 min"
+    blocked_by: [T-2.1]
+    blocks: [T-3.2, T-10.4]
+    serializes_with: [T-2.1]
+    affected_files:
+      - cloud/src/litellm-portal/durable/index-do.ts
+    affected_symbols: [alarm(), scheduleNonceCleanup()]
+    spec_refs:
+      - portal-magic-link-auth#"Magic link callback fails"
+    acceptance:
+      - storeNonce(token) writes the nonce AND sets an alarm at now + 15min
+      - alarm() reads soon-to-expire nonces and deletes them
+      - Re-entering the alarm during an active TTL window is idempotent
+    definition_of_done: [unit tests at T-10.4 cover expiry path]
+    verification_cmd: cd cloud/src/litellm-portal && npx tsc --noEmit
+    estimate: S
+    priority: high
+    labels: [durable-obj, auth]
+
+  - id: T-2.4
+    parent: EPIC-2
+    name: "Make IndexDO.init() idempotent and guard with meta:imported"
+    blocked_by: [T-2.1]
+    blocks: [T-6.5, T-11.2]
+    serializes_with: [T-2.1, T-2.3]
+    affected_files:
+      - cloud/src/litellm-portal/durable/index-do.ts
+    affected_symbols: [init(), isImported(), markImported()]
+    spec_refs:
+      - portal-bootstrap-import#"One-shot LiteLLM import seeds DO on first init"
+      - portal-bootstrap-import#"Already-imported deployment"
+    acceptance:
+      - init() reads meta:imported; if true, returns immediately
+      - init() uses a single-flight in-DO lock so concurrent invocations do not double-run
+      - init() is callable from a fetch() route and from the queue consumer's first run
+    definition_of_done: [unit tests at T-10.4 cover idempotent re-entry]
+    estimate: S
+    priority: high
+    labels: [durable-obj, bootstrap]
+
+  - id: T-2.5
+    parent: EPIC-2
+    name: "Add DO new_classes migration to wrangler config"
+    blocked_by: [T-2.1, T-2.2]
+    blocks: [T-7.1, T-11.1]
+    serializes_with: [T-2.6, T-4.1, T-5.1, T-7.x]
+    affected_files:
+      - wrangler.toml (or wrangler.jsonc)
+    affected_symbols: ["[[migrations]] new_classes"]
+    spec_refs:
+      - portal-config-source-of-truth#"DO partitioning uses per-team TeamConfigDO plus singleton IndexDO"
+    acceptance:
+      - A new [[migrations]] block adds "IndexDO" and "TeamConfigDO" with the next migration tag
+      - Existing migrations are not edited
+    definition_of_done:
+      - wrangler types reload without warning
+      - wrangler deploy --dry-run succeeds
+    verification_cmd: |
+      cd cloud/src/litellm-portal && npx wrangler types && \
+      npx wrangler deploy --dry-run --outdir /tmp/wrangler-dry
+    estimate: XS
+    priority: high
+    labels: [infra, durable-obj]
+
+  - id: T-2.6
+    parent: EPIC-2
+    name: "Add DO bindings (INDEX_DO, TEAM_CONFIG_DO) to wrangler config"
+    blocked_by: [T-1.4, T-2.1, T-2.2]
+    blocks: [T-3.5, T-3.6, T-4.4, T-5.2, T-6.5, T-8.1, T-11.1]
+    serializes_with: [T-2.5, T-4.1, T-5.1, T-7.x]
+    affected_files:
+      - wrangler.toml (or wrangler.jsonc)
+    affected_symbols: ["[[durable_objects.bindings]]"]
+    spec_refs: [portal-config-source-of-truth#"Per-team DO holds team-local state"]
+    acceptance:
+      - Two [[durable_objects.bindings]] entries: name=INDEX_DO/class=IndexDO; name=TEAM_CONFIG_DO/class=TeamConfigDO
+    definition_of_done: [wrangler types generates the env interface fields]
+    verification_cmd: cd cloud/src/litellm-portal && npx wrangler types
+    estimate: XS
+    priority: high
+    labels: [infra, durable-obj]
+
+  # ---------------------------------------------------------------------------
+  # EPIC-3: Auth
+  # ---------------------------------------------------------------------------
+  - id: T-3.1
+    parent: EPIC-3
+    name: "auth/allowlist.ts — parse PORTAL_ALLOWED_EMAIL_DOMAINS, case-insensitive"
+    blocked_by: [T-1.3]
+    blocks: [T-3.5, T-10.3]
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/auth/allowlist.ts (new)
+    affected_symbols: [parseAllowedDomains(), isEmailAllowed(email, env)]
+    spec_refs: [portal-magic-link-auth#"Email allow-list is configurable and case-insensitive"]
+    acceptance:
+      - parseAllowedDomains splits on "," and trims whitespace
+      - isEmailAllowed returns false for emails without "@" or with unknown domain
+      - Match is case-insensitive (compares both sides lowercased)
+    definition_of_done: [T-10.3 unit tests pass]
+    verification_cmd: |
+      cd cloud/src/litellm-portal && npm test -- auth/allowlist
+    estimate: XS
+    priority: high
+    labels: [auth]
+
+  - id: T-3.2
+    parent: EPIC-3
+    name: "auth/magic-link.ts — HMAC sign + verify + single-use enforcement"
+    blocked_by: [T-1.3, T-2.3]
+    blocks: [T-3.5, T-10.1]
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/auth/magic-link.ts (new)
+    affected_symbols: [issueMagicLink(env, email), verifyMagicLink(env, token)]
+    spec_refs:
+      - portal-magic-link-auth#"Allowed email requests a magic link"
+      - portal-magic-link-auth#"Magic link callback succeeds"
+      - portal-magic-link-auth#"Magic link callback fails"
+    acceptance:
+      - issueMagicLink mints HMAC-signed token using PORTAL_MAGIC_LINK_SECRET (Web Crypto SubtleCrypto, HS256-style)
+      - Token TTL = 15 min, encoded in the payload
+      - Nonce stored in IndexDO via T-2.1 accessors so consumption is observable
+      - verifyMagicLink rejects on bad sig, expired exp, missing email, OR if IndexDO nonce already consumed
+    definition_of_done: [T-10.1 unit tests pass]
+    estimate: S
+    priority: high
+    labels: [auth]
+
+  - id: T-3.3
+    parent: EPIC-3
+    name: "auth/session.ts — sign + verify session cookies, 7d TTL"
+    blocked_by: [T-1.3]
+    blocks: [T-3.5, T-3.6, T-10.2]
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/auth/session.ts (new)
+    affected_symbols: [issueSession(env, principal), verifySession(env, cookie), clearSessionHeader()]
+    spec_refs:
+      - portal-magic-link-auth#"Signed session cookie is the only credential the portal accepts"
+      - portal-magic-link-auth#"Logout clears the session and redirects to /login"
+    acceptance:
+      - Cookie uses HS256 HMAC of "<payload>.<sig>" with PORTAL_SESSION_SECRET
+      - Cookie attributes: HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800
+      - verifySession returns null on bad sig, expired exp, or missing payload fields
+      - clearSessionHeader emits a Max-Age=0 expiry cookie
+    definition_of_done: [T-10.2 unit tests pass]
+    estimate: S
+    priority: high
+    labels: [auth]
+
+  - id: T-3.4
+    parent: EPIC-3
+    name: "MailChannels send for magic-link delivery"
+    blocked_by: [T-1.3]
+    blocks: [T-3.5]
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/auth/magic-link.ts
+    affected_symbols: [sendMagicLink(env, email, link)]
+    spec_refs: [portal-magic-link-auth#"Allowed email requests a magic link"]
+    acceptance:
+      - POSTs to https://api.mailchannels.net/tx/v1/send with the configured from address
+      - On non-2xx, returns 5xx to the caller (do not silently swallow)
+      - Email body contains the magic link in BOTH text and HTML parts
+    definition_of_done:
+      - manual smoke during T-11.3 receives the email
+      - unit test stubs fetch and asserts the payload shape
+    estimate: S
+    priority: high
+    labels: [auth]
+    agent_hint: |
+      MailChannels free tier requires SPF/DMARC for the from address; document
+      the required DNS records in tasks.md cutover section.
+
+  - id: T-3.5
+    parent: EPIC-3
+    name: "Routes: /login, /magic-callback, /logout"
+    blocked_by: [T-3.1, T-3.2, T-3.3, T-3.4, T-2.6]
+    blocks: [T-3.6, T-3.7, T-9.1, T-9.2, T-10.10]
+    serializes_with: [T-3.6, T-4.4, T-5.2]
+    affected_files:
+      - cloud/src/litellm-portal/index.ts
+      - cloud/src/litellm-portal/routes/login.tsx (new)
+    affected_symbols: [registerAuthRoutes(app, env), GET /login, POST /login, GET /magic-callback, POST /logout]
+    spec_refs:
+      - portal-magic-link-auth#"Allowed email requests a magic link"
+      - portal-magic-link-auth#"Magic link callback succeeds"
+      - portal-magic-link-auth#"Logout clears the session and redirects to /login"
+    acceptance:
+      - GET /login renders a single-input form; POST /login validates allow-list and calls issueMagicLink
+      - GET /magic-callback verifies token, single-uses nonce, issues session, 302 to /
+      - POST /logout clears cookie and 302 to /login
+      - All three routes are EXEMPT from authenticateSession middleware
+    definition_of_done: [route registered in index.ts; T-10.10 e2e passes]
+    estimate: M
+    priority: high
+    labels: [auth, routes]
+
+  - id: T-3.6
+    parent: EPIC-3
+    name: "Replace authenticateRequest() body with session-cookie auth"
+    blocked_by: [T-3.3, T-2.1]
+    blocks: [T-8.1, T-10.10, T-12.1]
+    serializes_with: [T-3.5]
+    affected_files:
+      - cloud/src/litellm-portal/auth.ts
+    affected_symbols: [authenticateRequest(), authenticateSession()]
+    spec_refs:
+      - portal-magic-link-auth#"Signed session cookie is the only credential the portal accepts"
+    acceptance:
+      - authenticateRequest body deleted; new authenticateSession is a wrapper that reads Cookie header, calls verifySession, looks up role from IndexDO (via 30s memory cache from T-3.8)
+      - The exported PortalPrincipal shape is preserved
+      - All callers compile without edits
+      - Behind PORTAL_DO_SOT_ENABLED=true ONLY; falls back to throwing 401 (NOT to CF Access) when flag is on but cookie is missing
+    definition_of_done: [tsc clean; T-10.10 e2e passes; existing route tests pass with new test session helper]
+    estimate: M
+    priority: high
+    labels: [auth, routes]
+
+  - id: T-3.7
+    parent: EPIC-3
+    name: "Swap /cdn-cgi/access/logout link for POST /logout in __root.tsx"
+    blocked_by: [T-3.5]
+    blocks: [T-12.1]
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/routes/__root.tsx
+    affected_symbols: [logout link onClick]
+    spec_refs:
+      - portal-magic-link-auth#"Logout clears the session and redirects to /login"
+    acceptance:
+      - The `window.location.href = "/cdn-cgi/access/logout"` line is replaced with a fetch POST to /logout
+      - On success the page navigates to /login
+      - No other reference to /cdn-cgi/access remains in routes/
+    definition_of_done: [grep returns no /cdn-cgi/access/logout in routes/]
+    verification_cmd: |
+      ! grep -rn "/cdn-cgi/access/logout" cloud/src/litellm-portal/routes
+    estimate: XS
+    priority: medium
+    labels: [auth, ui]
+
+  - id: T-3.8
+    parent: EPIC-3
+    name: "Replace role-cache.ts LiteLLM projection with DO-backed 30s memory cache"
+    blocked_by: [T-2.1]
+    blocks: [T-3.6, T-8.1, T-12.2]
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/role-cache.ts (REWRITE)
+    affected_symbols: [getRoleForEmail(env, email)]
+    spec_refs:
+      - portal-config-source-of-truth#"Admin read serves DO data"
+    acceptance:
+      - getRoleForEmail consults a Map<email, {role, expiresAt}> with 30s TTL
+      - Cache miss falls back to IndexDO.getUserByEmail
+      - The singleflight + KV + LiteLLM projection code is GONE
+    definition_of_done: [tsc clean; route admin guard tests pass via T-10.9]
+    estimate: S
+    priority: high
+    labels: [auth, durable-obj]
+    agent_hint: |
+      The old file is 172 lines. Default to deleting and rewriting in place
+      with the same exported function name so callers do not change.
+
+  # ---------------------------------------------------------------------------
+  # EPIC-4: Sync queue
+  # ---------------------------------------------------------------------------
+  - id: T-4.1
+    parent: EPIC-4
+    name: "wrangler: queues.producers + queues.consumers for litellm-sync"
+    blocked_by: [T-1.4]
+    blocks: [T-4.3, T-4.4, T-7.2, T-11.1]
+    serializes_with: [T-2.5, T-2.6, T-4.2, T-5.1, T-7.x]
+    affected_files: [wrangler.toml]
+    affected_symbols: ["[[queues.producers]] binding=LITELLM_SYNC_QUEUE", "[[queues.consumers]] queue=litellm-sync"]
+    spec_refs:
+      - portal-litellm-config-sync#"Admin writes enqueue a sync message after DO commit"
+      - portal-litellm-config-sync#"Queue consumer materializes DO state into LiteLLM with retry and DLQ"
+    acceptance:
+      - Queue name `litellm-sync`
+      - Consumer max_batch_size=10, max_batch_timeout=5, max_retries=5, dead_letter_queue=litellm-sync-dlq
+    definition_of_done: [wrangler deploy --dry-run succeeds]
+    estimate: XS
+    priority: high
+    labels: [infra, sync]
+
+  - id: T-4.2
+    parent: EPIC-4
+    name: "wrangler: producer for the DLQ litellm-sync-dlq"
+    blocked_by: [T-1.4]
+    blocks: [T-4.5, T-7.2]
+    serializes_with: [T-2.5, T-2.6, T-4.1, T-5.1, T-7.x]
+    affected_files: [wrangler.toml]
+    affected_symbols: ["[[queues.producers]] binding=LITELLM_SYNC_DLQ"]
+    spec_refs: [portal-litellm-config-sync#"Terminal failure"]
+    acceptance: [DLQ binding present and matches T-1.4 typing]
+    definition_of_done: [wrangler deploy --dry-run succeeds]
+    estimate: XS
+    priority: high
+    labels: [infra, sync]
+
+  - id: T-4.3
+    parent: EPIC-4
+    name: "sync/queue-producer.ts — enqueueSync helper"
+    blocked_by: [T-1.1, T-4.1]
+    blocks: [T-8.3]
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/sync/queue-producer.ts (new)
+    affected_symbols: [enqueueSync(env, msg: SyncMessage)]
+    spec_refs:
+      - portal-litellm-config-sync#"Admin writes enqueue a sync message after DO commit"
+      - portal-litellm-config-sync#"Queue send failure"
+    acceptance:
+      - Generates idempotencyKey as `${kind}:${entityId}:${monotonicId}` when caller does not supply one
+      - On env.LITELLM_SYNC_QUEUE.send failure, sets meta:dirty=true on the DO and returns the error to caller
+    definition_of_done: [T-10.9 route tests verify dirty flag on simulated failure]
+    estimate: S
+    priority: high
+    labels: [sync]
+
+  - id: T-4.4
+    parent: EPIC-4
+    name: "sync/queue-consumer.ts — dispatch + retries"
+    blocked_by: [T-1.1, T-2.2, T-2.6, T-4.1]
+    blocks: [T-4.5, T-4.6, T-10.6]
+    serializes_with: [T-3.5, T-5.2]
+    affected_files:
+      - cloud/src/litellm-portal/sync/queue-consumer.ts (new)
+      - cloud/src/litellm-portal/index.ts
+    affected_symbols: [queue(batch, env), dispatchTo LiteLLM by kind]
+    spec_refs:
+      - portal-litellm-config-sync#"Successful materialization"
+      - portal-litellm-config-sync#"Retryable failure"
+      - portal-litellm-config-sync#"Sync is idempotent per message"
+    acceptance:
+      - Switch on msg.kind: team.update, user.update, key.generate, key.delete, key.update
+      - 2xx → success path (advance T-4.6 row)
+      - 5xx / network error → throw, letting Cloudflare retry up to max_retries
+      - Non-retryable 4xx → caller of `queue()` marks message.ack() and forwards to DLQ via T-4.5
+      - Idempotency: skip LiteLLM call if T-2.2 row's `meta:lastIdempotencyKey === msg.idempotencyKey`
+    definition_of_done: [T-10.6 covers happy + retry + DLQ]
+    estimate: M
+    priority: high
+    labels: [sync]
+
+  - id: T-4.5
+    parent: EPIC-4
+    name: "Terminal failure → DLQ + lastSyncError on DO row"
+    blocked_by: [T-4.2, T-4.4]
+    blocks: [T-10.6]
+    serializes_with: [T-4.4, T-4.6]
+    affected_files: [cloud/src/litellm-portal/sync/queue-consumer.ts]
+    affected_symbols: [handleTerminalFailure(msg, err)]
+    spec_refs: [portal-litellm-config-sync#"Terminal failure"]
+    acceptance:
+      - Final delivery attempt of a message forwards the original message to LITELLM_SYNC_DLQ
+      - Writes meta:lastSyncError (short string ≤200 chars) and keeps meta:dirty=true
+      - Emits an audit:{ts}:sync_failed event into IndexDO
+    definition_of_done: [T-10.6 DLQ path passes]
+    estimate: S
+    priority: high
+    labels: [sync]
+
+  - id: T-4.6
+    parent: EPIC-4
+    name: "Successful sync → meta:lastSyncedAt + clear dirty/error"
+    blocked_by: [T-4.4]
+    blocks: [T-10.6, T-8.5]
+    serializes_with: [T-4.4, T-4.5]
+    affected_files: [cloud/src/litellm-portal/sync/queue-consumer.ts]
+    affected_symbols: [recordSyncSuccess(row, idempotencyKey)]
+    spec_refs: [portal-litellm-config-sync#"Successful materialization"]
+    acceptance:
+      - On 2xx, write meta:lastSyncedAt=now, clear meta:lastSyncError, clear meta:dirty
+      - Also stamp meta:lastIdempotencyKey for the dedup check in T-4.4
+    definition_of_done: [T-10.6 happy path passes]
+    estimate: XS
+    priority: high
+    labels: [sync]
+
+  # ---------------------------------------------------------------------------
+  # EPIC-5: Spend snapshot cron
+  # ---------------------------------------------------------------------------
+  - id: T-5.1
+    parent: EPIC-5
+    name: "wrangler: cron trigger every 1 minute"
+    blocked_by: []
+    blocks: [T-5.2, T-7.3]
+    serializes_with: [T-2.5, T-2.6, T-4.1, T-4.2, T-7.x]
+    affected_files: [wrangler.toml]
+    affected_symbols: ["[triggers] crons = [\"* * * * *\"]"]
+    spec_refs: [portal-litellm-config-sync#"Spend mirror cron pulls LiteLLM spend into DO"]
+    acceptance: [Exactly one cron entry "* * * * *"]
+    definition_of_done: [wrangler deploy --dry-run succeeds]
+    estimate: XS
+    priority: medium
+    labels: [infra, cron]
+
+  - id: T-5.2
+    parent: EPIC-5
+    name: "scheduled() handler in sync/spend-snapshot-cron.ts"
+    blocked_by: [T-2.6, T-5.1]
+    blocks: [T-5.3, T-10.8]
+    serializes_with: [T-3.5, T-4.4]
+    affected_files:
+      - cloud/src/litellm-portal/sync/spend-snapshot-cron.ts (new)
+      - cloud/src/litellm-portal/index.ts
+    affected_symbols: ["scheduled(event, env, ctx)", "exports default { scheduled }"]
+    spec_refs: [portal-litellm-config-sync#"Steady-state spend refresh"]
+    acceptance:
+      - scheduled() is exported from index.ts
+      - The cron handler reads IndexDO.teams:list and dispatches work
+    definition_of_done: [tsc clean; T-10.8 happy path passes]
+    estimate: S
+    priority: medium
+    labels: [cron, sync]
+
+  - id: T-5.3
+    parent: EPIC-5
+    name: "Per-team: fetch LiteLLM /team/info and write spend:current"
+    blocked_by: [T-2.2, T-5.2]
+    blocks: [T-10.8]
+    serializes_with: []
+    affected_files: [cloud/src/litellm-portal/sync/spend-snapshot-cron.ts]
+    affected_symbols: [refreshOneTeam(teamId, env)]
+    spec_refs: [portal-litellm-config-sync#"Steady-state spend refresh"]
+    acceptance:
+      - For each team, GET /team/info?team_id= via litellm.ts helpers
+      - Write the response to TeamConfigDO.spend:current with `fetchedAt: now`
+    definition_of_done: [T-10.8 verifies a written snapshot]
+    estimate: S
+    priority: medium
+    labels: [cron, sync]
+
+  - id: T-5.4
+    parent: EPIC-5
+    name: "Per-team error tolerance + meta:lastSpendError"
+    blocked_by: [T-5.3]
+    blocks: [T-10.8]
+    serializes_with: [T-5.3]
+    affected_files: [cloud/src/litellm-portal/sync/spend-snapshot-cron.ts]
+    affected_symbols: [refreshOneTeam, runTick]
+    spec_refs: [portal-litellm-config-sync#"LiteLLM unavailable during a spend tick"]
+    acceptance:
+      - A thrown error inside refreshOneTeam does not abort the outer loop
+      - Failing team's previous spend:current is left intact
+      - meta:lastSpendError stamped on the failing DO row
+    definition_of_done: [T-10.8 covers the failure-isolation path]
+    estimate: S
+    priority: medium
+    labels: [cron, sync]
+
+  # ---------------------------------------------------------------------------
+  # EPIC-6: Bootstrap + import
+  # ---------------------------------------------------------------------------
+  - id: T-6.1
+    parent: EPIC-6
+    name: "Importer walks LiteLLM /team/list → TeamConfigDO + IndexDO.teams:list"
+    blocked_by: [T-1.1, T-2.2]
+    blocks: [T-6.3, T-6.4, T-10.7]
+    serializes_with: [T-6.2]
+    affected_files:
+      - cloud/src/litellm-portal/sync/litellm-importer.ts (new)
+    affected_symbols: [importTeams(env)]
+    spec_refs: [portal-bootstrap-import#"Fresh deployment, empty DO"]
+    acceptance:
+      - Walks all pages until the response signals the end
+      - For each team, creates the TeamConfigDO row (via T-2.2 putTeam)
+      - Updates IndexDO.teams:list as a list of {id, alias} summaries
+    definition_of_done: [T-10.7 covers no duplicates on re-run]
+    estimate: M
+    priority: high
+    labels: [bootstrap, sync]
+
+  - id: T-6.2
+    parent: EPIC-6
+    name: "Importer walks LiteLLM /user/list → IndexDO email + per-team members"
+    blocked_by: [T-1.1, T-2.1, T-2.2]
+    blocks: [T-6.3, T-6.4, T-10.7]
+    serializes_with: [T-6.1]
+    affected_files: [cloud/src/litellm-portal/sync/litellm-importer.ts]
+    affected_symbols: [importUsers(env)]
+    spec_refs: [portal-bootstrap-import#"Fresh deployment, empty DO"]
+    acceptance:
+      - For each user, write IndexDO.email:{lc(email)} and IndexDO.user:{userId}
+      - For each user with teamIds, write TeamConfigDO.members:{userId}
+      - Default role = the LiteLLM-mapped role (proxy_admin → admin, otherwise user)
+    definition_of_done: [T-10.7 covers idempotent re-run]
+    estimate: M
+    priority: high
+    labels: [bootstrap, sync]
+
+  - id: T-6.3
+    parent: EPIC-6
+    name: "Apply BOOTSTRAP_ADMIN_EMAILS during import"
+    blocked_by: [T-1.3, T-6.1, T-6.2]
+    blocks: [T-10.7]
+    serializes_with: [T-6.1, T-6.2]
+    affected_files: [cloud/src/litellm-portal/sync/litellm-importer.ts]
+    affected_symbols: [applyBootstrapAdmins(env)]
+    spec_refs:
+      - portal-bootstrap-import#"Bootstrap admin email exists in LiteLLM as a user"
+    acceptance:
+      - Email in BOOTSTRAP_ADMIN_EMAILS that also appears in /user/list → DO record forced to role=admin
+      - Email in BOOTSTRAP_ADMIN_EMAILS that DOES NOT appear in /user/list → import does NOT create a record (T-6.6 handles first-login path)
+    definition_of_done: [T-10.7 covers both paths]
+    estimate: S
+    priority: high
+    labels: [bootstrap]
+
+  - id: T-6.4
+    parent: EPIC-6
+    name: "Set meta:imported=true and append audit event on success"
+    blocked_by: [T-6.1, T-6.2, T-6.3]
+    blocks: [T-10.7]
+    serializes_with: []
+    affected_files: [cloud/src/litellm-portal/sync/litellm-importer.ts]
+    affected_symbols: [finalizeImport(env)]
+    spec_refs:
+      - portal-bootstrap-import#"Fresh deployment, empty DO"
+    acceptance:
+      - On final success, IndexDO.meta:imported = true
+      - A single audit:{now}:import event is appended with {teamCount, userCount}
+      - Partial-progress crash leaves meta:imported false; T-2.4 init() guard rules
+    definition_of_done: [T-10.7 verifies the marker]
+    estimate: XS
+    priority: high
+    labels: [bootstrap]
+
+  - id: T-6.5
+    parent: EPIC-6
+    name: "Gate importer entry behind IndexDO.init() lock"
+    blocked_by: [T-2.4, T-2.6, T-6.4]
+    blocks: [T-11.2]
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/durable/index-do.ts
+      - cloud/src/litellm-portal/sync/litellm-importer.ts
+    affected_symbols: [IndexDO.runImportIfNeeded()]
+    spec_refs:
+      - portal-bootstrap-import#"Re-entry after partial progress"
+      - portal-bootstrap-import#"Already-imported deployment"
+    acceptance:
+      - The importer's outer entry point is reached only via IndexDO.init()
+      - Two concurrent init() calls hit the single-flight lock from T-2.4; only one runs the importer
+      - meta:imported=true short-circuits all subsequent init() calls
+    definition_of_done: [T-10.4 covers single-flight; T-10.7 covers no-op re-run]
+    estimate: S
+    priority: high
+    labels: [bootstrap, durable-obj]
+
+  - id: T-6.6
+    parent: EPIC-6
+    name: "First-login path: bootstrap admin email upserted as admin"
+    blocked_by: [T-1.3, T-2.1, T-3.5]
+    blocks: [T-10.10]
+    serializes_with: []
+    affected_files: [cloud/src/litellm-portal/auth/magic-link.ts]
+    affected_symbols: [completeLogin(env, email)]
+    spec_refs: [portal-bootstrap-import#"Bootstrap admin email absent from LiteLLM"]
+    acceptance:
+      - On /magic-callback success, if IndexDO does NOT have a user for the email AND the email is listed in BOOTSTRAP_ADMIN_EMAILS, upsert user with role=admin
+      - If neither: upsert with role=user, teamId=null
+    definition_of_done: [T-10.10 e2e covers both branches]
+    estimate: S
+    priority: high
+    labels: [auth, bootstrap]
+
+  # ---------------------------------------------------------------------------
+  # EPIC-7: Wrangler bindings + secrets (aggregator + CF Access removal)
+  # ---------------------------------------------------------------------------
+  - id: T-7.1
+    parent: EPIC-7
+    name: "Verify [[durable_objects.bindings]] entries land in final wrangler.toml"
+    blocked_by: [T-2.5, T-2.6]
+    blocks: [T-11.1]
+    serializes_with: [T-2.5, T-2.6, T-4.1, T-4.2, T-5.1]
+    affected_files: [wrangler.toml]
+    affected_symbols: ["[[durable_objects.bindings]]"]
+    spec_refs: [portal-config-source-of-truth#"Per-team DO holds team-local state"]
+    acceptance: [INDEX_DO + TEAM_CONFIG_DO entries exist, no duplicates]
+    definition_of_done: [wrangler deploy --dry-run succeeds]
+    estimate: XS
+    priority: medium
+    labels: [infra]
+
+  - id: T-7.2
+    parent: EPIC-7
+    name: "Verify queue producer/consumer + DLQ entries land in wrangler.toml"
+    blocked_by: [T-4.1, T-4.2]
+    blocks: [T-11.1]
+    serializes_with: [T-2.5, T-2.6, T-4.1, T-4.2, T-5.1]
+    affected_files: [wrangler.toml]
+    affected_symbols: ["[[queues.producers]], [[queues.consumers]]"]
+    spec_refs: [portal-litellm-config-sync#"Queue consumer materializes DO state into LiteLLM"]
+    acceptance: [Two producers + one consumer entries, no duplicates]
+    definition_of_done: [wrangler deploy --dry-run succeeds]
+    estimate: XS
+    priority: medium
+    labels: [infra, sync]
+
+  - id: T-7.3
+    parent: EPIC-7
+    name: "Verify cron trigger entry lands in wrangler.toml"
+    blocked_by: [T-5.1]
+    blocks: [T-11.1]
+    serializes_with: [T-2.5, T-2.6, T-4.1, T-4.2, T-5.1]
+    affected_files: [wrangler.toml]
+    affected_symbols: ["[triggers]"]
+    spec_refs: [portal-litellm-config-sync#"Steady-state spend refresh"]
+    acceptance: [crons array contains exactly "* * * * *"]
+    definition_of_done: [wrangler deploy --dry-run succeeds]
+    estimate: XS
+    priority: medium
+    labels: [infra, cron]
+
+  - id: T-7.4
+    parent: EPIC-7
+    name: "Strip CF Access references from wrangler.toml"
+    blocked_by: []
+    blocks: [T-11.6, T-12.1]
+    serializes_with: [T-7.1, T-7.2, T-7.3]
+    affected_files: [wrangler.toml]
+    affected_symbols: ["any CLOUDFLARE_ACCESS_*"]
+    spec_refs: [portal-magic-link-auth#"Signed session cookie is the only credential the portal accepts"]
+    acceptance: [grep finds no CLOUDFLARE_ACCESS in wrangler.toml]
+    definition_of_done: [grep returns nothing]
+    verification_cmd: ! grep -nE "CLOUDFLARE_ACCESS|cdn-cgi/access" wrangler.toml
+    estimate: XS
+    priority: medium
+    labels: [infra, cleanup]
+
+  - id: T-7.5
+    parent: EPIC-7
+    name: "Document new secrets + env vars in portal README / deploy notes"
+    blocked_by: [T-1.3]
+    blocks: [T-11.2]
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/README.md (or equivalent deploy doc)
+    affected_symbols:
+      - PORTAL_SESSION_SECRET (secret), PORTAL_MAGIC_LINK_SECRET (secret)
+      - PORTAL_ALLOWED_EMAIL_DOMAINS, BOOTSTRAP_ADMIN_EMAILS, PORTAL_DO_SOT_ENABLED
+    spec_refs: [portal-magic-link-auth#"Bootstrap admins are seeded from environment"]
+    acceptance:
+      - Table listing each new var, type (secret vs env), example, where to set it
+      - "`wrangler secret put` commands listed for the two secrets"
+      - MailChannels SPF/DMARC DNS prerequisites documented
+    definition_of_done: [Operator can deploy purely from the README during T-11.2]
+    estimate: S
+    priority: medium
+    labels: [infra]
+
+  # ---------------------------------------------------------------------------
+  # EPIC-8: Route refactor
+  # ---------------------------------------------------------------------------
+  - id: T-8.1
+    parent: EPIC-8
+    name: "routes.ts: swap identity source to authenticateSession + IndexDO role"
+    blocked_by: [T-2.6, T-3.6, T-3.8]
+    blocks: [T-8.2, T-8.3, T-10.9, T-11.2]
+    serializes_with: [T-8.2, T-8.3, T-8.4, T-8.5]
+    affected_files: [cloud/src/litellm-portal/routes.ts]
+    affected_symbols: [applyAuthMiddleware, requireAdmin]
+    spec_refs:
+      - portal-magic-link-auth#"Signed session cookie is the only credential the portal accepts"
+      - portal-config-source-of-truth#"Admin read serves DO data"
+    acceptance:
+      - applyAuthMiddleware reads session cookie via T-3.6
+      - requireAdmin reads role via T-3.8 (DO-backed cache)
+      - Behind PORTAL_DO_SOT_ENABLED flag; off path still works during EPIC-2–EPIC-7
+    definition_of_done: [tsc clean; T-10.9 covers both flag states]
+    estimate: M
+    priority: high
+    labels: [routes, auth]
+
+  - id: T-8.2
+    parent: EPIC-8
+    name: "routes.ts: switch admin read endpoints to DO data source"
+    blocked_by: [T-2.2, T-8.1]
+    blocks: [T-10.9, T-11.2]
+    serializes_with: [T-8.1, T-8.3, T-8.4, T-8.5]
+    affected_files: [cloud/src/litellm-portal/routes.ts]
+    affected_symbols:
+      - GET /api/admin/teams
+      - GET /api/admin/users
+      - GET /api/admin/teams/:teamId/summary
+      - GET /api/admin/teams/:teamId/members
+    spec_refs: [portal-config-source-of-truth#"Admin read serves DO data"]
+    acceptance:
+      - Each listed handler reads from IndexDO/TeamConfigDO instead of litellmFetch
+      - Response shape preserved (no breaking changes for existing UI components)
+    definition_of_done: [T-10.9 route tests still pass]
+    estimate: M
+    priority: high
+    labels: [routes]
+
+  - id: T-8.3
+    parent: EPIC-8
+    name: "routes.ts: admin write endpoints write DO-first then enqueueSync"
+    blocked_by: [T-2.2, T-4.3, T-8.1]
+    blocks: [T-10.9, T-11.4]
+    serializes_with: [T-8.1, T-8.2, T-8.4, T-8.5]
+    affected_files: [cloud/src/litellm-portal/routes.ts]
+    affected_symbols:
+      - PATCH /api/admin/teams/:teamId/limits
+      - PATCH /api/admin/users/:userId
+      - PATCH /api/admin/keys/:keyId/disable
+      - DELETE /api/admin/keys/:keyId
+      - POST /api/keys
+    spec_refs:
+      - portal-config-source-of-truth#"Admin write commits to DO before responding"
+      - portal-litellm-config-sync#"Admin writes enqueue a sync message after DO commit"
+    acceptance:
+      - Each handler: validate input → write DO via T-2.2 → enqueueSync → return 200
+      - On DO write failure: 500 (do not enqueue)
+      - On enqueueSync failure after a successful DO write: 200 with meta:dirty set (per T-4.3)
+    definition_of_done: [T-10.9 covers happy + DO-fail + enqueue-fail]
+    estimate: L
+    priority: high
+    labels: [routes, sync]
+
+  - id: T-8.4
+    parent: EPIC-8
+    name: "auditWrite() also appends to IndexDO.audit:{ts}:{id}"
+    blocked_by: [T-2.1, T-8.3]
+    blocks: [T-10.9]
+    serializes_with: [T-8.1, T-8.2, T-8.3, T-8.5]
+    affected_files:
+      - cloud/src/litellm-portal/admin.ts (or wherever auditWrite is)
+    affected_symbols: [auditWrite(env, event)]
+    spec_refs: [portal-config-source-of-truth#"Admin write commits to DO before responding"]
+    acceptance:
+      - auditWrite first appends to IndexDO; LiteLLM /audit call kept but moved AFTER the DO append
+      - On LiteLLM /audit failure, do NOT roll back the DO write; record in audit event itself
+    definition_of_done: [T-10.9 audit assertion passes against IndexDO]
+    estimate: S
+    priority: medium
+    labels: [routes]
+
+  - id: T-8.5
+    parent: EPIC-8
+    name: "Surface lastSyncedAt + lastSyncError on admin payloads"
+    blocked_by: [T-1.5, T-2.2, T-4.6]
+    blocks: [T-9.4, T-10.9]
+    serializes_with: [T-8.1, T-8.2, T-8.3, T-8.4]
+    affected_files: [cloud/src/litellm-portal/routes.ts]
+    affected_symbols: [adminTeamPayload, adminUserPayload, adminKeyPayload]
+    spec_refs: [portal-litellm-config-sync#"Sync status is exposed on admin payloads"]
+    acceptance:
+      - Each admin row carries lastSyncedAt (ISO 8601) and lastSyncError (string | null)
+      - When meta:dirty=true and lastSyncError is set, payload also includes dirty:true
+    definition_of_done: [T-10.9 schema-validates the new fields]
+    estimate: S
+    priority: medium
+    labels: [routes]
+
+  # ---------------------------------------------------------------------------
+  # EPIC-9: UI
+  # ---------------------------------------------------------------------------
+  - id: T-9.1
+    parent: EPIC-9
+    name: "/login UI: single email input + inline error"
+    blocked_by: [T-3.5]
+    blocks: [T-10.10]
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/routes/login.tsx (new, server-rendered)
+    affected_symbols: [LoginPage]
+    spec_refs: [portal-magic-link-auth#"Allowed email requests a magic link"]
+    acceptance:
+      - Renders a form posting to /login with a single email field
+      - Submission shows an inline success state ("Check your inbox") or an error message; never reveals user existence
+    definition_of_done: [Vite dev build renders the route]
+    estimate: S
+    priority: high
+    labels: [ui, auth]
+
+  - id: T-9.2
+    parent: EPIC-9
+    name: "/magic-callback transition UI"
+    blocked_by: [T-3.5]
+    blocks: [T-10.10]
+    serializes_with: []
+    affected_files: [cloud/src/litellm-portal/routes/login.tsx]
+    affected_symbols: [MagicCallbackTransition]
+    spec_refs: [portal-magic-link-auth#"Magic link callback succeeds"]
+    acceptance:
+      - Renders a short "Signing you in…" state then redirects to /
+      - On error, renders a recoverable state pointing back to /login
+    definition_of_done: [Dev build renders both states]
+    estimate: XS
+    priority: medium
+    labels: [ui, auth]
+
+  - id: T-9.3
+    parent: EPIC-9
+    name: "Session-aware error page for invalid/expired magic links"
+    blocked_by: [T-3.5]
+    blocks: []
+    serializes_with: [T-9.1, T-9.2]
+    affected_files: [cloud/src/litellm-portal/routes/login.tsx]
+    affected_symbols: [MagicErrorView]
+    spec_refs: [portal-magic-link-auth#"Magic link callback fails"]
+    acceptance:
+      - Distinct UI for expired vs. tampered vs. already-used token
+      - Provides a single CTA back to /login
+    definition_of_done: [Manual smoke during T-11.3]
+    estimate: XS
+    priority: low
+    labels: [ui, auth]
+
+  - id: T-9.4
+    parent: EPIC-9
+    name: "Sync status badge on admin write surfaces"
+    blocked_by: [T-8.5]
+    blocks: []
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/admin-components.tsx
+    affected_symbols: [SyncStatusBadge]
+    spec_refs: [portal-litellm-config-sync#"Failed sync visible to the UI"]
+    acceptance:
+      - Renders "Synced" (lastSyncedAt, dirty=false), "Sync pending" (dirty=true, no error), "Sync failed" (lastSyncError set)
+      - Hover or expand shows the short error reason
+    definition_of_done: [Three states render in storybook (portal.stories.tsx)]
+    estimate: S
+    priority: medium
+    labels: [ui]
+
+  - id: T-9.5
+    parent: EPIC-9
+    name: "Awaiting-team-assignment empty state for new users"
+    blocked_by: [T-2.1, T-3.5]
+    blocks: []
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/app.tsx
+    affected_symbols: [AwaitingTeamView]
+    spec_refs: [portal-config-source-of-truth#"New users without a team are visible but constrained"]
+    acceptance:
+      - When the user's teamId is null, the portal home renders an explicit empty state, not a 500 or a blank dashboard
+      - Includes a help line "Ask an admin to assign you to a team"
+    definition_of_done: [Manual smoke during T-11.3]
+    estimate: S
+    priority: medium
+    labels: [ui]
+
+  # ---------------------------------------------------------------------------
+  # EPIC-10: Tests
+  # ---------------------------------------------------------------------------
+  - id: T-10.1
+    parent: EPIC-10
+    name: "Unit tests for auth/magic-link.ts (sign, verify, TTL, single-use)"
+    blocked_by: [T-3.2]
+    blocks: [T-11.1]
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/auth/magic-link.test.ts (new)
+    spec_refs:
+      - portal-magic-link-auth#"Magic link callback succeeds"
+      - portal-magic-link-auth#"Magic link callback fails"
+    acceptance: [≥4 cases: valid, expired, bad sig, replay]
+    definition_of_done: [npm test passes]
+    verification_cmd: cd cloud/src/litellm-portal && npm test -- magic-link
+    estimate: S
+    priority: high
+    labels: [tests, auth]
+
+  - id: T-10.2
+    parent: EPIC-10
+    name: "Unit tests for auth/session.ts (sign, tamper, expiry, clear)"
+    blocked_by: [T-3.3]
+    blocks: [T-11.1]
+    serializes_with: []
+    affected_files: [cloud/src/litellm-portal/auth/session.test.ts (new)]
+    spec_refs: [portal-magic-link-auth#"Signed session cookie is the only credential the portal accepts"]
+    acceptance: [≥4 cases: valid, tampered, expired, clear]
+    definition_of_done: [npm test passes]
+    estimate: S
+    priority: high
+    labels: [tests, auth]
+
+  - id: T-10.3
+    parent: EPIC-10
+    name: "Unit tests for auth/allowlist.ts (multi-domain, case-insensitive)"
+    blocked_by: [T-3.1]
+    blocks: [T-11.1]
+    serializes_with: []
+    affected_files: [cloud/src/litellm-portal/auth/allowlist.test.ts (new)]
+    spec_refs: [portal-magic-link-auth#"Email allow-list is configurable and case-insensitive"]
+    acceptance: [Cases for empty / single / multi / case-mismatch / disallowed domain]
+    definition_of_done: [npm test passes]
+    estimate: XS
+    priority: high
+    labels: [tests, auth]
+
+  - id: T-10.4
+    parent: EPIC-10
+    name: "Miniflare tests for IndexDO (nonce TTL, idempotent init, bootstrap upsert)"
+    blocked_by: [T-2.1, T-2.3, T-2.4]
+    blocks: [T-11.1]
+    serializes_with: []
+    affected_files: [cloud/src/litellm-portal/durable/index-do.test.ts (new)]
+    spec_refs:
+      - portal-config-source-of-truth#"IndexDO holds cross-team indexes"
+      - portal-bootstrap-import#"Re-entry after partial progress"
+    acceptance:
+      - Cases: nonce TTL via alarm, email index round-trip, init single-flight, bootstrap admin force-upsert
+    definition_of_done: [npm test passes against miniflare DO sim]
+    estimate: M
+    priority: high
+    labels: [tests, durable-obj]
+
+  - id: T-10.5
+    parent: EPIC-10
+    name: "Miniflare tests for TeamConfigDO (members, spend snapshot, sync meta)"
+    blocked_by: [T-2.2]
+    blocks: [T-11.1]
+    serializes_with: []
+    affected_files: [cloud/src/litellm-portal/durable/team-config-do.test.ts (new)]
+    spec_refs: [portal-config-source-of-truth#"DO writes carry sync metadata"]
+    acceptance:
+      - Cases: putTeam marks dirty, upsertMember idempotent, putSpend replaces snapshot, recordSyncSuccess clears dirty/error
+    definition_of_done: [npm test passes]
+    estimate: M
+    priority: high
+    labels: [tests, durable-obj]
+
+  - id: T-10.6
+    parent: EPIC-10
+    name: "Queue consumer tests (happy / retry / DLQ / idempotency)"
+    blocked_by: [T-4.4, T-4.5, T-4.6]
+    blocks: [T-11.1]
+    serializes_with: []
+    affected_files: [cloud/src/litellm-portal/sync/queue-consumer.test.ts (new)]
+    spec_refs:
+      - portal-litellm-config-sync#"Successful materialization"
+      - portal-litellm-config-sync#"Retryable failure"
+      - portal-litellm-config-sync#"Terminal failure"
+      - portal-litellm-config-sync#"Redelivered message"
+    acceptance:
+      - 2xx → success path; lastSyncedAt advances; dirty cleared
+      - 5xx → exception re-thrown so Cloudflare retries
+      - 4xx non-retryable → forwarded to DLQ; lastSyncError stamped
+      - Duplicate idempotencyKey → no LiteLLM call; lastSyncedAt still advances
+    definition_of_done: [npm test passes]
+    estimate: M
+    priority: high
+    labels: [tests, sync]
+
+  - id: T-10.7
+    parent: EPIC-10
+    name: "Importer tests (idempotent re-run, bootstrap admin pathways)"
+    blocked_by: [T-6.1, T-6.2, T-6.3, T-6.4]
+    blocks: [T-11.1]
+    serializes_with: []
+    affected_files: [cloud/src/litellm-portal/sync/litellm-importer.test.ts (new)]
+    spec_refs:
+      - portal-bootstrap-import#"Re-entry after partial progress"
+      - portal-bootstrap-import#"Already-imported deployment"
+      - portal-bootstrap-import#"Bootstrap admin email exists in LiteLLM as a user"
+    acceptance:
+      - Two consecutive imports produce identical DO state
+      - Bootstrap admin present in /user/list → role admin
+      - Bootstrap admin absent from /user/list → no row created
+    definition_of_done: [npm test passes]
+    estimate: M
+    priority: high
+    labels: [tests, bootstrap]
+
+  - id: T-10.8
+    parent: EPIC-10
+    name: "Spend cron tests (per-team failure isolation)"
+    blocked_by: [T-5.2, T-5.3, T-5.4]
+    blocks: [T-11.1]
+    serializes_with: []
+    affected_files: [cloud/src/litellm-portal/sync/spend-snapshot-cron.test.ts (new)]
+    spec_refs: [portal-litellm-config-sync#"LiteLLM unavailable during a spend tick"]
+    acceptance:
+      - Cases: all teams succeed; one team fails (others still get snapshot); failing team retains prior snapshot
+    definition_of_done: [npm test passes]
+    estimate: S
+    priority: medium
+    labels: [tests, cron]
+
+  - id: T-10.9
+    parent: EPIC-10
+    name: "Route regression tests (DO-sourced reads, DO-first writes, audit)"
+    blocked_by: [T-8.2, T-8.3, T-8.4, T-8.5]
+    blocks: [T-11.1]
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/index.test.ts (extend)
+      - cloud/src/litellm-portal/routes.test.ts (new if needed)
+    spec_refs:
+      - portal-config-source-of-truth#"Admin read serves DO data"
+      - portal-config-source-of-truth#"Admin write commits to DO before responding"
+    acceptance:
+      - Every /api/admin/* endpoint covered by at least one read-from-DO assertion
+      - Every admin write asserted to (a) commit to DO and (b) enqueue
+      - DO-write-failure path returns 500 and does NOT enqueue
+      - Tests use a new session-cookie helper, not the old x-litellm-portal-dev-email shim
+    definition_of_done: [Full route test suite passes]
+    verification_cmd: cd cloud/src/litellm-portal && npm test -- index router routes
+    estimate: L
+    priority: high
+    labels: [tests, routes]
+
+  - id: T-10.10
+    parent: EPIC-10
+    name: "E2E: /login → /magic-callback → admin write → queue → LiteLLM stub"
+    blocked_by: [T-3.5, T-3.6, T-4.4, T-6.6, T-8.3, T-9.1, T-9.2]
+    blocks: [T-11.1]
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/e2e/login-write-sync.test.ts (new)
+    spec_refs:
+      - portal-magic-link-auth#"Magic link callback succeeds"
+      - portal-litellm-config-sync#"Successful materialization"
+    acceptance:
+      - Boots miniflare with DO + queue stubs
+      - Walks: POST /login → reads mailchannels stub → GET /magic-callback → PATCH /api/admin/teams/:teamId/limits → queue consumer fires → LiteLLM stub asserts inbound /team/update
+    definition_of_done: [npm test -- e2e passes]
+    estimate: L
+    priority: high
+    labels: [tests]
+
+  # ---------------------------------------------------------------------------
+  # EPIC-11: Cutover + rollback verification
+  # ---------------------------------------------------------------------------
+  - id: T-11.1
+    parent: EPIC-11
+    name: "Pre-cutover deploy with PORTAL_DO_SOT_ENABLED=false"
+    blocked_by: [T-2.5, T-2.6, T-4.1, T-4.2, T-5.1, T-7.1, T-7.2, T-7.3, T-7.4, T-7.5, T-10.1, T-10.2, T-10.3, T-10.4, T-10.5, T-10.6, T-10.7, T-10.8, T-10.9, T-10.10]
+    blocks: [T-11.2]
+    serializes_with: []
+    affected_files: []
+    spec_refs: []
+    acceptance:
+      - CI green
+      - wrangler deploy --env production succeeds with the flag off
+      - CF Access still gates the portal; old admin flows still work
+    definition_of_done: [Smoke screenshot of the old portal taken; release notes drafted]
+    estimate: S
+    priority: urgent
+    labels: [cutover]
+
+  - id: T-11.2
+    parent: EPIC-11
+    name: "Maintenance window: flip flag to true, run init(), verify counts"
+    blocked_by: [T-6.5, T-8.1, T-11.1]
+    blocks: [T-11.3]
+    serializes_with: [T-11.3, T-11.4, T-11.5, T-11.6]
+    affected_files: []
+    spec_refs: [portal-bootstrap-import#"Fresh deployment, empty DO"]
+    acceptance:
+      - PORTAL_DO_SOT_ENABLED=true deployed
+      - GET /__diag/index → meta:imported=true, team count and user count match LiteLLM /team/list + /user/list
+    definition_of_done: [Counts logged in cutover runbook]
+    estimate: S
+    priority: urgent
+    labels: [cutover]
+
+  - id: T-11.3
+    parent: EPIC-11
+    name: "Smoke: bootstrap admin receives magic link → lands as admin"
+    blocked_by: [T-11.2]
+    blocks: [T-11.4]
+    serializes_with: [T-11.2, T-11.4, T-11.5]
+    affected_files: []
+    spec_refs: [portal-magic-link-auth#"Bootstrap admins are seeded from environment"]
+    acceptance:
+      - An email in BOOTSTRAP_ADMIN_EMAILS receives the magic-link email within 60s
+      - Clicking the link results in a session cookie and role=admin on the home page
+    definition_of_done: [Operator screenshot; success logged in runbook]
+    estimate: XS
+    priority: urgent
+    labels: [cutover]
+
+  - id: T-11.4
+    parent: EPIC-11
+    name: "Smoke: admin edits team budget → lastSyncedAt advances, LiteLLM reflects"
+    blocked_by: [T-8.3, T-11.3]
+    blocks: [T-11.5]
+    serializes_with: [T-11.3, T-11.5]
+    affected_files: []
+    spec_refs:
+      - portal-config-source-of-truth#"Admin write commits to DO before responding"
+      - portal-litellm-config-sync#"Successful materialization"
+    acceptance:
+      - PATCH /api/admin/teams/:teamId/limits returns 200
+      - Within retry budget (≤30s), GET /team/info on LiteLLM reflects the change AND lastSyncedAt on the row advances
+    definition_of_done: [Before/after numbers in runbook]
+    estimate: XS
+    priority: urgent
+    labels: [cutover]
+
+  - id: T-11.5
+    parent: EPIC-11
+    name: "Smoke: spend snapshot updates spend:current within one cron tick"
+    blocked_by: [T-5.2, T-11.3]
+    blocks: [T-11.6]
+    serializes_with: [T-11.3, T-11.4]
+    affected_files: []
+    spec_refs: [portal-litellm-config-sync#"Steady-state spend refresh"]
+    acceptance:
+      - Wait one cron tick after a known LiteLLM spend change
+      - Read spend via the portal UI; matches LiteLLM
+    definition_of_done: [Timestamp diff ≤60s recorded in runbook]
+    estimate: XS
+    priority: high
+    labels: [cutover]
+
+  - id: T-11.6
+    parent: EPIC-11
+    name: "Detach Cloudflare Access policy from the portal hostname"
+    blocked_by: [T-7.4, T-11.5]
+    blocks: [T-11.7]
+    serializes_with: []
+    affected_files: []
+    spec_refs: [portal-magic-link-auth#"Email magic-link login replaces Cloudflare Access"]
+    acceptance:
+      - In Cloudflare dashboard, the Access policy is unbound from the portal hostname
+      - A fresh incognito tab can reach /login without seeing Cloudflare Access UI
+    definition_of_done: [Screenshot saved to runbook]
+    estimate: XS
+    priority: urgent
+    labels: [cutover]
+
+  - id: T-11.7
+    parent: EPIC-11
+    name: "Rollback drill in staging"
+    blocked_by: [T-11.6]
+    blocks: [T-12.1]
+    serializes_with: []
+    affected_files: []
+    spec_refs: []
+    acceptance:
+      - In staging, redeploy the previous build AND re-attach CF Access
+      - Verify the old portal is reachable; verify meta:imported remains true on DO and is not re-run
+    definition_of_done: [Documented success in runbook; can roll forward again afterwards]
+    estimate: S
+    priority: high
+    labels: [cutover]
+
+  # ---------------------------------------------------------------------------
+  # EPIC-12: Cleanup (follow-up commit)
+  # ---------------------------------------------------------------------------
+  - id: T-12.1
+    parent: EPIC-12
+    name: "Delete CF Access code paths from auth.ts and surroundings"
+    blocked_by: [T-1.2, T-3.6, T-3.7, T-7.4, T-11.7]
+    blocks: []
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/auth.ts
+      - cloud/src/litellm-portal/routes/portal-command-palette.tsx
+      - cloud/src/litellm-portal/app.tsx
+    affected_symbols: [validateAccessJwt, getAccessJwks, Cf-Access-* lookups]
+    spec_refs: []
+    acceptance: [grep finds no Cf-Access / CLOUDFLARE_ACCESS / cdn-cgi/access in non-test source]
+    definition_of_done:
+      - verification_cmd exits 0
+    verification_cmd: |
+      ! grep -rn "Cf-Access\|CLOUDFLARE_ACCESS\|cdn-cgi/access" --include="*.ts" --include="*.tsx" cloud/src/litellm-portal | grep -v ".test." | grep -v "app.generated"
+    estimate: S
+    priority: medium
+    labels: [cleanup]
+
+  - id: T-12.2
+    parent: EPIC-12
+    name: "Delete role-cache.ts LiteLLM projection paths"
+    blocked_by: [T-3.8, T-11.7]
+    blocks: []
+    serializes_with: []
+    affected_files: [cloud/src/litellm-portal/role-cache.ts]
+    affected_symbols: [old LiteLLM /user/list projection, singleflight, KV TTL paths]
+    spec_refs: []
+    acceptance: [File contains only the DO-backed 30s memory cache; no LiteLLM fetch left]
+    definition_of_done: [grep no longer finds /user/list in role-cache.ts]
+    verification_cmd: ! grep -n "/user/list" cloud/src/litellm-portal/role-cache.ts
+    estimate: XS
+    priority: low
+    labels: [cleanup]
+
+  - id: T-12.3
+    parent: EPIC-12
+    name: "Remove ROLE_CACHE_KV binding if no other consumer remains"
+    blocked_by: [T-3.8, T-12.2]
+    blocks: []
+    serializes_with: [T-7.x]
+    affected_files: [wrangler.toml]
+    affected_symbols: [ROLE_CACHE_KV]
+    spec_refs: []
+    acceptance: [grep finds no ROLE_CACHE_KV in src; wrangler.toml entry deleted]
+    definition_of_done: [wrangler deploy --dry-run succeeds]
+    estimate: XS
+    priority: low
+    labels: [cleanup, infra]
+
+  - id: T-12.4
+    parent: EPIC-12
+    name: "Remove dev-auth test shim; introduce session-cookie test helper"
+    blocked_by: [T-11.7]
+    blocks: []
+    serializes_with: []
+    affected_files:
+      - cloud/src/litellm-portal/index.test.ts
+      - cloud/src/litellm-portal/role-cache.test.ts
+      - cloud/src/litellm-portal/security.test.ts
+      - cloud/src/litellm-portal/preferences-worker.test.ts
+      - cloud/src/litellm-portal/auth.ts (LITELLM_PORTAL_DEV_AUTH check)
+    affected_symbols: [x-litellm-portal-dev-email, mintTestSession()]
+    spec_refs: []
+    acceptance:
+      - New helper mintTestSession(env, email) returns a Cookie header value
+      - All tests previously using x-litellm-portal-dev-email switched to mintTestSession
+      - Full test suite still green
+    definition_of_done: [npm test passes; grep finds no dev-email header in src]
+    estimate: M
+    priority: medium
+    labels: [cleanup, tests]
+
+  - id: T-12.5
+    parent: EPIC-12
+    name: "Update portal README to describe magic-link, DO SoT, queue sync"
+    blocked_by: [T-11.7]
+    blocks: []
+    serializes_with: []
+    affected_files: [cloud/src/litellm-portal/README.md]
+    affected_symbols: []
+    spec_refs: []
+    acceptance:
+      - README lists: env vars, secrets, bindings, login flow, sync semantics, cutover runbook link
+      - Removes any mention of Cloudflare Access
+    definition_of_done: [Reviewer ack]
+    estimate: S
+    priority: low
+    labels: [cleanup]
+
+# =============================================================================
+# Dependency summary (high-level critical path)
+# =============================================================================
+#   EPIC-1 ─┬─> EPIC-2 ─┬─> EPIC-3 ─┐
+#           │           ├─> EPIC-4 ─┼─> EPIC-8 ─┐
+#           │           ├─> EPIC-5  │           │
+#           │           └─> EPIC-6 ─┘           │
+#           └─> EPIC-7 (in parallel)            │
+#                                               ├─> EPIC-10 ─> EPIC-11 ─> EPIC-12
+#                                EPIC-9 ───────┘
+#
+# Parallelizable batches (after EPIC-1):
+#   batch A: T-2.1, T-2.2                       (different new files)
+#   batch B: T-3.1, T-3.2, T-3.3, T-3.4          (different new files)
+#   batch C: T-4.3, T-5.2, T-6.1, T-6.2          (different new files; share types from EPIC-1)
+# Serialization hotspots:
+#   wrangler.toml — T-2.5, T-2.6, T-4.1, T-4.2, T-5.1, T-7.x (run serially)
+#   types.ts      — T-1.2, T-1.3, T-1.4         (run serially)
+#   index.ts      — T-3.5, T-4.4, T-5.2          (run serially)
+#   routes.ts     — T-8.1, T-8.2, T-8.3, T-8.4, T-8.5 (run serially)
