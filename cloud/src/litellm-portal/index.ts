@@ -44,12 +44,12 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
     return new Response(null, { status: 204, headers: securityHeaders() });
   }
 
-  // Auth-bypass routes (only when DO SoT is enabled)
+  // Auth-bypass routes (login/magic-callback only when flag=true; logout always)
+  if (url.pathname === "/logout" && request.method === "POST") return handleLogout(request, env);
   if (env.PORTAL_DO_SOT_ENABLED === "true") {
     if (url.pathname === "/login" && request.method === "GET")  return handleLoginGet(request, env);
     if (url.pathname === "/login" && request.method === "POST") return handleLoginPost(request, env);
     if (url.pathname === "/magic-callback" && request.method === "GET") return handleMagicCallback(request, env);
-    if (url.pathname === "/logout" && request.method === "POST") return handleLogout(request, env);
   }
 
   // Serve the portal SPA shell for all non-asset GET requests so that

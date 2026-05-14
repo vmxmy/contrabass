@@ -91,16 +91,11 @@ function HeaderActions() {
         aria-label={isDark ? "切换浅色模式" : "切换深色模式"}
         label={isDark ? <Trans>深色</Trans> : <Trans>浅色</Trans>}
       />
-      <Button
-        variant="outline"
-        type="button"
-        aria-label="退出登录"
-        onClick={() => {
-          window.location.href = "/cdn-cgi/access/logout";
-        }}
-      >
-        <Trans>退出登录</Trans>
-      </Button>
+      <form method="POST" action="/logout" style={{ display: "inline" }}>
+        <Button variant="outline" type="submit" aria-label="退出登录">
+          <Trans>退出登录</Trans>
+        </Button>
+      </form>
     </>
   );
 }
