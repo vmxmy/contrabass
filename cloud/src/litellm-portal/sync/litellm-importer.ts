@@ -1,5 +1,5 @@
 import type { LiteLLMPortalEnv, LiteLLMTeam } from "../types";
-import type { TeamRecord, UserRecord } from "../durable/schemas";
+import type { TeamRecord, UserRecord, AuditEvent } from "../durable/schemas";
 import type { TeamConfigDO } from "../durable/team-config-do";
 import type { IndexDO } from "../durable/index-do";
 import { litellmFetch, extractRecords } from "../litellm";
@@ -362,4 +362,60 @@ export async function applyBootstrapAdmins(env: LiteLLMPortalEnv): Promise<Apply
   }
 
   return { configuredEmails, promotedToAdmin, absentFromIndex };
+}
+
+/** Aggregate summary of the one-shot import phase. */
+export type ImportFinalizationSummary = {
+  /** From importTeams result. */
+  teamCount: number;
+  /** From importUsers result. */
+  userCount: number;
+  /** From applyBootstrapAdmins result. */
+  bootstrapAdmins: { configured: number; promoted: number; absentFromIndex: number };
+  /** Cumulative errors from any prior phase (importTeams + importUsers + applyBootstrapAdmins). */
+  errors: Array<{ entityId: string; reason: string }>;
+};
+
+/** Mark the one-shot import complete:
+ *  - Set IndexDO.meta:imported = true
+ *  - Append a single audit:{now}:import event recording the summary
+ *
+ *  Idempotent: if meta:imported is already true, returns early without
+ *  appending a duplicate audit event.
+ *
+ *  Does NOT call importTeams / importUsers / applyBootstrapAdmins — the
+ *  caller (T-6.5 orchestrator) is responsible for sequencing those, then
+ *  calling finalizeImport with the aggregated summary.
+ */
+export async function finalizeImport(
+  env: LiteLLMPortalEnv,
+  summary: ImportFinalizationSummary,
+): Promise<{ alreadyImported: boolean }> {
+  if (!env.INDEX_DO) {
+    throw new Error("finalizeImport: binding INDEX_DO is not configured");
+  }
+
+  const idxStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDO;
+
+  const alreadyImported = await idxStub.isImported();
+  if (alreadyImported) {
+    return { alreadyImported: true };
+  }
+
+  const event: AuditEvent = {
+    id: crypto.randomUUID(),
+    ts: new Date().toISOString(),
+    actorEmail: "system",
+    action: "import",
+    entityKind: "deployment",
+    entityId: "one-shot-import",
+    before: null,
+    after: { ...summary },
+    reason: `imported ${summary.teamCount} teams, ${summary.userCount} users, promoted ${summary.bootstrapAdmins.promoted} bootstrap admins`,
+  };
+
+  await idxStub.appendAudit(event);
+  await idxStub.markImported();
+
+  return { alreadyImported: false };
 }
