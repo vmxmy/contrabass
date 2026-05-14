@@ -7,6 +7,19 @@ import { issueSession, buildSessionCookieHeader, clearSessionHeader } from "./se
 // Inline IndexDO stub type (avoids pulling DO module into test transform chain)
 // ---------------------------------------------------------------------------
 
+type IndexDOInitStub = { init(): Promise<{ ok: true; imported: boolean }> };
+
+async function ensurePortalDOInitialized(env: LiteLLMPortalEnv): Promise<void> {
+  if (env.PORTAL_DO_SOT_ENABLED !== "true" || !env.INDEX_DO) return;
+  try {
+    const idxStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOInitStub;
+    await idxStub.init();
+  } catch (err) {
+    // Don't block login on init failure; log + continue. UI will show empty state until ops re-trigger init.
+    console.error("[auth] IndexDO.init() failed:", err);
+  }
+}
+
 type IndexDOStub = {
   getUserByEmail(email: string): Promise<{
     userId: string;
@@ -154,6 +167,7 @@ export async function handleLoginGet(_request: Request, _env: LiteLLMPortalEnv):
 }
 
 export async function handleLoginPost(request: Request, env: LiteLLMPortalEnv): Promise<Response> {
+  await ensurePortalDOInitialized(env);
   let email: string;
   try {
     const form = await request.formData();
@@ -196,6 +210,7 @@ export async function handleLoginPost(request: Request, env: LiteLLMPortalEnv): 
 }
 
 export async function handleMagicCallback(request: Request, env: LiteLLMPortalEnv): Promise<Response> {
+  await ensurePortalDOInitialized(env);
   const url = new URL(request.url);
   const token = url.searchParams.get("token");
 
