@@ -11,17 +11,24 @@ function makeRequest(url: string, method = "POST", headers: Record<string, strin
 }
 
 describe("checkCsrf", () => {
-  describe("_internal/* paths are exempt", () => {
-    it("allows POST to /_internal/role-changed without Origin or Referer", () => {
-      const req = makeRequest("https://portal.example.com/_internal/role-changed");
+  describe("/api/_internal/* paths are exempt", () => {
+    it("allows POST to /api/_internal/role-changed without Origin or Referer", () => {
+      const req = makeRequest("https://portal.example.com/api/_internal/role-changed");
       const result = checkCsrf(req, makeEnv());
       expect(result).toBeNull();
     });
 
-    it("allows POST to any /_internal/* path without Origin or Referer", () => {
-      const req = makeRequest("https://portal.example.com/_internal/other-hook");
+    it("allows POST to any /api/_internal/* path without Origin or Referer", () => {
+      const req = makeRequest("https://portal.example.com/api/_internal/other-hook");
       const result = checkCsrf(req, makeEnv());
       expect(result).toBeNull();
+    });
+
+    it("does NOT exempt bare /_internal/* (route is only reachable via /api mount)", () => {
+      const req = makeRequest("https://portal.example.com/_internal/role-changed");
+      const result = checkCsrf(req, makeEnv());
+      expect(result).not.toBeNull();
+      expect(result?.status).toBe(403);
     });
   });
 
