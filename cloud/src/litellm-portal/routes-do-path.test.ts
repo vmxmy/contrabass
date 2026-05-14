@@ -17,6 +17,16 @@ const TEAMS_DATA = [
   { id: "t2", alias: "beta" },
 ];
 
+// User whose userId is a UUID-like string, distinct from their email.
+// This exercises the adminUpdateUserDO path where userId !== email.
+const NON_EMAIL_USER = {
+  userId: "user-abc-123",
+  email: "alice@example.com",
+  role: "user" as const,
+  teamId: "t1",
+  createdAt: new Date().toISOString(),
+};
+
 const USERS_DATA = [
   {
     userId: ADMIN_EMAIL,
@@ -32,6 +42,7 @@ const USERS_DATA = [
     teamId: "t2",
     createdAt: new Date().toISOString(),
   },
+  NON_EMAIL_USER,
 ];
 
 const SYNC_META = {
@@ -213,7 +224,7 @@ describe("DO-path admin routes (PORTAL_DO_SOT_ENABLED=true)", () => {
         size: number;
       };
       expect(Array.isArray(data.users)).toBe(true);
-      expect(data.totalCount).toBe(2);
+      expect(data.totalCount).toBe(3);
       expect(data.page).toBe(1);
       expect(data.size).toBe(50);
 
@@ -416,5 +427,98 @@ describe("DO-path admin routes (PORTAL_DO_SOT_ENABLED=true)", () => {
       const data = await res.json() as Record<string, unknown>;
       expect(data.error).toBe("admin_required");
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Codex review: additional coverage
+  // ---------------------------------------------------------------------------
+
+  describe("PATCH /api/admin/users/:userId — userId !== email", () => {
+    it("looks up user by userId (not email) and preserves email field in stored record", async () => {
+      // NON_EMAIL_USER has userId="user-abc-123" and email="alice@example.com".
+      // adminUpdateUserDO must call getUserById("user-abc-123"), not getUserByEmail.
+      // The stored record (putUser arg) must retain the original email value.
+      const indexStub = makeIndexDOStub();
+      const teamStub = makeTeamConfigDOStub();
+      const env = makeFlagOnEnv(indexStub, teamStub);
+
+      const res = await app.fetch(
+        await adminRequest(
+          `https://x/api/admin/users/${encodeURIComponent(NON_EMAIL_USER.userId)}`,
+          env,
+          {
+            method: "PATCH",
+            body: JSON.stringify({ role: "proxy_admin", reason: "promotion" }),
+          },
+        ),
+        env,
+      );
+
+      expect(res.status).toBe(200);
+      const data = await res.json() as Record<string, unknown>;
+      // Response userId must be the non-email userId, not the email.
+      expect(data.userId).toBe(NON_EMAIL_USER.userId);
+
+      // getUserById must have been called with the userId, not the email.
+      expect(indexStub.getUserById).toHaveBeenCalledWith(NON_EMAIL_USER.userId);
+      // getUserByEmail must NOT have been called for this lookup.
+      expect(indexStub.getUserByEmail).not.toHaveBeenCalledWith(NON_EMAIL_USER.userId);
+
+      // putUser must have been called with a record that still carries the original email.
+      expect(indexStub.putUser).toHaveBeenCalledOnce();
+      const putArg = indexStub.putUser.mock.calls[0][0] as Record<string, unknown>;
+      expect(putArg.userId).toBe(NON_EMAIL_USER.userId);
+      expect(putArg.email).toBe(NON_EMAIL_USER.email);
+    });
+  });
+
+  describe("PATCH /api/admin/teams/:teamId/limits — dryRun=true is non-mutating", () => {
+    it("returns would-be-updated record with dryRun=true and does NOT call putTeam or enqueueSync", async () => {
+      const indexStub = makeIndexDOStub();
+      const teamStub = makeTeamConfigDOStub();
+      const syncQueue = { send: vi.fn().mockResolvedValue(undefined) };
+      const env = makeFlagOnEnv(indexStub, teamStub, {
+        LITELLM_SYNC_QUEUE: syncQueue as unknown as Queue,
+      });
+
+      const res = await app.fetch(
+        await adminRequest(
+          "https://x/api/admin/teams/t1/limits?dryRun=true",
+          env,
+          {
+            method: "PATCH",
+            body: JSON.stringify({ tpmLimit: 9999, rpmLimit: 500, maxBudget: 75, reason: "dry-run-check" }),
+          },
+        ),
+        env,
+      );
+
+      expect(res.status).toBe(200);
+      const data = await res.json() as Record<string, unknown>;
+
+      // Response must declare dryRun=true and carry the would-be-updated team.
+      expect(data.dryRun).toBe(true);
+      expect(data.enqueued).toBe(false);
+      expect(data.team).toBeDefined();
+      const team = data.team as Record<string, unknown>;
+      expect(team.tpmLimit).toBe(9999);
+      expect(team.rpmLimit).toBe(500);
+      expect(team.maxBudget).toBe(75);
+
+      // putTeam must NOT have been called — dryRun must be non-mutating.
+      expect(teamStub.putTeam).not.toHaveBeenCalled();
+
+      // The sync queue must NOT have been called.
+      expect(syncQueue.send).not.toHaveBeenCalled();
+    });
+  });
+
+  // TODO(post-cutover): adminKeyDisable and adminKeyDelete are not yet routed
+  // through the DO path — they return 501 when PORTAL_DO_SOT_ENABLED=true.
+  // Once those routes are implemented, replace these placeholders with real tests
+  // that assert TeamConfigDO.upsertKey / deleteKey calls and queue messages.
+  describe("Key operations under DO flag", () => {
+    it.todo("adminDisableKey: assert TeamConfigDO.upsertKey called and queue receives key.update");
+    it.todo("adminDeleteKey: assert TeamConfigDO.deleteKey called and queue receives key.delete");
   });
 });
