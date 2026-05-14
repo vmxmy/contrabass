@@ -117,6 +117,9 @@ export const DashboardKeySchema = z.object({
   expiresAt: nullableString.optional(),
   createdAt: nullableString.optional(),
   blocked: z.boolean().nullable().optional(),
+  lastSyncedAt: z.string().datetime().optional(),
+  lastSyncError: z.string().nullable().optional(),
+  dirty: z.boolean().optional(),
 });
 
 export const DashboardModelsSchema = z.object({
@@ -242,6 +245,9 @@ export const AdminUserSchema = z.object({
   maxBudget: nullableNumber,
   teamIds: z.array(z.string()),
   role: nullableString,
+  lastSyncedAt: z.string().datetime().optional(),
+  lastSyncError: z.string().nullable().optional(),
+  dirty: z.boolean().optional(),
 });
 
 export const AdminUsersSchema = z.object({
@@ -265,6 +271,9 @@ export const AdminTeamSchema = z.object({
   maxBudget: nullableNumber,
   tpmLimit: nullableNumber,
   rpmLimit: nullableNumber,
+  lastSyncedAt: z.string().datetime().optional(),
+  lastSyncError: z.string().nullable().optional(),
+  dirty: z.boolean().optional(),
 });
 
 export const AdminTeamsSchema = z.object({

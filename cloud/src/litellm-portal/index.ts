@@ -18,9 +18,21 @@ import { recordAudit } from "./observability/audit";
 import { checkClientErrorRateLimit, recordClientError } from "./observability/client-error";
 import type { ClientErrorPayload } from "./observability/client-error";
 import { scanBudgetThresholds } from "./notifications";
+import { runSpendSnapshotTick } from "./sync/spend-snapshot-cron";
+import { handleLiteLLMSyncBatch } from "./sync/queue-consumer";
+import type { SyncMessage } from "./durable/schemas";
+import {
+  handleLoginGet,
+  handleLoginPost,
+  handleMagicCallback,
+  handleLogout,
+} from "./auth/login-routes";
+import { checkCsrf } from "./auth/csrf";
 
 export type { LiteLLMPortalEnv } from "./types";
 export { RateLimitDO } from "./security/rate-limit-do";
+export { IndexDO } from "./durable/index-do";
+export { TeamConfigDO } from "./durable/team-config-do";
 
 const portalChunkByFileName = new Map<string, { fileName: string; js: string }>(
   portalBundleChunks.map((chunk) => [chunk.fileName, chunk]),
@@ -31,6 +43,17 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
 
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: securityHeaders() });
+  }
+
+  const csrfReject = checkCsrf(request, env);
+  if (csrfReject) return csrfReject;
+
+  // Auth-bypass routes (login/magic-callback only when flag=true; logout always)
+  if (url.pathname === "/logout" && request.method === "POST") return handleLogout(request, env);
+  if (env.PORTAL_DO_SOT_ENABLED === "true") {
+    if (url.pathname === "/login" && request.method === "GET")  return handleLoginGet(request, env);
+    if (url.pathname === "/login" && request.method === "POST") return handleLoginPost(request, env);
+    if (url.pathname === "/magic-callback" && request.method === "GET") return handleMagicCallback(request, env);
   }
 
   // Serve the portal SPA shell for all non-asset GET requests so that
@@ -201,7 +224,21 @@ async function handleClientError(request: Request, env: LiteLLMPortalEnv): Promi
 
 export default {
   fetch: handleLiteLLMPortalRequest,
-  async scheduled(_controller, env, ctx) {
-    ctx.waitUntil(scanBudgetThresholds(env));
+  async scheduled(controller, env, ctx) {
+    if (controller.cron === "0 9 * * *") {
+      ctx.waitUntil(scanBudgetThresholds(env));
+      return;
+    }
+    if (controller.cron === "* * * * *") {
+      if (env.PORTAL_DO_SOT_ENABLED === "true") {
+        ctx.waitUntil(runSpendSnapshotTick(env));
+      }
+      // flag=false: intentional no-op until cutover. The cron is still registered
+      // (for stability) but does no DO/LiteLLM work.
+      return;
+    }
+  },
+  async queue(batch, env, _ctx) {
+    await handleLiteLLMSyncBatch(batch as MessageBatch<SyncMessage>, env);
   },
 } satisfies ExportedHandler<LiteLLMPortalEnv>;

@@ -1,0 +1,84 @@
+import { describe, it, expect } from "vitest";
+import { checkCsrf } from "./csrf";
+import type { LiteLLMPortalEnv } from "../types";
+
+function makeEnv(enabled = true): LiteLLMPortalEnv {
+  return { PORTAL_DO_SOT_ENABLED: enabled ? "true" : "false" } as LiteLLMPortalEnv;
+}
+
+function makeRequest(url: string, method = "POST", headers: Record<string, string> = {}): Request {
+  return new Request(url, { method, headers });
+}
+
+describe("checkCsrf", () => {
+  describe("internal-webhook exact-match exemption", () => {
+    it("allows POST to /api/_internal/role-changed without Origin or Referer (shared-secret auth)", () => {
+      const req = makeRequest("https://portal.example.com/api/_internal/role-changed");
+      const result = checkCsrf(req, makeEnv());
+      expect(result).toBeNull();
+    });
+
+    it("does NOT exempt sibling /api/_internal/client-error (no shared-secret auth)", () => {
+      const req = makeRequest("https://portal.example.com/api/_internal/client-error");
+      const result = checkCsrf(req, makeEnv());
+      expect(result).not.toBeNull();
+      expect(result?.status).toBe(403);
+    });
+
+    it("does NOT exempt arbitrary /api/_internal/* paths", () => {
+      const req = makeRequest("https://portal.example.com/api/_internal/other-hook");
+      const result = checkCsrf(req, makeEnv());
+      expect(result).not.toBeNull();
+      expect(result?.status).toBe(403);
+    });
+
+    it("does NOT exempt bare /_internal/role-changed (route is only reachable via /api mount)", () => {
+      const req = makeRequest("https://portal.example.com/_internal/role-changed");
+      const result = checkCsrf(req, makeEnv());
+      expect(result).not.toBeNull();
+      expect(result?.status).toBe(403);
+    });
+  });
+
+  describe("non-internal paths still enforce CSRF", () => {
+    it("rejects POST without Origin or Referer", () => {
+      const req = makeRequest("https://portal.example.com/api/some-action");
+      const result = checkCsrf(req, makeEnv());
+      expect(result).not.toBeNull();
+      expect(result?.status).toBe(403);
+    });
+
+    it("accepts POST with matching Origin", () => {
+      const req = makeRequest("https://portal.example.com/api/some-action", "POST", {
+        Origin: "https://portal.example.com",
+      });
+      const result = checkCsrf(req, makeEnv());
+      expect(result).toBeNull();
+    });
+  });
+
+  describe("disabled when PORTAL_DO_SOT_ENABLED is not true", () => {
+    it("always returns null when disabled", () => {
+      const req = makeRequest("https://portal.example.com/api/some-action");
+      const result = checkCsrf(req, makeEnv(false));
+      expect(result).toBeNull();
+    });
+  });
+
+  describe("safe methods are always exempt", () => {
+    it("allows GET without Origin", () => {
+      const req = makeRequest("https://portal.example.com/api/some-action", "GET");
+      expect(checkCsrf(req, makeEnv())).toBeNull();
+    });
+
+    it("allows HEAD without Origin", () => {
+      const req = makeRequest("https://portal.example.com/api/some-action", "HEAD");
+      expect(checkCsrf(req, makeEnv())).toBeNull();
+    });
+
+    it("allows OPTIONS without Origin", () => {
+      const req = makeRequest("https://portal.example.com/api/some-action", "OPTIONS");
+      expect(checkCsrf(req, makeEnv())).toBeNull();
+    });
+  });
+});

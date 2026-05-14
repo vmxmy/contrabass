@@ -6,7 +6,7 @@ class ResizeObserverMock {
   disconnect() {}
 }
 
-global.ResizeObserver = ResizeObserverMock;
+Object.assign(globalThis, { ResizeObserver: ResizeObserverMock });
 
 afterEach(() => {
   vi.restoreAllMocks();
