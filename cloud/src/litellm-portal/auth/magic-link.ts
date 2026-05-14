@@ -211,11 +211,10 @@ export async function verifyMagicLink(
 // sendMagicLink
 // ---------------------------------------------------------------------------
 
-/** Send a magic-link email via Resend.
- *  POSTs to https://api.resend.com/emails with Bearer auth.
- *  Requires env.RESEND_API_KEY. From-address domain must be verified in Resend
- *  (or fall back to onboarding@resend.dev for initial smoke tests).
- *  On a non-2xx response, throws an Error so the caller can return 5xx. */
+/** Send a magic-link email via the Cloudflare Email Service Workers binding.
+ *  Requires env.EMAIL (bound via `[[send_email]] name="EMAIL" remote=true`).
+ *  Sender domain must be onboarded in Cloudflare Email Sending dashboard.
+ *  Throws on send failure so the caller can return 5xx. */
 export async function sendMagicLink(
   env: LiteLLMPortalEnv,
   options: {
@@ -225,16 +224,16 @@ export async function sendMagicLink(
     companyName?: string;
   },
 ): Promise<void> {
-  if (!env.RESEND_API_KEY) {
-    throw new Error("Resend send failed: RESEND_API_KEY not configured");
+  if (!env.EMAIL) {
+    throw new Error("Email send failed: EMAIL binding not configured");
   }
 
-  const fromEmail = options.from ?? env.PORTAL_MAIL_FROM ?? "no-reply@gz-zhiyun.com";
+  const fromEmail = options.from ?? env.PORTAL_MAIL_FROM ?? "noreply@ziikoo.com";
   const fromName = env.LITELLM_PORTAL_DISPLAY_NAME ?? "Portal Sign-in";
   const companyName = options.companyName ?? "the portal";
   const subject = `Sign in to ${companyName}`;
 
-  const plainBody = [
+  const text = [
     "Click the link below to sign in. It expires in 15 minutes.",
     "",
     options.link,
@@ -242,7 +241,7 @@ export async function sendMagicLink(
     "If you did not request this, ignore this email.",
   ].join("\n");
 
-  const htmlBody = [
+  const html = [
     "<!DOCTYPE html>",
     "<html><body>",
     "<p>Click the link below to sign in. It expires in 15 minutes.</p>",
@@ -251,28 +250,11 @@ export async function sendMagicLink(
     "</body></html>",
   ].join("\n");
 
-  const payload = {
-    from: `${fromName} <${fromEmail}>`,
-    to: [options.email],
+  await env.EMAIL.send({
+    from: { email: fromEmail, name: fromName },
+    to: options.email,
     subject,
-    html: htmlBody,
-    text: plainBody,
-  };
-
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${env.RESEND_API_KEY}`,
-    },
-    body: JSON.stringify(payload),
+    text,
+    html,
   });
-
-  if (!response.ok) {
-    const snippet = await response
-      .text()
-      .then((t) => t.slice(0, 200))
-      .catch(() => "");
-    throw new Error(`Resend send failed: HTTP ${response.status} — ${snippet}`);
-  }
 }

@@ -36,12 +36,12 @@ export type LiteLLMPortalEnv = {
   /** HMAC secret used to sign 15-minute magic-link tokens.
    *  Required when PORTAL_DO_SOT_ENABLED is "true". */
   PORTAL_MAGIC_LINK_SECRET?: string;
-  /** Resend API key — Bearer token for https://api.resend.com/emails.
-   *  Required for magic-link delivery. Provision via
-   *  `wrangler secret put RESEND_API_KEY`. */
-  RESEND_API_KEY?: string;
-  /** From address for outbound mail (must be a domain verified in Resend,
-   *  or onboarding@resend.dev for testing). Defaults to no-reply@gz-zhiyun.com. */
+  /** Cloudflare Email Service Workers binding (paid plan, no recipient
+   *  whitelist). Configure in wrangler.toml with `[[send_email]] name="EMAIL"
+   *  remote = true`. Sender domain must be onboarded in Email Sending dashboard. */
+  EMAIL?: SendEmail;
+  /** From address for outbound mail. Must be on a Cloudflare-Email-Sending
+   *  verified domain. Defaults to noreply@ziikoo.com. */
   PORTAL_MAIL_FROM?: string;
   /** Comma-separated list of allowed email domains for magic-link login.
    *  Match is case-insensitive. Example: "gz-zhiyun.com,partner.example". */
