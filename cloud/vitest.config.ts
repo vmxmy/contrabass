@@ -1,6 +1,7 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import { makeConfig } from "@lingui/conf";
+import path from "path";
 
 const linguiConfig = makeConfig({
   locales: ["zh-CN", "en"],
@@ -10,6 +11,11 @@ const linguiConfig = makeConfig({
 
 export default defineConfig({
   plugins: [react({ babel: { plugins: [["@lingui/babel-plugin-lingui-macro", { linguiConfig }]] } })],
+  resolve: {
+    alias: {
+      "cloudflare:workers": path.resolve(__dirname, "src/test/cloudflare-workers-stub.ts"),
+    },
+  },
   test: {
     environment: "node",
     globals: false,
