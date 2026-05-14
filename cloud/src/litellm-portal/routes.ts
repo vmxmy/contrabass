@@ -98,6 +98,11 @@ type TeamConfigDOAdminStub = {
     rpmLimit?: number;
     blocked: boolean;
   } | null>;
+  getSyncMetadata(): Promise<{
+    lastSyncedAt: string | null;
+    lastSyncError: string | null;
+    dirty: boolean;
+  }>;
 };
 
 type TeamConfigDOWriteStub = {
@@ -161,11 +166,19 @@ async function adminTeamsFromDO(env: LiteLLMPortalEnv): Promise<AdminTeams> {
   const teams: AdminTeams["teams"] = await Promise.all(
     entries.map(async (entry) => {
       let teamRecord: Awaited<ReturnType<TeamConfigDOAdminStub["getTeam"]>> = null;
+      let syncMeta: { lastSyncedAt: string | null; lastSyncError: string | null; dirty: boolean } = {
+        lastSyncedAt: null,
+        lastSyncError: null,
+        dirty: false,
+      };
       if (env.TEAM_CONFIG_DO) {
         const stub = env.TEAM_CONFIG_DO.get(
           env.TEAM_CONFIG_DO.idFromName(entry.id),
         ) as unknown as TeamConfigDOAdminStub;
-        teamRecord = await stub.getTeam();
+        [teamRecord, syncMeta] = await Promise.all([
+          stub.getTeam(),
+          stub.getSyncMetadata(),
+        ]);
       }
       return {
         id: entry.id,
@@ -175,6 +188,9 @@ async function adminTeamsFromDO(env: LiteLLMPortalEnv): Promise<AdminTeams> {
         maxBudget: teamRecord?.maxBudget ?? null,
         tpmLimit: teamRecord?.tpmLimit ?? null,
         rpmLimit: teamRecord?.rpmLimit ?? null,
+        lastSyncedAt: syncMeta.lastSyncedAt ?? undefined,
+        lastSyncError: syncMeta.lastSyncError,
+        dirty: syncMeta.dirty || undefined,
       };
     }),
   );
