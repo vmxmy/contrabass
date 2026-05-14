@@ -145,6 +145,23 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
     await this.ctx.storage.put(auditKey(parsed.ts, parsed.id), parsed);
   }
 
+  async listAllUsers(opts?: { limit?: number; cursor?: string }): Promise<{ users: UserRecord[]; cursor: string | undefined }> {
+    const limit = opts?.limit ?? 50;
+    const entries = await this.ctx.storage.list<unknown>({
+      prefix: "user:",
+      limit,
+      ...(opts?.cursor != null ? { startAfter: opts.cursor } : {}),
+    });
+    const users: UserRecord[] = [];
+    let lastKey: string | undefined;
+    for (const [key, raw] of entries) {
+      users.push(UserRecordSchema.parse(raw));
+      lastKey = key;
+    }
+    const cursor = entries.size >= limit ? lastKey : undefined;
+    return { users, cursor };
+  }
+
   async listAudit(opts?: { limit?: number; before?: string }): Promise<AuditEvent[]> {
     const limit = opts?.limit ?? 50;
     const before = opts?.before;
