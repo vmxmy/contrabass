@@ -9,12 +9,13 @@ export function checkCsrf(request: Request, env: LiteLLMPortalEnv): Response | n
   const method = request.method.toUpperCase();
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return null;
 
-  // Internal webhook paths authenticate via shared secret, not browser session.
-  // Note: the Hono app is mounted under /api, so the route .post("/_internal/role-changed")
-  // is externally reachable at /api/_internal/role-changed. checkCsrf runs at the worker
-  // entrypoint BEFORE Hono dispatch, so the raw path includes the /api/ prefix.
+  // Only exact internal-webhook paths that authenticate via shared secret are exempt.
+  // Do NOT exempt the broader /api/_internal/* prefix — sibling routes like
+  // /api/_internal/client-error are unauthenticated and would become a CSRF
+  // spam target if exempted. Add new entries here only when the new route
+  // authenticates via shared secret (not browser session).
   const requestUrl = new URL(request.url);
-  if (requestUrl.pathname.startsWith("/api/_internal/")) return null;
+  if (requestUrl.pathname === "/api/_internal/role-changed") return null;
 
   const expectedOrigin = `${requestUrl.protocol}//${requestUrl.host}`;
 
