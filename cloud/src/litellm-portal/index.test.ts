@@ -28,18 +28,20 @@ describe("litellm portal worker", () => {
     expect(html).toContain('id="header-actions-root"');
     expect(html).toContain("面向智云团队的 AI 能力自助台");
     expect(html).toContain("团队可用模型");
-    expect(html).toContain("Token 用量趋势");
+    // PersonalView replaces old UsagePanel — SSR renders loading placeholder
+    expect(html).not.toContain("Token 用量趋势");
+    expect(html).toContain('id="usage-panel-root"');
     // Usage window presets present
     expect(html).not.toContain("近 4 周");
     expect(html).not.toContain("近 12 周");
     expect(html).not.toContain("近 24 周");
     expect(html).not.toContain("近 26 周");
     // SSR renders the sections with their IDs
-    expect(html).toContain('id="usage-panel-root"');
-    expect(html).toContain('id="usage-panel"');
     expect(html).toContain('id="keys-root"');
     expect(html).toContain('id="portal-error-root"');
     expect(html).toContain('id="hero-stats-root"');
+    // Old usage-panel article ID is gone (replaced by PersonalView)
+    expect(html).not.toContain('id="usage-panel"');
     // Inline JS event bridge MUST be removed (spec requirement)
     expect(html).not.toContain("litellm-portal:keys");
     expect(html).not.toContain("litellm-portal:error");
@@ -53,7 +55,6 @@ describe("litellm portal worker", () => {
     expect(html).not.toContain("renderUsageLoading");
     expect(html).not.toContain('id="usage-chart-root"');
     expect(html).not.toContain("renderTopModelsLoading");
-    expect(html).toContain("aria-busy");
     expect(html).toContain("API Keys");
     expect(html).not.toContain("创建新 Key");
     expect(html).not.toContain("生成 API Key");

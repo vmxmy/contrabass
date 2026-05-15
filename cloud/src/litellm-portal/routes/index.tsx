@@ -6,8 +6,8 @@ import {
   TeamsAccessCard,
   ModelAccessCard,
   ApiKeysCard,
-  PreferencesAwareUsagePanel,
 } from "../app";
+import { PersonalView } from "../dashboard/views/personal-view";
 
 export const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -23,7 +23,7 @@ function UserView() {
       </div>
 
       <section id="usage-panel-root" className="mb-14">
-        <PreferencesAwareUsagePanel />
+        <PersonalView />
       </section>
 
       <section className="mb-10 grid grid-cols-1 gap-5 md:grid-cols-[1fr_2fr]">
