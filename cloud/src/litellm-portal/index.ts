@@ -30,19 +30,10 @@ import {
 import { checkCsrf } from "./auth/csrf";
 
 export type { LiteLLMPortalEnv } from "./types";
-// KV→SQLite migration, step 1 of 2. Export BOTH the legacy class names and the
-// new *SQLite names:
-//   - Old names must stay exported or CF rejects the deploy (error 10064:
-//     "script does not export class X which is depended on by existing
-//     Durable Objects"). The live KV DOs still belong to these classes until
-//     step 2 deletes them.
-//   - New *SQLite names back the repointed bindings (created via the v3
-//     new_sqlite_classes migration).
-// Step 2 (separate deploy) drops the old exports + adds a deleted_classes
-// migration once no live binding references them (avoids error 10061).
-export { RateLimitDO } from "./security/rate-limit-do";
-export { IndexDO } from "./durable/index-do";
-export { TeamConfigDO } from "./durable/team-config-do";
+// SQLite-backed Durable Object classes. The KV→SQLite migration is complete:
+// step 1 created these and repointed the bindings; step 2 (the v4
+// deleted_classes migration below) destroys the orphaned legacy KV classes, so
+// the old IndexDO/TeamConfigDO/RateLimitDO exports are no longer needed.
 export { RateLimitDO as RateLimitDOSQLite } from "./security/rate-limit-do";
 export { IndexDO as IndexDOSQLite } from "./durable/index-do";
 export { TeamConfigDO as TeamConfigDOSQLite } from "./durable/team-config-do";
