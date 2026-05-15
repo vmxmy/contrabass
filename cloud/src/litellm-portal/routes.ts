@@ -32,8 +32,9 @@ import {
   updateTeamLimits,
   updateUser,
 } from "./litellm";
-import { parseDashboardRequest, buildDashboard } from "./dashboard";
+import { parseDashboardRequest, buildDashboard, buildSummary } from "./dashboard";
 import type { UsageDOStub, IndexDOLike } from "./dashboard-schemas";
+import { WINDOW_SPEC } from "./dashboard-schemas";
 import { readUserDailyActivity } from "./usage";
 import {
   MeSchema,
@@ -827,37 +828,40 @@ const usageApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get("/usage"
   );
 });
 
+const SUMMARY_USER_CAP = 200;
+
 const adminSummaryApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
   .use("/admin/*", applyAdminRateLimit)
   .use("/admin/*", requireAdmin)
   .get("/admin/summary", async (c) => {
-    const [userPage, teams] = await Promise.all([
-      listAllUsers(c.env, { page: 1, size: ADMIN_SUMMARY_PAGE_SIZE }),
-      listAllTeams(c.env),
-    ]);
-    const users = userPage.users;
-    const sampledUserCount = users.length;
-    const limited = userPage.totalCount > sampledUserCount;
-    const overBudgetUserCount = users.filter((u) => u.maxBudget != null && Number(u.spend ?? 0) >= u.maxBudget).length;
-    const overBudgetTeamCount = teams.filter((t) => t.maxBudget != null && Number(t.spend ?? 0) >= t.maxBudget).length;
-    const noTeamUserCount = users.filter((u) => u.teamIds.length === 0).length;
-    const unmanagedRoleCount = users.filter((u) => !isManagedRole(u.role)).length;
+    const toMs = Date.now();
+    const fromMs = toMs - WINDOW_SPEC["30d"].lenMs;
+    const usageStub = usageDOStub(c.env);
+    let totalSpend = 0;
+    if (usageStub !== null) {
+      const k = await usageStub.queryKpiWithDelta({
+        scope: { kind: "global" },
+        currentFromMs: fromMs,
+        currentToMs: toMs,
+        previousFromMs: 0,
+        previousToMs: 0,
+      });
+      totalSpend = k.current.spend;
+    }
+    const deps = { usage: usageStub, index: indexDOLike(c.env), now: toMs };
+    const s = await buildSummary(deps, totalSpend, fromMs, toMs);
     return c.json(
       AdminSummarySchema.parse({
-        userCount: userPage.totalCount,
-        sampledUserCount,
-        limited,
-        teamCount: teams.length,
-        adminCount: users.filter((u) => isAdminRole(u.role)).length,
-        unmanagedRoleCount,
-        noTeamUserCount,
-        overBudgetUserCount,
-        overBudgetTeamCount,
-        riskCount: overBudgetUserCount + overBudgetTeamCount + unmanagedRoleCount,
-        totalSpend: roundCurrency(users.reduce((sum, u) => sum + Number(u.spend ?? 0), 0)),
-        teamSpend: roundCurrency(teams.reduce((sum, t) => sum + Number(t.spend ?? 0), 0)),
-        totalBudget: sumDefinedNumbers([...users.map((u) => u.maxBudget), ...teams.map((t) => t.maxBudget)]),
+        userCount: s.userCount,
+        sampledUserCount: s.sampled ? SUMMARY_USER_CAP : s.userCount,
+        limited: s.sampled,
+        teamCount: s.teamCount,
+        adminCount: s.adminCount,
+        riskCount: s.riskCount,
+        totalSpend: s.totalSpend,
+        teamSpend: null,
+        totalBudget: s.totalBudget,
       }),
     );
   });

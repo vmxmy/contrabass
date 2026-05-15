@@ -129,3 +129,41 @@ describe("usage overview endpoints", () => {
     expect(b.status).toBe(404);
   });
 });
+
+describe("/api/admin/summary DO-backed", () => {
+  it("returns 200 with schema-valid AdminSummary and performs zero litellmFetch", async () => {
+    const env = makeEnv();
+    // litellmFetch must never be called — mock globalThis.fetch to throw if called
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      throw new Error("litellmFetch must not be called from /api/admin/summary");
+    });
+
+    const req = new Request("https://x/api/admin/summary", {
+      headers: { Cookie: await cookie(env, ADMIN_EMAIL) },
+    });
+    const res = await app.fetch(req, env);
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as Record<string, unknown>;
+    // All fields from the DO-backed summary must be present and correct types
+    expect(typeof body.userCount).toBe("number");
+    expect(typeof body.teamCount).toBe("number");
+    expect(typeof body.adminCount).toBe("number");
+    expect(typeof body.riskCount).toBe("number");
+    expect(typeof body.totalSpend).toBe("number");
+    expect(typeof body.totalBudget).toBe("number");
+    expect(typeof body.sampledUserCount).toBe("number");
+    expect(typeof body.limited).toBe("boolean");
+  });
+
+  it("non-admin gets 403 on /api/admin/summary", async () => {
+    const env = makeEnv();
+    const req = new Request("https://x/api/admin/summary", {
+      headers: { Cookie: await cookie(env, USER_EMAIL) },
+    });
+    const res = await app.fetch(req, env);
+    expect(res.status).toBe(403);
+  });
+});

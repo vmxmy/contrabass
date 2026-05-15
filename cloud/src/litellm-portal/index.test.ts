@@ -1106,77 +1106,67 @@ describe("litellm portal worker", () => {
       expect(body.users).toHaveLength(2);
     });
 
-    it("admin user calling /api/admin/summary receives bounded global metrics", async () => {
-      // #given
-      const litellmUrls: string[] = [];
-      globalThis.fetch = async (input) => {
-        const url = String(input);
-        litellmUrls.push(url);
-        if (url.startsWith("https://litellm.test/user/list?page=")) {
-          return Response.json({
-            users: [
-              {
-                user_id: "u1",
-                user_email: "alice@gz-zhiyun.com",
-                spend: 10,
-                max_budget: 20,
-                teams: ["team-a"],
-                user_role: "internal_user",
-              },
-              {
-                user_id: "u2",
-                user_email: "bob@gz-zhiyun.com",
-                spend: 15,
-                max_budget: 10,
-                teams: [],
-                user_role: "proxy_admin",
-              },
-              {
-                user_id: "u3",
-                user_email: "casey@gz-zhiyun.com",
-                spend: 1,
-                teams: ["team-b"],
-                user_role: "custom_role",
-              },
-            ],
-            total_count: 250,
-          });
-        }
-        if (url === "https://litellm.test/team/list") {
-          return Response.json([
-            { team_id: "team-a", team_alias: "Alpha", spend: 12, max_budget: 20, models: ["gpt-4o-mini"] },
-            { team_id: "team-b", team_alias: "Beta", spend: 10, max_budget: 10, models: ["deepseek-v3"] },
-          ]);
-        }
-        return new Response("not found", { status: 404 });
+    it("admin user calling /api/admin/summary receives DO-backed global metrics without calling litellmFetch", async () => {
+      // #given — DO stubs replace the old litellm-fetch path (H1 CQRS fix)
+      const doUsers = [
+        { userId: "u1", role: "admin" as const, maxBudget: 20 },
+        { userId: "u2", role: "user" as const, maxBudget: 10 },
+        { userId: "u3", role: "user" as const, maxBudget: undefined },
+      ];
+      const doIndexStub = {
+        getUserByEmail: vi.fn(async (e: string) => ({ role: DEFAULT_INDEX_DO_ROLES[e]?.role ?? "user" })),
+        listTeams: vi.fn(async () => [
+          { id: "team-a", alias: "Alpha" },
+          { id: "team-b", alias: "Beta" },
+        ]),
+        listAllUsers: vi.fn(async () => ({ users: doUsers, cursor: undefined })),
       };
+      const doUsageStub = {
+        queryTimeseries: vi.fn().mockResolvedValue([]),
+        queryModelBreakdown: vi.fn().mockResolvedValue([]),
+        queryHourOfDay: vi
+          .fn()
+          .mockResolvedValue(Array.from({ length: 24 }, (_, h) => ({ hour: h, totalTokens: 0, requests: 0, spend: 0 }))),
+        queryPerUserSeries: vi.fn().mockResolvedValue([]),
+        queryRecentEvents: vi.fn().mockResolvedValue([]),
+        queryKpiWithDelta: vi.fn().mockResolvedValue({
+          current: { spend: 26, requests: 10, totalTokens: 1000, source: "events" },
+          previous: { spend: 0, requests: 0, totalTokens: 0, source: "events" },
+        }),
+      };
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+        throw new Error("litellmFetch must not be called");
+      });
 
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/summary", "admin@gz-zhiyun.com"),
-        portalEnv(),
+        portalEnv({
+          INDEX_DO: {
+            idFromName: vi.fn(() => "idx-id" as unknown as DurableObjectId),
+            get: vi.fn(() => doIndexStub as unknown as DurableObjectStub),
+          } as unknown as DurableObjectNamespace,
+          USAGE_DO: {
+            idFromName: vi.fn(() => "usage-id" as unknown as DurableObjectId),
+            get: vi.fn(() => doUsageStub as unknown as DurableObjectStub),
+          } as unknown as DurableObjectNamespace,
+        }),
       );
 
-      // #then
+      // #then — zero litellm calls, schema-valid AdminSummary
+      expect(fetchSpy).not.toHaveBeenCalled();
       expect(response.status).toBe(200);
       const body = (await response.json()) as Record<string, unknown>;
       expect(body).toMatchObject({
-        userCount: 250,
-        sampledUserCount: 3,
-        limited: true,
+        userCount: 3,
         teamCount: 2,
         adminCount: 1,
-        unmanagedRoleCount: 1,
-        noTeamUserCount: 1,
-        overBudgetUserCount: 1,
-        overBudgetTeamCount: 1,
-        riskCount: 3,
         totalSpend: 26,
-        teamSpend: 22,
-        totalBudget: 60,
+        teamSpend: null,
+        totalBudget: 30,
       });
-      const summaryUserList = litellmUrls.find((url) => url.startsWith("https://litellm.test/user/list?page="));
-      expect(summaryUserList).toContain("page_size=100");
+      expect(typeof body.riskCount).toBe("number");
+      expect(typeof body.limited).toBe("boolean");
     });
 
     it("admin user calling /api/admin/teams receives 200 with teams array", async () => {
