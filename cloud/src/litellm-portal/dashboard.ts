@@ -1,10 +1,14 @@
 import {
   DASHBOARD_WINDOWS,
   WINDOW_SPEC,
+  EVENT_RETENTION_MS,
   type DashboardWindow,
   type DashboardGrain,
   type DashboardScope,
   type UsageScope,
+  type UsageDOStub,
+  type IndexDOLike,
+  type DashboardResponse,
 } from "./dashboard-schemas";
 
 export type ParsedDashboardRequest =
@@ -34,4 +38,152 @@ export function parseDashboardRequest(url: URL): ParsedDashboardRequest {
 
 export function toUsageScope(scope: DashboardScope): UsageScope {
   return scope.kind === "global" ? { kind: "global" } : { kind: "user", userId: scope.userId };
+}
+
+type BuildDeps = { usage: UsageDOStub | null; index: IndexDOLike | null; now: number };
+type BuildOpts = {
+  scope: DashboardScope;
+  window: DashboardWindow;
+  grain: DashboardGrain;
+  grainFallback: boolean;
+};
+
+function deltaPct(current: number, previous: number | null): number | null {
+  if (previous === null) return null;
+  if (previous > 0) return Math.round(((current - previous) / previous) * 100);
+  return current > 0 ? null : 0;
+}
+
+const SUMMARY_USER_CAP = 200;
+
+export async function buildDashboard(deps: BuildDeps, opts: BuildOpts): Promise<DashboardResponse> {
+  const scopeLabel =
+    opts.scope.kind === "global" ? "global" : opts.scope.kind === "member" ? `member:${opts.scope.userId}` : "self";
+  const base = {
+    scope: scopeLabel,
+    window: opts.window,
+    grain: opts.grain,
+    grainFallback: opts.grainFallback,
+    timezone: "Asia/Shanghai" as const,
+  };
+
+  if (deps.usage === null) {
+    return {
+      ...base,
+      available: false,
+      empty: false,
+      kpi: emptyKpi(),
+      trend: [],
+      models: [],
+      hourOfDay: emptyHours(),
+    };
+  }
+
+  const toMs = deps.now;
+  const fromMs = toMs - WINDOW_SPEC[opts.window].lenMs;
+  const prevToMs = fromMs;
+  const prevFromMs = fromMs - WINDOW_SPEC[opts.window].lenMs;
+  const prevComparable = prevFromMs >= deps.now - EVENT_RETENTION_MS;
+  const us = toUsageScope(opts.scope);
+
+  const [trend, models, hourOfDay, kpiRaw] = await Promise.all([
+    deps.usage.queryTimeseries({ scope: us, grain: opts.grain, fromMs, toMs }),
+    deps.usage.queryModelBreakdown({ scope: us, fromMs, toMs }),
+    deps.usage.queryHourOfDay({ scope: us, fromMs, toMs }),
+    deps.usage.queryKpiWithDelta({
+      scope: us,
+      currentFromMs: fromMs,
+      currentToMs: toMs,
+      previousFromMs: prevFromMs,
+      previousToMs: prevToMs,
+    }),
+  ]);
+
+  const mkMetric = (cur: number, prev: number) => ({
+    current: cur,
+    previous: prevComparable ? prev : null,
+    deltaPct: deltaPct(cur, prevComparable ? prev : null),
+  });
+  const kpi = {
+    spend: mkMetric(kpiRaw.current.spend, kpiRaw.previous.spend),
+    requests: mkMetric(kpiRaw.current.requests, kpiRaw.previous.requests),
+    totalTokens: mkMetric(kpiRaw.current.totalTokens, kpiRaw.previous.totalTokens),
+  };
+
+  const empty =
+    trend.length === 0 && models.length === 0 && kpiRaw.current.spend === 0 && kpiRaw.current.requests === 0;
+
+  const result: DashboardResponse = {
+    ...base,
+    available: true,
+    empty,
+    kpi,
+    trend,
+    models,
+    hourOfDay,
+  };
+
+  if (opts.scope.kind === "global") {
+    const [perUser, summary] = await Promise.all([
+      deps.usage.queryPerUserSeries({ grain: opts.grain, fromMs, toMs, topN: 8 }),
+      buildSummary(deps, kpiRaw.current.spend),
+    ]);
+    result.perUser = perUser;
+    result.summary = summary;
+  } else {
+    result.recent = await deps.usage.queryRecentEvents({ userId: opts.scope.userId, limit: 20 });
+  }
+  return result;
+}
+
+function emptyKpi() {
+  const z = { current: 0, previous: null, deltaPct: null };
+  return { spend: { ...z }, requests: { ...z }, totalTokens: { ...z } };
+}
+function emptyHours() {
+  return Array.from({ length: 24 }, (_, hour) => ({ hour, totalTokens: 0, requests: 0, spend: 0 }));
+}
+
+async function buildSummary(deps: BuildDeps, totalSpend: number): Promise<NonNullable<DashboardResponse["summary"]>> {
+  if (deps.index === null) {
+    return { userCount: 0, adminCount: 0, teamCount: 0, totalSpend, totalBudget: 0, riskCount: 0, sampled: false };
+  }
+  const teams = await deps.index.listTeams();
+  const users: Array<{ userId: string; role: "admin" | "user"; maxBudget?: number }> = [];
+  let cursor: string | undefined;
+  let sampled = false;
+  for (;;) {
+    const page = await deps.index.listAllUsers({ limit: 200, cursor });
+    users.push(...page.users);
+    cursor = page.cursor;
+    if (cursor === undefined) break;
+    if (users.length >= SUMMARY_USER_CAP) {
+      sampled = true;
+      break;
+    }
+  }
+  const adminCount = users.filter((u) => u.role === "admin").length;
+  const totalBudget = users.reduce((s, u) => s + (u.maxBudget ?? 0), 0);
+  let riskCount = 0;
+  for (const u of users) {
+    if (u.maxBudget != null && u.maxBudget > 0 && deps.usage !== null) {
+      const k = await deps.usage.queryKpiWithDelta({
+        scope: { kind: "user", userId: u.userId },
+        currentFromMs: 0,
+        currentToMs: deps.now,
+        previousFromMs: 0,
+        previousToMs: 0,
+      });
+      if (k.current.spend > u.maxBudget) riskCount += 1;
+    }
+  }
+  return {
+    userCount: users.length,
+    adminCount,
+    teamCount: teams.length,
+    totalSpend,
+    totalBudget,
+    riskCount,
+    sampled,
+  };
 }

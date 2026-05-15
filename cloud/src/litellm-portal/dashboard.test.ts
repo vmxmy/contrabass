@@ -1,5 +1,39 @@
 import { describe, it, expect } from "vitest";
 import { parseDashboardRequest, toUsageScope } from "./dashboard";
+import { buildDashboard } from "./dashboard";
+import type { UsageDOStub, IndexDOLike } from "./dashboard-schemas";
+
+function usageStub(over: Partial<UsageDOStub> = {}): UsageDOStub {
+  return {
+    queryTimeseries: async () => [{ startMs: 1, label: "05-01", totalTokens: 10, requests: 2, spend: 1 }],
+    queryModelBreakdown: async () => [{ model: "gpt", spend: 1, totalTokens: 10, requests: 2 }],
+    queryHourOfDay: async () =>
+      Array.from({ length: 24 }, (_, h) => ({ hour: h, totalTokens: 0, requests: 0, spend: 0 })),
+    queryPerUserSeries: async () => [{ userId: "u1", points: [{ startMs: 1, spend: 1 }] }],
+    queryRecentEvents: async () => [{ tsMs: 1, model: "gpt", totalTokens: 10, spend: 1 }],
+    queryKpiWithDelta: async () => ({
+      current: { spend: 5, requests: 3, totalTokens: 50, source: "events" as const },
+      previous: { spend: 4, requests: 2, totalTokens: 40, source: "events" as const },
+    }),
+    ...over,
+  };
+}
+function indexStub(): IndexDOLike {
+  return {
+    listTeams: async () => [
+      { id: "t1", alias: "a" },
+      { id: "t2", alias: "b" },
+    ],
+    listAllUsers: async () => ({
+      users: [
+        { userId: "u1", role: "admin", maxBudget: 10 },
+        { userId: "u2", role: "user", maxBudget: 1 },
+      ],
+      cursor: undefined,
+    }),
+  };
+}
+const NOW = Date.parse("2026-05-15T00:00:00Z");
 
 describe("parseDashboardRequest", () => {
   it("defaults window=30d, auto grain=day", () => {
@@ -29,5 +63,86 @@ describe("parseDashboardRequest", () => {
     expect(toUsageScope({ kind: "self", userId: "u1" })).toEqual({ kind: "user", userId: "u1" });
     expect(toUsageScope({ kind: "member", userId: "m1" })).toEqual({ kind: "user", userId: "m1" });
     expect(toUsageScope({ kind: "global" })).toEqual({ kind: "global" });
+  });
+});
+
+describe("buildDashboard", () => {
+  it("self scope omits perUser/summary, includes recent", async () => {
+    const res = await buildDashboard(
+      { usage: usageStub(), index: indexStub(), now: NOW },
+      { scope: { kind: "self", userId: "u1" }, window: "7d", grain: "day", grainFallback: false },
+    );
+    expect(res.scope).toBe("self");
+    expect(res).not.toHaveProperty("perUser");
+    expect(res).not.toHaveProperty("summary");
+    expect(res.recent).toHaveLength(1);
+    expect(res.kpi.spend).toEqual({ current: 5, previous: 4, deltaPct: 25 });
+    expect(res.available).toBe(true);
+    expect(res.empty).toBe(false);
+  });
+
+  it("global scope omits recent, includes perUser + DO-backed summary", async () => {
+    const res = await buildDashboard(
+      { usage: usageStub(), index: indexStub(), now: NOW },
+      { scope: { kind: "global" }, window: "7d", grain: "day", grainFallback: false },
+    );
+    expect(res.scope).toBe("global");
+    expect(res).not.toHaveProperty("recent");
+    expect(res.perUser).toHaveLength(1);
+    expect(res.summary).toEqual({
+      userCount: 2,
+      adminCount: 1,
+      teamCount: 2,
+      totalSpend: 5,
+      totalBudget: 11,
+      riskCount: 1,
+      sampled: false,
+    });
+  });
+
+  it("member scope shaped like self with member:<id> label", async () => {
+    const res = await buildDashboard(
+      { usage: usageStub(), index: indexStub(), now: NOW },
+      { scope: { kind: "member", userId: "m9" }, window: "24h", grain: "hour", grainFallback: false },
+    );
+    expect(res.scope).toBe("member:m9");
+    expect(res).not.toHaveProperty("perUser");
+    expect(res.recent).toBeDefined();
+  });
+
+  it("30d window: previous out of retention -> previous/deltaPct null", async () => {
+    const res = await buildDashboard(
+      { usage: usageStub(), index: indexStub(), now: NOW },
+      { scope: { kind: "self", userId: "u1" }, window: "30d", grain: "day", grainFallback: false },
+    );
+    expect(res.kpi.spend.previous).toBeNull();
+    expect(res.kpi.spend.deltaPct).toBeNull();
+  });
+
+  it("empty data -> available true, empty true", async () => {
+    const empty = usageStub({
+      queryTimeseries: async () => [],
+      queryModelBreakdown: async () => [],
+      queryRecentEvents: async () => [],
+      queryKpiWithDelta: async () => ({
+        current: { spend: 0, requests: 0, totalTokens: 0, source: "events" as const },
+        previous: { spend: 0, requests: 0, totalTokens: 0, source: "events" as const },
+      }),
+    });
+    const res = await buildDashboard(
+      { usage: empty, index: indexStub(), now: NOW },
+      { scope: { kind: "self", userId: "u1" }, window: "7d", grain: "day", grainFallback: false },
+    );
+    expect(res.available).toBe(true);
+    expect(res.empty).toBe(true);
+  });
+
+  it("missing usage dep -> available false", async () => {
+    const res = await buildDashboard(
+      { usage: null, index: indexStub(), now: NOW },
+      { scope: { kind: "self", userId: "u1" }, window: "7d", grain: "day", grainFallback: false },
+    );
+    expect(res.available).toBe(false);
+    expect(res.empty).toBe(false);
   });
 });
