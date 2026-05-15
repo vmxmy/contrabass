@@ -48,7 +48,6 @@ import {
   AdminAuditSchema,
   type AdminTeams,
   type AdminUsers,
-  AdminSummarySchema,
   UsageSchema,
   UserPreferencesSchema,
   UserPreferencesPatchSchema,
@@ -465,23 +464,6 @@ async function adminUpdateUserDO(
 // Helpers
 // ---------------------------------------------------------------------------
 
-const ADMIN_SUMMARY_PAGE_SIZE = 100;
-
-function isAdminRole(role: string | null): boolean {
-  return role === "proxy_admin" || role === "proxy_admin_viewer";
-}
-
-function isManagedRole(role: string | null): boolean {
-  return (
-    role === "proxy_admin" ||
-    role === "proxy_admin_viewer" ||
-    role === "internal_user" ||
-    role === "internal_user_viewer" ||
-    role === "team" ||
-    role === "customer"
-  );
-}
-
 function sanitizeIntParam(value: string | null, fallback: number): number {
   if (value === null) return fallback;
   const n = Number(value);
@@ -827,45 +809,6 @@ const usageApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get("/usage"
     }),
   );
 });
-
-const adminSummaryApp = new Hono<HonoEnv>()
-  .use("/*", applyAuthMiddleware)
-  .use("/admin/*", applyAdminRateLimit)
-  .use("/admin/*", requireAdmin)
-  .get("/admin/summary", async (c) => {
-    const toMs = Date.now();
-    // 30d = max honest window; equals UsageDO event retention (EVENT_RETENTION_MS)
-    const fromMs = toMs - WINDOW_SPEC["30d"].lenMs;
-    const usageStub = usageDOStub(c.env);
-    let totalSpend = 0;
-    if (usageStub !== null) {
-      const k = await usageStub.queryKpiWithDelta({
-        scope: { kind: "global" },
-        currentFromMs: fromMs,
-        currentToMs: toMs,
-        // previous range intentionally empty — only current.spend is consumed here
-        previousFromMs: 0,
-        previousToMs: 0,
-      });
-      totalSpend = k.current.spend;
-    }
-    const deps = { usage: usageStub, index: indexDOLike(c.env), now: toMs };
-    const s = await buildSummary(deps, totalSpend, fromMs, toMs);
-    return c.json(
-      AdminSummarySchema.parse({
-        userCount: s.userCount,
-        sampledUserCount: s.sampled ? SUMMARY_USER_CAP : s.userCount,
-        limited: s.sampled,
-        teamCount: s.teamCount,
-        adminCount: s.adminCount,
-        riskCount: s.riskCount,
-        totalSpend: s.totalSpend,
-        // per-team spend not in L1 DO path; omitted by L2 spec (frontend does not read it)
-        teamSpend: null,
-        totalBudget: s.totalBudget,
-      }),
-    );
-  });
 
 const adminUsersApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
@@ -1338,7 +1281,6 @@ const app = new Hono<{ Bindings: LiteLLMPortalEnv }>()
   .route("/api", keysDeleteApp)
   .route("/api", usageApp)
   .route("/api", usageOverviewApp)
-  .route("/api", adminSummaryApp)
   .route("/api", adminUsersApp)
   .route("/api", adminTeamsApp)
   .route("/api", adminAuditApp)
