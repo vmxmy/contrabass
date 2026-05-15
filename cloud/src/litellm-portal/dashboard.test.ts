@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseDashboardRequest, toUsageScope } from "./dashboard";
-import { buildDashboard } from "./dashboard";
+import { parseDashboardRequest, toUsageScope, buildDashboard, buildSummary } from "./dashboard";
 import type { UsageDOStub, IndexDOLike } from "./dashboard-schemas";
 
 function usageStub(over: Partial<UsageDOStub> = {}): UsageDOStub {
@@ -200,5 +199,63 @@ describe("buildDashboard", () => {
       { scope: { kind: "self", userId: "u1" }, window: "7d", grain: "day", grainFallback: false },
     );
     expect(res.kpi.spend).toEqual({ current: 5, previous: 0, deltaPct: null });
+  });
+});
+
+describe("buildSummary", () => {
+  const FROM_MS = NOW - 7 * 86_400_000;
+  const TO_MS = NOW;
+
+  it("riskCount counts users whose IN-WINDOW spend > maxBudget", async () => {
+    // u2 has maxBudget=1; queryKpiWithDelta returns spend=5 → risk
+    const usage = usageStub();
+    const idx = indexStub();
+    const summary = await buildSummary({ usage, index: idx, now: NOW }, 0, FROM_MS, TO_MS);
+    expect(summary.riskCount).toBe(1);
+  });
+
+  it("riskCount = 0 when in-window spend <= maxBudget (even if all-time spend > maxBudget)", async () => {
+    // queryKpiWithDelta returns spend=0 for in-window; maxBudget=1 → not at risk
+    const usage = usageStub({
+      queryKpiWithDelta: async (o) => {
+        // Only return spend for the global scope (used by buildDashboard caller);
+        // for per-user probes inside buildSummary return 0 spend in window
+        if (o.scope.kind === "user") {
+          return {
+            current: { spend: 0, requests: 0, totalTokens: 0, source: "events" as const },
+            previous: { spend: 0, requests: 0, totalTokens: 0, source: "events" as const },
+          };
+        }
+        return {
+          current: { spend: 5, requests: 3, totalTokens: 50, source: "events" as const },
+          previous: { spend: 4, requests: 2, totalTokens: 40, source: "events" as const },
+        };
+      },
+    });
+    const idx = indexStub();
+    const summary = await buildSummary({ usage, index: idx, now: NOW }, 0, FROM_MS, TO_MS);
+    expect(summary.riskCount).toBe(0);
+  });
+
+  it("buildSummary passes window fromMs/toMs to per-user KPI probes", async () => {
+    const calls: Array<{ currentFromMs: number; currentToMs: number }> = [];
+    const usage = usageStub({
+      queryKpiWithDelta: async (o) => {
+        if (o.scope.kind === "user") {
+          calls.push({ currentFromMs: o.currentFromMs, currentToMs: o.currentToMs });
+        }
+        return {
+          current: { spend: 0, requests: 0, totalTokens: 0, source: "events" as const },
+          previous: { spend: 0, requests: 0, totalTokens: 0, source: "events" as const },
+        };
+      },
+    });
+    await buildSummary({ usage, index: indexStub(), now: NOW }, 0, FROM_MS, TO_MS);
+    // Both budgeted users (u1 maxBudget=10, u2 maxBudget=1) should be probed with window bounds
+    expect(calls.length).toBe(2);
+    for (const c of calls) {
+      expect(c.currentFromMs).toBe(FROM_MS);
+      expect(c.currentToMs).toBe(TO_MS);
+    }
   });
 });

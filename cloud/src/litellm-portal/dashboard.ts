@@ -131,7 +131,7 @@ export async function buildDashboard(deps: BuildDeps, opts: BuildOpts): Promise<
   if (opts.scope.kind === "global") {
     const [perUser, summary] = await Promise.all([
       deps.usage.queryPerUserSeries({ grain: opts.grain, fromMs, toMs, topN: 8 }),
-      buildSummary(deps, kpiRaw.current.spend),
+      buildSummary(deps, kpiRaw.current.spend, fromMs, toMs),
     ]);
     result.perUser = perUser;
     result.summary = summary;
@@ -149,7 +149,12 @@ function emptyHours() {
   return Array.from({ length: 24 }, (_, hour) => ({ hour, totalTokens: 0, requests: 0, spend: 0 }));
 }
 
-async function buildSummary(deps: BuildDeps, totalSpend: number): Promise<NonNullable<DashboardResponse["summary"]>> {
+export async function buildSummary(
+  deps: BuildDeps,
+  totalSpend: number,
+  windowFromMs: number,
+  windowToMs: number,
+): Promise<NonNullable<DashboardResponse["summary"]>> {
   if (deps.index === null) {
     return { userCount: 0, adminCount: 0, teamCount: 0, totalSpend, totalBudget: 0, riskCount: 0, sampled: false };
   }
@@ -186,8 +191,8 @@ async function buildSummary(deps: BuildDeps, totalSpend: number): Promise<NonNul
       chunk.map(async (u) => {
         const k = await usage!.queryKpiWithDelta({
           scope: { kind: "user", userId: u.userId },
-          currentFromMs: 0,
-          currentToMs: deps.now,
+          currentFromMs: windowFromMs,
+          currentToMs: windowToMs,
           previousFromMs: 0,
           previousToMs: 0,
         });
