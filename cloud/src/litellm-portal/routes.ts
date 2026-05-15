@@ -32,7 +32,8 @@ import {
   updateTeamLimits,
   updateUser,
 } from "./litellm";
-import { parseUsageTimeseriesRequest, readGlobalUsageTimeseries, readUsageTimeseries } from "./timeseries";
+import { parseDashboardRequest, buildDashboard } from "./dashboard";
+import type { UsageDOStub, IndexDOLike } from "./dashboard-schemas";
 import { readUserDailyActivity } from "./usage";
 import {
   MeSchema,
@@ -48,7 +49,6 @@ import {
   type AdminUsers,
   AdminSummarySchema,
   UsageSchema,
-  UsageTimeseriesSchema,
   UserPreferencesSchema,
   UserPreferencesPatchSchema,
   ErrorResponseSchema,
@@ -117,24 +117,26 @@ type TeamConfigDOWriteStub = {
     budgetDuration?: string;
     budgetResetAt?: string;
   } | null>;
-  putTeam(record: {
-    id: string;
-    alias: string;
-    models: string[];
-    maxBudget?: number;
-    tpmLimit?: number;
-    rpmLimit?: number;
-    blocked: boolean;
-    budgetDuration?: string;
-    budgetResetAt?: string;
-  }, idempotencyKey?: string): Promise<void>;
+  putTeam(
+    record: {
+      id: string;
+      alias: string;
+      models: string[];
+      maxBudget?: number;
+      tpmLimit?: number;
+      rpmLimit?: number;
+      blocked: boolean;
+      budgetDuration?: string;
+      budgetResetAt?: string;
+    },
+    idempotencyKey?: string,
+  ): Promise<void>;
   getSyncMetadata(): Promise<{
     lastSyncedAt: string | null;
     lastSyncError: string | null;
     dirty: boolean;
   }>;
 };
-
 
 type IndexDOStorageAdminStub = IndexDOAdminStub & {
   getStorageMigrationState(): Promise<{
@@ -163,10 +165,12 @@ type TeamConfigDOStorageAdminStub = {
   deleteLegacyKV(): Promise<{ deleted: number; skipped: boolean }>;
 };
 
-const DeleteLegacyDOStorageBodySchema = z.object({
-  confirm: z.literal("delete-legacy-do-kv"),
-  teamIds: z.array(z.string().min(1)).optional(),
-}).strict();
+const DeleteLegacyDOStorageBodySchema = z
+  .object({
+    confirm: z.literal("delete-legacy-do-kv"),
+    teamIds: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
 
 type IndexDOWriteStub = {
   getUserById(userId: string): Promise<{
@@ -208,10 +212,7 @@ async function adminTeamsFromDO(env: LiteLLMPortalEnv): Promise<AdminTeams> {
         const stub = env.TEAM_CONFIG_DO.get(
           env.TEAM_CONFIG_DO.idFromName(entry.id),
         ) as unknown as TeamConfigDOAdminStub;
-        [teamRecord, syncMeta] = await Promise.all([
-          stub.getTeam(),
-          stub.getSyncMetadata(),
-        ]);
+        [teamRecord, syncMeta] = await Promise.all([stub.getTeam(), stub.getSyncMetadata()]);
       }
       return {
         id: entry.id,
@@ -231,10 +232,7 @@ async function adminTeamsFromDO(env: LiteLLMPortalEnv): Promise<AdminTeams> {
   return AdminTeamsSchema.parse({ teams });
 }
 
-async function adminUsersFromDO(
-  env: LiteLLMPortalEnv,
-  opts: { page: number; size: number },
-): Promise<AdminUsers> {
+async function adminUsersFromDO(env: LiteLLMPortalEnv, opts: { page: number; size: number }): Promise<AdminUsers> {
   if (!env.INDEX_DO) return { users: [], totalCount: 0, page: opts.page, size: opts.size };
   const idx = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOAdminStub;
 
@@ -266,7 +264,6 @@ async function adminUsersFromDO(
   return AdminUsersSchema.parse({ users, totalCount, page: opts.page, size: opts.size });
 }
 
-
 async function listDOStorageMigrationState(
   env: LiteLLMPortalEnv,
   opts: { limit: number; teamIds?: string[] } = { limit: 100 },
@@ -276,15 +273,10 @@ async function listDOStorageMigrationState(
   }
 
   const indexStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOStorageAdminStub;
-  const [index, allTeams] = await Promise.all([
-    indexStub.getStorageMigrationState(),
-    indexStub.listTeams(),
-  ]);
+  const [index, allTeams] = await Promise.all([indexStub.getStorageMigrationState(), indexStub.listTeams()]);
 
   const requestedTeamIds = opts.teamIds != null ? new Set(opts.teamIds) : null;
-  const matchingTeams = requestedTeamIds == null
-    ? allTeams
-    : allTeams.filter((team) => requestedTeamIds.has(team.id));
+  const matchingTeams = requestedTeamIds == null ? allTeams : allTeams.filter((team) => requestedTeamIds.has(team.id));
   const selectedTeams = matchingTeams.slice(0, opts.limit);
   const errors: string[] = [];
 
@@ -299,18 +291,20 @@ async function listDOStorageMigrationState(
     };
   }
 
-  const teams = await Promise.all(selectedTeams.map(async (team) => {
-    try {
-      const stub = env.TEAM_CONFIG_DO!.get(
-        env.TEAM_CONFIG_DO!.idFromName(team.id),
-      ) as unknown as TeamConfigDOStorageAdminStub;
-      return { id: team.id, alias: team.alias, state: await stub.getStorageMigrationState() };
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      errors.push(`${team.id}:${reason}`);
-      return { id: team.id, alias: team.alias, state: null };
-    }
-  }));
+  const teams = await Promise.all(
+    selectedTeams.map(async (team) => {
+      try {
+        const stub = env.TEAM_CONFIG_DO!.get(
+          env.TEAM_CONFIG_DO!.idFromName(team.id),
+        ) as unknown as TeamConfigDOStorageAdminStub;
+        return { id: team.id, alias: team.alias, state: await stub.getStorageMigrationState() };
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        errors.push(`${team.id}:${reason}`);
+        return { id: team.id, alias: team.alias, state: null };
+      }
+    }),
+  );
 
   return {
     index,
@@ -322,37 +316,34 @@ async function listDOStorageMigrationState(
   };
 }
 
-async function deleteLegacyDOStorageKV(
-  env: LiteLLMPortalEnv,
-  teamIds?: string[],
-): Promise<Record<string, unknown>> {
+async function deleteLegacyDOStorageKV(env: LiteLLMPortalEnv, teamIds?: string[]): Promise<Record<string, unknown>> {
   if (!env.INDEX_DO) {
     return { index: null, teams: [], errors: ["INDEX_DO binding not configured"] };
   }
   const indexStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOStorageAdminStub;
   const allTeams = await indexStub.listTeams();
   const requestedTeamIds = teamIds != null ? new Set(teamIds) : null;
-  const selectedTeams = requestedTeamIds == null
-    ? allTeams
-    : allTeams.filter((team) => requestedTeamIds.has(team.id));
+  const selectedTeams = requestedTeamIds == null ? allTeams : allTeams.filter((team) => requestedTeamIds.has(team.id));
   const errors: string[] = [];
 
   const index = await indexStub.deleteLegacyKV();
-  const teams = await Promise.all(selectedTeams.map(async (team) => {
-    if (!env.TEAM_CONFIG_DO) {
-      return { id: team.id, alias: team.alias, result: { deleted: 0, skipped: true } };
-    }
-    try {
-      const stub = env.TEAM_CONFIG_DO.get(
-        env.TEAM_CONFIG_DO.idFromName(team.id),
-      ) as unknown as TeamConfigDOStorageAdminStub;
-      return { id: team.id, alias: team.alias, result: await stub.deleteLegacyKV() };
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      errors.push(`${team.id}:${reason}`);
-      return { id: team.id, alias: team.alias, result: { deleted: 0, skipped: true } };
-    }
-  }));
+  const teams = await Promise.all(
+    selectedTeams.map(async (team) => {
+      if (!env.TEAM_CONFIG_DO) {
+        return { id: team.id, alias: team.alias, result: { deleted: 0, skipped: true } };
+      }
+      try {
+        const stub = env.TEAM_CONFIG_DO.get(
+          env.TEAM_CONFIG_DO.idFromName(team.id),
+        ) as unknown as TeamConfigDOStorageAdminStub;
+        return { id: team.id, alias: team.alias, result: await stub.deleteLegacyKV() };
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        errors.push(`${team.id}:${reason}`);
+        return { id: team.id, alias: team.alias, result: { deleted: 0, skipped: true } };
+      }
+    }),
+  );
 
   return {
     index,
@@ -428,14 +419,15 @@ async function adminUpdateUserDO(
   isDryRun: boolean,
 ): Promise<Response> {
   if (!env.INDEX_DO) return c.json({ error: "index_do_unavailable" }, 503);
-  const idxStub = env.INDEX_DO.get(
-    env.INDEX_DO.idFromName("index"),
-  ) as unknown as IndexDOWriteStub;
+  const idxStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOWriteStub;
   const currentUser = await idxStub.getUserById(userId);
   if (!currentUser) return c.json({ error: "user_not_found" }, 404);
-  const updatedRole: "admin" | "user" = (body.role === "proxy_admin" || body.role === "proxy_admin_viewer")
-    ? "admin"
-    : (body.role != null ? "user" : currentUser.role);
+  const updatedRole: "admin" | "user" =
+    body.role === "proxy_admin" || body.role === "proxy_admin_viewer"
+      ? "admin"
+      : body.role != null
+        ? "user"
+        : currentUser.role;
   const updated = {
     ...currentUser,
     role: updatedRole,
@@ -479,12 +471,14 @@ function isAdminRole(role: string | null): boolean {
 }
 
 function isManagedRole(role: string | null): boolean {
-  return role === "proxy_admin"
-    || role === "proxy_admin_viewer"
-    || role === "internal_user"
-    || role === "internal_user_viewer"
-    || role === "team"
-    || role === "customer";
+  return (
+    role === "proxy_admin" ||
+    role === "proxy_admin_viewer" ||
+    role === "internal_user" ||
+    role === "internal_user_viewer" ||
+    role === "team" ||
+    role === "customer"
+  );
 }
 
 function sanitizeIntParam(value: string | null, fallback: number): number {
@@ -507,14 +501,8 @@ function keyDisplayModels(
   env: LiteLLMPortalEnv,
 ): string[] {
   const configured = configuredAllowedModels(env);
-  const teamModels = key.teamId === null
-    ? []
-    : teams.find((t) => t.id === key.teamId)?.models ?? [];
-  const models = key.models.length > 0
-    ? key.models
-    : teamModels.length > 0
-      ? teamModels
-      : fallbackModels;
+  const teamModels = key.teamId === null ? [] : (teams.find((t) => t.id === key.teamId)?.models ?? []);
+  const models = key.models.length > 0 ? key.models : teamModels.length > 0 ? teamModels : fallbackModels;
   return configured.length > 0 ? models.filter((m) => configured.includes(m)) : models;
 }
 
@@ -611,19 +599,18 @@ async function requireAdmin(c: Context<HonoEnv>, next: () => Promise<void>): Pro
 // One-route-per-sub-app typed chains (avoids TS2589 from long accumulation)
 // ---------------------------------------------------------------------------
 
-const meApp = new Hono<HonoEnv>()
-  .use("/*", applyAuthMiddleware)
-  .get("/me", (c) => {
-    const identity = c.get("identity");
-    return c.json(MeSchema.parse({
+const meApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get("/me", (c) => {
+  const identity = c.get("identity");
+  return c.json(
+    MeSchema.parse({
       email: identity.email,
       userId: identity.litellmUserId,
       company: portalCompanyName(c.env),
       domain: identity.domain,
       role: identity.role,
-    }));
-  });
-
+    }),
+  );
+});
 
 const preferencesApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
@@ -642,11 +629,14 @@ const preferencesApp = new Hono<HonoEnv>()
     const parsed = UserPreferencesPatchSchema.safeParse(rawBody);
     if (!parsed.success) {
       const firstIssue = parsed.error.issues[0];
-      return c.json(ErrorResponseSchema.parse({
-        error: "validation_error",
-        path: firstIssue?.path.join(".") ?? "",
-        message: firstIssue?.message ?? "invalid_preferences",
-      }), 422);
+      return c.json(
+        ErrorResponseSchema.parse({
+          error: "validation_error",
+          path: firstIssue?.path.join(".") ?? "",
+          message: firstIssue?.message ?? "invalid_preferences",
+        }),
+        422,
+      );
     }
     const identity = c.get("identity");
     const store = new KVUserPrefsStore(c.env.USER_PREFS_KV);
@@ -672,154 +662,154 @@ const adminPreferencesDefaultsApp = new Hono<HonoEnv>()
     const parsed = UserPreferencesPatchSchema.safeParse(rawBody);
     if (!parsed.success) {
       const firstIssue = parsed.error.issues[0];
-      return c.json(ErrorResponseSchema.parse({
-        error: "validation_error",
-        path: firstIssue?.path.join(".") ?? "",
-        message: firstIssue?.message ?? "invalid_preferences",
-      }), 422);
+      return c.json(
+        ErrorResponseSchema.parse({
+          error: "validation_error",
+          path: firstIssue?.path.join(".") ?? "",
+          message: firstIssue?.message ?? "invalid_preferences",
+        }),
+        422,
+      );
     }
     const store = new KVUserPrefsStore(c.env.USER_PREFS_KV);
     const next = await store.patchGlobalDefaults(parsed.data);
     return c.json(UserPreferencesSchema.parse(next));
   });
 
-const dashboardApp = new Hono<HonoEnv>()
-  .use("/*", applyAuthMiddleware)
-  .get("/dashboard", async (c) => {
-    const identity = c.get("identity");
-    const data = await loadDashboard(c.env, identity);
-    return c.json(DashboardSchema.parse(data));
-  });
+const dashboardApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get("/dashboard", async (c) => {
+  const identity = c.get("identity");
+  const data = await loadDashboard(c.env, identity);
+  return c.json(DashboardSchema.parse(data));
+});
 
-const modelsApp = new Hono<HonoEnv>()
-  .use("/*", applyAuthMiddleware)
-  .get("/models", async (c) => {
-    const identity = c.get("identity");
-    const user = await resolveLiteLLMUser(c.env, identity.email);
-    const result = await readAvailableModels(c.env, user);
-    return c.json(ModelsSchema.parse(result));
-  });
+const modelsApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get("/models", async (c) => {
+  const identity = c.get("identity");
+  const user = await resolveLiteLLMUser(c.env, identity.email);
+  const result = await readAvailableModels(c.env, user);
+  return c.json(ModelsSchema.parse(result));
+});
 
-const keysGetApp = new Hono<HonoEnv>()
-  .use("/*", applyAuthMiddleware)
-  .get("/keys", async (c) => {
-    const identity = c.get("identity");
-    const user = await resolveLiteLLMUser(c.env, identity.email);
-    const keyList = await listUserKeys(c.env, user.userId);
-    const teamIds = keyAwareTeamIds(user.teamIds, keyList.keys);
-    const teams = await readUserTeams(c.env, teamIds);
-    const modelAccess = await readAvailableModelsFromTeams(c.env, teamIds, teams);
-    return c.json(KeysSchema.parse({
+const keysGetApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get("/keys", async (c) => {
+  const identity = c.get("identity");
+  const user = await resolveLiteLLMUser(c.env, identity.email);
+  const keyList = await listUserKeys(c.env, user.userId);
+  const teamIds = keyAwareTeamIds(user.teamIds, keyList.keys);
+  const teams = await readUserTeams(c.env, teamIds);
+  const modelAccess = await readAvailableModelsFromTeams(c.env, teamIds, teams);
+  return c.json(
+    KeysSchema.parse({
       litellmUserId: user.userId,
       totalCount: keyList.totalCount,
       keys: keyList.keys.map((key) => publicKeyWithModels(key, teams, modelAccess.models, c.env)),
-    }));
-  });
+    }),
+  );
+});
 
-const keysPostApp = new Hono<HonoEnv>()
-  .use("/*", applyAuthMiddleware)
-  .post("/keys", async (c) => {
-    const identity = c.get("identity");
-    const user = await resolveLiteLLMUser(c.env, identity.email);
-    if (!user.found) {
-      return c.json({ error: "user_not_found" }, 400);
+const keysPostApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).post("/keys", async (c) => {
+  const identity = c.get("identity");
+  const user = await resolveLiteLLMUser(c.env, identity.email);
+  if (!user.found) {
+    return c.json({ error: "user_not_found" }, 400);
+  }
+
+  let rawBody: unknown;
+  try {
+    rawBody = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+
+  const parsed = CreateKeyBodySchema.safeParse(rawBody);
+  if (!parsed.success) {
+    const firstIssue = parsed.error.issues[0];
+    const isKeyAlias = !firstIssue || firstIssue.path[0] === "keyAlias";
+    if (isKeyAlias) {
+      return c.json({ error: "key_alias_required" }, 400);
     }
-
-    let rawBody: unknown;
-    try {
-      rawBody = await c.req.json();
-    } catch {
-      return c.json({ error: "invalid_json" }, 400);
-    }
-
-    const parsed = CreateKeyBodySchema.safeParse(rawBody);
-    if (!parsed.success) {
-      const firstIssue = parsed.error.issues[0];
-      const isKeyAlias = !firstIssue || firstIssue.path[0] === "keyAlias";
-      if (isKeyAlias) {
-        return c.json({ error: "key_alias_required" }, 400);
-      }
-      return c.json(ErrorResponseSchema.parse({
+    return c.json(
+      ErrorResponseSchema.parse({
         error: "validation_error",
         path: firstIssue?.path.join(".") ?? "",
         message: firstIssue?.message ?? "invalid_request",
-      }), 422);
-    }
+      }),
+      422,
+    );
+  }
 
-    const { keyAlias, models, maxBudget, duration } = parsed.data;
+  const { keyAlias, models, maxBudget, duration } = parsed.data;
 
+  try {
+    const result = await createKey(c.env, user.userId, {
+      keyAlias,
+      models,
+      maxBudget: maxBudget ?? null,
+      duration: duration ?? null,
+    });
     try {
-      const result = await createKey(c.env, user.userId, {
-        keyAlias,
-        models,
-        maxBudget: maxBudget ?? null,
-        duration: duration ?? null,
-      });
-      try {
-        const preferences = await new KVUserPrefsStore(c.env.USER_PREFS_KV).getForEmail(identity.email);
-        if (preferences.notifications.keyCreation) {
-          await sendEmail(identity.email, "keyCreation", {
-            keyAlias: result.keyAlias ?? keyAlias,
-            createdAt: new Date().toISOString(),
-          });
-        }
-      } catch {
-        // Key creation should not fail if notification delivery is unavailable.
+      const preferences = await new KVUserPrefsStore(c.env.USER_PREFS_KV).getForEmail(identity.email);
+      if (preferences.notifications.keyCreation) {
+        await sendEmail(identity.email, "keyCreation", {
+          keyAlias: result.keyAlias ?? keyAlias,
+          createdAt: new Date().toISOString(),
+        });
       }
-      return c.json(CreateKeyResultSchema.parse(result), 201);
-    } catch (error) {
-      if (error instanceof KeyAliasConflictError) {
-        return c.json({
+    } catch {
+      // Key creation should not fail if notification delivery is unavailable.
+    }
+    return c.json(CreateKeyResultSchema.parse(result), 201);
+  } catch (error) {
+    if (error instanceof KeyAliasConflictError) {
+      return c.json(
+        {
           error: "key_alias_conflict",
           keyAlias: error.keyAlias,
           message: "API Key name already exists",
-        }, 409);
-      }
-      throw error;
+        },
+        409,
+      );
     }
-  });
+    throw error;
+  }
+});
 
-const keysDeleteApp = new Hono<HonoEnv>()
-  .use("/*", applyAuthMiddleware)
-  .delete("/keys/:keyId", async (c) => {
-    const identity = c.get("identity");
-    const encodedKeyId = c.req.param("keyId") ?? "";
-    let keyId = "";
-    try {
-      keyId = decodeURIComponent(encodedKeyId).trim();
-    } catch {
-      return c.json({ error: "key_id_required" }, 400);
-    }
-    if (!keyId) {
-      return c.json({ error: "key_id_required" }, 400);
-    }
+const keysDeleteApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).delete("/keys/:keyId", async (c) => {
+  const identity = c.get("identity");
+  const encodedKeyId = c.req.param("keyId") ?? "";
+  let keyId = "";
+  try {
+    keyId = decodeURIComponent(encodedKeyId).trim();
+  } catch {
+    return c.json({ error: "key_id_required" }, 400);
+  }
+  if (!keyId) {
+    return c.json({ error: "key_id_required" }, 400);
+  }
 
-    const user = await resolveLiteLLMUser(c.env, identity.email);
-    if (!user.found) {
-      return c.json({ error: "user_not_found" }, 400);
-    }
+  const user = await resolveLiteLLMUser(c.env, identity.email);
+  if (!user.found) {
+    return c.json({ error: "user_not_found" }, 400);
+  }
 
-    const keyList = await listUserKeys(c.env, user.userId);
-    const key = keyList.keys.find((item) => item.id === keyId);
-    if (key === undefined) {
-      return c.json({ error: "key_not_found" }, 404);
-    }
+  const keyList = await listUserKeys(c.env, user.userId);
+  const key = keyList.keys.find((item) => item.id === keyId);
+  if (key === undefined) {
+    return c.json({ error: "key_not_found" }, 404);
+  }
 
-    await deleteKey(c.env, key, identity.email);
-    return new Response(null, { status: 204 });
-  });
+  await deleteKey(c.env, key, identity.email);
+  return new Response(null, { status: 204 });
+});
 
-const usageApp = new Hono<HonoEnv>()
-  .use("/*", applyAuthMiddleware)
-  .get("/usage", async (c) => {
-    const identity = c.get("identity");
-    const user = await resolveLiteLLMUser(c.env, identity.email);
-    const keyList = await listUserKeys(c.env, user.userId);
-    const teamIds = keyAwareTeamIds(user.teamIds, keyList.keys);
-    const teams = await readUserTeams(c.env, teamIds);
-    const modelAccess = await readAvailableModelsFromTeams(c.env, teamIds, teams);
-    const keySpend = roundCurrency(keyList.keys.reduce((sum, key) => sum + key.spend, 0));
-    return c.json(UsageSchema.parse({
+const usageApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get("/usage", async (c) => {
+  const identity = c.get("identity");
+  const user = await resolveLiteLLMUser(c.env, identity.email);
+  const keyList = await listUserKeys(c.env, user.userId);
+  const teamIds = keyAwareTeamIds(user.teamIds, keyList.keys);
+  const teams = await readUserTeams(c.env, teamIds);
+  const modelAccess = await readAvailableModelsFromTeams(c.env, teamIds, teams);
+  const keySpend = roundCurrency(keyList.keys.reduce((sum, key) => sum + key.spend, 0));
+  return c.json(
+    UsageSchema.parse({
       userId: user.userId,
       email: identity.email,
       litellmUserFound: user.found,
@@ -833,21 +823,9 @@ const usageApp = new Hono<HonoEnv>()
         maxBudget: key.maxBudget,
         models: keyDisplayModels(key, teams, modelAccess.models, c.env),
       })),
-    }));
-  });
-
-const usageTimeseriesApp = new Hono<HonoEnv>()
-  .use("/*", applyAuthMiddleware)
-  .get("/usage/timeseries", async (c) => {
-    const identity = c.get("identity");
-    const requestParams = parseUsageTimeseriesRequest(new URL(c.req.url));
-    if (!requestParams.ok) {
-      return c.json(requestParams.body as Record<string, string>, 400);
-    }
-    const user = await resolveLiteLLMUser(c.env, identity.email);
-    const result = await readUsageTimeseries(c.env, user.userId, requestParams.grain, requestParams.window);
-    return c.json(UsageTimeseriesSchema.parse(result));
-  });
+    }),
+  );
+});
 
 const adminSummaryApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
@@ -865,24 +843,23 @@ const adminSummaryApp = new Hono<HonoEnv>()
     const overBudgetTeamCount = teams.filter((t) => t.maxBudget != null && Number(t.spend ?? 0) >= t.maxBudget).length;
     const noTeamUserCount = users.filter((u) => u.teamIds.length === 0).length;
     const unmanagedRoleCount = users.filter((u) => !isManagedRole(u.role)).length;
-    return c.json(AdminSummarySchema.parse({
-      userCount: userPage.totalCount,
-      sampledUserCount,
-      limited,
-      teamCount: teams.length,
-      adminCount: users.filter((u) => isAdminRole(u.role)).length,
-      unmanagedRoleCount,
-      noTeamUserCount,
-      overBudgetUserCount,
-      overBudgetTeamCount,
-      riskCount: overBudgetUserCount + overBudgetTeamCount + unmanagedRoleCount,
-      totalSpend: roundCurrency(users.reduce((sum, u) => sum + Number(u.spend ?? 0), 0)),
-      teamSpend: roundCurrency(teams.reduce((sum, t) => sum + Number(t.spend ?? 0), 0)),
-      totalBudget: sumDefinedNumbers([
-        ...users.map((u) => u.maxBudget),
-        ...teams.map((t) => t.maxBudget),
-      ]),
-    }));
+    return c.json(
+      AdminSummarySchema.parse({
+        userCount: userPage.totalCount,
+        sampledUserCount,
+        limited,
+        teamCount: teams.length,
+        adminCount: users.filter((u) => isAdminRole(u.role)).length,
+        unmanagedRoleCount,
+        noTeamUserCount,
+        overBudgetUserCount,
+        overBudgetTeamCount,
+        riskCount: overBudgetUserCount + overBudgetTeamCount + unmanagedRoleCount,
+        totalSpend: roundCurrency(users.reduce((sum, u) => sum + Number(u.spend ?? 0), 0)),
+        teamSpend: roundCurrency(teams.reduce((sum, t) => sum + Number(t.spend ?? 0), 0)),
+        totalBudget: sumDefinedNumbers([...users.map((u) => u.maxBudget), ...teams.map((t) => t.maxBudget)]),
+      }),
+    );
   });
 
 const adminUsersApp = new Hono<HonoEnv>()
@@ -897,19 +874,21 @@ const adminUsersApp = new Hono<HonoEnv>()
       return c.json(await adminUsersFromDO(c.env, { page, size }));
     }
     const result = await listAllUsers(c.env, { page, size });
-    return c.json(AdminUsersSchema.parse({
-      users: result.users.map((u) => ({
-        userId: u.userId,
-        email: u.email,
-        spend: u.spend,
-        maxBudget: u.maxBudget,
-        teamIds: u.teamIds,
-        role: u.role,
-      })),
-      totalCount: result.totalCount,
-      page: result.page,
-      size: result.size,
-    }));
+    return c.json(
+      AdminUsersSchema.parse({
+        users: result.users.map((u) => ({
+          userId: u.userId,
+          email: u.email,
+          spend: u.spend,
+          maxBudget: u.maxBudget,
+          teamIds: u.teamIds,
+          role: u.role,
+        })),
+        totalCount: result.totalCount,
+        page: result.page,
+        size: result.size,
+      }),
+    );
   });
 
 const adminTeamsApp = new Hono<HonoEnv>()
@@ -933,33 +912,65 @@ const adminAuditApp = new Hono<HonoEnv>()
     const page = sanitizeIntParam(url.searchParams.get("page"), 1);
     const size = sanitizeIntParam(url.searchParams.get("size"), 50);
     const result = await listAuditEvents(c.env, { page, size });
-    return c.json(AdminAuditSchema.parse({
-      events: result.events.map((e) => ({
-        id: e.id,
-        createdAt: e.createdAt,
-        action: e.action,
-        actorUserId: e.actorUserId,
-        actorUserEmail: e.actorUserEmail,
-        objectType: e.objectType,
-        objectId: e.objectId,
-      })),
-      totalCount: result.totalCount,
-      page: result.page,
-      size: result.size,
-    }));
+    return c.json(
+      AdminAuditSchema.parse({
+        events: result.events.map((e) => ({
+          id: e.id,
+          createdAt: e.createdAt,
+          action: e.action,
+          actorUserId: e.actorUserId,
+          actorUserEmail: e.actorUserEmail,
+          objectType: e.objectType,
+          objectId: e.objectId,
+        })),
+        totalCount: result.totalCount,
+        page: result.page,
+        size: result.size,
+      }),
+    );
   });
 
-const adminUsageTimeseriesApp = new Hono<HonoEnv>()
+function usageDOStub(env: LiteLLMPortalEnv): UsageDOStub | null {
+  if (!env.USAGE_DO) return null;
+  return env.USAGE_DO.get(env.USAGE_DO.idFromName("usage")) as unknown as UsageDOStub;
+}
+function indexDOLike(env: LiteLLMPortalEnv): IndexDOLike | null {
+  if (!env.INDEX_DO) return null;
+  return env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOLike;
+}
+
+const usageOverviewApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get("/usage/overview", async (c) => {
+  const parsed = parseDashboardRequest(new URL(c.req.url));
+  if (!parsed.ok) return c.json(parsed.body, 400);
+  const identity = c.get("identity");
+  const res = await buildDashboard(
+    { usage: usageDOStub(c.env), index: indexDOLike(c.env), now: Date.now() },
+    {
+      scope: { kind: "self", userId: identity.litellmUserId },
+      window: parsed.window,
+      grain: parsed.grain,
+      grainFallback: parsed.grainFallback,
+    },
+  );
+  return c.json(res);
+});
+
+const adminUsageOverviewApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
   .use("/admin/*", applyAdminRateLimit)
   .use("/admin/*", requireAdmin)
-  .get("/admin/usage/timeseries", async (c) => {
-    const parsed = parseUsageTimeseriesRequest(new URL(c.req.url));
-    if (!parsed.ok) {
-      return c.json(parsed.body as Record<string, string>, 400);
-    }
-    const timeseries = await readGlobalUsageTimeseries(c.env, parsed.grain, parsed.window);
-    return c.json(UsageTimeseriesSchema.parse(timeseries));
+  .get("/admin/usage/overview", async (c) => {
+    const url = new URL(c.req.url);
+    const parsed = parseDashboardRequest(url);
+    if (!parsed.ok) return c.json(parsed.body, 400);
+    const member = url.searchParams.get("member");
+    const scope =
+      member != null && member.length > 0 ? { kind: "member" as const, userId: member } : { kind: "global" as const };
+    const res = await buildDashboard(
+      { usage: usageDOStub(c.env), index: indexDOLike(c.env), now: Date.now() },
+      { scope, window: parsed.window, grain: parsed.grain, grainFallback: parsed.grainFallback },
+    );
+    return c.json(res);
   });
 
 const adminRolesInvalidateApp = new Hono<HonoEnv>()
@@ -983,26 +994,25 @@ const adminRolesInvalidateApp = new Hono<HonoEnv>()
     return new Response(null, { status: 204 });
   });
 
-const internalRoleChangedApp = new Hono<{ Bindings: LiteLLMPortalEnv }>()
-  .post("/_internal/role-changed", async (c) => {
-    let rawBody: unknown;
-    try {
-      rawBody = await c.req.json();
-    } catch {
-      return c.json({ error: "invalid_json" }, 400);
-    }
-    const parsed = RoleChangedBodySchema.safeParse(rawBody);
-    if (!parsed.success) {
-      return c.json({ error: "invalid_body" }, 400);
-    }
-    const { email, secret } = parsed.data;
-    const expectedToken = c.env.ROLE_INVALIDATION_WEBHOOK_TOKEN;
-    if (!expectedToken || secret !== expectedToken) {
-      return c.json({ error: "unauthorized" }, 401);
-    }
-    await invalidateRole(c.env, email);
-    return new Response(null, { status: 204 });
-  });
+const internalRoleChangedApp = new Hono<{ Bindings: LiteLLMPortalEnv }>().post("/_internal/role-changed", async (c) => {
+  let rawBody: unknown;
+  try {
+    rawBody = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+  const parsed = RoleChangedBodySchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return c.json({ error: "invalid_body" }, 400);
+  }
+  const { email, secret } = parsed.data;
+  const expectedToken = c.env.ROLE_INVALIDATION_WEBHOOK_TOKEN;
+  if (!expectedToken || secret !== expectedToken) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  await invalidateRole(c.env, email);
+  return new Response(null, { status: 204 });
+});
 
 // ---------------------------------------------------------------------------
 // Feature flag helper
@@ -1036,11 +1046,14 @@ async function parseWriteBody<T>(
     const pathSegments = firstIssue?.path.map((segment) => String(segment)) ?? [];
     return {
       ok: false,
-      response: c.json({
-        error: "validation_error",
-        path: pathSegments.join("."),
-        message: firstIssue?.message ?? "invalid_request",
-      }, 422),
+      response: c.json(
+        {
+          error: "validation_error",
+          path: pathSegments.join("."),
+          message: firstIssue?.message ?? "invalid_request",
+        },
+        422,
+      ),
     };
   }
   return { ok: true, data: parsed.data };
@@ -1057,11 +1070,16 @@ const adminDOStorageApp = new Hono<HonoEnv>()
   .get("/admin/do-storage/migration-state", async (c) => {
     const url = new URL(c.req.url);
     const limit = Math.min(sanitizeIntParam(url.searchParams.get("limit"), 100), 500);
-    const teamIds = url.searchParams.getAll("teamId").map((id) => id.trim()).filter(Boolean);
-    return c.json(await listDOStorageMigrationState(c.env, {
-      limit,
-      ...(teamIds.length > 0 ? { teamIds } : {}),
-    }));
+    const teamIds = url.searchParams
+      .getAll("teamId")
+      .map((id) => id.trim())
+      .filter(Boolean);
+    return c.json(
+      await listDOStorageMigrationState(c.env, {
+        limit,
+        ...(teamIds.length > 0 ? { teamIds } : {}),
+      }),
+    );
   })
   .post("/admin/do-storage/delete-legacy-kv", async (c) => {
     if (!isWriteOpsEnabled(c.env)) return writeOpsDisabledResponse(c);
@@ -1164,13 +1182,15 @@ const adminUpdateTeamLimitsApp = new Hono<HonoEnv>()
       });
     }
 
-    return c.json(UpdateTeamLimitsResultSchema.parse({
-      teamId,
-      tpmLimit: tpmLimit ?? null,
-      rpmLimit: rpmLimit ?? null,
-      maxBudget: maxBudget ?? null,
-      dryRun: isDryRun,
-    }));
+    return c.json(
+      UpdateTeamLimitsResultSchema.parse({
+        teamId,
+        tpmLimit: tpmLimit ?? null,
+        rpmLimit: rpmLimit ?? null,
+        maxBudget: maxBudget ?? null,
+        dryRun: isDryRun,
+      }),
+    );
   });
 
 // ---------------------------------------------------------------------------
@@ -1219,12 +1239,14 @@ const adminUpdateUserApp = new Hono<HonoEnv>()
       });
     }
 
-    return c.json(UpdateUserResultSchema.parse({
-      userId,
-      role: role ?? null,
-      maxBudget: maxBudget ?? null,
-      dryRun: isDryRun,
-    }));
+    return c.json(
+      UpdateUserResultSchema.parse({
+        userId,
+        role: role ?? null,
+        maxBudget: maxBudget ?? null,
+        dryRun: isDryRun,
+      }),
+    );
   });
 
 // ---------------------------------------------------------------------------
@@ -1259,9 +1281,8 @@ const adminDeleteKeyApp = new Hono<HonoEnv>()
     // Typed-confirmation: the submitted string MUST match the key's alias (or, if
     // the key has no alias, its public displayKey). This is the safety contract
     // the UI's ConfirmDialog enforces server-side.
-    const expectedConfirm = (existing.alias && existing.alias.trim().length > 0)
-      ? existing.alias.trim()
-      : existing.displayKey?.trim() ?? "";
+    const expectedConfirm =
+      existing.alias && existing.alias.trim().length > 0 ? existing.alias.trim() : (existing.displayKey?.trim() ?? "");
     if (expectedConfirm.length === 0 || submittedConfirm !== expectedConfirm) {
       return c.json({ error: "confirm_alias_mismatch" }, 403);
     }
@@ -1311,12 +1332,12 @@ const app = new Hono<{ Bindings: LiteLLMPortalEnv }>()
   .route("/api", keysPostApp)
   .route("/api", keysDeleteApp)
   .route("/api", usageApp)
-  .route("/api", usageTimeseriesApp)
+  .route("/api", usageOverviewApp)
   .route("/api", adminSummaryApp)
   .route("/api", adminUsersApp)
   .route("/api", adminTeamsApp)
   .route("/api", adminAuditApp)
-  .route("/api", adminUsageTimeseriesApp)
+  .route("/api", adminUsageOverviewApp)
   .route("/api", adminPreferencesDefaultsApp)
   .route("/api", adminRolesInvalidateApp)
   .route("/api", adminDOStorageApp)
