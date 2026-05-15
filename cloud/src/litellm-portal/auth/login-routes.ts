@@ -17,7 +17,7 @@ let _initFailedAt: number | null = null;
 const INIT_BACKOFF_MS = 30_000; // 30 s cooldown after a failure
 
 async function ensurePortalDOInitialized(env: LiteLLMPortalEnv): Promise<void> {
-  if (env.PORTAL_DO_SOT_ENABLED !== "true" || !env.INDEX_DO) return;
+  if (!env.INDEX_DO) return;
 
   // Backoff: if init failed recently, skip to avoid hammering the DO.
   if (_initFailedAt !== null && Date.now() - _initFailedAt < INIT_BACKOFF_MS) return;
@@ -377,19 +377,12 @@ export async function handleMagicCallback(request: Request, env: LiteLLMPortalEn
   });
 }
 
-export function handleLogout(_request: Request, env: LiteLLMPortalEnv): Response {
-  if (env.PORTAL_DO_SOT_ENABLED === "true") {
-    return new Response(null, {
-      status: 302,
-      headers: {
-        Location: "/login",
-        "Set-Cookie": clearSessionHeader(),
-      },
-    });
-  }
-  // Legacy: hand off to Cloudflare Access logout (CF manages its own session cookies)
+export function handleLogout(_request: Request, _env: LiteLLMPortalEnv): Response {
   return new Response(null, {
     status: 302,
-    headers: { Location: "/cdn-cgi/access/logout" },
+    headers: {
+      Location: "/login",
+      "Set-Cookie": clearSessionHeader(),
+    },
   });
 }

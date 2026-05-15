@@ -74,7 +74,7 @@ epics:
     name: "3. Auth: magic-link + session + allow-list"
     description: |
       Replace Cloudflare Access with a Worker-owned email magic-link flow
-      and signed session cookies. Gated behind PORTAL_DO_SOT_ENABLED until
+      and signed session cookies. Gated behind DO_SOT_FLAG until
       cutover.
     labels: [auth]
     priority: high
@@ -117,7 +117,7 @@ epics:
     name: "8. Route refactor (DO-sourced reads, DO-first writes)"
     description: |
       Rewire every /api/admin/* handler in routes.ts to read from DO and
-      write DO-first + enqueue. Gated by PORTAL_DO_SOT_ENABLED.
+      write DO-first + enqueue. Gated by DO_SOT_FLAG.
     labels: [routes]
     priority: high
 
@@ -231,7 +231,7 @@ tasks:
       - cloud/src/litellm-portal/types.ts
     affected_symbols:
       - PORTAL_SESSION_SECRET, PORTAL_MAGIC_LINK_SECRET, PORTAL_ALLOWED_EMAIL_DOMAINS
-      - BOOTSTRAP_ADMIN_EMAILS, PORTAL_DO_SOT_ENABLED
+      - BOOTSTRAP_ADMIN_EMAILS, DO_SOT_FLAG
     spec_refs:
       - portal-magic-link-auth#"Email allow-list is configurable and case-insensitive"
       - portal-bootstrap-import#"Bootstrap admin emails are honored at import time"
@@ -569,7 +569,7 @@ tasks:
       - authenticateRequest body deleted; new authenticateSession is a wrapper that reads Cookie header, calls verifySession, looks up role from IndexDO (via 30s memory cache from T-3.8)
       - The exported PortalPrincipal shape is preserved
       - All callers compile without edits
-      - Behind PORTAL_DO_SOT_ENABLED=true ONLY; falls back to throwing 401 (NOT to CF Access) when flag is on but cookie is missing
+      - Behind DO_SOT_FLAG=true ONLY; falls back to throwing 401 (NOT to CF Access) when flag is on but cookie is missing
     definition_of_done: [tsc clean; T-10.10 e2e passes; existing route tests pass with new test session helper]
     estimate: M
     priority: high
@@ -999,7 +999,7 @@ tasks:
       - cloud/src/litellm-portal/README.md (or equivalent deploy doc)
     affected_symbols:
       - PORTAL_SESSION_SECRET (secret), PORTAL_MAGIC_LINK_SECRET (secret)
-      - PORTAL_ALLOWED_EMAIL_DOMAINS, BOOTSTRAP_ADMIN_EMAILS, PORTAL_DO_SOT_ENABLED
+      - PORTAL_ALLOWED_EMAIL_DOMAINS, BOOTSTRAP_ADMIN_EMAILS, DO_SOT_FLAG
     spec_refs: [portal-magic-link-auth#"Bootstrap admins are seeded from environment"]
     acceptance:
       - Table listing each new var, type (secret vs env), example, where to set it
@@ -1027,7 +1027,7 @@ tasks:
     acceptance:
       - applyAuthMiddleware reads session cookie via T-3.6
       - requireAdmin reads role via T-3.8 (DO-backed cache)
-      - Behind PORTAL_DO_SOT_ENABLED flag; off path still works during EPIC-2–EPIC-7
+      - Behind DO_SOT_FLAG flag; off path still works during EPIC-2–EPIC-7
     definition_of_done: [tsc clean; T-10.9 covers both flag states]
     estimate: M
     priority: high
@@ -1390,7 +1390,7 @@ tasks:
   # ---------------------------------------------------------------------------
   - id: T-11.1
     parent: EPIC-11
-    name: "Pre-cutover deploy with PORTAL_DO_SOT_ENABLED=false"
+    name: "Pre-cutover deploy with DO_SOT_FLAG=false"
     blocked_by: [T-2.5, T-2.6, T-4.1, T-4.2, T-5.1, T-7.1, T-7.2, T-7.3, T-7.4, T-7.5, T-10.1, T-10.2, T-10.3, T-10.4, T-10.5, T-10.6, T-10.7, T-10.8, T-10.9, T-10.10]
     blocks: [T-11.2]
     serializes_with: []
@@ -1414,7 +1414,7 @@ tasks:
     affected_files: []
     spec_refs: [portal-bootstrap-import#"Fresh deployment, empty DO"]
     acceptance:
-      - PORTAL_DO_SOT_ENABLED=true deployed
+      - DO_SOT_FLAG=true deployed
       - GET /__diag/index → meta:imported=true, team count and user count match LiteLLM /team/list + /user/list
     definition_of_done: [Counts logged in cutover runbook]
     estimate: S

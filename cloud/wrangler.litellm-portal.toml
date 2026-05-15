@@ -11,12 +11,7 @@ routes = [
 [vars]
 LITELLM_PORTAL_ALLOWED_EMAIL_DOMAIN = "gz-zhiyun.com"
 LITELLM_PORTAL_ALLOWED_EMAILS = "blueyang@gmail.com,xu@ziikoo.com"
-# Canonical var read by allowlist.ts (PORTAL_DO_SOT_ENABLED path).
-# allowlist.ts falls back to LITELLM_PORTAL_ALLOWED_EMAIL_DOMAIN during cutover.
 PORTAL_ALLOWED_EMAIL_DOMAINS = "gz-zhiyun.com"
-# Cutover flag — when "true", admin routes use DO as source of truth and the
-# Worker requires its own session cookie (CF Access JWT is no longer trusted).
-PORTAL_DO_SOT_ENABLED = "true"
 # From address for magic-link emails. Must be on a Cloudflare Email Sending
 # verified domain (ziikoo.com is onboarded — see Compute → Email Service).
 PORTAL_MAIL_FROM = "noreply@ziikoo.com"

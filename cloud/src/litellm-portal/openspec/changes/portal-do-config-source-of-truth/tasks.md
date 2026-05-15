@@ -2,7 +2,7 @@
 
 - [ ] 1.1 Define Zod schemas in `durable/schemas.ts` for `TeamRecord`, `UserRecord`, `KeyRecord`, `SpendSnapshot`, `MagicLinkNonce`, `AuditEvent`, `SyncMessage`.
 - [ ] 1.2 Remove `CLOUDFLARE_ACCESS_AUD`, `CLOUDFLARE_ACCESS_TEAM_DOMAIN`, `LITELLM_PORTAL_ALLOWED_EMAIL_DOMAIN`, `LITELLM_PORTAL_ALLOWED_EMAILS`, `LITELLM_PORTAL_DEV_AUTH` from `types.ts`.
-- [ ] 1.3 Add `PORTAL_SESSION_SECRET`, `PORTAL_MAGIC_LINK_SECRET`, `PORTAL_ALLOWED_EMAIL_DOMAINS`, `BOOTSTRAP_ADMIN_EMAILS`, `PORTAL_DO_SOT_ENABLED` to `types.ts`.
+- [ ] 1.3 Add `PORTAL_SESSION_SECRET`, `PORTAL_MAGIC_LINK_SECRET`, `PORTAL_ALLOWED_EMAIL_DOMAINS`, `BOOTSTRAP_ADMIN_EMAILS`, `DO_SOT_FLAG` to `types.ts`.
 - [ ] 1.4 Add `INDEX_DO`, `TEAM_CONFIG_DO`, `LITELLM_SYNC_QUEUE`, `LITELLM_SYNC_DLQ` bindings to `types.ts`.
 - [ ] 1.5 Choose explicit field names (`maxBudget`, `currentSpend`, `lastSyncedAt`, `lastSyncError`) and ensure they do not collide with existing admin payloads.
 
@@ -57,7 +57,7 @@
 - [ ] 7.2 Add the queue producer/consumer entries and the DLQ producer entry.
 - [ ] 7.3 Add the 1-minute cron trigger.
 - [ ] 7.4 Remove any CF Access references from `wrangler.toml` / `wrangler.jsonc`.
-- [ ] 7.5 Define new secrets in deploy docs: `PORTAL_SESSION_SECRET`, `PORTAL_MAGIC_LINK_SECRET`; new env vars: `PORTAL_ALLOWED_EMAIL_DOMAINS`, `BOOTSTRAP_ADMIN_EMAILS`, `PORTAL_DO_SOT_ENABLED`.
+- [ ] 7.5 Define new secrets in deploy docs: `PORTAL_SESSION_SECRET`, `PORTAL_MAGIC_LINK_SECRET`; new env vars: `PORTAL_ALLOWED_EMAIL_DOMAINS`, `BOOTSTRAP_ADMIN_EMAILS`, `DO_SOT_FLAG`.
 
 ## 8. Route refactor (DO-sourced reads, DO-first writes)
 
@@ -96,8 +96,8 @@
   npx wrangler queues create litellm-sync-dlq --config wrangler.litellm-portal.toml
   ```
   Confirm both queues appear in the Cloudflare dashboard (Workers & Pages → Queues) before proceeding.
-- [ ] 11.1 Pre-cutover: deploy with `PORTAL_DO_SOT_ENABLED=false`. Verify CF Access still gates the portal.
-- [ ] 11.2 In the maintenance window: flip `PORTAL_DO_SOT_ENABLED=true`, redeploy, allow `IndexDO.init()` to run, check `meta:imported=true`, verify team and user counts match LiteLLM.
+- [ ] 11.1 Pre-cutover: deploy with `DO_SOT_FLAG=false`. Verify CF Access still gates the portal.
+- [ ] 11.2 In the maintenance window: flip `DO_SOT_FLAG=true`, redeploy, allow `IndexDO.init()` to run, check `meta:imported=true`, verify team and user counts match LiteLLM.
 - [ ] 11.3 Smoke: a `BOOTSTRAP_ADMIN_EMAILS` user receives a magic link, logs in, lands as `role=admin`.
 - [ ] 11.4 Smoke: admin edits a team budget, sees `lastSyncedAt` advance, and `GET /team/info` on LiteLLM reflects the change within retry budget.
 - [ ] 11.5 Smoke: spend snapshot updates `spend:current` within one cron tick.

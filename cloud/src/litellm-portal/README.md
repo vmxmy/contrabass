@@ -126,7 +126,7 @@ The following items were removed as part of the magic-link + DO source-of-truth 
 - **`role-cache.ts` LiteLLM-projection path** — three-tier memory → KV → LiteLLM role lookup. Replaced by `IndexDO` lookup with in-process cache.
 - **`ROLE_CACHE_KV` binding** — removed in T-12.3.
 - **`x-litellm-portal-dev-email` test header** — replaced by a signed session cookie test helper.
-- **`PORTAL_DO_SOT_ENABLED` feature flag** — the DO source-of-truth path is always active; the flag is gone.
+- **DO source-of-truth feature flag** — the DO path is always active; the flag has been removed.
 - **MailChannels** — `https://api.mailchannels.net/tx/v1/send`. Replaced by Cloudflare Email Service (`[[send_email]]` binding).
 - **`CLOUDFLARE_ACCESS_AUD`, `CLOUDFLARE_ACCESS_TEAM_DOMAIN`, `LITELLM_PORTAL_ALLOWED_EMAIL_DOMAIN`, `LITELLM_PORTAL_ALLOWED_EMAILS`, `LITELLM_PORTAL_DEV_AUTH`** — removed env vars from the pre-cutover configuration.
 

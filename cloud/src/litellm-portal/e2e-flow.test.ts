@@ -1,7 +1,7 @@
 /**
  * End-to-end happy-path flow test (PDCSOT-72)
  *
- * Covers the full flag=true (PORTAL_DO_SOT_ENABLED="true") admin-write flow
+ * Covers the full DO-path admin-write flow
  * without a real Cloudflare runtime:
  *
  *   [Test 1] magic-link round-trip:
@@ -147,7 +147,6 @@ function makeBaseEnv(
   queueSend: ReturnType<typeof vi.fn>,
 ): LiteLLMPortalEnv {
   return {
-    PORTAL_DO_SOT_ENABLED: "true",
     PORTAL_SESSION_SECRET: SESSION_SECRET,
     PORTAL_MAGIC_LINK_SECRET: MAGIC_LINK_SECRET,
     PORTAL_ALLOWED_EMAIL_DOMAINS: ALLOWED_DOMAIN,
@@ -299,7 +298,6 @@ describe("queue consumer → TeamConfigDO.recordSyncSuccess (PDCSOT-72 full flow
 
     // This time the queue is not needed for the consumer test — we supply the message directly
     const env: LiteLLMPortalEnv = {
-      PORTAL_DO_SOT_ENABLED: "true",
       PORTAL_SESSION_SECRET: SESSION_SECRET,
       PORTAL_MAGIC_LINK_SECRET: MAGIC_LINK_SECRET,
       LITELLM_BASE_URL: "https://litellm.test",

@@ -103,7 +103,6 @@ function makeFlagOnEnv(
   overrides: Partial<LiteLLMPortalEnv> = {},
 ): LiteLLMPortalEnv {
   return {
-    PORTAL_DO_SOT_ENABLED: "true",
     PORTAL_SESSION_SECRET: SESSION_SECRET,
     PORTAL_ALLOWED_EMAIL_DOMAINS: "gz-zhiyun.com",
     LITELLM_BASE_URL: "https://litellm.test",
@@ -149,7 +148,7 @@ afterEach(() => {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("DO-path admin routes (PORTAL_DO_SOT_ENABLED=true)", () => {
+describe("DO-path admin routes", () => {
 
   describe("GET /api/admin/teams", () => {
     it("returns DO-sourced teams with sync metadata fields", async () => {
@@ -514,9 +513,9 @@ describe("DO-path admin routes (PORTAL_DO_SOT_ENABLED=true)", () => {
   });
 
   // TODO(post-cutover): adminKeyDisable and adminKeyDelete are not yet routed
-  // through the DO path — they return 501 when PORTAL_DO_SOT_ENABLED=true.
-  // Once those routes are implemented, replace these placeholders with real tests
-  // that assert TeamConfigDO.upsertKey / deleteKey calls and queue messages.
+  // through the DO path. Once those routes are implemented, replace these
+  // placeholders with real tests that assert TeamConfigDO.upsertKey / deleteKey
+  // calls and queue messages.
   describe("Key operations under DO flag", () => {
     it.todo("adminDisableKey: assert TeamConfigDO.upsertKey called and queue receives key.update");
     it.todo("adminDeleteKey: assert TeamConfigDO.deleteKey called and queue receives key.delete");
