@@ -72,6 +72,16 @@ function makeIndexDOStub() {
       USERS_DATA.find((u) => u.userId === userId) ?? null,
     ),
     putUser: vi.fn().mockResolvedValue(undefined),
+    getStorageMigrationState: vi.fn().mockResolvedValue({
+      backend: "sql",
+      teams: 2,
+      users: 3,
+      nonces: 0,
+      auditEvents: 1,
+      legacyKeys: 4,
+      legacyKvDeleted: false,
+    }),
+    deleteLegacyKV: vi.fn().mockResolvedValue({ deleted: 4, skipped: false }),
   };
 }
 
@@ -80,6 +90,17 @@ function makeTeamConfigDOStub(overrides: { getTeam?: () => Promise<typeof TEAM_R
     getTeam: overrides.getTeam ?? vi.fn().mockResolvedValue(TEAM_RECORD),
     putTeam: vi.fn().mockResolvedValue(undefined),
     getSyncMetadata: vi.fn().mockResolvedValue(SYNC_META),
+    getStorageMigrationState: vi.fn().mockResolvedValue({
+      backend: "sql",
+      hasTeam: true,
+      members: 1,
+      keys: 1,
+      hasSpend: true,
+      dirty: false,
+      legacyKeys: 3,
+      legacyKvDeleted: false,
+    }),
+    deleteLegacyKV: vi.fn().mockResolvedValue({ deleted: 3, skipped: false }),
   };
 }
 
@@ -201,6 +222,64 @@ describe("DO-path admin routes", () => {
       );
 
       expect(res.status).toBe(401);
+    });
+  });
+
+
+  describe("DO storage migration admin routes", () => {
+    it("returns migration state for index and team config DOs", async () => {
+      const indexStub = makeIndexDOStub();
+      const teamStub = makeTeamConfigDOStub();
+      const env = makeFlagOnEnv(indexStub, teamStub);
+
+      const res = await app.fetch(
+        await adminRequest("https://x/api/admin/do-storage/migration-state?limit=1", env),
+        env,
+      );
+
+      expect(res.status).toBe(200);
+      const data = await res.json() as {
+        index: Record<string, unknown>;
+        teams: Array<{ id: string; state: Record<string, unknown> }>;
+        limited: boolean;
+      };
+      expect(data.index.backend).toBe("sql");
+      expect(data.index.legacyKeys).toBe(4);
+      expect(data.teams.length).toBe(1);
+      expect(data.teams[0].state.legacyKeys).toBe(3);
+      expect(data.limited).toBe(true);
+    });
+
+    it("deletes legacy KV only with typed confirmation", async () => {
+      const indexStub = makeIndexDOStub();
+      const teamStub = makeTeamConfigDOStub();
+      const env = makeFlagOnEnv(indexStub, teamStub);
+
+      const bad = await app.fetch(
+        await adminRequest("https://x/api/admin/do-storage/delete-legacy-kv", env, {
+          method: "POST",
+          body: JSON.stringify({ confirm: "delete" }),
+        }),
+        env,
+      );
+      expect(bad.status).toBe(422);
+      expect(indexStub.deleteLegacyKV).not.toHaveBeenCalled();
+
+      const ok = await app.fetch(
+        await adminRequest("https://x/api/admin/do-storage/delete-legacy-kv", env, {
+          method: "POST",
+          body: JSON.stringify({ confirm: "delete-legacy-do-kv", teamIds: ["t1"] }),
+        }),
+        env,
+      );
+
+      expect(ok.status).toBe(200);
+      const data = await ok.json() as { index: { deleted: number }; teams: Array<{ result: { deleted: number } }> };
+      expect(data.index.deleted).toBe(4);
+      expect(data.teams).toHaveLength(1);
+      expect(data.teams[0].result.deleted).toBe(3);
+      expect(indexStub.deleteLegacyKV).toHaveBeenCalledOnce();
+      expect(teamStub.deleteLegacyKV).toHaveBeenCalledOnce();
     });
   });
 

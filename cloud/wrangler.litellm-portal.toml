@@ -54,12 +54,13 @@ new_classes = ["IndexDO", "TeamConfigDO"]
 # the deleted class (error 10061). The supported path: point the bindings at
 # fresh *SQLite class names, then in ONE migration tag delete the old KV classes
 # (no binding references them anymore) and create the new SQLite classes.
-# Production data is intentionally discarded — IndexDO.init() re-imports
-# teams/users from LiteLLM on the first /login after deploy, and
-# BOOTSTRAP_ADMIN_EMAILS re-elevates the bootstrap admin. RateLimitDO holds only
-# ephemeral 60s counters. SQLite-backed DOs keep the same
-# ctx.storage.get/put/delete/transaction API (hidden __cf_kv table), so no DO
-# class code changes are required. Unlocks per-row billing + 30-day PITR.
+# Production data was intentionally discarded for the original class-name
+# migration — IndexDO.init() re-imports teams/users from LiteLLM on the first
+# /login after deploy, and BOOTSTRAP_ADMIN_EMAILS re-elevates the bootstrap
+# admin. RateLimitDO holds only ephemeral 60s counters. IndexDOSQLite and
+# TeamConfigDOSQLite now store long-lived portal state in explicit SQL tables;
+# their legacy hidden KV rows can be removed through the admin DO storage
+# cleanup endpoint after migration-state checks pass.
 # Two-deploy migration. CF validates a delete-class migration against the
 # CURRENTLY-LIVE deployment's bindings; combining delete+create in one deploy
 # fails with error 10061 because the live worker still binds the old KV class

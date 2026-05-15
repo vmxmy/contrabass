@@ -135,6 +135,39 @@ type TeamConfigDOWriteStub = {
   }>;
 };
 
+
+type IndexDOStorageAdminStub = IndexDOAdminStub & {
+  getStorageMigrationState(): Promise<{
+    backend: "sql" | "kv";
+    teams: number;
+    users: number;
+    nonces: number;
+    auditEvents: number;
+    legacyKeys: number;
+    legacyKvDeleted: boolean;
+  }>;
+  deleteLegacyKV(): Promise<{ deleted: number; skipped: boolean }>;
+};
+
+type TeamConfigDOStorageAdminStub = {
+  getStorageMigrationState(): Promise<{
+    backend: "sql" | "kv";
+    hasTeam: boolean;
+    members: number;
+    keys: number;
+    hasSpend: boolean;
+    dirty: boolean;
+    legacyKeys: number;
+    legacyKvDeleted: boolean;
+  }>;
+  deleteLegacyKV(): Promise<{ deleted: number; skipped: boolean }>;
+};
+
+const DeleteLegacyDOStorageBodySchema = z.object({
+  confirm: z.literal("delete-legacy-do-kv"),
+  teamIds: z.array(z.string().min(1)).optional(),
+}).strict();
+
 type IndexDOWriteStub = {
   getUserById(userId: string): Promise<{
     userId: string;
@@ -231,6 +264,103 @@ async function adminUsersFromDO(
   }));
 
   return AdminUsersSchema.parse({ users, totalCount, page: opts.page, size: opts.size });
+}
+
+
+async function listDOStorageMigrationState(
+  env: LiteLLMPortalEnv,
+  opts: { limit: number; teamIds?: string[] } = { limit: 100 },
+): Promise<Record<string, unknown>> {
+  if (!env.INDEX_DO) {
+    return { index: null, teams: [], errors: ["INDEX_DO binding not configured"] };
+  }
+
+  const indexStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOStorageAdminStub;
+  const [index, allTeams] = await Promise.all([
+    indexStub.getStorageMigrationState(),
+    indexStub.listTeams(),
+  ]);
+
+  const requestedTeamIds = opts.teamIds != null ? new Set(opts.teamIds) : null;
+  const matchingTeams = requestedTeamIds == null
+    ? allTeams
+    : allTeams.filter((team) => requestedTeamIds.has(team.id));
+  const selectedTeams = matchingTeams.slice(0, opts.limit);
+  const errors: string[] = [];
+
+  if (!env.TEAM_CONFIG_DO) {
+    return {
+      index,
+      teams: [],
+      totalTeams: allTeams.length,
+      scannedTeams: 0,
+      limited: false,
+      errors: ["TEAM_CONFIG_DO binding not configured"],
+    };
+  }
+
+  const teams = await Promise.all(selectedTeams.map(async (team) => {
+    try {
+      const stub = env.TEAM_CONFIG_DO!.get(
+        env.TEAM_CONFIG_DO!.idFromName(team.id),
+      ) as unknown as TeamConfigDOStorageAdminStub;
+      return { id: team.id, alias: team.alias, state: await stub.getStorageMigrationState() };
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      errors.push(`${team.id}:${reason}`);
+      return { id: team.id, alias: team.alias, state: null };
+    }
+  }));
+
+  return {
+    index,
+    teams,
+    totalTeams: allTeams.length,
+    scannedTeams: teams.length,
+    limited: matchingTeams.length > selectedTeams.length,
+    ...(errors.length > 0 ? { errors } : {}),
+  };
+}
+
+async function deleteLegacyDOStorageKV(
+  env: LiteLLMPortalEnv,
+  teamIds?: string[],
+): Promise<Record<string, unknown>> {
+  if (!env.INDEX_DO) {
+    return { index: null, teams: [], errors: ["INDEX_DO binding not configured"] };
+  }
+  const indexStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOStorageAdminStub;
+  const allTeams = await indexStub.listTeams();
+  const requestedTeamIds = teamIds != null ? new Set(teamIds) : null;
+  const selectedTeams = requestedTeamIds == null
+    ? allTeams
+    : allTeams.filter((team) => requestedTeamIds.has(team.id));
+  const errors: string[] = [];
+
+  const index = await indexStub.deleteLegacyKV();
+  const teams = await Promise.all(selectedTeams.map(async (team) => {
+    if (!env.TEAM_CONFIG_DO) {
+      return { id: team.id, alias: team.alias, result: { deleted: 0, skipped: true } };
+    }
+    try {
+      const stub = env.TEAM_CONFIG_DO.get(
+        env.TEAM_CONFIG_DO.idFromName(team.id),
+      ) as unknown as TeamConfigDOStorageAdminStub;
+      return { id: team.id, alias: team.alias, result: await stub.deleteLegacyKV() };
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      errors.push(`${team.id}:${reason}`);
+      return { id: team.id, alias: team.alias, result: { deleted: 0, skipped: true } };
+    }
+  }));
+
+  return {
+    index,
+    teams,
+    totalTeams: allTeams.length,
+    cleanedTeams: teams.length,
+    ...(errors.length > 0 ? { errors } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -917,6 +1047,32 @@ async function parseWriteBody<T>(
 }
 
 // ---------------------------------------------------------------------------
+// Admin DO storage migration helpers
+// ---------------------------------------------------------------------------
+
+const adminDOStorageApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
+  .use("/admin/*", requireAdmin)
+  .get("/admin/do-storage/migration-state", async (c) => {
+    const url = new URL(c.req.url);
+    const limit = Math.min(sanitizeIntParam(url.searchParams.get("limit"), 100), 500);
+    const teamIds = url.searchParams.getAll("teamId").map((id) => id.trim()).filter(Boolean);
+    return c.json(await listDOStorageMigrationState(c.env, {
+      limit,
+      ...(teamIds.length > 0 ? { teamIds } : {}),
+    }));
+  })
+  .post("/admin/do-storage/delete-legacy-kv", async (c) => {
+    if (!isWriteOpsEnabled(c.env)) return writeOpsDisabledResponse(c);
+
+    const parsed = await parseWriteBody(c, DeleteLegacyDOStorageBodySchema);
+    if (!parsed.ok) return parsed.response;
+
+    return c.json(await deleteLegacyDOStorageKV(c.env, parsed.data.teamIds));
+  });
+
+// ---------------------------------------------------------------------------
 // Admin write endpoints — low risk: PATCH /api/admin/keys/:id/disable
 // ---------------------------------------------------------------------------
 
@@ -1163,6 +1319,7 @@ const app = new Hono<{ Bindings: LiteLLMPortalEnv }>()
   .route("/api", adminUsageTimeseriesApp)
   .route("/api", adminPreferencesDefaultsApp)
   .route("/api", adminRolesInvalidateApp)
+  .route("/api", adminDOStorageApp)
   .route("/api", adminDisableKeyApp)
   .route("/api", adminUpdateTeamLimitsApp)
   .route("/api", adminUpdateUserApp)

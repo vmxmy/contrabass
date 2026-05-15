@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { IndexDO } from "./index-do";
 import type { LiteLLMPortalEnv } from "../types";
+import { makeTestSqlStorage } from "../../test/sql-storage";
 
 // ---------------------------------------------------------------------------
 // In-memory Storage mock
@@ -21,10 +22,10 @@ interface MockStorage {
   getAlarm(): Promise<number | null>;
 }
 
-function makeStorage(): { data: Map<string, unknown>; storage: MockStorage; getAlarm: () => number | null } {
+function makeStorage(sql?: SqlStorage): { data: Map<string, unknown>; storage: MockStorage & { sql?: SqlStorage }; getAlarm: () => number | null } {
   const data = new Map<string, unknown>();
   let alarm: number | null = null;
-  const storage: MockStorage = {
+  const storage: MockStorage & { sql?: SqlStorage } = {
     async get<T>(key: string): Promise<T | undefined> {
       return data.get(key) as T | undefined;
     },
@@ -64,6 +65,7 @@ function makeStorage(): { data: Map<string, unknown>; storage: MockStorage; getA
       return alarm;
     },
   };
+  if (sql) storage.sql = sql;
   return {
     data,
     storage,
@@ -75,6 +77,14 @@ function makeIndexDO() {
   const { data, storage } = makeStorage();
   const env = {} as LiteLLMPortalEnv;
   // IndexDO extends DurableObject which stores ctx and env as-is
+  const ctx = { storage } as unknown as DurableObjectState;
+  const obj = new IndexDO(ctx, env);
+  return { obj, data, storage };
+}
+
+function makeSqlIndexDO() {
+  const { data, storage } = makeStorage(makeTestSqlStorage());
+  const env = {} as LiteLLMPortalEnv;
   const ctx = { storage } as unknown as DurableObjectState;
   const obj = new IndexDO(ctx, env);
   return { obj, data, storage };
@@ -333,4 +343,50 @@ describe("IndexDO", () => {
     const found = await obj.consumeNonce("new");
     expect(found).not.toBeNull();
   });
+
+  it("SQL path backfills legacy KV and can delete legacy keys", async () => {
+    const { obj, data } = makeSqlIndexDO();
+    data.set("teams:list", [{ id: "t1", alias: "team one" }]);
+    data.set("user:u1", {
+      userId: "u1",
+      email: "Alice@Example.com",
+      role: "admin",
+      teamId: "t1",
+      createdAt: new Date().toISOString(),
+    });
+    data.set("email:alice@example.com", { userId: "u1", teamId: "t1", role: "admin" });
+    data.set("meta:imported", true);
+
+    const beforeCleanup = await obj.getStorageMigrationState();
+    expect(beforeCleanup.backend).toBe("sql");
+    expect(beforeCleanup.teams).toBe(1);
+    expect(beforeCleanup.users).toBe(1);
+    expect(beforeCleanup.legacyKeys).toBe(4);
+    expect((await obj.getUserByEmail("alice@example.com"))?.userId).toBe("u1");
+    expect(await obj.isImported()).toBe(true);
+
+    const cleanup = await obj.deleteLegacyKV();
+    expect(cleanup).toEqual({ deleted: 4, skipped: false });
+    expect(data.size).toBe(0);
+    expect(await obj.listTeams()).toEqual([{ id: "t1", alias: "team one" }]);
+    expect((await obj.getUserById("u1"))?.email).toBe("Alice@Example.com");
+    expect((await obj.getStorageMigrationState()).legacyKvDeleted).toBe(true);
+  });
+
+  it("SQL path writes new records without creating legacy KV keys", async () => {
+    const { obj, data } = makeSqlIndexDO();
+    await obj.setTeamsList([{ id: "t2", alias: "team two" }]);
+    await obj.putUser({
+      userId: "u2",
+      email: "bob@example.com",
+      role: "user",
+      teamId: "t2",
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(data.size).toBe(0);
+    expect((await obj.getStorageMigrationState()).users).toBe(1);
+    expect((await obj.listAllUsers()).users.map((u) => u.userId)).toEqual(["u2"]);
+  });
+
 });
