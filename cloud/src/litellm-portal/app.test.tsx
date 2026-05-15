@@ -747,11 +747,12 @@ describe("AdminSection", () => {
           size: 50,
         });
       }
-      return Response.json({ teams: [], users: [], buckets: [], totals: {}, topModels: [] });
+      if (url.includes("/api/admin/usage/overview")) return Response.json({ available: false, empty: true, scope: "global", window: "7d", grain: "day", grainFallback: false, timezone: "Asia/Shanghai", kpi: { spend: { current: 0, previous: null, deltaPct: null }, requests: { current: 0, previous: null, deltaPct: null }, totalTokens: { current: 0, previous: null, deltaPct: null } }, trend: [], models: [], hourOfDay: [], perUser: [] });
+      return Response.json({ teams: [], users: [], totalCount: 0, page: 1, size: 50, buckets: [], totals: {}, topModels: [] });
     }) as typeof fetch;
 
     // #when
-    render(<AdminSection role="admin" />);
+    render(<AdminSection role="admin" />, { wrapper: createWrapper() });
 
     // wait for initial load
     await waitFor(() => {
@@ -798,13 +799,13 @@ describe("AdminSection", () => {
           size: 50,
         });
       }
-      if (url.includes("/api/admin/summary")) return Response.json({ userCount: 1 });
+      if (url.includes("/api/admin/usage/overview")) return Response.json({ available: false, empty: true, scope: "global", window: "7d", grain: "day", grainFallback: false, timezone: "Asia/Shanghai", kpi: { spend: { current: 0, previous: null, deltaPct: null }, requests: { current: 0, previous: null, deltaPct: null }, totalTokens: { current: 0, previous: null, deltaPct: null } }, trend: [], models: [], hourOfDay: [], perUser: [] });
       if (url.includes("/api/admin/teams")) return Response.json({ teams: [] });
       if (url.includes("/api/admin/audit")) return Response.json({ events: [], totalCount: 0, page: 1, size: 50 });
       return Response.json({});
     }) as typeof fetch;
 
-    render(<AdminSection role="admin" />);
+    render(<AdminSection role="admin" />, { wrapper: createWrapper() });
 
     // Wait for users table to render the user row
     await waitFor(() => {
@@ -830,23 +831,7 @@ describe("AdminSection", () => {
           size: 50,
         });
       }
-      if (url.includes("/api/admin/summary")) {
-        return Response.json({
-          userCount: 1,
-          sampledUserCount: 1,
-          limited: false,
-          teamCount: 1,
-          adminCount: 1,
-          unmanagedRoleCount: 0,
-          noTeamUserCount: 0,
-          overBudgetUserCount: 0,
-          overBudgetTeamCount: 0,
-          riskCount: 0,
-          totalSpend: 1.5,
-          teamSpend: 0.5,
-          totalBudget: 100,
-        });
-      }
+      if (url.includes("/api/admin/usage/overview")) return Response.json({ available: false, empty: true, scope: "global", window: "7d", grain: "day", grainFallback: false, timezone: "Asia/Shanghai", kpi: { spend: { current: 0, previous: null, deltaPct: null }, requests: { current: 0, previous: null, deltaPct: null }, totalTokens: { current: 0, previous: null, deltaPct: null } }, trend: [], models: [], hourOfDay: [], perUser: [] });
       if (url.includes("/api/admin/teams")) {
         return Response.json({
           teams: [{ id: "t1", alias: "Test Team", models: ["gpt-4o"], spend: 0.5, tpmLimit: null, rpmLimit: null }],
@@ -863,14 +848,12 @@ describe("AdminSection", () => {
       return Response.json({});
     }) as typeof fetch;
 
-    render(<AdminSection role="admin" />);
+    render(<AdminSection role="admin" />, { wrapper: createWrapper() });
 
     expect(screen.queryByText("全局管理（只读）")).not.toBeNull();
     await waitFor(() => {
-      expect(screen.queryByText("全局账户")).not.toBeNull();
       expect(screen.queryByText("全员账户")).not.toBeNull();
       expect(screen.queryByText("全部团队")).not.toBeNull();
-      expect(screen.queryByText("全局用量趋势")).not.toBeNull();
       expect(screen.queryByText("资源与权限")).not.toBeNull();
       expect(screen.queryByText("审计与风险")).not.toBeNull();
       expect(screen.queryByText("审计日志")).not.toBeNull();
@@ -958,13 +941,13 @@ describe("DropdownMenu — AdminUsersTable row actions", () => {
           size: 50,
         });
       }
-      if (url.includes("/api/admin/summary")) return Response.json({ userCount: 1 });
+      if (url.includes("/api/admin/usage/overview")) return Response.json({ available: false, empty: true, scope: "global", window: "7d", grain: "day", grainFallback: false, timezone: "Asia/Shanghai", kpi: { spend: { current: 0, previous: null, deltaPct: null }, requests: { current: 0, previous: null, deltaPct: null }, totalTokens: { current: 0, previous: null, deltaPct: null } }, trend: [], models: [], hourOfDay: [], perUser: [] });
       if (url.includes("/api/admin/teams")) return Response.json({ teams: [] });
       if (url.includes("/api/admin/audit")) return Response.json({ events: [], totalCount: 0, page: 1, size: 50 });
       return Response.json({});
     }) as typeof fetch;
 
-    render(<AdminSection role="admin" />);
+    render(<AdminSection role="admin" />, { wrapper: createWrapper() });
 
     // Wait for users table to render
     await waitFor(() => {
