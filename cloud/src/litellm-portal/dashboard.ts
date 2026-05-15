@@ -199,6 +199,7 @@ export async function buildSummary(
           scope: { kind: "user", userId: u.userId },
           currentFromMs: windowFromMs,
           currentToMs: windowToMs,
+          // previous range intentionally empty — only current.spend is consumed here
           previousFromMs: 0,
           previousToMs: 0,
         });

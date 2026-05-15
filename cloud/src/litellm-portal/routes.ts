@@ -834,6 +834,7 @@ const adminSummaryApp = new Hono<HonoEnv>()
   .use("/admin/*", requireAdmin)
   .get("/admin/summary", async (c) => {
     const toMs = Date.now();
+    // 30d = max honest window; equals UsageDO event retention (EVENT_RETENTION_MS)
     const fromMs = toMs - WINDOW_SPEC["30d"].lenMs;
     const usageStub = usageDOStub(c.env);
     let totalSpend = 0;
@@ -842,6 +843,7 @@ const adminSummaryApp = new Hono<HonoEnv>()
         scope: { kind: "global" },
         currentFromMs: fromMs,
         currentToMs: toMs,
+        // previous range intentionally empty — only current.spend is consumed here
         previousFromMs: 0,
         previousToMs: 0,
       });
@@ -858,6 +860,7 @@ const adminSummaryApp = new Hono<HonoEnv>()
         adminCount: s.adminCount,
         riskCount: s.riskCount,
         totalSpend: s.totalSpend,
+        // per-team spend not in L1 DO path; omitted by L2 spec (frontend does not read it)
         teamSpend: null,
         totalBudget: s.totalBudget,
       }),
