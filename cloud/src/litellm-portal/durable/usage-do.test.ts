@@ -658,4 +658,73 @@ describe("UsageDO queryKpiWithDelta Option A source resolution", () => {
     });
     expect(k.current).toMatchObject({ spend: 0, requests: 0, totalTokens: 0, source: "events" });
   });
+
+  it("previous window straddling the horizon → previous.source split (symmetry)", async () => {
+    const obj = makeUsageDO();
+    // current fully in events; PREVIOUS [NOW-45d, NOW-15d) straddles NOW-30d.
+    await obj.writeSpendEvents([
+      {
+        requestId: "cur",
+        tsMs: NOW - 3 * DAY,
+        userId: "u1",
+        teamId: "t",
+        model: "m",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 1,
+        spend: 1,
+      },
+      {
+        requestId: "pse",
+        tsMs: NOW - 20 * DAY,
+        userId: "u1",
+        teamId: "t",
+        model: "m",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 2,
+        spend: 3,
+      },
+    ]);
+    await obj.upsertDailyRows([
+      {
+        date: new Date(NOW - 40 * DAY + 8 * 3600000).toISOString().slice(0, 10),
+        userId: "__global__",
+        model: "__all__",
+        spend: 5,
+        totalTokens: 50,
+        promptTokens: 0,
+        completionTokens: 0,
+        requests: 5,
+        successRequests: 5,
+        failedRequests: 0,
+      },
+      {
+        date: new Date(NOW - 40 * DAY + 8 * 3600000).toISOString().slice(0, 10),
+        userId: "__global__",
+        model: "gpt",
+        spend: 5,
+        totalTokens: 50,
+        promptTokens: 0,
+        completionTokens: 0,
+        requests: 5,
+        successRequests: 5,
+        failedRequests: 0,
+      },
+    ]);
+    const k = await obj.queryKpiWithDelta({
+      scope: { kind: "global" },
+      nowMs: NOW,
+      currentFromMs: NOW - 7 * DAY,
+      currentToMs: NOW,
+      previousFromMs: NOW - 45 * DAY,
+      previousToMs: NOW - 15 * DAY,
+    });
+    expect(k.current).toMatchObject({ source: "events" });
+    // previous straddles: daily older part (__all__ only = 5, NOT 10) + events recent part (3) = 8.
+    expect(k.previous.source).toBe("split");
+    expect(k.previous.spend).toBe(8);
+    expect(k.previous.totalTokens).toBe(52);
+    expect(k.previous.requests).toBe(6);
+  });
 });
