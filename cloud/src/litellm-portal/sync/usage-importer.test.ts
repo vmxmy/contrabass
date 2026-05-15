@@ -148,9 +148,13 @@ describe("ingestSpendLogs", () => {
 });
 
 function makeDailyStub() {
+  let cursor: number | null = null;
   return {
+    getSyncCursor: vi.fn(async (_s?: string) => cursor),
+    setSyncCursor: vi.fn(async (_s: string, o: { cursorMs: number }) => {
+      cursor = o.cursorMs;
+    }),
     upsertDailyRows: vi.fn(async () => undefined),
-    setSyncCursor: vi.fn(async () => undefined),
     pruneRetention: vi.fn(async () => undefined),
   };
 }
@@ -158,42 +162,93 @@ function makeDailyStub() {
 describe("refreshDailyActivity", () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it("upserts per-model rows from aggregated daily activity", async () => {
+  it("parses real LiteLLM shape: breakdown.models[m].metrics + day.metrics __all__, sends timezone=-480", async () => {
     const stub = makeDailyStub();
     const env = makeEnv(stub);
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          results: [
-            {
-              date: "2026-05-14",
-              metrics: { spend: 5, total_tokens: 100, prompt_tokens: 40, completion_tokens: 60, api_requests: 10 },
-              metadata: { total_successful_requests: 9, total_failed_requests: 1 },
-              breakdown: {
-                models: {
-                  gpt: { spend: 4, total_tokens: 80, api_requests: 8 },
-                  claude: { spend: 1, total_tokens: 20, api_requests: 2 },
+    let calledUrl = "";
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+      calledUrl = url;
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            results: [
+              {
+                date: "2026-05-14",
+                metrics: {
+                  spend: 5,
+                  total_tokens: 100,
+                  prompt_tokens: 40,
+                  completion_tokens: 60,
+                  api_requests: 10,
+                  successful_requests: 9,
+                  failed_requests: 1,
+                },
+                breakdown: {
+                  models: {
+                    gpt: {
+                      metrics: {
+                        spend: 4,
+                        total_tokens: 80,
+                        prompt_tokens: 30,
+                        completion_tokens: 50,
+                        api_requests: 8,
+                        successful_requests: 8,
+                        failed_requests: 0,
+                      },
+                    },
+                    claude: {
+                      metrics: {
+                        spend: 1,
+                        total_tokens: 20,
+                        prompt_tokens: 10,
+                        completion_tokens: 10,
+                        api_requests: 2,
+                        successful_requests: 1,
+                        failed_requests: 1,
+                      },
+                    },
+                  },
                 },
               },
-            },
-          ],
-        }),
-        { status: 200 },
-      ),
-    );
+            ],
+            metadata: { total_pages: 1, has_more: false },
+          }),
+          { status: 200 },
+        ),
+      );
+    });
     const r = await refreshDailyActivity(env);
     expect(r.error).toBeNull();
-    const calls = stub.upsertDailyRows.mock.calls as unknown as Array<[unknown]>;
-    const rows = calls.at(0)?.[0];
+    expect(calledUrl).toContain("timezone=-480");
+    const allCalls = stub.upsertDailyRows.mock.calls as unknown as Array<[Array<Record<string, unknown>>]>;
+    const rows = allCalls[0][0];
     expect(rows).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ date: "2026-05-14", userId: "__global__", model: "gpt", spend: 4, requests: 8 }),
-        expect.objectContaining({ date: "2026-05-14", userId: "__global__", model: "claude", spend: 1 }),
+        expect.objectContaining({
+          date: "2026-05-14",
+          userId: "__global__",
+          model: "gpt",
+          spend: 4,
+          totalTokens: 80,
+          requests: 8,
+          successRequests: 8,
+          failedRequests: 0,
+        }),
+        expect.objectContaining({
+          date: "2026-05-14",
+          userId: "__global__",
+          model: "claude",
+          spend: 1,
+          requests: 2,
+          successRequests: 1,
+          failedRequests: 1,
+        }),
         expect.objectContaining({
           date: "2026-05-14",
           userId: "__global__",
           model: "__all__",
           spend: 5,
+          totalTokens: 100,
           requests: 10,
           successRequests: 9,
           failedRequests: 1,
@@ -202,23 +257,96 @@ describe("refreshDailyActivity", () => {
     );
   });
 
-  it("on fetch failure records lastError and does not upsert", async () => {
+  it("first run (no cursor) backfills 365d; sets cursor on success", async () => {
+    const stub = makeDailyStub();
+    const env = makeEnv(stub);
+    let qs = "";
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+      qs = url;
+      return Promise.resolve(
+        new Response(JSON.stringify({ results: [], metadata: { total_pages: 1, has_more: false } }), { status: 200 }),
+      );
+    });
+    const r = await refreshDailyActivity(env);
+    expect(r.error).toBeNull();
+    // 365d window: start_date should be ~365 days before end_date.
+    const start = new Date(decodeURIComponent(qs.match(/start_date=([^&]+)/)![1]));
+    const end = new Date(decodeURIComponent(qs.match(/end_date=([^&]+)/)![1]));
+    const days = Math.round((end.getTime() - start.getTime()) / 86400000);
+    expect(days).toBeGreaterThanOrEqual(364);
+    expect(days).toBeLessThanOrEqual(366);
+    expect(stub.setSyncCursor).toHaveBeenCalledWith("daily_activity", expect.objectContaining({ lastError: null }));
+  });
+
+  it("subsequent run (cursor set) uses short trailing window, not 365d", async () => {
+    const stub = makeDailyStub();
+    const env = makeEnv(stub);
+    await stub.setSyncCursor("daily_activity", { cursorMs: Date.now() });
+    let qs = "";
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+      qs = url;
+      return Promise.resolve(
+        new Response(JSON.stringify({ results: [], metadata: { total_pages: 1, has_more: false } }), { status: 200 }),
+      );
+    });
+    await refreshDailyActivity(env);
+    const start = new Date(decodeURIComponent(qs.match(/start_date=([^&]+)/)![1]));
+    const end = new Date(decodeURIComponent(qs.match(/end_date=([^&]+)/)![1]));
+    const days = Math.round((end.getTime() - start.getTime()) / 86400000);
+    expect(days).toBeLessThanOrEqual(4);
+  });
+
+  it("paginates via metadata.total_pages", async () => {
+    const stub = makeDailyStub();
+    const env = makeEnv(stub);
+    let calls = 0;
+    globalThis.fetch = vi.fn().mockImplementation(() => {
+      calls += 1;
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            results: [
+              {
+                date: "2026-05-1" + calls,
+                metrics: {
+                  spend: 1,
+                  total_tokens: 1,
+                  api_requests: 1,
+                  successful_requests: 1,
+                  failed_requests: 0,
+                },
+                breakdown: { models: {} },
+              },
+            ],
+            metadata: { total_pages: 3, has_more: calls < 3 },
+          }),
+          { status: 200 },
+        ),
+      );
+    });
+    const r = await refreshDailyActivity(env);
+    expect(calls).toBe(3);
+    expect(r.ingested).toBe(3); // one __all__ row per page
+  });
+
+  it("first-run fetch failure leaves cursor null (so backfill retries) + error", async () => {
     const stub = makeDailyStub();
     const env = makeEnv(stub);
     globalThis.fetch = vi.fn().mockResolvedValue(new Response("boom", { status: 503 }));
     const r = await refreshDailyActivity(env);
-    expect(r.ingested).toBe(0);
     expect(r.error).toBeTruthy();
+    expect(await stub.getSyncCursor("daily_activity")).toBeNull();
     expect(stub.upsertDailyRows).not.toHaveBeenCalled();
-    const last = (stub.setSyncCursor.mock.calls as unknown as Array<[string, { lastError: string | null }]>).at(-1);
-    expect(last?.[0]).toBe("daily_activity");
-    expect(last?.[1].lastError).toBeTruthy();
   });
 
   it("empty results → no upsert, ingested 0, error null", async () => {
     const stub = makeDailyStub();
     const env = makeEnv(stub);
-    globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ results: [] }), { status: 200 }));
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ results: [], metadata: { total_pages: 1, has_more: false } }), { status: 200 }),
+      );
     const r = await refreshDailyActivity(env);
     expect(r.ingested).toBe(0);
     expect(r.error).toBeNull();
