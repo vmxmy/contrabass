@@ -30,10 +30,19 @@ import {
 import { checkCsrf } from "./auth/csrf";
 
 export type { LiteLLMPortalEnv } from "./types";
-// SQLite-backed class names (GA Apr 2025). Same implementations; the *SQLite
-// suffix is required because Cloudflare forbids enabling SQLite on an already-
-// deployed class name — the binding must point at a fresh class name so the
-// delete-old + create-sqlite migration can run in one deploy.
+// KV→SQLite migration, step 1 of 2. Export BOTH the legacy class names and the
+// new *SQLite names:
+//   - Old names must stay exported or CF rejects the deploy (error 10064:
+//     "script does not export class X which is depended on by existing
+//     Durable Objects"). The live KV DOs still belong to these classes until
+//     step 2 deletes them.
+//   - New *SQLite names back the repointed bindings (created via the v3
+//     new_sqlite_classes migration).
+// Step 2 (separate deploy) drops the old exports + adds a deleted_classes
+// migration once no live binding references them (avoids error 10061).
+export { RateLimitDO } from "./security/rate-limit-do";
+export { IndexDO } from "./durable/index-do";
+export { TeamConfigDO } from "./durable/team-config-do";
 export { RateLimitDO as RateLimitDOSQLite } from "./security/rate-limit-do";
 export { IndexDO as IndexDOSQLite } from "./durable/index-do";
 export { TeamConfigDO as TeamConfigDOSQLite } from "./durable/team-config-do";
