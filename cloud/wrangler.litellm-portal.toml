@@ -29,16 +29,16 @@ remote = true
 
 [[durable_objects.bindings]]
 name = "RATE_LIMIT_DO"
-class_name = "RateLimitDO"
+class_name = "RateLimitDOSQLite"
 
 # IndexDO + TeamConfigDO — see openspec change portal-do-config-source-of-truth.
 [[durable_objects.bindings]]
 name = "INDEX_DO"
-class_name = "IndexDO"
+class_name = "IndexDOSQLite"
 
 [[durable_objects.bindings]]
 name = "TEAM_CONFIG_DO"
-class_name = "TeamConfigDO"
+class_name = "TeamConfigDOSQLite"
 
 [[migrations]]
 tag = "v1"
@@ -48,22 +48,22 @@ new_classes = ["RateLimitDO"]
 tag = "v2"
 new_classes = ["IndexDO", "TeamConfigDO"]
 
-# Migrate all DO classes from the legacy KV-backed storage to SQLite-backed
-# storage (GA April 2025). Cloudflare forbids enabling SQLite on an already-
-# deployed class, so the only path is delete-then-recreate. Production data is
-# intentionally discarded — IndexDO.init() re-imports teams/users from LiteLLM
-# on the first /login after deploy, and BOOTSTRAP_ADMIN_EMAILS re-elevates the
-# bootstrap admin. RateLimitDO holds only ephemeral 60s counters.
-# SQLite-backed DOs keep the same ctx.storage.get/put/delete/transaction API
-# (backed by a hidden __cf_kv table), so no DO class code changes are required.
-# This unlocks cheaper per-row billing and 30-day point-in-time recovery.
+# Migrate all DO classes from legacy KV-backed storage to SQLite-backed storage
+# (GA April 2025). Cloudflare forbids enabling SQLite on an already-deployed
+# class name, AND a delete migration is rejected while a binding still references
+# the deleted class (error 10061). The supported path: point the bindings at
+# fresh *SQLite class names, then in ONE migration tag delete the old KV classes
+# (no binding references them anymore) and create the new SQLite classes.
+# Production data is intentionally discarded — IndexDO.init() re-imports
+# teams/users from LiteLLM on the first /login after deploy, and
+# BOOTSTRAP_ADMIN_EMAILS re-elevates the bootstrap admin. RateLimitDO holds only
+# ephemeral 60s counters. SQLite-backed DOs keep the same
+# ctx.storage.get/put/delete/transaction API (hidden __cf_kv table), so no DO
+# class code changes are required. Unlocks per-row billing + 30-day PITR.
 [[migrations]]
 tag = "v3"
 deleted_classes = ["RateLimitDO", "IndexDO", "TeamConfigDO"]
-
-[[migrations]]
-tag = "v4"
-new_sqlite_classes = ["RateLimitDO", "IndexDO", "TeamConfigDO"]
+new_sqlite_classes = ["RateLimitDOSQLite", "IndexDOSQLite", "TeamConfigDOSQLite"]
 
 # ---------------------------------------------------------------------------
 # Workers Secret Store (opt-in — requires manual provisioning)

@@ -30,9 +30,13 @@ import {
 import { checkCsrf } from "./auth/csrf";
 
 export type { LiteLLMPortalEnv } from "./types";
-export { RateLimitDO } from "./security/rate-limit-do";
-export { IndexDO } from "./durable/index-do";
-export { TeamConfigDO } from "./durable/team-config-do";
+// SQLite-backed class names (GA Apr 2025). Same implementations; the *SQLite
+// suffix is required because Cloudflare forbids enabling SQLite on an already-
+// deployed class name — the binding must point at a fresh class name so the
+// delete-old + create-sqlite migration can run in one deploy.
+export { RateLimitDO as RateLimitDOSQLite } from "./security/rate-limit-do";
+export { IndexDO as IndexDOSQLite } from "./durable/index-do";
+export { TeamConfigDO as TeamConfigDOSQLite } from "./durable/team-config-do";
 
 const portalChunkByFileName = new Map<string, { fileName: string; js: string }>(
   portalBundleChunks.map((chunk) => [chunk.fileName, chunk]),
