@@ -558,6 +558,11 @@ import { SpendEventSchema, type SpendEvent, DailyRowSchema, type DailyRow } from
     const zero = { spend: 0, requests: 0, totalTokens: 0 };
     if (sql === null) return { current: { ...zero }, previous: { ...zero } };
     const userId = opts.scope.kind === "user" ? opts.scope.userId : null;
+    // cb_usage_daily.date stores Asia/Shanghai (UTC+8) business dates, so the
+    // daily-fallback window must derive its YYYY-MM-DD bounds in that TZ, not UTC.
+    const SHANGHAI_TZ_MS = 8 * 60 * 60 * 1000;
+    const shDate = (ms: number) =>
+      new Date(ms + SHANGHAI_TZ_MS).toISOString().slice(0, 10);
     const agg = (fromMs: number, toMs: number) => {
       const where = userId === null ? "" : " AND user_id = ?";
       const args: SqlStorageValue[] = userId === null
@@ -586,10 +591,8 @@ import { SpendEventSchema, type SpendEvent, DailyRowSchema, type DailyRow } from
            FROM cb_usage_daily
           WHERE date >= ? AND date < ?${userId === null ? "" : " AND user_id = ?"}`,
         ...(userId === null
-          ? [new Date(opts.currentFromMs).toISOString().slice(0, 10),
-             new Date(opts.currentToMs).toISOString().slice(0, 10)]
-          : [new Date(opts.currentFromMs).toISOString().slice(0, 10),
-             new Date(opts.currentToMs).toISOString().slice(0, 10), userId]),
+          ? [shDate(opts.currentFromMs), shDate(opts.currentToMs)]
+          : [shDate(opts.currentFromMs), shDate(opts.currentToMs), userId]),
       ));
       if (dRow) {
         current.spend = Number(dRow.s);
