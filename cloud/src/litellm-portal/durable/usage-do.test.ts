@@ -120,3 +120,72 @@ describe("UsageDO upsertDailyRows + pruneRetention", () => {
     expect(await obj.countDailyRows()).toBe(0);
   });
 });
+
+describe("UsageDO queryTimeseries + queryModelBreakdown", () => {
+  const day0 = Date.parse("2026-05-12T10:00:00+08:00");
+  const day1 = Date.parse("2026-05-13T10:00:00+08:00");
+
+  async function seed(obj: UsageDO) {
+    await obj.writeSpendEvents([
+      {
+        requestId: "a",
+        tsMs: day0,
+        userId: "u1",
+        teamId: "t",
+        model: "gpt",
+        promptTokens: 1,
+        completionTokens: 1,
+        totalTokens: 2,
+        spend: 1,
+      },
+      {
+        requestId: "b",
+        tsMs: day1,
+        userId: "u1",
+        teamId: "t",
+        model: "gpt",
+        promptTokens: 1,
+        completionTokens: 1,
+        totalTokens: 3,
+        spend: 2,
+      },
+      {
+        requestId: "c",
+        tsMs: day1,
+        userId: "u2",
+        teamId: "t",
+        model: "claude",
+        promptTokens: 1,
+        completionTokens: 1,
+        totalTokens: 5,
+        spend: 4,
+      },
+    ]);
+  }
+
+  it("queryTimeseries day grain buckets by Asia/Shanghai day, global scope", async () => {
+    const obj = makeUsageDO();
+    await seed(obj);
+    const r = await obj.queryTimeseries({
+      scope: { kind: "global" },
+      grain: "day",
+      fromMs: Date.parse("2026-05-12T00:00:00+08:00"),
+      toMs: Date.parse("2026-05-14T00:00:00+08:00"),
+    });
+    expect(r.map((b) => [b.label, b.spend, b.requests])).toEqual([
+      ["05-12", 1, 1],
+      ["05-13", 6, 2],
+    ]);
+  });
+
+  it("queryModelBreakdown aggregates per model, user scope", async () => {
+    const obj = makeUsageDO();
+    await seed(obj);
+    const r = await obj.queryModelBreakdown({
+      scope: { kind: "user", userId: "u1" },
+      fromMs: Date.parse("2026-05-12T00:00:00+08:00"),
+      toMs: Date.parse("2026-05-14T00:00:00+08:00"),
+    });
+    expect(r).toEqual([{ model: "gpt", spend: 3, totalTokens: 5, requests: 2 }]);
+  });
+});

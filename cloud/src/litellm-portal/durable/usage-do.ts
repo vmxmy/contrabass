@@ -9,6 +9,35 @@ function firstRow<T extends SqlRow>(cursor: SqlStorageCursor<T>): T | undefined 
   return cursor.toArray()[0];
 }
 
+const TZ_OFFSET_MS = 8 * 60 * 60 * 1000; // Asia/Shanghai — fixed UTC+8, no DST
+
+function shanghaiDayLabel(tsMs: number): string {
+  const d = new Date(tsMs + TZ_OFFSET_MS);
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${mm}-${dd}`;
+}
+
+function shanghaiDayStartMs(tsMs: number): number {
+  const d = new Date(tsMs + TZ_OFFSET_MS);
+  const utcMidnight = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  return utcMidnight - TZ_OFFSET_MS;
+}
+
+function shanghaiHourStartMs(tsMs: number): number {
+  const d = new Date(tsMs + TZ_OFFSET_MS);
+  const utcHour = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours());
+  return utcHour - TZ_OFFSET_MS;
+}
+
+function shanghaiHourLabel(tsMs: number): string {
+  const d = new Date(tsMs + TZ_OFFSET_MS);
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  return `${mm}-${dd} ${hh}:00`;
+}
+
 export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
   private sqlReady: Promise<SqlStorage | null> | null = null;
 
@@ -202,7 +231,7 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
     const userId = opts.scope.kind === "user" ? opts.scope.userId : null;
     // cb_usage_daily.date stores Asia/Shanghai (UTC+8) business dates, so the
     // daily-fallback window must derive its YYYY-MM-DD bounds in that TZ, not UTC.
-    const SHANGHAI_TZ_MS = 8 * 60 * 60 * 1000;
+    const SHANGHAI_TZ_MS = TZ_OFFSET_MS;
     const shDate = (ms: number) => new Date(ms + SHANGHAI_TZ_MS).toISOString().slice(0, 10);
     const agg = (fromMs: number, toMs: number) => {
       const where = userId === null ? "" : " AND user_id = ?";
@@ -245,6 +274,84 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
       }
     }
     return { current, previous };
+  }
+
+  private scopeClause(scope: { kind: "global" } | { kind: "user"; userId: string }): {
+    clause: string;
+    arg: string | null;
+  } {
+    return scope.kind === "user" ? { clause: " AND user_id = ?", arg: scope.userId } : { clause: "", arg: null };
+  }
+
+  async queryTimeseries(opts: {
+    scope: { kind: "global" } | { kind: "user"; userId: string };
+    grain: "hour" | "day";
+    fromMs: number;
+    toMs: number;
+  }): Promise<Array<{ startMs: number; label: string; totalTokens: number; requests: number; spend: number }>> {
+    const sql = await this.sql();
+    if (sql === null) return [];
+    const { clause, arg } = this.scopeClause(opts.scope);
+    const args: SqlStorageValue[] = arg === null ? [opts.fromMs, opts.toMs] : [opts.fromMs, opts.toMs, arg];
+    const rows = sql
+      .exec<SqlRow>(
+        `SELECT ts_ms, total_tokens, spend
+         FROM cb_usage_events
+        WHERE ts_ms >= ? AND ts_ms < ?${clause}
+        ORDER BY ts_ms ASC`,
+        ...args,
+      )
+      .toArray();
+    // Bucket in-app: Shanghai-day/hour truncation isn't portably expressible in the SqlStorage SQL dialect; event volume is bounded by 30d retention.
+    const buckets = new Map<number, { totalTokens: number; requests: number; spend: number }>();
+    for (const r of rows) {
+      const ts = Number(r.ts_ms);
+      const key = opts.grain === "day" ? shanghaiDayStartMs(ts) : shanghaiHourStartMs(ts);
+      const cur = buckets.get(key) ?? { totalTokens: 0, requests: 0, spend: 0 };
+      cur.totalTokens += Number(r.total_tokens);
+      cur.requests += 1;
+      cur.spend += Number(r.spend);
+      buckets.set(key, cur);
+    }
+    return [...buckets.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([startMs, v]) => ({
+        startMs,
+        label: opts.grain === "day" ? shanghaiDayLabel(startMs) : shanghaiHourLabel(startMs),
+        totalTokens: v.totalTokens,
+        requests: v.requests,
+        spend: Math.round(v.spend * 1e6) / 1e6,
+      }));
+  }
+
+  async queryModelBreakdown(opts: {
+    scope: { kind: "global" } | { kind: "user"; userId: string };
+    fromMs: number;
+    toMs: number;
+  }): Promise<Array<{ model: string; spend: number; totalTokens: number; requests: number }>> {
+    const sql = await this.sql();
+    if (sql === null) return [];
+    const { clause, arg } = this.scopeClause(opts.scope);
+    const args: SqlStorageValue[] = arg === null ? [opts.fromMs, opts.toMs] : [opts.fromMs, opts.toMs, arg];
+    const rows = sql
+      .exec<SqlRow>(
+        `SELECT model,
+              COALESCE(SUM(spend),0) AS s,
+              COALESCE(SUM(total_tokens),0) AS t,
+              COUNT(*) AS r
+         FROM cb_usage_events
+        WHERE ts_ms >= ? AND ts_ms < ?${clause}
+        GROUP BY model
+        ORDER BY s DESC, t DESC`,
+        ...args,
+      )
+      .toArray();
+    return rows.map((r) => ({
+      model: String(r.model),
+      spend: Math.round(Number(r.s) * 1e6) / 1e6,
+      totalTokens: Number(r.t),
+      requests: Number(r.r),
+    }));
   }
 }
 
