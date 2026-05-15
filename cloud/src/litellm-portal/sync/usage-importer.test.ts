@@ -75,4 +75,73 @@ describe("ingestSpendLogs", () => {
     expect(r.ingested).toBe(0);
     expect(r.error).toContain("USAGE_DO");
   });
+
+  it("paginates across pages until total_pages and ingests all", async () => {
+    const usage = makeUsageStub();
+    const env = makeEnv(usage);
+    let call = 0;
+    globalThis.fetch = vi.fn().mockImplementation(() => {
+      call += 1;
+      const page = call;
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            data: [
+              {
+                request_id: `r${page}`,
+                startTime: "2026-05-13T0" + page + ":00:00",
+                user_id: "u1",
+                team_id: "t",
+                model: "gpt",
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+                spend: 1,
+              },
+            ],
+            total_pages: 3,
+          }),
+          { status: 200 },
+        ),
+      );
+    });
+    const r = await ingestSpendLogs(env);
+    expect(r.ingested).toBe(3);
+    expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(3);
+    expect(usage.writeSpendEvents).toHaveBeenCalledTimes(3);
+  });
+
+  it("first-run failure persists floor cursor but next run still re-attempts full backfill window", async () => {
+    const usage = makeUsageStub();
+    const env = makeEnv(usage);
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(new Response("boom", { status: 503 }));
+    const r1 = await ingestSpendLogs(env);
+    expect(r1.error).toBeTruthy();
+    // cursor was persisted (floor ~ now-30d). Next run: window end is still "now",
+    // so a successful tick ingests everything in [~30d-5min, now].
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [
+            {
+              request_id: "r1",
+              startTime: "2026-05-13T01:00:00",
+              user_id: "u1",
+              team_id: "t",
+              model: "gpt",
+              prompt_tokens: 1,
+              completion_tokens: 1,
+              total_tokens: 2,
+              spend: 1,
+            },
+          ],
+          total_pages: 1,
+        }),
+        { status: 200 },
+      ),
+    );
+    const r2 = await ingestSpendLogs(env);
+    expect(r2.error).toBeNull();
+    expect(r2.ingested).toBe(1);
+  });
 });
