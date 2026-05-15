@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 import { TrendChart } from "./trend-chart";
 import { ModelDonut } from "./model-donut";
+import { RankBar } from "./rank-bar";
+import { HourBars } from "./hour-bars";
 
 afterEach(cleanup);
 
@@ -32,5 +34,30 @@ describe("ModelDonut", () => {
       <ModelDonut slices={[{ model: "gpt", value: 10 }, { model: "claude", value: 5 }]} />,
     );
     expect(container.querySelector("[data-chart='model-donut']")).toBeTruthy();
+  });
+});
+
+describe("RankBar", () => {
+  it("empty state", () => {
+    const { getByText } = render(<RankBar rows={[]} />);
+    expect(getByText("暂无数据")).toBeTruthy();
+  });
+  it("renders container", () => {
+    const { container } = render(<RankBar rows={[{ label: "u1", value: 9 }]} />);
+    expect(container.querySelector("[data-chart='rank-bar']")).toBeTruthy();
+  });
+});
+
+describe("HourBars", () => {
+  it("empty state when all zero", () => {
+    const { getByText } = render(
+      <HourBars buckets={Array.from({ length: 24 }, (_, h) => ({ hour: h, value: 0 }))} />,
+    );
+    expect(getByText("暂无数据")).toBeTruthy();
+  });
+  it("renders container with data", () => {
+    const b = Array.from({ length: 24 }, (_, h) => ({ hour: h, value: h }));
+    const { container } = render(<HourBars buckets={b} />);
+    expect(container.querySelector("[data-chart='hour-bars']")).toBeTruthy();
   });
 });
