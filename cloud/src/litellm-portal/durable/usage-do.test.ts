@@ -44,3 +44,79 @@ describe("UsageDO writeSpendEvents dedupe + cursor", () => {
     expect(await obj.getSyncCursor("spend_logs")).toBe(5000);
   });
 });
+
+describe("UsageDO upsertDailyRows + pruneRetention", () => {
+  it("upsert overwrites the (date,user,model) row", async () => {
+    const obj = makeUsageDO();
+    const base = {
+      date: "2026-05-10",
+      userId: "__global__",
+      model: "gpt",
+      spend: 1,
+      totalTokens: 10,
+      promptTokens: 4,
+      completionTokens: 6,
+      requests: 2,
+      successRequests: 2,
+      failedRequests: 0,
+    };
+    await obj.upsertDailyRows([base]);
+    await obj.upsertDailyRows([{ ...base, spend: 9, requests: 5 }]);
+    const k = await obj.queryKpiWithDelta({
+      scope: { kind: "global" },
+      currentFromMs: Date.parse("2026-05-10T00:00:00+08:00"),
+      currentToMs: Date.parse("2026-05-11T00:00:00+08:00"),
+      previousFromMs: Date.parse("2026-05-09T00:00:00+08:00"),
+      previousToMs: Date.parse("2026-05-10T00:00:00+08:00"),
+    });
+    expect(k.current.spend).toBe(9);
+    expect(k.current.requests).toBe(5);
+  });
+
+  it("pruneRetention deletes old events and old daily rows", async () => {
+    const obj = makeUsageDO();
+    const now = Date.parse("2026-05-15T12:00:00+08:00");
+    await obj.writeSpendEvents([
+      {
+        requestId: "old",
+        tsMs: now - 40 * 86400000,
+        userId: "u1",
+        teamId: "t",
+        model: "m",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 1,
+        spend: 0,
+      },
+      {
+        requestId: "fresh",
+        tsMs: now - 1 * 86400000,
+        userId: "u1",
+        teamId: "t",
+        model: "m",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 1,
+        spend: 0,
+      },
+    ]);
+    await obj.upsertDailyRows([
+      {
+        date: "2024-01-01",
+        userId: "__global__",
+        model: "m",
+        spend: 0,
+        totalTokens: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        requests: 0,
+        successRequests: null,
+        failedRequests: null,
+      },
+    ]);
+    await obj.pruneRetention(now);
+    const recent = await obj.queryRecentEvents({ userId: "u1", limit: 10 });
+    expect(recent.map((r) => r.tsMs)).toEqual([now - 1 * 86400000]);
+    expect(await obj.countDailyRows()).toBe(0);
+  });
+});

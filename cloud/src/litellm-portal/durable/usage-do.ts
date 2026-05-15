@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { LiteLLMPortalEnv } from "../types";
-import { SpendEventSchema, type SpendEvent } from "./usage-schemas";
+import { SpendEventSchema, type SpendEvent, DailyRowSchema, type DailyRow } from "./usage-schemas";
 
 type SqlRow = Record<string, SqlStorageValue>;
 type SqlCapableStorage = DurableObjectStorage & { sql?: SqlStorage };
@@ -135,6 +135,116 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
       new Date().toISOString(),
       opts.lastError,
     );
+  }
+
+  private static readonly EVENT_RETENTION_MS = 30 * 86400000;
+
+  async upsertDailyRows(rows: DailyRow[]): Promise<void> {
+    const sql = await this.sql();
+    if (sql === null) return;
+    for (const raw of rows) {
+      const d = DailyRowSchema.parse(raw);
+      sql.exec(
+        `INSERT INTO cb_usage_daily
+           (date, user_id, model, spend, total_tokens, prompt_tokens,
+            completion_tokens, requests, success_requests, failed_requests)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(date, user_id, model) DO UPDATE SET
+           spend = excluded.spend,
+           total_tokens = excluded.total_tokens,
+           prompt_tokens = excluded.prompt_tokens,
+           completion_tokens = excluded.completion_tokens,
+           requests = excluded.requests,
+           success_requests = excluded.success_requests,
+           failed_requests = excluded.failed_requests`,
+        d.date,
+        d.userId,
+        d.model,
+        d.spend,
+        d.totalTokens,
+        d.promptTokens,
+        d.completionTokens,
+        d.requests,
+        d.successRequests,
+        d.failedRequests,
+      );
+    }
+  }
+
+  async pruneRetention(nowMs: number): Promise<void> {
+    const sql = await this.sql();
+    if (sql === null) return;
+    sql.exec("DELETE FROM cb_usage_events WHERE ts_ms < ?", nowMs - UsageDO.EVENT_RETENTION_MS);
+    const cutoffDate = new Date(nowMs - 365 * 86400000 + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    sql.exec("DELETE FROM cb_usage_daily WHERE date < ?", cutoffDate);
+  }
+
+  async countDailyRows(): Promise<number> {
+    const sql = await this.sql();
+    if (sql === null) return 0;
+    const row = firstRow(sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM cb_usage_daily"));
+    return row?.n ?? 0;
+  }
+
+  async queryKpiWithDelta(opts: {
+    scope: { kind: "global" } | { kind: "user"; userId: string };
+    currentFromMs: number;
+    currentToMs: number;
+    previousFromMs: number;
+    previousToMs: number;
+  }): Promise<{
+    current: { spend: number; requests: number; totalTokens: number };
+    previous: { spend: number; requests: number; totalTokens: number };
+  }> {
+    const sql = await this.sql();
+    const zero = { spend: 0, requests: 0, totalTokens: 0 };
+    if (sql === null) return { current: { ...zero }, previous: { ...zero } };
+    const userId = opts.scope.kind === "user" ? opts.scope.userId : null;
+    // cb_usage_daily.date stores Asia/Shanghai (UTC+8) business dates, so the
+    // daily-fallback window must derive its YYYY-MM-DD bounds in that TZ, not UTC.
+    const SHANGHAI_TZ_MS = 8 * 60 * 60 * 1000;
+    const shDate = (ms: number) => new Date(ms + SHANGHAI_TZ_MS).toISOString().slice(0, 10);
+    const agg = (fromMs: number, toMs: number) => {
+      const where = userId === null ? "" : " AND user_id = ?";
+      const args: SqlStorageValue[] = userId === null ? [fromMs, toMs] : [fromMs, toMs, userId];
+      const row = firstRow(
+        sql.exec<SqlRow>(
+          `SELECT COALESCE(SUM(spend),0) AS s,
+                COALESCE(SUM(total_tokens),0) AS t,
+                COUNT(*) AS r
+           FROM cb_usage_events
+          WHERE ts_ms >= ? AND ts_ms < ?${where}`,
+          ...args,
+        ),
+      );
+      return {
+        spend: Number(row?.s ?? 0),
+        totalTokens: Number(row?.t ?? 0),
+        requests: Number(row?.r ?? 0),
+      };
+    };
+    const current = agg(opts.currentFromMs, opts.currentToMs);
+    // previous is intentionally event-only (no daily fallback); callers comparing current-vs-previous must treat the delta as approximate when current fell back to daily aggregates.
+    const previous = agg(opts.previousFromMs, opts.previousToMs);
+    if (current.requests === 0 && current.spend === 0) {
+      const dRow = firstRow(
+        sql.exec<SqlRow>(
+          `SELECT COALESCE(SUM(spend),0) AS s, COALESCE(SUM(total_tokens),0) AS t,
+                COALESCE(SUM(requests),0) AS r
+           FROM cb_usage_daily
+          WHERE date >= ? AND date < ?${userId === null ? "" : " AND user_id = ?"}`,
+          ...(userId === null
+            ? [shDate(opts.currentFromMs), shDate(opts.currentToMs)]
+            : [shDate(opts.currentFromMs), shDate(opts.currentToMs), userId]),
+        ),
+      );
+      if (dRow) {
+        current.spend = Number(dRow.s);
+        current.totalTokens = Number(dRow.t);
+        current.requests = Number(dRow.r);
+      }
+    }
+    return { current, previous };
   }
 }
 
