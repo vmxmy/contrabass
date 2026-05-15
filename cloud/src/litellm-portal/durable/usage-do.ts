@@ -230,8 +230,13 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
     const zero = { spend: 0, requests: 0, totalTokens: 0 };
     if (sql === null) return { current: { ...zero }, previous: { ...zero } };
     const userId = opts.scope.kind === "user" ? opts.scope.userId : null;
-    // cb_usage_daily.date stores Asia/Shanghai (UTC+8) business dates, so the
-    // daily-fallback window must derive its YYYY-MM-DD bounds in that TZ, not UTC.
+    // cb_usage_daily.date is stored verbatim from LiteLLM's daily-activity
+    // bucketing (proxy server date — TZ not guaranteed UTC+8). These shDate()
+    // bounds derive YYYY-MM-DD in Shanghai as a best-effort approximation: it
+    // can be off by one day at the boundary when LiteLLM's bucket TZ differs.
+    // Acceptable because this daily fallback only fires when the window has
+    // zero events; L3 product windows are <=30d and event-backed, so this
+    // path is not user-facing. See refreshDailyActivity (sync/usage-importer).
     const SHANGHAI_TZ_MS = TZ_OFFSET_MS;
     const shDate = (ms: number) => new Date(ms + SHANGHAI_TZ_MS).toISOString().slice(0, 10);
     const agg = (fromMs: number, toMs: number) => {

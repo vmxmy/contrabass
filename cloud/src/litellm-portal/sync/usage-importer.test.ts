@@ -201,6 +201,29 @@ describe("refreshDailyActivity", () => {
       ]),
     );
   });
+
+  it("on fetch failure records lastError and does not upsert", async () => {
+    const stub = makeDailyStub();
+    const env = makeEnv(stub);
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response("boom", { status: 503 }));
+    const r = await refreshDailyActivity(env);
+    expect(r.ingested).toBe(0);
+    expect(r.error).toBeTruthy();
+    expect(stub.upsertDailyRows).not.toHaveBeenCalled();
+    const last = (stub.setSyncCursor.mock.calls as unknown as Array<[string, { lastError: string | null }]>).at(-1);
+    expect(last?.[0]).toBe("daily_activity");
+    expect(last?.[1].lastError).toBeTruthy();
+  });
+
+  it("empty results → no upsert, ingested 0, error null", async () => {
+    const stub = makeDailyStub();
+    const env = makeEnv(stub);
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ results: [] }), { status: 200 }));
+    const r = await refreshDailyActivity(env);
+    expect(r.ingested).toBe(0);
+    expect(r.error).toBeNull();
+    expect(stub.upsertDailyRows).not.toHaveBeenCalled();
+  });
 });
 
 describe("pruneUsageRetention", () => {

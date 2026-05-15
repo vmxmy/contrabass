@@ -155,6 +155,9 @@ export async function refreshDailyActivity(env: LiteLLMPortalEnv): Promise<Inges
     });
     const response = await litellmFetch(env, `/user/daily/activity/aggregated?${params.toString()}`);
     const body = await readJson(response);
+    // day.date is stored verbatim (LiteLLM proxy-server bucket date; TZ not
+    // guaranteed UTC+8). Consumers treat it as the business date — see the
+    // approximation note in UsageDO.queryKpiWithDelta's daily fallback.
     const rows: DailyRow[] = [];
     for (const day of dailyResults(body)) {
       const date = firstString(day, ["date"]);
@@ -177,6 +180,8 @@ export async function refreshDailyActivity(env: LiteLLMPortalEnv): Promise<Inges
           failedRequests: null,
         });
       }
+      const succ = numberLikeField(metadata, "total_successful_requests");
+      const fail = numberLikeField(metadata, "total_failed_requests");
       rows.push({
         date,
         userId: "__global__",
@@ -186,14 +191,8 @@ export async function refreshDailyActivity(env: LiteLLMPortalEnv): Promise<Inges
         promptTokens: Math.trunc(numberLikeField(metrics, "prompt_tokens") ?? 0),
         completionTokens: Math.trunc(numberLikeField(metrics, "completion_tokens") ?? 0),
         requests: Math.trunc(numberLikeField(metrics, "api_requests") ?? 0),
-        successRequests:
-          numberLikeField(metadata, "total_successful_requests") != null
-            ? Math.trunc(numberLikeField(metadata, "total_successful_requests")!)
-            : null,
-        failedRequests:
-          numberLikeField(metadata, "total_failed_requests") != null
-            ? Math.trunc(numberLikeField(metadata, "total_failed_requests")!)
-            : null,
+        successRequests: succ != null ? Math.trunc(succ) : null,
+        failedRequests: fail != null ? Math.trunc(fail) : null,
       });
     }
     if (rows.length > 0) await stub.upsertDailyRows(rows);
