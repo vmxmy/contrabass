@@ -54,7 +54,7 @@ function deltaPct(current: number, previous: number | null): number | null {
   return current > 0 ? null : 0;
 }
 
-const SUMMARY_USER_CAP = 200;
+export const SUMMARY_USER_CAP = 200;
 
 export async function buildDashboard(deps: BuildDeps, opts: BuildOpts): Promise<DashboardResponse> {
   const scopeLabel =

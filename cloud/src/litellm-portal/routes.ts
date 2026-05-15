@@ -32,7 +32,7 @@ import {
   updateTeamLimits,
   updateUser,
 } from "./litellm";
-import { parseDashboardRequest, buildDashboard, buildSummary } from "./dashboard";
+import { parseDashboardRequest, buildDashboard, buildSummary, SUMMARY_USER_CAP } from "./dashboard";
 import type { UsageDOStub, IndexDOLike } from "./dashboard-schemas";
 import { WINDOW_SPEC } from "./dashboard-schemas";
 import { readUserDailyActivity } from "./usage";
@@ -827,8 +827,6 @@ const usageApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get("/usage"
     }),
   );
 });
-
-const SUMMARY_USER_CAP = 200;
 
 const adminSummaryApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
