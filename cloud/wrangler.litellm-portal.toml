@@ -60,9 +60,15 @@ new_classes = ["IndexDO", "TeamConfigDO"]
 # ephemeral 60s counters. SQLite-backed DOs keep the same
 # ctx.storage.get/put/delete/transaction API (hidden __cf_kv table), so no DO
 # class code changes are required. Unlocks per-row billing + 30-day PITR.
+# Two-deploy migration. CF validates a delete-class migration against the
+# CURRENTLY-LIVE deployment's bindings; combining delete+create in one deploy
+# fails with error 10061 because the live worker still binds the old KV class
+# names. Step 1 (this tag): only create the new SQLite classes and repoint the
+# bindings — the old KV classes become orphaned (no binding) but survive.
+# Step 2 (tag v4, a separate later deploy): deleted_classes for the now-orphaned
+# old KV classes; by then no live deployment references them, so it succeeds.
 [[migrations]]
 tag = "v3"
-deleted_classes = ["RateLimitDO", "IndexDO", "TeamConfigDO"]
 new_sqlite_classes = ["RateLimitDOSQLite", "IndexDOSQLite", "TeamConfigDOSQLite"]
 
 # ---------------------------------------------------------------------------
