@@ -126,6 +126,14 @@ describe("litellm portal worker", () => {
     // MUST contain the L3 replacement endpoints
     expect(allJs).toContain("/api/usage/overview");
     expect(allJs).toContain("/api/admin/usage/overview");
+
+    // L3 spec §6 parity: member-overlay MUST ship the team-average dashed series.
+    // The bundle unicode-escapes Chinese strings, so build the needle programmatically
+    // from the literal so this assertion stays readable and won't silently rot.
+    const teamAvgNeedle = [..."团队人均"]
+      .map((c) => "\\u" + c.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0"))
+      .join("");
+    expect(allJs).toContain(teamAvgNeedle);
   });
 
   it("app.generated.ts contains no CustomEvent bridge, litellm-portal: events, or __litellmPortal globals", () => {
