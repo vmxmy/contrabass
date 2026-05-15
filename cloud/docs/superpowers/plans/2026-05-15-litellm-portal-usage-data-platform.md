@@ -559,8 +559,13 @@ import { SpendEventSchema, type SpendEvent, DailyRowSchema, type DailyRow } from
     const zero = { spend: 0, requests: 0, totalTokens: 0 };
     if (sql === null) return { current: { ...zero }, previous: { ...zero } };
     const userId = opts.scope.kind === "user" ? opts.scope.userId : null;
-    // cb_usage_daily.date stores Asia/Shanghai (UTC+8) business dates, so the
-    // daily-fallback window must derive its YYYY-MM-DD bounds in that TZ, not UTC.
+    // cb_usage_daily.date is stored verbatim from LiteLLM's daily-activity
+    // bucketing (proxy server date — TZ not guaranteed UTC+8). These shDate()
+    // bounds derive YYYY-MM-DD in Shanghai as a best-effort approximation: it
+    // can be off by one day at the boundary when LiteLLM's bucket TZ differs.
+    // Acceptable because this daily fallback only fires when the window has
+    // zero events; L3 product windows are <=30d and event-backed, so this
+    // path is not user-facing. See refreshDailyActivity (sync/usage-importer).
     const SHANGHAI_TZ_MS = 8 * 60 * 60 * 1000;
     const shDate = (ms: number) =>
       new Date(ms + SHANGHAI_TZ_MS).toISOString().slice(0, 10);
@@ -1321,6 +1326,9 @@ export async function refreshDailyActivity(env: LiteLLMPortalEnv): Promise<Inges
     });
     const response = await litellmFetch(env, `/user/daily/activity/aggregated?${params.toString()}`);
     const body = await readJson(response);
+    // day.date is stored verbatim (LiteLLM proxy-server bucket date; TZ not
+    // guaranteed UTC+8). Consumers treat it as the business date — see the
+    // approximation note in UsageDO.queryKpiWithDelta's daily fallback.
     const rows: DailyRow[] = [];
     for (const day of dailyResults(body)) {
       const date = firstString(day, ["date"]);
