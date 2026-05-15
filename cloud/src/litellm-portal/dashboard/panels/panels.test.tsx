@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 import { KpiBand } from "./kpi-band";
 import { RecentTable } from "./recent-table";
+import { AlertPanel } from "./alert-panel";
+import { UserTable } from "./user-table";
 
 afterEach(cleanup);
 
@@ -37,5 +39,33 @@ describe("RecentTable", () => {
     );
     expect(container.querySelectorAll("tbody tr").length).toBe(1);
     expect(queryByText("状态")).toBeNull();
+  });
+});
+
+describe("AlertPanel", () => {
+  it("renders status dots + text, no tint pills", () => {
+    const { container, getByText } = render(
+      <AlertPanel alerts={[{ tone: "danger", title: "配额预警", text: "已用 70.7%" }]} />,
+    );
+    expect(getByText("配额预警")).toBeTruthy();
+    expect(container.querySelector("[data-dot='danger']")).toBeTruthy();
+  });
+  it("renders nothing when no alerts", () => {
+    const { container } = render(<AlertPanel alerts={[]} />);
+    expect(container.firstChild).toBeNull();
+  });
+});
+
+describe("UserTable", () => {
+  it("calls onSelect with userId and maxBudget on row click", () => {
+    let picked: { userId: string; maxBudget: number | null } | null = null;
+    const { getByText } = render(
+      <UserTable
+        rows={[{ userId: "u1", email: "u1@x.com", spend: 5, maxBudget: 10, role: "user" }]}
+        onSelect={(p) => { picked = p; }}
+      />,
+    );
+    getByText("u1@x.com").click();
+    expect(picked).toEqual({ userId: "u1", maxBudget: 10 });
   });
 });
