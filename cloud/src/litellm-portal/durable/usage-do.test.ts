@@ -51,7 +51,7 @@ describe("UsageDO upsertDailyRows + pruneRetention", () => {
     const base = {
       date: "2026-05-10",
       userId: "__global__",
-      model: "gpt",
+      model: "__all__",
       spend: 1,
       totalTokens: 10,
       promptTokens: 4,
@@ -303,5 +303,62 @@ describe("UsageDO hourOfDay + perUserSeries + userDetail", () => {
     expect(d.totalTokens).toBe(0);
     expect(d.models).toEqual([]);
     expect(d.hours.every((h) => h.totalTokens === 0 && h.requests === 0 && h.spend === 0)).toBe(true);
+  });
+});
+
+describe("UsageDO queryKpiWithDelta daily fallback excludes per-model rows", () => {
+  it("sums only model='__all__' (no double-count with per-model rows)", async () => {
+    const obj = makeUsageDO();
+    // No events in window → fallback fires. Seed per-model rows + the __all__ total.
+    await obj.upsertDailyRows([
+      {
+        date: "2026-05-10",
+        userId: "__global__",
+        model: "gpt",
+        spend: 6,
+        totalTokens: 60,
+        promptTokens: 0,
+        completionTokens: 0,
+        requests: 6,
+        successRequests: 6,
+        failedRequests: 0,
+      },
+      {
+        date: "2026-05-10",
+        userId: "__global__",
+        model: "claude",
+        spend: 4,
+        totalTokens: 40,
+        promptTokens: 0,
+        completionTokens: 0,
+        requests: 4,
+        successRequests: 4,
+        failedRequests: 0,
+      },
+      {
+        date: "2026-05-10",
+        userId: "__global__",
+        model: "__all__",
+        spend: 10,
+        totalTokens: 100,
+        promptTokens: 0,
+        completionTokens: 0,
+        requests: 10,
+        successRequests: 10,
+        failedRequests: 0,
+      },
+    ]);
+    const k = await obj.queryKpiWithDelta({
+      scope: { kind: "global" },
+      currentFromMs: Date.parse("2026-05-10T00:00:00+08:00"),
+      currentToMs: Date.parse("2026-05-11T00:00:00+08:00"),
+      previousFromMs: Date.parse("2026-05-09T00:00:00+08:00"),
+      previousToMs: Date.parse("2026-05-10T00:00:00+08:00"),
+    });
+    // Must be the __all__ totals (10/100/10), NOT 20/200/20 (which would be the
+    // double-count of per-model rows + __all__).
+    expect(k.current.spend).toBe(10);
+    expect(k.current.totalTokens).toBe(100);
+    expect(k.current.requests).toBe(10);
   });
 });

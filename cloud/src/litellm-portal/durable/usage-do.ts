@@ -230,13 +230,12 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
     const zero = { spend: 0, requests: 0, totalTokens: 0 };
     if (sql === null) return { current: { ...zero }, previous: { ...zero } };
     const userId = opts.scope.kind === "user" ? opts.scope.userId : null;
-    // cb_usage_daily.date is stored verbatim from LiteLLM's daily-activity
-    // bucketing (proxy server date — TZ not guaranteed UTC+8). These shDate()
-    // bounds derive YYYY-MM-DD in Shanghai as a best-effort approximation: it
-    // can be off by one day at the boundary when LiteLLM's bucket TZ differs.
-    // Acceptable because this daily fallback only fires when the window has
-    // zero events; L3 product windows are <=30d and event-backed, so this
-    // path is not user-facing. See refreshDailyActivity (sync/usage-importer).
+    // cb_usage_daily.date is an Asia/Shanghai (UTC+8) business date:
+    // refreshDailyActivity requests LiteLLM with timezone=-480 so LiteLLM
+    // buckets by Shanghai day, so these shDate() bounds match exactly.
+    // The daily table holds per-model rows plus one synthetic model='__all__'
+    // per-day total row; the fallback below filters model='__all__' so it
+    // never double-counts per-model rows against the total.
     const SHANGHAI_TZ_MS = TZ_OFFSET_MS;
     const shDate = (ms: number) => new Date(ms + SHANGHAI_TZ_MS).toISOString().slice(0, 10);
     const agg = (fromMs: number, toMs: number) => {
@@ -267,7 +266,7 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
           `SELECT COALESCE(SUM(spend),0) AS s, COALESCE(SUM(total_tokens),0) AS t,
                 COALESCE(SUM(requests),0) AS r
            FROM cb_usage_daily
-          WHERE date >= ? AND date < ?${userId === null ? "" : " AND user_id = ?"}`,
+          WHERE date >= ? AND date < ? AND model = '__all__'${userId === null ? "" : " AND user_id = ?"}`,
           ...(userId === null
             ? [shDate(opts.currentFromMs), shDate(opts.currentToMs)]
             : [shDate(opts.currentFromMs), shDate(opts.currentToMs), userId]),
