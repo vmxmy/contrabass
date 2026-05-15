@@ -18,6 +18,13 @@ L1 把用量数据备进 `UsageDO`(SQLite)并提供只读查询方法。L2 在�
 
 - **本 spec(L2)**:新增聚合 dashboard 端点;删除旧 timeseries 端点及其
   LiteLLM 读取路径;DO-backed 全局 summary;路由/鉴权接线;纯函数装配层 + 测试。
+- **(Codex end-of-L2 review 修订)`/api/admin/summary` 一并 DO 化**:该端点仍被
+  现役管理员 UI(`admin-components.tsx` `AdminHeroStats`)消费,且其 handler 经
+  `listAllUsers`/`listAllTeams` 直读 LiteLLM,违反"请求路径零 LiteLLM"硬约束。
+  原 spec 仅显式删除 timeseries 端点而遗漏此端点(L2→L3 缺口)。**决策:不删除、
+  不破坏前端**——把 `adminSummaryApp` handler 重写为 DO-backed(复用 `buildSummary`
+  的 IndexDO+UsageDO 计算,保持 `AdminSummary` 响应形状),请求路径零 `litellmFetch`。
+  该端点在 L3 admin-view 迁移到 `/api/admin/usage/overview` 后由 L3 回归清理移除。
 - **不在本 spec**:L1(已完成设计)、L3(前端 UI)。**不引入写操作**。
 - **明确不做(L1 as-built 限制)**:`90d` / `12mo` 长窗口、`month` 粒度。
   L1 查询方法仅读 `cb_usage_events`(30d 保留)、grain 仅 `hour|day`。
@@ -32,6 +39,7 @@ L1 把用量数据备进 `UsageDO`(SQLite)并提供只读查询方法。L2 在�
 | 成员下钻 | `?member=<userId>` 复用全局端点,只读,同 self 响应形状 |
 | 窗口目录 | 仅 `24h / 48h / 7d / 30d`(均 events-backed) |
 | 全局 summary | 从 **IndexDO + UsageDO** 重算,**绝不调 LiteLLM / adminSummary** |
+| `/api/admin/summary` | 保留端点+响应形状,handler 改 DO-backed(复用 `buildSummary`),零 `litellmFetch` |
 
 ## § 1. 端点与契约
 
