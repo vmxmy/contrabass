@@ -48,6 +48,23 @@ new_classes = ["RateLimitDO"]
 tag = "v2"
 new_classes = ["IndexDO", "TeamConfigDO"]
 
+# Migrate all DO classes from the legacy KV-backed storage to SQLite-backed
+# storage (GA April 2025). Cloudflare forbids enabling SQLite on an already-
+# deployed class, so the only path is delete-then-recreate. Production data is
+# intentionally discarded — IndexDO.init() re-imports teams/users from LiteLLM
+# on the first /login after deploy, and BOOTSTRAP_ADMIN_EMAILS re-elevates the
+# bootstrap admin. RateLimitDO holds only ephemeral 60s counters.
+# SQLite-backed DOs keep the same ctx.storage.get/put/delete/transaction API
+# (backed by a hidden __cf_kv table), so no DO class code changes are required.
+# This unlocks cheaper per-row billing and 30-day point-in-time recovery.
+[[migrations]]
+tag = "v3"
+deleted_classes = ["RateLimitDO", "IndexDO", "TeamConfigDO"]
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["RateLimitDO", "IndexDO", "TeamConfigDO"]
+
 # ---------------------------------------------------------------------------
 # Workers Secret Store (opt-in — requires manual provisioning)
 # Run: wrangler secrets-store store create default_secrets_store --remote
