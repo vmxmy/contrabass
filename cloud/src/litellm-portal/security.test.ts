@@ -234,8 +234,6 @@ describe("RateLimitDO", () => {
 
 function portalEnv(overrides: Partial<LiteLLMPortalEnv> = {}): LiteLLMPortalEnv {
   return {
-    CLOUDFLARE_ACCESS_AUD: "access-aud",
-    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://gz-zhiyun.cloudflareaccess.com",
     LITELLM_ALLOWED_MODELS: "gpt-4o-mini",
     LITELLM_BASE_URL: "https://litellm.test",
     LITELLM_MASTER_KEY: "litellm-master",

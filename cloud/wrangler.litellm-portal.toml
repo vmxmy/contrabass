@@ -9,8 +9,6 @@ routes = [
 ]
 
 [vars]
-CLOUDFLARE_ACCESS_TEAM_DOMAIN = "https://ziikoo.cloudflareaccess.com"
-CLOUDFLARE_ACCESS_AUD = "b791adb332e76931e51a12fb2191d9a888e35d553a6ffd16c27f18ad962cc084"
 LITELLM_PORTAL_ALLOWED_EMAIL_DOMAIN = "gz-zhiyun.com"
 LITELLM_PORTAL_ALLOWED_EMAILS = "blueyang@gmail.com,xu@ziikoo.com"
 # Canonical var read by allowlist.ts (PORTAL_DO_SOT_ENABLED path).

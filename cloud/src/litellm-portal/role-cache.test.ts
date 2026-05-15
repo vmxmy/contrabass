@@ -26,8 +26,6 @@ function baseEnv(overrides: Partial<LiteLLMPortalEnv> = {}): LiteLLMPortalEnv {
   return {
     LITELLM_BASE_URL: "https://litellm.test",
     LITELLM_MASTER_KEY: "master-key",
-    CLOUDFLARE_ACCESS_AUD: "access-aud",
-    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://gz-zhiyun.cloudflareaccess.com",
     LITELLM_PORTAL_ALLOWED_EMAIL_DOMAIN: "gz-zhiyun.com",
     ...overrides,
   };
