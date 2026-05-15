@@ -1,6 +1,6 @@
 import type { LiteLLMPortalEnv } from "../types";
 import type { UsageDO } from "../durable/usage-do";
-import type { SpendEvent } from "../durable/usage-schemas";
+import type { SpendEvent, DailyRow } from "../durable/usage-schemas";
 import { litellmFetch, firstString, numberLikeField, litellmDateTime } from "../litellm";
 import { readJson, isRecord } from "../utils";
 
@@ -126,4 +126,89 @@ export async function ingestSpendLogs(env: LiteLLMPortalEnv): Promise<IngestResu
     await stub.setSyncCursor("spend_logs", { cursorMs: cursor ?? startMs, lastError: reason });
     return { ingested, error: reason };
   }
+}
+
+function dailyResults(body: unknown): Array<Record<string, unknown>> {
+  if (!isRecord(body)) return [];
+  for (const key of ["results", "data", "days"]) {
+    const nested = body[key];
+    if (Array.isArray(nested)) return nested.filter(isRecord);
+  }
+  return [];
+}
+
+export async function refreshDailyActivity(env: LiteLLMPortalEnv): Promise<IngestResult> {
+  const stub = usageStub(env);
+  if (stub === null) return { ingested: 0, error: "USAGE_DO binding not configured" };
+
+  const now = new Date();
+  const yesterday = new Date(now.getTime() - 86400000);
+  const startDate = yesterday.toISOString().slice(0, 10);
+  const endDate = now.toISOString().slice(0, 10);
+
+  try {
+    const params = new URLSearchParams({
+      start_date: startDate,
+      end_date: endDate,
+      page: "1",
+      page_size: "1000",
+    });
+    const response = await litellmFetch(env, `/user/daily/activity/aggregated?${params.toString()}`);
+    const body = await readJson(response);
+    const rows: DailyRow[] = [];
+    for (const day of dailyResults(body)) {
+      const date = firstString(day, ["date"]);
+      if (date === undefined) continue;
+      const metrics = isRecord(day.metrics) ? day.metrics : {};
+      const metadata = isRecord(day.metadata) ? day.metadata : {};
+      const breakdown = isRecord(day.breakdown) && isRecord(day.breakdown.models) ? day.breakdown.models : {};
+      for (const [model, raw] of Object.entries(breakdown)) {
+        if (!isRecord(raw)) continue;
+        rows.push({
+          date,
+          userId: "__global__",
+          model,
+          spend: numberLikeField(raw, "spend") ?? 0,
+          totalTokens: Math.trunc(numberLikeField(raw, "total_tokens") ?? 0),
+          promptTokens: Math.trunc(numberLikeField(raw, "prompt_tokens") ?? 0),
+          completionTokens: Math.trunc(numberLikeField(raw, "completion_tokens") ?? 0),
+          requests: Math.trunc(numberLikeField(raw, "api_requests") ?? 0),
+          successRequests: null,
+          failedRequests: null,
+        });
+      }
+      rows.push({
+        date,
+        userId: "__global__",
+        model: "__all__",
+        spend: numberLikeField(metrics, "spend") ?? 0,
+        totalTokens: Math.trunc(numberLikeField(metrics, "total_tokens") ?? 0),
+        promptTokens: Math.trunc(numberLikeField(metrics, "prompt_tokens") ?? 0),
+        completionTokens: Math.trunc(numberLikeField(metrics, "completion_tokens") ?? 0),
+        requests: Math.trunc(numberLikeField(metrics, "api_requests") ?? 0),
+        successRequests:
+          numberLikeField(metadata, "total_successful_requests") != null
+            ? Math.trunc(numberLikeField(metadata, "total_successful_requests")!)
+            : null,
+        failedRequests:
+          numberLikeField(metadata, "total_failed_requests") != null
+            ? Math.trunc(numberLikeField(metadata, "total_failed_requests")!)
+            : null,
+      });
+    }
+    if (rows.length > 0) await stub.upsertDailyRows(rows);
+    await stub.setSyncCursor("daily_activity", { cursorMs: now.getTime(), lastError: null });
+    return { ingested: rows.length, error: null };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
+    await stub.setSyncCursor("daily_activity", { cursorMs: 0, lastError: reason });
+    return { ingested: 0, error: reason };
+  }
+}
+
+export async function pruneUsageRetention(env: LiteLLMPortalEnv): Promise<{ ok: boolean }> {
+  const stub = usageStub(env);
+  if (stub === null) return { ok: false };
+  await stub.pruneRetention(Date.now());
+  return { ok: true };
 }

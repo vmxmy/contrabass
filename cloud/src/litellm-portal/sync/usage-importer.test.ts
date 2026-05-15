@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ingestSpendLogs } from "./usage-importer";
+import { refreshDailyActivity, pruneUsageRetention } from "./usage-importer";
 import type { LiteLLMPortalEnv } from "../types";
 
 function makeUsageStub() {
@@ -143,5 +144,70 @@ describe("ingestSpendLogs", () => {
     const r2 = await ingestSpendLogs(env);
     expect(r2.error).toBeNull();
     expect(r2.ingested).toBe(1);
+  });
+});
+
+function makeDailyStub() {
+  return {
+    upsertDailyRows: vi.fn(async () => undefined),
+    setSyncCursor: vi.fn(async () => undefined),
+    pruneRetention: vi.fn(async () => undefined),
+  };
+}
+
+describe("refreshDailyActivity", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("upserts per-model rows from aggregated daily activity", async () => {
+    const stub = makeDailyStub();
+    const env = makeEnv(stub);
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          results: [
+            {
+              date: "2026-05-14",
+              metrics: { spend: 5, total_tokens: 100, prompt_tokens: 40, completion_tokens: 60, api_requests: 10 },
+              metadata: { total_successful_requests: 9, total_failed_requests: 1 },
+              breakdown: {
+                models: {
+                  gpt: { spend: 4, total_tokens: 80, api_requests: 8 },
+                  claude: { spend: 1, total_tokens: 20, api_requests: 2 },
+                },
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    const r = await refreshDailyActivity(env);
+    expect(r.error).toBeNull();
+    const calls = stub.upsertDailyRows.mock.calls as unknown as Array<[unknown]>;
+    const rows = calls.at(0)?.[0];
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ date: "2026-05-14", userId: "__global__", model: "gpt", spend: 4, requests: 8 }),
+        expect.objectContaining({ date: "2026-05-14", userId: "__global__", model: "claude", spend: 1 }),
+        expect.objectContaining({
+          date: "2026-05-14",
+          userId: "__global__",
+          model: "__all__",
+          spend: 5,
+          requests: 10,
+          successRequests: 9,
+          failedRequests: 1,
+        }),
+      ]),
+    );
+  });
+});
+
+describe("pruneUsageRetention", () => {
+  it("calls UsageDO.pruneRetention with now", async () => {
+    const stub = makeDailyStub();
+    const env = makeEnv(stub);
+    await pruneUsageRetention(env);
+    expect(stub.pruneRetention).toHaveBeenCalledTimes(1);
   });
 });
