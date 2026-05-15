@@ -549,29 +549,36 @@ import { SpendEventSchema, type SpendEvent, DailyRowSchema, type DailyRow } from
 在 `UsageDO` 内追加:
 
 ```typescript
+  // KPI source-resolution (architect Option A): pick events vs daily per the
+  // requested span's position relative to the 30d event-retention horizon,
+  // applied IDENTICALLY to current and previous (symmetric — no current-zero
+  // heuristic). cb_usage_events holds [now-30d, now); cb_usage_daily holds 365d
+  // of per-day model='__all__' global totals (Shanghai business dates, written
+  // by refreshDailyActivity with timezone=-480 so shDate() matches exactly).
+  // Daily has NO per-user rows (userId column is the sentinel "__global__"),
+  // so user-scope and eventsOnly are ALWAYS events-only by design; the daily
+  // path is global-only. `source` is additive optional metadata for L2.
   async queryKpiWithDelta(opts: {
     scope: { kind: "global" } | { kind: "user"; userId: string };
     currentFromMs: number; currentToMs: number;
     previousFromMs: number; previousToMs: number;
     eventsOnly?: boolean;
+    nowMs?: number;
   }): Promise<{
-    current: { spend: number; requests: number; totalTokens: number };
-    previous: { spend: number; requests: number; totalTokens: number };
+    current: { spend: number; requests: number; totalTokens: number; source: "events" | "daily" | "split" };
+    previous: { spend: number; requests: number; totalTokens: number; source: "events" | "daily" | "split" };
   }> {
     const sql = await this.sql();
-    const zero = { spend: 0, requests: 0, totalTokens: 0 };
+    const zero = { spend: 0, requests: 0, totalTokens: 0, source: "events" as const };
     if (sql === null) return { current: { ...zero }, previous: { ...zero } };
     const userId = opts.scope.kind === "user" ? opts.scope.userId : null;
-    // cb_usage_daily.date is an Asia/Shanghai (UTC+8) business date:
-    // refreshDailyActivity requests LiteLLM with timezone=-480 so LiteLLM
-    // buckets by Shanghai day, so these shDate() bounds match exactly.
-    // The daily table holds per-model rows plus one synthetic model='__all__'
-    // per-day total row; the fallback below filters model='__all__' so it
-    // never double-counts per-model rows against the total.
-    const SHANGHAI_TZ_MS = 8 * 60 * 60 * 1000;
+    const now = opts.nowMs ?? Date.now();
+    const eventHorizon = now - UsageDO.EVENT_RETENTION_MS;
+    const SHANGHAI_TZ_MS = TZ_OFFSET_MS;
     const shDate = (ms: number) =>
       new Date(ms + SHANGHAI_TZ_MS).toISOString().slice(0, 10);
-    const agg = (fromMs: number, toMs: number) => {
+
+    const aggEvents = (fromMs: number, toMs: number) => {
       const where = userId === null ? "" : " AND user_id = ?";
       const args: SqlStorageValue[] = userId === null
         ? [fromMs, toMs] : [fromMs, toMs, userId];
@@ -589,26 +596,65 @@ import { SpendEventSchema, type SpendEvent, DailyRowSchema, type DailyRow } from
         requests: Number(row?.r ?? 0),
       };
     };
-    // For global daily-only data fall back to cb_usage_daily when no events.
-    const current = agg(opts.currentFromMs, opts.currentToMs);
-    const previous = agg(opts.previousFromMs, opts.previousToMs);
-    if (!opts.eventsOnly && current.requests === 0 && current.spend === 0) {
-      const dRow = firstRow(sql.exec<SqlRow>(
-        `SELECT COALESCE(SUM(spend),0) AS s, COALESCE(SUM(total_tokens),0) AS t,
+
+    // Global only; sums the synthetic per-day model='__all__' total rows so it
+    // never double-counts per-model rows. Range is [shDate(fromMs), shDate(toMs)).
+    const aggDaily = (fromMs: number, toMs: number) => {
+      const row = firstRow(sql.exec<SqlRow>(
+        `SELECT COALESCE(SUM(spend),0) AS s,
+                COALESCE(SUM(total_tokens),0) AS t,
                 COALESCE(SUM(requests),0) AS r
            FROM cb_usage_daily
-          WHERE date >= ? AND date < ? AND model = '__all__'${userId === null ? "" : " AND user_id = ?"}`,
-        ...(userId === null
-          ? [shDate(opts.currentFromMs), shDate(opts.currentToMs)]
-          : [shDate(opts.currentFromMs), shDate(opts.currentToMs), userId]),
+          WHERE date >= ? AND date < ? AND model = '__all__'`,
+        shDate(fromMs), shDate(toMs),
       ));
-      if (dRow) {
-        current.spend = Number(dRow.s);
-        current.totalTokens = Number(dRow.t);
-        current.requests = Number(dRow.r);
+      return {
+        spend: Number(row?.s ?? 0),
+        totalTokens: Number(row?.t ?? 0),
+        requests: Number(row?.r ?? 0),
+      };
+    };
+
+    type Period = { spend: number; totalTokens: number; requests: number; source: "events" | "daily" | "split" };
+    const resolve = (fromMs: number, toMs: number): Period => {
+      // User-scope / eventsOnly: events only (daily has no per-user rows).
+      if (opts.eventsOnly || userId !== null) {
+        return { ...aggEvents(fromMs, toMs), source: "events" };
       }
-    }
-    return { current, previous };
+      // Global: choose by span position vs the 30d event-retention horizon.
+      if (fromMs >= eventHorizon) return { ...aggEvents(fromMs, toMs), source: "events" };
+      if (toMs <= eventHorizon) return { ...aggDaily(fromMs, toMs), source: "daily" };
+      // Straddles the horizon. NOTE: no approved L2 window produces a straddle
+      // (24h/48h/7d are fully in events; 30d's current is fully in events and
+      // its previous is fully in daily). This branch only serves future >30d
+      // windows. Split at the horizon: daily for [from, horizon), events for
+      // [horizon, to). Half-open at `eventHorizon` (epoch ms) on the events
+      // side and `< shDate(eventHorizon)` on the daily side, so the Shanghai
+      // day containing the horizon is taken from events only — no double-count
+      // (accepted: up to <1 Shanghai-day of that boundary day predating the
+      // exact prune cliff may be under-counted; immaterial and not reachable
+      // from the approved L2 window catalog).
+      const d = firstRow(sql.exec<SqlRow>(
+        `SELECT COALESCE(SUM(spend),0) AS s,
+                COALESCE(SUM(total_tokens),0) AS t,
+                COALESCE(SUM(requests),0) AS r
+           FROM cb_usage_daily
+          WHERE date >= ? AND date < ? AND model = '__all__'`,
+        shDate(fromMs), shDate(eventHorizon),
+      ));
+      const e = aggEvents(eventHorizon, toMs);
+      return {
+        spend: Number(d?.s ?? 0) + e.spend,
+        totalTokens: Number(d?.t ?? 0) + e.totalTokens,
+        requests: Number(d?.r ?? 0) + e.requests,
+        source: "split",
+      };
+    };
+
+    return {
+      current: resolve(opts.currentFromMs, opts.currentToMs),
+      previous: resolve(opts.previousFromMs, opts.previousToMs),
+    };
   }
 ```
 

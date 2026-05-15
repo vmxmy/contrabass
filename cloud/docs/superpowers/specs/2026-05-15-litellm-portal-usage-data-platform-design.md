@@ -105,6 +105,13 @@ CREATE TABLE IF NOT EXISTS cb_usage_sync_state (
 - 数据来源映射:
   - `cb_usage_events` → 24h 时段分布、最近请求明细、任意粒度趋势。
   - `cb_usage_daily` → 长期趋势、成功率、KPI 环比、分模型占比(长期)。
+  - **KPI 环比数据源解析(架构 Option A)**:`queryKpiWithDelta` 按请求区间
+    相对 30d events 视野对称解析 current/previous —— 区间全在 30d 内走
+    `cb_usage_events`,全在 30d 外走 `cb_usage_daily`(`model='__all__'`
+    全局总行),跨界 split。**daily 路径仅 global**:`cb_usage_daily` 行
+    `user_id` 恒为哨兵 `__global__`,无 per-user 行,故 **user-scope 与
+    `eventsOnly` 一律 events-only**;per-user 长期 KPI(daily-backed)为
+    未来增量(Option B,需 importer 产出 per-user daily 行),本期不做。
 - 时间统一存 epoch ms UTC;展示时区(默认 `Asia/Shanghai`)在 L2/L3 转换。
   `cb_usage_daily.date` 为展示时区下的业务日字符串,便于按日 GROUP BY。
 
