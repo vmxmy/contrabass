@@ -1,3 +1,8 @@
+// L3 client-side mirror of the L2 response contract (src/litellm-portal/dashboard-schemas.ts).
+// Deliberately a separate file: the L3 frontend island bundle must not import server-side
+// L2 code. Plain z.object() (not .strict()) is intentional — this is a CONSUMER schema, so
+// unknown/forward-compatible fields from L2 are stripped, never thrown on. Keep field shapes
+// in sync with the L2 schema; additive L2 changes are backward-safe here by design.
 import { z } from "zod";
 
 export const DASHBOARD_WINDOWS = ["24h", "48h", "7d", "30d"] as const;

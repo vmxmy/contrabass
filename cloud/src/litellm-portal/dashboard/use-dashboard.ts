@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { DashboardResponseSchema, type DashboardWindow } from "./dashboard-schemas";
 
+/** Client-side scope. `self` carries no userId — the server derives it from the session.
+ *  Distinct from the server-side DashboardScope in ../dashboard-schemas.ts (which has userId on self). */
 export type DashboardScope =
   | { kind: "self" }
   | { kind: "global" }
