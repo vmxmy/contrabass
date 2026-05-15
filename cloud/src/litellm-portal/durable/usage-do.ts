@@ -85,6 +85,57 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
       );
     }
   }
+
+  async queryRecentEvents(opts: {
+    userId: string;
+    limit: number;
+  }): Promise<Array<{ tsMs: number; model: string; totalTokens: number; spend: number }>> {
+    const sql = await this.sql();
+    if (sql === null) return [];
+    const rows = sql
+      .exec<SqlRow>(
+        `SELECT ts_ms, model, total_tokens, spend
+         FROM cb_usage_events
+        WHERE user_id = ?
+        ORDER BY ts_ms DESC
+        LIMIT ?`,
+        opts.userId,
+        opts.limit,
+      )
+      .toArray();
+    return rows.map((r) => ({
+      tsMs: Number(r.ts_ms),
+      model: String(r.model),
+      totalTokens: Number(r.total_tokens),
+      spend: Number(r.spend),
+    }));
+  }
+
+  async getSyncCursor(source: string): Promise<number | null> {
+    const sql = await this.sql();
+    if (sql === null) return null;
+    const row = firstRow(
+      sql.exec<{ cursor_ms: number | null }>("SELECT cursor_ms FROM cb_usage_sync_state WHERE source = ?", source),
+    );
+    return row?.cursor_ms == null ? null : Number(row.cursor_ms);
+  }
+
+  async setSyncCursor(source: string, opts: { cursorMs: number; lastError: string | null }): Promise<void> {
+    const sql = await this.sql();
+    if (sql === null) return;
+    sql.exec(
+      `INSERT INTO cb_usage_sync_state (source, cursor_ms, last_run_iso, last_error)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(source) DO UPDATE SET
+         cursor_ms = excluded.cursor_ms,
+         last_run_iso = excluded.last_run_iso,
+         last_error = excluded.last_error`,
+      source,
+      opts.cursorMs,
+      new Date().toISOString(),
+      opts.lastError,
+    );
+  }
 }
 
 export { firstRow };

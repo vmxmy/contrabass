@@ -16,3 +16,31 @@ describe("UsageDO schema", () => {
     await expect(obj.writeSpendEvents([])).resolves.toBeUndefined();
   });
 });
+
+describe("UsageDO writeSpendEvents dedupe + cursor", () => {
+  it("INSERT OR IGNORE dedupes by requestId across calls", async () => {
+    const obj = makeUsageDO();
+    const ev = {
+      requestId: "r1",
+      tsMs: 1000,
+      userId: "u1",
+      teamId: "t1",
+      model: "gpt",
+      promptTokens: 1,
+      completionTokens: 2,
+      totalTokens: 3,
+      spend: 0.5,
+    };
+    await obj.writeSpendEvents([ev]);
+    await obj.writeSpendEvents([{ ...ev, spend: 999 }]);
+    const recent = await obj.queryRecentEvents({ userId: "u1", limit: 10 });
+    expect(recent).toEqual([{ tsMs: 1000, model: "gpt", totalTokens: 3, spend: 0.5 }]);
+  });
+
+  it("sync cursor get returns null then round-trips set", async () => {
+    const obj = makeUsageDO();
+    expect(await obj.getSyncCursor("spend_logs")).toBeNull();
+    await obj.setSyncCursor("spend_logs", { cursorMs: 5000, lastError: null });
+    expect(await obj.getSyncCursor("spend_logs")).toBe(5000);
+  });
+});
