@@ -68,6 +68,7 @@ describe("UsageDO upsertDailyRows + pruneRetention", () => {
       currentToMs: Date.parse("2026-05-11T00:00:00+08:00"),
       previousFromMs: Date.parse("2026-05-09T00:00:00+08:00"),
       previousToMs: Date.parse("2026-05-10T00:00:00+08:00"),
+      nowMs: Date.parse("2026-09-01T00:00:00+08:00"),
     });
     expect(k.current.spend).toBe(9);
     expect(k.current.requests).toBe(5);
@@ -437,11 +438,224 @@ describe("UsageDO queryKpiWithDelta daily fallback excludes per-model rows", () 
       currentToMs: Date.parse("2026-05-11T00:00:00+08:00"),
       previousFromMs: Date.parse("2026-05-09T00:00:00+08:00"),
       previousToMs: Date.parse("2026-05-10T00:00:00+08:00"),
+      nowMs: Date.parse("2026-09-01T00:00:00+08:00"),
     });
     // Must be the __all__ totals (10/100/10), NOT 20/200/20 (which would be the
     // double-count of per-model rows + __all__).
     expect(k.current.spend).toBe(10);
     expect(k.current.totalTokens).toBe(100);
     expect(k.current.requests).toBe(10);
+  });
+});
+
+describe("UsageDO queryKpiWithDelta Option A source resolution", () => {
+  const NOW = Date.parse("2026-06-15T12:00:00+08:00");
+  const DAY = 86400000;
+
+  it("both periods inside 30d → events-sourced", async () => {
+    const obj = makeUsageDO();
+    await obj.writeSpendEvents([
+      {
+        requestId: "c",
+        tsMs: NOW - 2 * DAY,
+        userId: "u1",
+        teamId: "t",
+        model: "m",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 5,
+        spend: 2,
+      },
+      {
+        requestId: "p",
+        tsMs: NOW - 9 * DAY,
+        userId: "u1",
+        teamId: "t",
+        model: "m",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 3,
+        spend: 1,
+      },
+    ]);
+    const k = await obj.queryKpiWithDelta({
+      scope: { kind: "global" },
+      nowMs: NOW,
+      currentFromMs: NOW - 7 * DAY,
+      currentToMs: NOW,
+      previousFromMs: NOW - 14 * DAY,
+      previousToMs: NOW - 7 * DAY,
+    });
+    expect(k.current).toMatchObject({ spend: 2, totalTokens: 5, requests: 1, source: "events" });
+    expect(k.previous).toMatchObject({ spend: 1, totalTokens: 3, requests: 1, source: "events" });
+  });
+
+  it("30d window global: current=events, previous=daily(__all__)", async () => {
+    const obj = makeUsageDO();
+    await obj.writeSpendEvents([
+      {
+        requestId: "e1",
+        tsMs: NOW - 5 * DAY,
+        userId: "u1",
+        teamId: "t",
+        model: "m",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 9,
+        spend: 4,
+      },
+    ]);
+    // previous window [NOW-60d, NOW-30d] is older than the 30d horizon → daily.
+    await obj.upsertDailyRows([
+      {
+        date: new Date(NOW - 45 * DAY + 8 * 3600000).toISOString().slice(0, 10),
+        userId: "__global__",
+        model: "__all__",
+        spend: 7,
+        totalTokens: 70,
+        promptTokens: 0,
+        completionTokens: 0,
+        requests: 7,
+        successRequests: 7,
+        failedRequests: 0,
+      },
+      {
+        date: new Date(NOW - 45 * DAY + 8 * 3600000).toISOString().slice(0, 10),
+        userId: "__global__",
+        model: "gpt",
+        spend: 7,
+        totalTokens: 70,
+        promptTokens: 0,
+        completionTokens: 0,
+        requests: 7,
+        successRequests: 7,
+        failedRequests: 0,
+      },
+    ]);
+    const k = await obj.queryKpiWithDelta({
+      scope: { kind: "global" },
+      nowMs: NOW,
+      currentFromMs: NOW - 30 * DAY,
+      currentToMs: NOW,
+      previousFromMs: NOW - 60 * DAY,
+      previousToMs: NOW - 30 * DAY,
+    });
+    expect(k.current).toMatchObject({ spend: 4, source: "events" });
+    // previous from daily, __all__ only (NOT 14 = 7+7 double-count with the gpt row).
+    expect(k.previous).toMatchObject({ spend: 7, totalTokens: 70, requests: 7, source: "daily" });
+  });
+
+  it("user scope is always events-only even for an old window", async () => {
+    const obj = makeUsageDO();
+    await obj.upsertDailyRows([
+      {
+        date: new Date(NOW - 45 * DAY + 8 * 3600000).toISOString().slice(0, 10),
+        userId: "__global__",
+        model: "__all__",
+        spend: 99,
+        totalTokens: 99,
+        promptTokens: 0,
+        completionTokens: 0,
+        requests: 99,
+        successRequests: 99,
+        failedRequests: 0,
+      },
+    ]);
+    const k = await obj.queryKpiWithDelta({
+      scope: { kind: "user", userId: "u1" },
+      nowMs: NOW,
+      currentFromMs: NOW - 60 * DAY,
+      currentToMs: NOW - 30 * DAY,
+      previousFromMs: NOW - 90 * DAY,
+      previousToMs: NOW - 60 * DAY,
+    });
+    expect(k.current).toMatchObject({ spend: 0, source: "events" });
+    expect(k.previous).toMatchObject({ spend: 0, source: "events" });
+  });
+
+  it("eventsOnly forces events even for an old global window", async () => {
+    const obj = makeUsageDO();
+    await obj.upsertDailyRows([
+      {
+        date: new Date(NOW - 45 * DAY + 8 * 3600000).toISOString().slice(0, 10),
+        userId: "__global__",
+        model: "__all__",
+        spend: 50,
+        totalTokens: 50,
+        promptTokens: 0,
+        completionTokens: 0,
+        requests: 50,
+        successRequests: 50,
+        failedRequests: 0,
+      },
+    ]);
+    const k = await obj.queryKpiWithDelta({
+      scope: { kind: "global" },
+      nowMs: NOW,
+      eventsOnly: true,
+      currentFromMs: NOW - 60 * DAY,
+      currentToMs: NOW - 30 * DAY,
+      previousFromMs: NOW - 90 * DAY,
+      previousToMs: NOW - 60 * DAY,
+    });
+    expect(k.current.source).toBe("events");
+    expect(k.current.spend).toBe(0);
+  });
+
+  it("straddle window → split (daily older part + events recent part), no double-count", async () => {
+    const obj = makeUsageDO();
+    // horizon = NOW-30d. window [NOW-45d, NOW-15d) straddles it.
+    await obj.writeSpendEvents([
+      {
+        requestId: "se",
+        tsMs: NOW - 20 * DAY,
+        userId: "u1",
+        teamId: "t",
+        model: "m",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 2,
+        spend: 3,
+      },
+    ]);
+    await obj.upsertDailyRows([
+      {
+        date: new Date(NOW - 40 * DAY + 8 * 3600000).toISOString().slice(0, 10),
+        userId: "__global__",
+        model: "__all__",
+        spend: 5,
+        totalTokens: 50,
+        promptTokens: 0,
+        completionTokens: 0,
+        requests: 5,
+        successRequests: 5,
+        failedRequests: 0,
+      },
+    ]);
+    const k = await obj.queryKpiWithDelta({
+      scope: { kind: "global" },
+      nowMs: NOW,
+      currentFromMs: NOW - 45 * DAY,
+      currentToMs: NOW - 15 * DAY,
+      previousFromMs: NOW - 90 * DAY,
+      previousToMs: NOW - 45 * DAY,
+    });
+    expect(k.current.source).toBe("split");
+    expect(k.current.spend).toBe(8); // daily 5 + events 3
+    expect(k.current.totalTokens).toBe(52); // 50 + 2
+    expect(k.current.requests).toBe(6); // 5 + 1
+  });
+
+  it("empty data → zeros, source reflects resolution", async () => {
+    const obj = makeUsageDO();
+    const k = await obj.queryKpiWithDelta({
+      scope: { kind: "global" },
+      nowMs: NOW,
+      currentFromMs: NOW - 7 * DAY,
+      currentToMs: NOW,
+      previousFromMs: NOW - 14 * DAY,
+      previousToMs: NOW - 7 * DAY,
+    });
+    expect(k.current).toMatchObject({ spend: 0, requests: 0, totalTokens: 0, source: "events" });
   });
 });

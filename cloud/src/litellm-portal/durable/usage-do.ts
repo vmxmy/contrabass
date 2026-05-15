@@ -218,6 +218,15 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
     return row?.n ?? 0;
   }
 
+  // KPI source-resolution (architect Option A): pick events vs daily per the
+  // requested span's position relative to the 30d event-retention horizon,
+  // applied IDENTICALLY to current and previous (symmetric — no current-zero
+  // heuristic). cb_usage_events holds [now-30d, now); cb_usage_daily holds 365d
+  // of per-day model='__all__' global totals (Shanghai business dates, written
+  // by refreshDailyActivity with timezone=-480 so shDate() matches exactly).
+  // Daily has NO per-user rows (userId column is the sentinel "__global__"),
+  // so user-scope and eventsOnly are ALWAYS events-only by design; the daily
+  // path is global-only. `source` is additive optional metadata for L2.
   async queryKpiWithDelta(opts: {
     scope: { kind: "global" } | { kind: "user"; userId: string };
     currentFromMs: number;
@@ -225,23 +234,21 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
     previousFromMs: number;
     previousToMs: number;
     eventsOnly?: boolean;
+    nowMs?: number;
   }): Promise<{
-    current: { spend: number; requests: number; totalTokens: number };
-    previous: { spend: number; requests: number; totalTokens: number };
+    current: { spend: number; requests: number; totalTokens: number; source: "events" | "daily" | "split" };
+    previous: { spend: number; requests: number; totalTokens: number; source: "events" | "daily" | "split" };
   }> {
     const sql = await this.sql();
-    const zero = { spend: 0, requests: 0, totalTokens: 0 };
+    const zero = { spend: 0, requests: 0, totalTokens: 0, source: "events" as const };
     if (sql === null) return { current: { ...zero }, previous: { ...zero } };
     const userId = opts.scope.kind === "user" ? opts.scope.userId : null;
-    // cb_usage_daily.date is an Asia/Shanghai (UTC+8) business date:
-    // refreshDailyActivity requests LiteLLM with timezone=-480 so LiteLLM
-    // buckets by Shanghai day, so these shDate() bounds match exactly.
-    // The daily table holds per-model rows plus one synthetic model='__all__'
-    // per-day total row; the fallback below filters model='__all__' so it
-    // never double-counts per-model rows against the total.
+    const now = opts.nowMs ?? Date.now();
+    const eventHorizon = now - UsageDO.EVENT_RETENTION_MS;
     const SHANGHAI_TZ_MS = TZ_OFFSET_MS;
     const shDate = (ms: number) => new Date(ms + SHANGHAI_TZ_MS).toISOString().slice(0, 10);
-    const agg = (fromMs: number, toMs: number) => {
+
+    const aggEvents = (fromMs: number, toMs: number) => {
       const where = userId === null ? "" : " AND user_id = ?";
       const args: SqlStorageValue[] = userId === null ? [fromMs, toMs] : [fromMs, toMs, userId];
       const row = firstRow(
@@ -260,28 +267,47 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
         requests: Number(row?.r ?? 0),
       };
     };
-    const current = agg(opts.currentFromMs, opts.currentToMs);
-    // previous is intentionally event-only (no daily fallback); callers comparing current-vs-previous must treat the delta as approximate when current fell back to daily aggregates.
-    const previous = agg(opts.previousFromMs, opts.previousToMs);
-    if (!opts.eventsOnly && current.requests === 0 && current.spend === 0) {
-      const dRow = firstRow(
+
+    const aggDaily = (fromMs: number, toMs: number) => {
+      const row = firstRow(
         sql.exec<SqlRow>(
-          `SELECT COALESCE(SUM(spend),0) AS s, COALESCE(SUM(total_tokens),0) AS t,
+          `SELECT COALESCE(SUM(spend),0) AS s,
+                COALESCE(SUM(total_tokens),0) AS t,
                 COALESCE(SUM(requests),0) AS r
            FROM cb_usage_daily
-          WHERE date >= ? AND date < ? AND model = '__all__'${userId === null ? "" : " AND user_id = ?"}`,
-          ...(userId === null
-            ? [shDate(opts.currentFromMs), shDate(opts.currentToMs)]
-            : [shDate(opts.currentFromMs), shDate(opts.currentToMs), userId]),
+          WHERE date >= ? AND date < ? AND model = '__all__'`,
+          shDate(fromMs),
+          shDate(toMs),
         ),
       );
-      if (dRow) {
-        current.spend = Number(dRow.s);
-        current.totalTokens = Number(dRow.t);
-        current.requests = Number(dRow.r);
+      return {
+        spend: Number(row?.s ?? 0),
+        totalTokens: Number(row?.t ?? 0),
+        requests: Number(row?.r ?? 0),
+      };
+    };
+
+    type Period = { spend: number; totalTokens: number; requests: number; source: "events" | "daily" | "split" };
+    const resolve = (fromMs: number, toMs: number): Period => {
+      if (opts.eventsOnly || userId !== null) {
+        return { ...aggEvents(fromMs, toMs), source: "events" };
       }
-    }
-    return { current, previous };
+      if (fromMs >= eventHorizon) return { ...aggEvents(fromMs, toMs), source: "events" };
+      if (toMs <= eventHorizon) return { ...aggDaily(fromMs, toMs), source: "daily" };
+      const d = aggDaily(fromMs, eventHorizon);
+      const e = aggEvents(eventHorizon, toMs);
+      return {
+        spend: d.spend + e.spend,
+        totalTokens: d.totalTokens + e.totalTokens,
+        requests: d.requests + e.requests,
+        source: "split",
+      };
+    };
+
+    return {
+      current: resolve(opts.currentFromMs, opts.currentToMs),
+      previous: resolve(opts.previousFromMs, opts.previousToMs),
+    };
   }
 
   private scopeClause(scope: { kind: "global" } | { kind: "user"; userId: string }): {
