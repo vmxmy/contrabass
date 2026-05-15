@@ -71,6 +71,14 @@ new_classes = ["IndexDO", "TeamConfigDO"]
 tag = "v3"
 new_sqlite_classes = ["RateLimitDOSQLite", "IndexDOSQLite", "TeamConfigDOSQLite"]
 
+# Step 2: the live deployment (post-step-1) no longer binds the legacy KV
+# classes, so deleting them no longer hits error 10061. This permanently
+# destroys the orphaned KV DO instances + their data (authorized — the SQLite
+# DOs were already repopulated by IndexDO.init() after step 1).
+[[migrations]]
+tag = "v4"
+deleted_classes = ["RateLimitDO", "IndexDO", "TeamConfigDO"]
+
 # ---------------------------------------------------------------------------
 # Workers Secret Store (opt-in — requires manual provisioning)
 # Run: wrangler secrets-store store create default_secrets_store --remote
