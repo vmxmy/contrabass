@@ -15,10 +15,7 @@ afterEach(() => {
 
 describe("litellm portal worker", () => {
   it("serves the portal page rendered by React SSR with no inline JS event bridge", async () => {
-    const response = await handleLiteLLMPortalRequest(
-      new Request("https://portal.test/"),
-      portalEnv(),
-    );
+    const response = await handleLiteLLMPortalRequest(new Request("https://portal.test/"), portalEnv());
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/html");
@@ -73,10 +70,7 @@ describe("litellm portal worker", () => {
   });
 
   it("serves the Kumo standalone stylesheet from the installed package", async () => {
-    const response = await handleLiteLLMPortalRequest(
-      new Request("https://portal.test/kumo.css"),
-      portalEnv(),
-    );
+    const response = await handleLiteLLMPortalRequest(new Request("https://portal.test/kumo.css"), portalEnv());
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/css");
@@ -88,10 +82,7 @@ describe("litellm portal worker", () => {
   });
 
   it("serves the React portal bundle with unified hydration root and no CustomEvent bridge", async () => {
-    const response = await handleLiteLLMPortalRequest(
-      new Request("https://portal.test/portal.js"),
-      portalEnv(),
-    );
+    const response = await handleLiteLLMPortalRequest(new Request("https://portal.test/portal.js"), portalEnv());
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("application/javascript");
@@ -120,7 +111,7 @@ describe("litellm portal worker", () => {
     // hydrate the #root div, not bind window.__INITIAL_DATA__ or hydrate the whole document.
     // This guards against shipping a stale bundle that doesn't match the SSR shell.
     expect(portalAppJs).not.toContain("__INITIAL_DATA__");
-    expect(portalAppJs).toContain('initial-data');
+    expect(portalAppJs).toContain("initial-data");
     expect(portalAppJs).toContain('"root"');
   });
 
@@ -157,10 +148,7 @@ describe("litellm portal worker", () => {
   });
 
   it("serves an empty favicon response without requiring authentication", async () => {
-    const response = await handleLiteLLMPortalRequest(
-      new Request("https://portal.test/favicon.ico"),
-      portalEnv(),
-    );
+    const response = await handleLiteLLMPortalRequest(new Request("https://portal.test/favicon.ico"), portalEnv());
 
     expect(response.status).toBe(204);
   });
@@ -566,243 +554,6 @@ describe("litellm portal worker", () => {
     });
   });
 
-  it("aggregates minute usage from paginated spend logs without exposing raw payloads", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-05-10T12:00:00.000Z"));
-    const seen: string[] = [];
-    globalThis.fetch = async (input) => {
-      const url = new URL(String(input));
-      seen.push(String(input));
-      if (String(input) === "https://litellm.test/user/list?user_email=liqingying%40gz-zhiyun.com") {
-        return Response.json({
-          users: [{ user_id: "liqingying", user_email: "liqingying@gz-zhiyun.com" }],
-        });
-      }
-      if (url.pathname === "/spend/logs/v2" && url.searchParams.get("page") === "1") {
-        return Response.json({
-          data: [
-            {
-              startTime: "2026-05-10T11:58:12.000Z",
-              total_tokens: 100,
-              prompt_tokens: 60,
-              completion_tokens: 40,
-              spend: 0.1,
-              model: "gpt-4o-mini",
-              messages: [{ role: "user", content: "secret prompt" }],
-            },
-            {
-              startTime: "2026-05-10T11:58:45.000Z",
-              total_tokens: 200,
-              prompt_tokens: 120,
-              completion_tokens: 80,
-              spend: 0.2,
-              model_name: "deepseek-v3",
-              response: "secret response",
-            },
-            {
-              start_time: "2026-05-10T11:59:01.000",
-              prompt_tokens: 10,
-              completion_tokens: 15,
-              spend: 0.05,
-              model_group: "gpt-4o-mini",
-            },
-          ],
-          total_pages: 2,
-        });
-      }
-      if (url.pathname === "/spend/logs/v2" && url.searchParams.get("page") === "2") {
-        return Response.json({
-          data: [
-            {
-              startTime: "2026-05-10T12:00:00.000Z",
-              total_tokens: 5,
-              spend: 0.01,
-              model: "deepseek-v3",
-            },
-          ],
-          total_pages: 2,
-        });
-      }
-      return new Response("not found", { status: 404 });
-    };
-
-    const response = await handleLiteLLMPortalRequest(
-      devRequest(
-        "https://portal.test/api/usage/timeseries?grain=minute&window=1h&user_id=forged-user",
-        "liqingying@gz-zhiyun.com",
-      ),
-      portalEnv(),
-    );
-
-    expect(response.status).toBe(200);
-    const body = await response.json() as {
-      source: string;
-      limited: boolean;
-      buckets: Array<Record<string, unknown>>;
-      totals: Record<string, unknown>;
-      topModels: Array<Record<string, unknown>>;
-    };
-    expect(body.source).toBe("spend_logs_v2");
-    expect(body.limited).toBe(false);
-    expect(body.totals).toMatchObject({ totalTokens: 330, promptTokens: 190, completionTokens: 135, requests: 4, spend: 0.36 });
-    expect(body.buckets.find((bucket) => bucket.start === "2026-05-10T19:58:00.000+08:00")).toMatchObject({
-      label: "19:58",
-      totalTokens: 300,
-      promptTokens: 180,
-      completionTokens: 120,
-      requests: 2,
-      spend: 0.3,
-    });
-    expect(body.buckets.find((bucket) => bucket.start === "2026-05-10T19:59:00.000+08:00")).toMatchObject({
-      label: "19:59",
-      totalTokens: 25,
-      promptTokens: 10,
-      completionTokens: 15,
-      requests: 1,
-      spend: 0.05,
-    });
-    expect(body.topModels).toMatchObject([
-      { model: "deepseek-v3", spend: 0.21, totalTokens: 205, requests: 2 },
-      { model: "gpt-4o-mini", spend: 0.15, totalTokens: 125, requests: 2 },
-    ]);
-    expect(JSON.stringify(body)).not.toContain("secret prompt");
-    expect(JSON.stringify(body)).not.toContain("secret response");
-    expect(seen.filter((url) => url.includes("/spend/logs/v2")).map((url) => new URL(url).searchParams.get("user_id"))).toEqual([
-      "liqingying",
-      "liqingying",
-    ]);
-  });
-
-  it("rejects unsupported usage grains before calling LiteLLM", async () => {
-    let usageCalled = false;
-    globalThis.fetch = async (input) => {
-      const url = String(input);
-      if (!url.includes("/user/list?user_email=")) {
-        usageCalled = true;
-      }
-      return Response.json({});
-    };
-
-    const response = await handleLiteLLMPortalRequest(
-      devRequest("https://portal.test/api/usage/timeseries?grain=week", "liqingying@gz-zhiyun.com"),
-      portalEnv(),
-    );
-
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({
-      error: "unsupported_usage_grain",
-      allowedGrains: ["minute", "hour", "day", "month"],
-    });
-    expect(usageCalled).toBe(false);
-  });
-
-  it("bounds spend log pagination for short-grain timeseries", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-05-10T12:00:00.000Z"));
-    const spendLogPages: string[] = [];
-    globalThis.fetch = async (input) => {
-      const url = new URL(String(input));
-      if (String(input) === "https://litellm.test/user/list?user_email=liqingying%40gz-zhiyun.com") {
-        return Response.json({
-          users: [{ user_id: "liqingying", user_email: "liqingying@gz-zhiyun.com" }],
-        });
-      }
-      if (url.pathname === "/spend/logs/v2") {
-        spendLogPages.push(url.searchParams.get("page") ?? "");
-        return Response.json({
-          data: Array.from({ length: 100 }, () => ({
-            startTime: "2026-05-10T11:00:00.000Z",
-            total_tokens: 1,
-            spend: 0.001,
-          })),
-          total_pages: 99,
-        });
-      }
-      return new Response("not found", { status: 404 });
-    };
-
-    const response = await handleLiteLLMPortalRequest(
-      devRequest("https://portal.test/api/usage/timeseries?grain=hour&window=24h", "liqingying@gz-zhiyun.com"),
-      portalEnv(),
-    );
-
-    expect(response.status).toBe(200);
-    const body = await response.json() as { limited: boolean; totals: Record<string, unknown> };
-    expect(spendLogPages).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]);
-    expect(body.limited).toBe(true);
-    expect(body.totals).toMatchObject({ totalTokens: 1000, requests: 1000, spend: 1 });
-  });
-
-  it("rolls daily activity into day and month usage buckets", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-05-10T12:00:00.000Z"));
-    const dailyUrls: string[] = [];
-    globalThis.fetch = async (input) => {
-      const url = new URL(String(input));
-      if (String(input) === "https://litellm.test/user/list?user_email=liqingying%40gz-zhiyun.com") {
-        return Response.json({
-          users: [{ user_id: "liqingying", user_email: "liqingying@gz-zhiyun.com" }],
-        });
-      }
-      if (url.pathname === "/user/daily/activity/aggregated") {
-        dailyUrls.push(String(input));
-        return Response.json({
-          results: [
-            {
-              date: "2026-04-28",
-              metrics: { spend: 0.4, total_tokens: 400, prompt_tokens: 250, completion_tokens: 150, api_requests: 4 },
-            },
-            {
-              date: "2026-05-04",
-              metrics: { spend: 0.15, total_tokens: 150, prompt_tokens: 100, completion_tokens: 50, api_requests: 2 },
-            },
-            {
-              date: "2026-05-05",
-              metrics: { spend: 0.2, total_tokens: 200, prompt_tokens: 120, completion_tokens: 80, api_requests: 3 },
-            },
-            {
-              date: "2026-05-10",
-              metrics: { spend: 0.3, total_tokens: 300, prompt_tokens: 180, completion_tokens: 120, api_requests: 5 },
-            },
-          ],
-        });
-      }
-      return new Response("not found", { status: 404 });
-    };
-    const read = async (query: string) => {
-      const response = await handleLiteLLMPortalRequest(
-        devRequest(`https://portal.test/api/usage/timeseries?${query}`, "liqingying@gz-zhiyun.com"),
-        portalEnv(),
-      );
-      expect(response.status).toBe(200);
-      return await response.json() as { source: string; buckets: Array<Record<string, unknown>> };
-    };
-
-    const day = await read("grain=day&window=7d");
-    const month = await read("grain=month&window=6mo");
-
-    expect(day.source).toBe("user_daily_activity");
-    expect(day.buckets.find((bucket) => bucket.start === "2026-05-04T00:00:00.000+08:00")).toMatchObject({
-      totalTokens: 150,
-      promptTokens: 100,
-      completionTokens: 50,
-      requests: 2,
-      spend: 0.15,
-    });
-    expect(month.buckets.find((bucket) => bucket.start === "2026-05-01T00:00:00.000+08:00")).toMatchObject({
-      totalTokens: 650,
-      requests: 10,
-      spend: 0.65,
-    });
-    expect(month.buckets.find((bucket) => bucket.start === "2026-04-01T00:00:00.000+08:00")).toMatchObject({
-      totalTokens: 400,
-      requests: 4,
-      spend: 0.4,
-    });
-    expect(dailyUrls.every((url) => new URL(url).searchParams.get("user_id") === "liqingying")).toBe(true);
-    expect(dailyUrls.every((url) => new URL(url).searchParams.get("timezone") === "-480")).toBe(true);
-  });
-
   it("requires authentication for key creation", async () => {
     const response = await handleLiteLLMPortalRequest(
       new Request("https://portal.test/api/keys", {
@@ -824,11 +575,13 @@ describe("litellm portal worker", () => {
         requests.push(`${(init as RequestInit)?.method ?? "GET"} ${url}`);
         if (url.includes("/user/list")) {
           return Response.json({
-            users: [{
-              user_id: "liqingying",
-              user_email: "liqingying@gz-zhiyun.com",
-              teams: [],
-            }],
+            users: [
+              {
+                user_id: "liqingying",
+                user_email: "liqingying@gz-zhiyun.com",
+                teams: [],
+              },
+            ],
           });
         }
         if (url.includes("/key/generate")) {
@@ -855,7 +608,7 @@ describe("litellm portal worker", () => {
       );
 
       expect(response.status).toBe(201);
-      const body = await response.json() as Record<string, unknown>;
+      const body = (await response.json()) as Record<string, unknown>;
       expect(body.rawKey).toBe("sk-generated-abc123");
       expect(body.keyAlias).toBe("my-key");
       expect(body.keyId).toBe("tok-123");
@@ -866,11 +619,13 @@ describe("litellm portal worker", () => {
         const url = String(input);
         if (url.includes("/user/list")) {
           return Response.json({
-            users: [{
-              user_id: "liqingying",
-              user_email: "liqingying@gz-zhiyun.com",
-              teams: [],
-            }],
+            users: [
+              {
+                user_id: "liqingying",
+                user_email: "liqingying@gz-zhiyun.com",
+                teams: [],
+              },
+            ],
           });
         }
         return Response.json({});
@@ -893,11 +648,13 @@ describe("litellm portal worker", () => {
         const url = String(input);
         if (url.includes("/user/list")) {
           return Response.json({
-            users: [{
-              user_id: "liqingying",
-              user_email: "liqingying@gz-zhiyun.com",
-              teams: [],
-            }],
+            users: [
+              {
+                user_id: "liqingying",
+                user_email: "liqingying@gz-zhiyun.com",
+                teams: [],
+              },
+            ],
           });
         }
         if (url.includes("/key/generate")) {
@@ -949,11 +706,13 @@ describe("litellm portal worker", () => {
         const url = String(input);
         if (url.includes("/user/list")) {
           return Response.json({
-            users: [{
-              user_id: "real-user",
-              user_email: "liqingying@gz-zhiyun.com",
-              teams: [],
-            }],
+            users: [
+              {
+                user_id: "real-user",
+                user_email: "liqingying@gz-zhiyun.com",
+                teams: [],
+              },
+            ],
           });
         }
         if (url.includes("/key/generate")) {
@@ -984,20 +743,24 @@ describe("litellm portal worker", () => {
         const url = String(input);
         if (url.includes("/user/list")) {
           return Response.json({
-            users: [{
-              user_id: "liqingying",
-              user_email: "liqingying@gz-zhiyun.com",
-              teams: [],
-            }],
+            users: [
+              {
+                user_id: "liqingying",
+                user_email: "liqingying@gz-zhiyun.com",
+                teams: [],
+              },
+            ],
           });
         }
         if (url === "https://litellm.test/user/info?user_id=liqingying") {
           return Response.json({
-            keys: [{
-              token: "hash-owned",
-              key_alias: "primary",
-              user_id: "liqingying",
-            }],
+            keys: [
+              {
+                token: "hash-owned",
+                key_alias: "primary",
+                user_id: "liqingying",
+              },
+            ],
           });
         }
         if (url.includes("/key/delete")) {
@@ -1026,19 +789,23 @@ describe("litellm portal worker", () => {
         const url = String(input);
         if (url.includes("/user/list")) {
           return Response.json({
-            users: [{
-              user_id: "liqingying",
-              user_email: "liqingying@gz-zhiyun.com",
-              teams: [],
-            }],
+            users: [
+              {
+                user_id: "liqingying",
+                user_email: "liqingying@gz-zhiyun.com",
+                teams: [],
+              },
+            ],
           });
         }
         if (url === "https://litellm.test/user/info?user_id=liqingying") {
           return Response.json({
-            keys: [{
-              key_alias: "primary",
-              user_id: "liqingying",
-            }],
+            keys: [
+              {
+                key_alias: "primary",
+                user_id: "liqingying",
+              },
+            ],
           });
         }
         if (url.includes("/key/delete")) {
@@ -1065,20 +832,24 @@ describe("litellm portal worker", () => {
         const url = String(input);
         if (url.includes("/user/list")) {
           return Response.json({
-            users: [{
-              user_id: "liqingying",
-              user_email: "liqingying@gz-zhiyun.com",
-              teams: [],
-            }],
+            users: [
+              {
+                user_id: "liqingying",
+                user_email: "liqingying@gz-zhiyun.com",
+                teams: [],
+              },
+            ],
           });
         }
         if (url === "https://litellm.test/user/info?user_id=liqingying") {
           return Response.json({
-            keys: [{
-              token: "hash-owned",
-              key_alias: "primary",
-              user_id: "liqingying",
-            }],
+            keys: [
+              {
+                token: "hash-owned",
+                key_alias: "primary",
+                user_id: "liqingying",
+              },
+            ],
           });
         }
         if (url.includes("/key/delete")) {
@@ -1291,7 +1062,7 @@ describe("litellm portal worker", () => {
     it("rejects non-admin user on all /api/admin/* paths", async () => {
       // #given
 
-      const paths = ["/api/admin/users", "/api/admin/summary", "/api/admin/teams", "/api/admin/audit", "/api/admin/usage/timeseries"];
+      const paths = ["/api/admin/users", "/api/admin/summary", "/api/admin/teams", "/api/admin/audit"];
 
       for (const path of paths) {
         // #when
@@ -1329,7 +1100,7 @@ describe("litellm portal worker", () => {
 
       // #then
       expect(response.status).toBe(200);
-      const body = await response.json() as { users: unknown[]; totalCount: number };
+      const body = (await response.json()) as { users: unknown[]; totalCount: number };
       expect(Array.isArray(body.users)).toBe(true);
       expect(body.totalCount).toBe(2);
       expect(body.users).toHaveLength(2);
@@ -1344,9 +1115,29 @@ describe("litellm portal worker", () => {
         if (url.startsWith("https://litellm.test/user/list?page=")) {
           return Response.json({
             users: [
-              { user_id: "u1", user_email: "alice@gz-zhiyun.com", spend: 10, max_budget: 20, teams: ["team-a"], user_role: "internal_user" },
-              { user_id: "u2", user_email: "bob@gz-zhiyun.com", spend: 15, max_budget: 10, teams: [], user_role: "proxy_admin" },
-              { user_id: "u3", user_email: "casey@gz-zhiyun.com", spend: 1, teams: ["team-b"], user_role: "custom_role" },
+              {
+                user_id: "u1",
+                user_email: "alice@gz-zhiyun.com",
+                spend: 10,
+                max_budget: 20,
+                teams: ["team-a"],
+                user_role: "internal_user",
+              },
+              {
+                user_id: "u2",
+                user_email: "bob@gz-zhiyun.com",
+                spend: 15,
+                max_budget: 10,
+                teams: [],
+                user_role: "proxy_admin",
+              },
+              {
+                user_id: "u3",
+                user_email: "casey@gz-zhiyun.com",
+                spend: 1,
+                teams: ["team-b"],
+                user_role: "custom_role",
+              },
             ],
             total_count: 250,
           });
@@ -1368,7 +1159,7 @@ describe("litellm portal worker", () => {
 
       // #then
       expect(response.status).toBe(200);
-      const body = await response.json() as Record<string, unknown>;
+      const body = (await response.json()) as Record<string, unknown>;
       expect(body).toMatchObject({
         userCount: 250,
         sampledUserCount: 3,
@@ -1408,7 +1199,7 @@ describe("litellm portal worker", () => {
 
       // #then
       expect(response.status).toBe(200);
-      const body = await response.json() as { teams: unknown[] };
+      const body = (await response.json()) as { teams: unknown[] };
       expect(Array.isArray(body.teams)).toBe(true);
       expect(body.teams).toHaveLength(2);
     });
@@ -1443,50 +1234,11 @@ describe("litellm portal worker", () => {
 
       // #then
       expect(response.status).toBe(200);
-      const body = await response.json() as { events: unknown[]; totalCount: number; page: number; size: number };
+      const body = (await response.json()) as { events: unknown[]; totalCount: number; page: number; size: number };
       expect(Array.isArray(body.events)).toBe(true);
       expect(body.totalCount).toBe(1);
       expect(body.page).toBe(1);
       expect(typeof body.size).toBe("number");
-    });
-
-    it("admin user calling /api/admin/usage/timeseries?grain=day&window=30d receives 200 with UsageTimeseries shape", async () => {
-      // #given
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date("2026-05-10T12:00:00.000Z"));
-      globalThis.fetch = async (input) => {
-        if (new URL(String(input)).pathname === "/spend/logs/v2") {
-          return Response.json({ data: [], total_pages: 1 });
-        }
-        return new Response("not found", { status: 404 });
-      };
-
-      // #when
-      const response = await handleLiteLLMPortalRequest(
-        devRequest("https://portal.test/api/admin/usage/timeseries?grain=day&window=30d", "admin@gz-zhiyun.com"),
-        portalEnv(),
-      );
-
-      // #then
-      expect(response.status).toBe(200);
-      const body = await response.json() as Record<string, unknown>;
-      expect(body.source).toBe("spend_logs_v2_global");
-      expect(body.grain).toBe("day");
-      expect(body.window).toBe("30d");
-      expect(Array.isArray(body.buckets)).toBe(true);
-      expect(typeof body.totals).toBe("object");
-    });
-
-    it("admin calling /api/admin/usage/timeseries?grain=invalid receives 400", async () => {
-      // #when
-      const response = await handleLiteLLMPortalRequest(
-        devRequest("https://portal.test/api/admin/usage/timeseries?grain=invalid", "admin@gz-zhiyun.com"),
-        portalEnv(),
-      );
-
-      // #then
-      expect(response.status).toBe(400);
-      await expect(response.json()).resolves.toMatchObject({ error: "unsupported_usage_grain" });
     });
 
     it("cache hit ratio: 5 mixed admin requests query IndexDO only once (30s memory cache)", async () => {
@@ -1517,16 +1269,10 @@ describe("litellm portal worker", () => {
       // #when - 5 mixed requests: 3 /api/admin/users and 2 /api/admin/audit
       const env = portalEnv({ INDEX_DO: indexDO });
       for (let i = 0; i < 3; i++) {
-        await handleLiteLLMPortalRequest(
-          devRequest("https://portal.test/api/admin/users", "admin@gz-zhiyun.com"),
-          env,
-        );
+        await handleLiteLLMPortalRequest(devRequest("https://portal.test/api/admin/users", "admin@gz-zhiyun.com"), env);
       }
       for (let i = 0; i < 2; i++) {
-        await handleLiteLLMPortalRequest(
-          devRequest("https://portal.test/api/admin/audit", "admin@gz-zhiyun.com"),
-          env,
-        );
+        await handleLiteLLMPortalRequest(devRequest("https://portal.test/api/admin/audit", "admin@gz-zhiyun.com"), env);
       }
 
       // #then — IndexDO queried only once across all 5 requests (memory cache hit)
@@ -1568,36 +1314,12 @@ describe("litellm portal worker", () => {
 
       // #then
       expect(response.status).toBe(200);
-      const body = await response.json() as Record<string, unknown>;
+      const body = (await response.json()) as Record<string, unknown>;
       expect(body.role).toBe("none");
       const serialized = JSON.stringify(body);
       // must not leak master key prefix or the word 'master'
       expect(serialized).not.toMatch(/sk-/u);
       expect(serialized.toLowerCase()).not.toContain("master");
-    });
-
-    it("/api/admin/usage/timeseries with no grain defaults to day and returns source=spend_logs_v2_global", async () => {
-      // #given
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date("2026-05-10T12:00:00.000Z"));
-      globalThis.fetch = async (input) => {
-        if (new URL(String(input)).pathname === "/spend/logs/v2") {
-          return Response.json({ data: [], total_pages: 1 });
-        }
-        return new Response("not found", { status: 404 });
-      };
-
-      // #when - no grain param
-      const response = await handleLiteLLMPortalRequest(
-        devRequest("https://portal.test/api/admin/usage/timeseries?window=30d", "admin@gz-zhiyun.com"),
-        portalEnv(),
-      );
-
-      // #then
-      expect(response.status).toBe(200);
-      const body = await response.json() as Record<string, unknown>;
-      expect(body.grain).toBe("day");
-      expect(body.source).toBe("spend_logs_v2_global");
     });
 
     it("/api/admin/users size=999 is clamped to ADMIN_PAGE_SIZE_MAX=100", async () => {
@@ -1631,16 +1353,12 @@ describe("litellm portal worker", () => {
       // #given
       _clearRoleCacheForTests();
       globalThis.fetch = async () => {
-        return new Response(JSON.stringify({ error: "internal", key: "sk-secret", master: "litellm-master" }), { status: 500 });
+        return new Response(JSON.stringify({ error: "internal", key: "sk-secret", master: "litellm-master" }), {
+          status: 500,
+        });
       };
 
-      const adminPaths = [
-        "/api/admin/users",
-        "/api/admin/summary",
-        "/api/admin/teams",
-        "/api/admin/audit",
-        "/api/admin/usage/timeseries?grain=day&window=7d",
-      ];
+      const adminPaths = ["/api/admin/users", "/api/admin/summary", "/api/admin/teams", "/api/admin/audit"];
 
       for (const path of adminPaths) {
         // #when
@@ -1663,7 +1381,16 @@ describe("litellm portal worker", () => {
       globalThis.fetch = async (input) => {
         if (String(input).includes("/user/list")) {
           return Response.json({
-            users: [{ user_id: "liqingying", user_email: "liqingying@gz-zhiyun.com", teams: [], spend: 0, max_budget: null, user_role: "internal_user" }],
+            users: [
+              {
+                user_id: "liqingying",
+                user_email: "liqingying@gz-zhiyun.com",
+                teams: [],
+                spend: 0,
+                max_budget: null,
+                user_role: "internal_user",
+              },
+            ],
           });
         }
         return Response.json({});
@@ -1685,7 +1412,16 @@ describe("litellm portal worker", () => {
       globalThis.fetch = async (input) => {
         if (String(input).includes("/user/list")) {
           return Response.json({
-            users: [{ user_id: "liqingying", user_email: "liqingying@gz-zhiyun.com", teams: [], spend: 0, max_budget: null, user_role: "internal_user" }],
+            users: [
+              {
+                user_id: "liqingying",
+                user_email: "liqingying@gz-zhiyun.com",
+                teams: [],
+                spend: 0,
+                max_budget: null,
+                user_role: "internal_user",
+              },
+            ],
           });
         }
         return Response.json({});
@@ -1712,7 +1448,11 @@ describe("litellm portal worker", () => {
     const adminFetch = (input: string | URL | Request) => {
       const url = String(input);
       if (url.includes("/key/info?key=")) {
-        return Promise.resolve(Response.json({ info: { token: "key-abc", key_alias: "primary", blocked: false, user_id: "uid", team_id: "tid" } }));
+        return Promise.resolve(
+          Response.json({
+            info: { token: "key-abc", key_alias: "primary", blocked: false, user_id: "uid", team_id: "tid" },
+          }),
+        );
       }
       if (url.includes("/key/update")) {
         return Promise.resolve(Response.json({ status: "ok" }));
@@ -1753,7 +1493,7 @@ describe("litellm portal worker", () => {
         portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
       );
       expect(response.status).toBe(422);
-      const body = await response.json() as Record<string, unknown>;
+      const body = (await response.json()) as Record<string, unknown>;
       expect(body.error).toBe("validation_error");
     });
 
@@ -1780,7 +1520,7 @@ describe("litellm portal worker", () => {
       );
 
       expect(response.status).toBe(200);
-      const body = await response.json() as Record<string, unknown>;
+      const body = (await response.json()) as Record<string, unknown>;
       expect(body.keyId).toBe("key-abc");
       expect(body.disabled).toBe(true);
       expect(body.dryRun).toBe(false);
@@ -1810,7 +1550,7 @@ describe("litellm portal worker", () => {
       );
 
       expect(response.status).toBe(200);
-      const body = await response.json() as Record<string, unknown>;
+      const body = (await response.json()) as Record<string, unknown>;
       expect(body.dryRun).toBe(true);
       expect(keyUpdateCalled).toBe(false);
     });
@@ -1820,7 +1560,11 @@ describe("litellm portal worker", () => {
     const adminFetch = (input: string | URL | Request) => {
       const url = String(input);
       if (url.includes("/team/info?team_id=")) {
-        return Promise.resolve(Response.json({ team_info: { team_id: "team-1", team_alias: "ops", tpm_limit: null, rpm_limit: null, max_budget: null } }));
+        return Promise.resolve(
+          Response.json({
+            team_info: { team_id: "team-1", team_alias: "ops", tpm_limit: null, rpm_limit: null, max_budget: null },
+          }),
+        );
       }
       if (url.includes("/team/update")) {
         return Promise.resolve(Response.json({ status: "ok" }));
@@ -1866,8 +1610,18 @@ describe("litellm portal worker", () => {
     it("updates team limits (happy path)", async () => {
       let putTeamCalled = false;
       const teamConfigStub = {
-        getTeam: vi.fn(async () => ({ id: "team-1", alias: "ops", models: [], blocked: false, tpmLimit: undefined, rpmLimit: undefined, maxBudget: undefined })),
-        putTeam: vi.fn(async () => { putTeamCalled = true; }),
+        getTeam: vi.fn(async () => ({
+          id: "team-1",
+          alias: "ops",
+          models: [],
+          blocked: false,
+          tpmLimit: undefined,
+          rpmLimit: undefined,
+          maxBudget: undefined,
+        })),
+        putTeam: vi.fn(async () => {
+          putTeamCalled = true;
+        }),
         getSyncMetadata: vi.fn(async () => ({ lastSyncedAt: null, lastSyncError: null, dirty: false })),
       };
       const teamConfigDO = {
@@ -1884,7 +1638,7 @@ describe("litellm portal worker", () => {
       );
 
       expect(response.status).toBe(200);
-      const body = await response.json() as Record<string, unknown>;
+      const body = (await response.json()) as Record<string, unknown>;
       expect((body.team as Record<string, unknown>).rpmLimit).toBe(200);
       expect((body.team as Record<string, unknown>).tpmLimit).toBe(5000);
       expect(body.enqueued).toBe(false); // no LITELLM_SYNC_QUEUE in test env
@@ -1896,7 +1650,9 @@ describe("litellm portal worker", () => {
     const adminFetch = (input: string | URL | Request) => {
       const url = String(input);
       if (url.includes("/v2/user/info?user_id=")) {
-        return Promise.resolve(Response.json({ user: { user_id: "user-123", user_role: "internal_user", max_budget: null } }));
+        return Promise.resolve(
+          Response.json({ user: { user_id: "user-123", user_role: "internal_user", max_budget: null } }),
+        );
       }
       if (url.includes("/user/update")) {
         return Promise.resolve(Response.json({ status: "ok" }));
@@ -1962,7 +1718,7 @@ describe("litellm portal worker", () => {
       );
 
       expect(response.status).toBe(200);
-      const body = await response.json() as Record<string, unknown>;
+      const body = (await response.json()) as Record<string, unknown>;
       expect(body.userId).toBe("user-123");
       expect(body.role).toBe("internal_user");
       expect(body.dryRun).toBe(false);
@@ -1974,7 +1730,11 @@ describe("litellm portal worker", () => {
     const adminFetch = (input: string | URL | Request) => {
       const url = String(input);
       if (url.includes("/key/info?key=")) {
-        return Promise.resolve(Response.json({ info: { token: "key-abc", key_alias: "my-key", blocked: false, user_id: "uid", team_id: "tid" } }));
+        return Promise.resolve(
+          Response.json({
+            info: { token: "key-abc", key_alias: "my-key", blocked: false, user_id: "uid", team_id: "tid" },
+          }),
+        );
       }
       if (url.includes("/key/delete")) {
         return Promise.resolve(Response.json({ deleted_keys: ["key-abc"] }));
@@ -2052,7 +1812,7 @@ describe("litellm portal worker", () => {
       );
 
       expect(response.status).toBe(200);
-      const body = await response.json() as Record<string, unknown>;
+      const body = (await response.json()) as Record<string, unknown>;
       expect(body.keyId).toBe("key-abc");
       expect(body.dryRun).toBe(false);
       expect(deleteBody?.keys).toEqual(["key-abc"]);
@@ -2081,7 +1841,7 @@ describe("litellm portal worker", () => {
       );
 
       expect(response.status).toBe(403);
-      const body = await response.json() as Record<string, unknown>;
+      const body = (await response.json()) as Record<string, unknown>;
       expect(body.error).toBe("confirm_alias_mismatch");
       expect(deleteKeyCallCount).toBe(0);
     });
@@ -2129,7 +1889,7 @@ describe("litellm portal worker", () => {
       );
 
       expect(response.status).toBe(200);
-      const body = await response.json() as Record<string, unknown>;
+      const body = (await response.json()) as Record<string, unknown>;
       expect(body.dryRun).toBe(true);
       expect(deleteKeyCallCount).toBe(0);
     });
@@ -2179,7 +1939,6 @@ describe("litellm portal worker", () => {
       expect(point.blobs?.[7]).toBe("security_incident"); // reason
     });
   });
-
 });
 
 // ---------------------------------------------------------------------------
@@ -2264,4 +2023,3 @@ function devRequest(url: string, email: string, init: RequestInit = {}): Request
   }
   return new Request(url, { ...init, headers });
 }
-

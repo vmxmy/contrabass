@@ -37,9 +37,11 @@ L1 把用量数据备进 `UsageDO`(SQLite)并提供只读查询方法。L2 在�
 
 | 端点 | 守卫 | scope |
 |---|---|---|
-| `GET /api/dashboard?window=&grain=` | 登录身份 | self(`identity.litellmUserId`) |
-| `GET /api/admin/dashboard?window=&grain=` | `requireAdmin` | global |
-| `GET /api/admin/dashboard?window=&grain=&member=<userId>` | `requireAdmin` | member(该 userId,只读) |
+| `GET /api/usage/overview?window=&grain=` | 登录身份 | self(`identity.litellmUserId`) |
+| `GET /api/admin/usage/overview?window=&grain=` | `requireAdmin` | global |
+| `GET /api/admin/usage/overview?window=&grain=&member=<userId>` | `requireAdmin` | member(该 userId,只读) |
+
+> 命名说明:/api/dashboard 已被既有 SSR portal 数据端点占用,故聚合用量端点采用 /api/usage/overview 与 /api/admin/usage/overview(替代被删除的 /api/usage/timeseries、/api/admin/usage/timeseries)。
 
 - 删除路由 `/api/usage/timeseries`、`/api/admin/usage/timeseries`。
 - handler 经 `env.USAGE_DO.get(env.USAGE_DO.idFromName("usage"))` 取 stub
@@ -145,8 +147,8 @@ LiteLLM,会违反 CQRS)。改为:
   (便于测试),`opts={ scope, window, grain }`。内部 `Promise.all` 并行调
   L1 查询 +(global)IndexDO 计数,按 scope 整形。
 - `index.ts` 路由:
-  - `/api/dashboard`:走现有身份解析,取 `identity.litellmUserId` → self。
-  - `/api/admin/dashboard`:经现有 `requireAdmin` 中间件;`member` 仅此路由
+  - `/api/usage/overview`:走现有身份解析,取 `identity.litellmUserId` → self。
+  - `/api/admin/usage/overview`:经现有 `requireAdmin` 中间件;`member` 仅此路由
     解析(非 admin 经中间件先行拦截,不可达 handler)。
 - 不改 L1 `UsageDO`;请求路径**零新增 `litellmFetch`**。
 
@@ -183,18 +185,18 @@ LiteLLM,会违反 CQRS)。改为:
   `empty` 与 `available` 语义、`grainFallback`、`toUsageScope` 映射、
   summary 的 IndexDO 计数与 riskCount 计算、sampled 截断。
 - 路由集成测:沿用 `index.test.ts` 风格 —— 鉴权(self 需登录、admin 端点
-  与 `member` 需 admin)、非法 window→400、旧端点已 404、请求路径无
-  `litellmFetch`(可用模块级 spy 断言)。
+  与 `member` 需 admin、`/api/usage/overview` 与 `/api/admin/usage/overview`)、
+  非法 window→400、旧端点已 404、请求路径无 `litellmFetch`(可用模块级 spy 断言)。
 - 表驱动 + `vitest`。
 
 ## 验收标准(L2)
 
-1. self/global/member 经聚合端点返回正确**省略键**的形状,纯函数+路由
-   测试通过。
+1. self/global/member 经聚合端点(`/api/usage/overview`、`/api/admin/usage/overview`)
+   返回正确**省略键**的形状,纯函数+路由测试通过。
 2. 旧 `/api/usage/timeseries`、`/api/admin/usage/timeseries` 删除并 404;
    仓库请求路径无 `litellmFetch`(sync 路径不受影响);summary 不调 adminSummary。
-3. 鉴权正确;非法 window→400;平台不可用→`available:false`;空窗口→
-   `available:true,empty:true`。
+3. 鉴权正确(`/api/usage/overview` 需登录;`/api/admin/usage/overview` 需 admin);
+   非法 window→400;平台不可用→`available:false`;空窗口→`available:true,empty:true`。
 4. KPI 环比:`24h/48h/7d` 真实值;`30d` 的 previous/deltaPct 为 `null`。
 5. 既有测试套件绿;`tsc --noEmit` 0 error;wrangler dry-run 通过。
 
