@@ -369,13 +369,16 @@ Expected: FAIL — `obj.queryRecentEvents is not a function`
   > {
     const sql = await this.sql();
     if (sql === null) return [];
+    // Clamp: SQLite LIMIT -1 means "no limit" — never let a caller request
+    // an unbounded scan.
+    const limit = Math.min(Math.max(1, Math.trunc(opts.limit)), 1000);
     const rows = sql.exec<SqlRow>(
       `SELECT ts_ms, model, total_tokens, spend
          FROM cb_usage_events
         WHERE user_id = ?
         ORDER BY ts_ms DESC
         LIMIT ?`,
-      opts.userId, opts.limit,
+      opts.userId, limit,
     ).toArray();
     return rows.map((r) => ({
       tsMs: Number(r.ts_ms),
@@ -559,13 +562,12 @@ import { SpendEventSchema, type SpendEvent, DailyRowSchema, type DailyRow } from
     const zero = { spend: 0, requests: 0, totalTokens: 0 };
     if (sql === null) return { current: { ...zero }, previous: { ...zero } };
     const userId = opts.scope.kind === "user" ? opts.scope.userId : null;
-    // cb_usage_daily.date is stored verbatim from LiteLLM's daily-activity
-    // bucketing (proxy server date — TZ not guaranteed UTC+8). These shDate()
-    // bounds derive YYYY-MM-DD in Shanghai as a best-effort approximation: it
-    // can be off by one day at the boundary when LiteLLM's bucket TZ differs.
-    // Acceptable because this daily fallback only fires when the window has
-    // zero events; L3 product windows are <=30d and event-backed, so this
-    // path is not user-facing. See refreshDailyActivity (sync/usage-importer).
+    // cb_usage_daily.date is an Asia/Shanghai (UTC+8) business date:
+    // refreshDailyActivity requests LiteLLM with timezone=-480 so LiteLLM
+    // buckets by Shanghai day, so these shDate() bounds match exactly.
+    // The daily table holds per-model rows plus one synthetic model='__all__'
+    // per-day total row; the fallback below filters model='__all__' so it
+    // never double-counts per-model rows against the total.
     const SHANGHAI_TZ_MS = 8 * 60 * 60 * 1000;
     const shDate = (ms: number) =>
       new Date(ms + SHANGHAI_TZ_MS).toISOString().slice(0, 10);
@@ -595,7 +597,7 @@ import { SpendEventSchema, type SpendEvent, DailyRowSchema, type DailyRow } from
         `SELECT COALESCE(SUM(spend),0) AS s, COALESCE(SUM(total_tokens),0) AS t,
                 COALESCE(SUM(requests),0) AS r
            FROM cb_usage_daily
-          WHERE date >= ? AND date < ?${userId === null ? "" : " AND user_id = ?"}`,
+          WHERE date >= ? AND date < ? AND model = '__all__'${userId === null ? "" : " AND user_id = ?"}`,
         ...(userId === null
           ? [shDate(opts.currentFromMs), shDate(opts.currentToMs)]
           : [shDate(opts.currentFromMs), shDate(opts.currentToMs), userId]),
@@ -926,6 +928,8 @@ Expected: FAIL — `obj.queryHourOfDay is not a function`
   }): Promise<Array<{ userId: string; points: Array<{ startMs: number; spend: number }> }>> {
     const sql = await this.sql();
     if (sql === null) return [];
+    // Clamp: SQLite LIMIT -1 = "no limit"; bound topN to a sane range.
+    const topN = Math.min(Math.max(1, Math.trunc(opts.topN)), 100);
     const top = sql.exec<SqlRow>(
       `SELECT user_id, COALESCE(SUM(spend),0) AS s
          FROM cb_usage_events
@@ -933,7 +937,7 @@ Expected: FAIL — `obj.queryHourOfDay is not a function`
         GROUP BY user_id
         ORDER BY s DESC
         LIMIT ?`,
-      opts.fromMs, opts.toMs, opts.topN,
+      opts.fromMs, opts.toMs, topN,
     ).toArray().map((r) => String(r.user_id));
     const series: Array<{ userId: string; points: Array<{ startMs: number; spend: number }> }> = [];
     for (const userId of top) {
@@ -1308,68 +1312,111 @@ function dailyResults(body: unknown): Array<Record<string, unknown>> {
   return [];
 }
 
+// LiteLLM daily-activity is requested with timezone=-480 so LiteLLM buckets
+// each `date` by Asia/Shanghai (UTC+8). cb_usage_daily.date is therefore a
+// true Shanghai business date — matches queryKpiWithDelta's shDate() bounds.
+const DAILY_TZ_OFFSET_MINUTES = "-480";
+const DAILY_BACKFILL_DAYS = 365;
+const DAILY_REFRESH_DAYS = 3; // trailing window each tick to absorb late data
+const DAILY_MAX_PAGES = 60;
+const DAILY_TZ_MS = 8 * 60 * 60 * 1000;
+
+function shanghaiDate(ms: number): string {
+  return new Date(ms + DAILY_TZ_MS).toISOString().slice(0, 10);
+}
+
+/** SpendMetrics → DailyRow numeric fields (shared by per-model + __all__). */
+function metricsToRow(
+  date: string,
+  model: string,
+  m: Record<string, unknown>,
+): DailyRow {
+  const succ = numberLikeField(m, "successful_requests");
+  const fail = numberLikeField(m, "failed_requests");
+  return {
+    date,
+    userId: "__global__",
+    model,
+    spend: numberLikeField(m, "spend") ?? 0,
+    totalTokens: Math.trunc(numberLikeField(m, "total_tokens") ?? 0),
+    promptTokens: Math.trunc(numberLikeField(m, "prompt_tokens") ?? 0),
+    completionTokens: Math.trunc(numberLikeField(m, "completion_tokens") ?? 0),
+    requests: Math.trunc(numberLikeField(m, "api_requests") ?? 0),
+    successRequests: succ != null ? Math.trunc(succ) : null,
+    failedRequests: fail != null ? Math.trunc(fail) : null,
+  };
+}
+
 export async function refreshDailyActivity(env: LiteLLMPortalEnv): Promise<IngestResult> {
   const stub = usageStub(env);
   if (stub === null) return { ingested: 0, error: "USAGE_DO binding not configured" };
 
-  const now = new Date();
-  const yesterday = new Date(now.getTime() - 86400000);
-  const startDate = yesterday.toISOString().slice(0, 10);
-  const endDate = now.toISOString().slice(0, 10);
+  // Cursor presence = "365d backfill already done". null → backfill 365d;
+  // otherwise just refresh a short trailing window each tick.
+  const priorCursor = await stub.getSyncCursor("daily_activity");
+  const now = Date.now();
+  const spanDays = priorCursor === null ? DAILY_BACKFILL_DAYS : DAILY_REFRESH_DAYS;
+  const startDate = shanghaiDate(now - spanDays * 86400000);
+  const endDate = shanghaiDate(now);
 
+  let ingested = 0;
   try {
-    const params = new URLSearchParams({
-      start_date: startDate,
-      end_date: endDate,
-      page: "1",
-      page_size: "1000",
-    });
-    const response = await litellmFetch(env, `/user/daily/activity/aggregated?${params.toString()}`);
-    const body = await readJson(response);
-    // day.date is stored verbatim (LiteLLM proxy-server bucket date; TZ not
-    // guaranteed UTC+8). Consumers treat it as the business date — see the
-    // approximation note in UsageDO.queryKpiWithDelta's daily fallback.
-    const rows: DailyRow[] = [];
-    for (const day of dailyResults(body)) {
-      const date = firstString(day, ["date"]);
-      if (date === undefined) continue;
-      const metrics = isRecord(day.metrics) ? day.metrics : {};
-      const metadata = isRecord(day.metadata) ? day.metadata : {};
-      const breakdown = isRecord(day.breakdown) && isRecord(day.breakdown.models)
-        ? day.breakdown.models : {};
-      for (const [model, raw] of Object.entries(breakdown)) {
-        if (!isRecord(raw)) continue;
-        rows.push({
-          date, userId: "__global__", model,
-          spend: numberLikeField(raw, "spend") ?? 0,
-          totalTokens: Math.trunc(numberLikeField(raw, "total_tokens") ?? 0),
-          promptTokens: Math.trunc(numberLikeField(raw, "prompt_tokens") ?? 0),
-          completionTokens: Math.trunc(numberLikeField(raw, "completion_tokens") ?? 0),
-          requests: Math.trunc(numberLikeField(raw, "api_requests") ?? 0),
-          successRequests: null,
-          failedRequests: null,
-        });
-      }
-      rows.push({
-        date, userId: "__global__", model: "__all__",
-        spend: numberLikeField(metrics, "spend") ?? 0,
-        totalTokens: Math.trunc(numberLikeField(metrics, "total_tokens") ?? 0),
-        promptTokens: Math.trunc(numberLikeField(metrics, "prompt_tokens") ?? 0),
-        completionTokens: Math.trunc(numberLikeField(metrics, "completion_tokens") ?? 0),
-        requests: Math.trunc(numberLikeField(metrics, "api_requests") ?? 0),
-        successRequests: numberLikeField(metadata, "total_successful_requests") != null
-          ? Math.trunc(numberLikeField(metadata, "total_successful_requests")!) : null,
-        failedRequests: numberLikeField(metadata, "total_failed_requests") != null
-          ? Math.trunc(numberLikeField(metadata, "total_failed_requests")!) : null,
+    for (let page = 1; page <= DAILY_MAX_PAGES; page += 1) {
+      const params = new URLSearchParams({
+        start_date: startDate,
+        end_date: endDate,
+        timezone: DAILY_TZ_OFFSET_MINUTES,
+        page: String(page),
+        page_size: "1000",
       });
+      const response = await litellmFetch(env, `/user/daily/activity/aggregated?${params.toString()}`);
+      const body = await readJson(response);
+      const rows: DailyRow[] = [];
+      for (const day of dailyResults(body)) {
+        const date = firstString(day, ["date"]);
+        if (date === undefined) continue;
+        const dayMetrics = isRecord(day.metrics) ? day.metrics : {};
+        const breakdown = isRecord(day.breakdown) ? day.breakdown : {};
+        const models = isRecord(breakdown.models)
+          ? breakdown.models
+          : isRecord(breakdown.model_groups)
+            ? breakdown.model_groups
+            : {};
+        for (const [model, entry] of Object.entries(models)) {
+          if (!isRecord(entry)) continue;
+          const em = isRecord(entry.metrics) ? entry.metrics : {};
+          rows.push(metricsToRow(date, model, em));
+        }
+        // Synthetic per-day total row (model='__all__') from day.metrics —
+        // SpendMetrics carries per-day successful_requests/failed_requests.
+        rows.push(metricsToRow(date, "__all__", dayMetrics));
+      }
+      if (rows.length > 0) {
+        await stub.upsertDailyRows(rows);
+        ingested += rows.length;
+      }
+      // DailySpendMetadata on the response carries pagination.
+      const meta = isRecord(body) && isRecord(body.metadata) ? body.metadata : {};
+      const totalPages = numberLikeField(meta, "total_pages");
+      const hasMore = meta.has_more === true;
+      if (totalPages !== undefined) {
+        if (page >= totalPages) break;
+      } else if (!hasMore) {
+        break;
+      }
     }
-    if (rows.length > 0) await stub.upsertDailyRows(rows);
-    await stub.setSyncCursor("daily_activity", { cursorMs: now.getTime(), lastError: null });
-    return { ingested: rows.length, error: null };
+    await stub.setSyncCursor("daily_activity", { cursorMs: now, lastError: null });
+    return { ingested, error: null };
   } catch (err) {
     const reason = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
-    await stub.setSyncCursor("daily_activity", { cursorMs: 0, lastError: reason });
-    return { ingested: 0, error: reason };
+    // Only record the cursor/error if a prior cursor exists. If priorCursor is
+    // null (365d backfill never completed), DON'T write one — a non-null value
+    // would falsely flag "backfill done" and the 365d backfill would be skipped
+    // forever. Leaving it null makes the next tick retry the full backfill.
+    if (priorCursor !== null) {
+      await stub.setSyncCursor("daily_activity", { cursorMs: priorCursor, lastError: reason });
+    }
+    return { ingested, error: reason };
   }
 }
 
