@@ -145,4 +145,60 @@ describe("buildDashboard", () => {
     expect(res.available).toBe(false);
     expect(res.empty).toBe(false);
   });
+
+  it("global summary sampled:true when user list exceeds the 200 cap", async () => {
+    const many = Array.from({ length: 200 }, (_, i) => ({
+      userId: `u${i}`,
+      role: "user" as const,
+      maxBudget: undefined,
+    }));
+    const idx: IndexDOLike = {
+      listTeams: async () => [{ id: "t1", alias: "a" }],
+      listAllUsers: async () => ({ users: many, cursor: "next" }),
+    };
+    const res = await buildDashboard(
+      { usage: usageStub(), index: idx, now: NOW },
+      { scope: { kind: "global" }, window: "7d", grain: "day", grainFallback: false },
+    );
+    expect(res.summary?.sampled).toBe(true);
+    expect(res.summary?.userCount).toBe(200);
+  });
+
+  it("grainFallback:true is passed through to the response", async () => {
+    const res = await buildDashboard(
+      { usage: usageStub(), index: indexStub(), now: NOW },
+      { scope: { kind: "self", userId: "u1" }, window: "24h", grain: "hour", grainFallback: true },
+    );
+    expect(res.grainFallback).toBe(true);
+  });
+
+  it("index null -> zeroed summary with passthrough totalSpend", async () => {
+    const res = await buildDashboard(
+      { usage: usageStub(), index: null, now: NOW },
+      { scope: { kind: "global" }, window: "7d", grain: "day", grainFallback: false },
+    );
+    expect(res.summary).toEqual({
+      userCount: 0,
+      adminCount: 0,
+      teamCount: 0,
+      totalSpend: 5,
+      totalBudget: 0,
+      riskCount: 0,
+      sampled: false,
+    });
+  });
+
+  it("deltaPct null when previous is 0 but current > 0 (infinite growth → —)", async () => {
+    const stub = usageStub({
+      queryKpiWithDelta: async () => ({
+        current: { spend: 5, requests: 3, totalTokens: 50, source: "events" as const },
+        previous: { spend: 0, requests: 0, totalTokens: 0, source: "events" as const },
+      }),
+    });
+    const res = await buildDashboard(
+      { usage: stub, index: indexStub(), now: NOW },
+      { scope: { kind: "self", userId: "u1" }, window: "7d", grain: "day", grainFallback: false },
+    );
+    expect(res.kpi.spend).toEqual({ current: 5, previous: 0, deltaPct: null });
+  });
 });

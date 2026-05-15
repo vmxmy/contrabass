@@ -83,6 +83,11 @@ export async function buildDashboard(deps: BuildDeps, opts: BuildOpts): Promise<
   const fromMs = toMs - WINDOW_SPEC[opts.window].lenMs;
   const prevToMs = fromMs;
   const prevFromMs = fromMs - WINDOW_SPEC[opts.window].lenMs;
+  // NOTE: EVENT_RETENTION_MS here (dashboard-schemas.ts) must stay in lockstep
+  // with UsageDO.EVENT_RETENTION_MS (durable/usage-do.ts). L2 nulls the 30d
+  // `previous` deliberately (current=events vs previous=daily would be
+  // apples-to-oranges); this is a stricter presentation policy than L1's own
+  // data-availability source resolution, by design (L2 spec §3).
   const prevComparable = prevFromMs >= deps.now - EVENT_RETENTION_MS;
   const us = toUsageScope(opts.scope);
 
@@ -164,18 +169,34 @@ async function buildSummary(deps: BuildDeps, totalSpend: number): Promise<NonNul
   }
   const adminCount = users.filter((u) => u.role === "admin").length;
   const totalBudget = users.reduce((s, u) => s + (u.maxBudget ?? 0), 0);
+  // Risk = users whose retained-events spend exceeds their maxBudget. The
+  // per-user KPI probe is an N-query fan-out, so run it with bounded
+  // concurrency (NOT a serial await-in-loop) to keep the admin request
+  // latency bounded even at SUMMARY_USER_CAP users.
+  const usage = deps.usage;
+  const budgeted =
+    usage === null
+      ? []
+      : users.filter((u): u is typeof u & { maxBudget: number } => u.maxBudget != null && u.maxBudget > 0);
+  const RISK_CONCURRENCY = 10;
   let riskCount = 0;
-  for (const u of users) {
-    if (u.maxBudget != null && u.maxBudget > 0 && deps.usage !== null) {
-      const k = await deps.usage.queryKpiWithDelta({
-        scope: { kind: "user", userId: u.userId },
-        currentFromMs: 0,
-        currentToMs: deps.now,
-        previousFromMs: 0,
-        previousToMs: 0,
-      });
-      if (k.current.spend > u.maxBudget) riskCount += 1;
-    }
+  for (let i = 0; i < budgeted.length; i += RISK_CONCURRENCY) {
+    const chunk = budgeted.slice(i, i + RISK_CONCURRENCY);
+    const spends = await Promise.all(
+      chunk.map(async (u) => {
+        const k = await usage!.queryKpiWithDelta({
+          scope: { kind: "user", userId: u.userId },
+          currentFromMs: 0,
+          currentToMs: deps.now,
+          previousFromMs: 0,
+          previousToMs: 0,
+        });
+        return k.current.spend;
+      }),
+    );
+    spends.forEach((s, j) => {
+      if (s > chunk[j].maxBudget) riskCount += 1;
+    });
   }
   return {
     userCount: users.length,
