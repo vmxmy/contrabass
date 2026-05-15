@@ -1111,7 +1111,12 @@ function parseEventDate(record: Record<string, unknown>): number | undefined {
     }
     if (typeof v === "string" && v.trim().length > 0) {
       const norm = v.includes("T") ? v : v.replace(" ", "T");
-      const withTz = /(?:[zZ]|[+-]\d{2}:?\d{2})$/u.test(norm) ? norm : `${norm}Z`;
+      // Match timeseries.ts: bare YYYY-MM-DD → UTC midnight; otherwise append Z if no tz.
+      const withTz = /(?:[zZ]|[+-]\d{2}:?\d{2})$/u.test(norm)
+        ? norm
+        : /^\d{4}-\d{2}-\d{2}$/u.test(norm)
+          ? `${norm}T00:00:00.000Z`
+          : `${norm}Z`;
       const t = Date.parse(withTz);
       if (!Number.isNaN(t)) return t;
     }
