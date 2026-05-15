@@ -1,10 +1,29 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { recordMetric } from "./metrics";
 import { recordAudit } from "./audit";
 import { checkClientErrorRateLimit, _clearRateLimitStoreForTests } from "./client-error";
 import type { LiteLLMPortalEnv } from "../types";
 import { handleLiteLLMPortalRequest } from "../index";
 import { _clearRoleCacheForTests } from "../roles";
+import { issueSession, SESSION_COOKIE_NAME } from "../auth/session";
+
+const TEST_SESSION_SECRET = "test-session-secret-for-dev-request";
+const _cookieCache = new Map<string, string>();
+
+const _testEmails = [
+  "test@gz-zhiyun.com",
+  "admin@gz-zhiyun.com",
+];
+
+beforeAll(async () => {
+  const env: LiteLLMPortalEnv = { PORTAL_SESSION_SECRET: TEST_SESSION_SECRET };
+  await Promise.all(
+    _testEmails.map(async (email) => {
+      const value = await issueSession(env, { email, userId: email });
+      _cookieCache.set(email, value);
+    }),
+  );
+});
 
 afterEach(() => {
   _clearRateLimitStoreForTests();
@@ -101,7 +120,7 @@ describe("checkClientErrorRateLimit", () => {
 
 describe("POST /api/_internal/client-error", () => {
   function makeEnv(extras: Partial<LiteLLMPortalEnv> = {}): LiteLLMPortalEnv {
-    return { LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_BASE_URL: "https://litellm.test", ...extras };
+    return { LITELLM_BASE_URL: "https://litellm.test", PORTAL_SESSION_SECRET: TEST_SESSION_SECRET, ...extras };
   }
 
   it("accepts a valid payload and returns ok", async () => {
@@ -164,8 +183,8 @@ describe("metrics middleware", () => {
   it("calls writeDataPoint once per /api/* request", async () => {
     const writeDataPoint = vi.fn();
     const env: LiteLLMPortalEnv = {
-      LITELLM_PORTAL_DEV_AUTH: "true",
       LITELLM_BASE_URL: "https://litellm.test",
+      PORTAL_SESSION_SECRET: TEST_SESSION_SECRET,
       METRICS_AE: { writeDataPoint },
     };
     globalThis.fetch = vi.fn(async (input) => {
@@ -176,7 +195,7 @@ describe("metrics middleware", () => {
 
     await handleLiteLLMPortalRequest(
       new Request("https://portal.test/api/me", {
-        headers: { "x-litellm-portal-dev-email": "test@gz-zhiyun.com" },
+        headers: { Cookie: `${SESSION_COOKIE_NAME}=${_cookieCache.get("test@gz-zhiyun.com") ?? ""}` },
       }),
       env,
     );
@@ -188,8 +207,8 @@ describe("metrics middleware", () => {
   it("does NOT call AUDIT_AE for /api/me (non-admin route)", async () => {
     const writeDataPointAudit = vi.fn();
     const env: LiteLLMPortalEnv = {
-      LITELLM_PORTAL_DEV_AUTH: "true",
       LITELLM_BASE_URL: "https://litellm.test",
+      PORTAL_SESSION_SECRET: TEST_SESSION_SECRET,
       AUDIT_AE: { writeDataPoint: writeDataPointAudit },
     };
     globalThis.fetch = vi.fn(async (input) => {
@@ -200,7 +219,7 @@ describe("metrics middleware", () => {
 
     await handleLiteLLMPortalRequest(
       new Request("https://portal.test/api/me", {
-        headers: { "x-litellm-portal-dev-email": "test@gz-zhiyun.com" },
+        headers: { Cookie: `${SESSION_COOKIE_NAME}=${_cookieCache.get("test@gz-zhiyun.com") ?? ""}` },
       }),
       env,
     );
@@ -210,8 +229,8 @@ describe("metrics middleware", () => {
   it("calls AUDIT_AE for /api/admin/* routes", async () => {
     const writeDataPointAudit = vi.fn();
     const env: LiteLLMPortalEnv = {
-      LITELLM_PORTAL_DEV_AUTH: "true",
       LITELLM_BASE_URL: "https://litellm.test",
+      PORTAL_SESSION_SECRET: TEST_SESSION_SECRET,
       LITELLM_MASTER_KEY: "test-master-key",
       AUDIT_AE: { writeDataPoint: writeDataPointAudit },
     };
@@ -224,7 +243,7 @@ describe("metrics middleware", () => {
 
     await handleLiteLLMPortalRequest(
       new Request("https://portal.test/api/admin/users", {
-        headers: { "x-litellm-portal-dev-email": "admin@gz-zhiyun.com" },
+        headers: { Cookie: `${SESSION_COOKIE_NAME}=${_cookieCache.get("admin@gz-zhiyun.com") ?? ""}` },
       }),
       env,
     );

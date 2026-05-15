@@ -1,12 +1,15 @@
 import type { LiteLLMPortalEnv } from "../types";
+import { SESSION_COOKIE_NAME } from "./session";
 
 /** Returns null on success, a Response on rejection.
  *  Validates Origin / Referer header against the request URL's origin for
  *  state-changing requests. Skipped when no session secret is configured
- *  (no browser-session auth path active) or in dev-auth mode. */
+ *  (no browser-session auth path active) or when the request carries no
+ *  session cookie (unauthenticated requests fail at the auth layer anyway). */
 export function checkCsrf(request: Request, env: LiteLLMPortalEnv): Response | null {
   if (!env.PORTAL_SESSION_SECRET) return null;
-  if (env.LITELLM_PORTAL_DEV_AUTH) return null;
+  const cookieHeader = request.headers.get("Cookie") ?? "";
+  if (!cookieHeader.includes(`${SESSION_COOKIE_NAME}=`)) return null;
 
   const method = request.method.toUpperCase();
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return null;

@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { getRole, getRoleForEmail, invalidateRole, _resetMemoryRoleCacheForTests } from "./role-cache";
 import { handleLiteLLMPortalRequest, type LiteLLMPortalEnv } from "./index";
 import { _clearRoleCacheForTests } from "./roles";
+import { issueSession, SESSION_COOKIE_NAME } from "./auth/session";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -22,11 +23,30 @@ function makeIndexDO(usersByEmail: Record<string, { role: "admin" | "user" } | n
   } as unknown as DurableObjectNamespace;
 }
 
+const TEST_SESSION_SECRET = "test-session-secret-for-dev-request";
+const _cookieCache = new Map<string, string>();
+
+const _testEmails = [
+  "admin@gz-zhiyun.com",
+  "user@gz-zhiyun.com",
+];
+
+beforeAll(async () => {
+  const env: LiteLLMPortalEnv = { PORTAL_SESSION_SECRET: TEST_SESSION_SECRET };
+  await Promise.all(
+    _testEmails.map(async (email) => {
+      const value = await issueSession(env, { email, userId: email });
+      _cookieCache.set(email, value);
+    }),
+  );
+});
+
 function baseEnv(overrides: Partial<LiteLLMPortalEnv> = {}): LiteLLMPortalEnv {
   return {
     LITELLM_BASE_URL: "https://litellm.test",
     LITELLM_MASTER_KEY: "master-key",
     LITELLM_PORTAL_ALLOWED_EMAIL_DOMAIN: "gz-zhiyun.com",
+    PORTAL_SESSION_SECRET: TEST_SESSION_SECRET,
     ...overrides,
   };
 }
@@ -41,9 +61,17 @@ function portalEnv(overrides: Partial<LiteLLMPortalEnv> = {}): LiteLLMPortalEnv 
 
 function devRequest(url: string, email: string, init: RequestInit = {}): Request {
   const headers = new Headers(init.headers);
-  headers.set("x-litellm-portal-dev-email", email);
   if (init.body !== undefined) {
     headers.set("content-type", "application/json");
+  }
+  const cookie = _cookieCache.get(email);
+  if (cookie === undefined) {
+    throw new Error(`devRequest: no cookie pre-minted for ${email}. Add it to _testEmails.`);
+  }
+  headers.set("Cookie", `${SESSION_COOKIE_NAME}=${cookie}`);
+  const method = (init.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+    headers.set("Origin", new URL(url).origin);
   }
   return new Request(url, { ...init, headers });
 }
@@ -139,7 +167,7 @@ describe("POST /api/admin/roles/invalidate", () => {
 
     const response = await handleLiteLLMPortalRequest(
       devRequest("https://portal.test/api/admin/roles/invalidate?email=target@gz-zhiyun.com", "user@gz-zhiyun.com", { method: "POST" }),
-      portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", INDEX_DO: indexDO }),
+      portalEnv({ INDEX_DO: indexDO }),
     );
 
     expect(response.status).toBe(403);
@@ -151,7 +179,7 @@ describe("POST /api/admin/roles/invalidate", () => {
 
     const response = await handleLiteLLMPortalRequest(
       devRequest("https://portal.test/api/admin/roles/invalidate", "admin@gz-zhiyun.com", { method: "POST" }),
-      portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", INDEX_DO: indexDO }),
+      portalEnv({ INDEX_DO: indexDO }),
     );
 
     expect(response.status).toBe(400);
@@ -163,7 +191,7 @@ describe("POST /api/admin/roles/invalidate", () => {
 
     const response = await handleLiteLLMPortalRequest(
       devRequest("https://portal.test/api/admin/roles/invalidate?email=target%40gz-zhiyun.com", "admin@gz-zhiyun.com", { method: "POST" }),
-      portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", INDEX_DO: indexDO }),
+      portalEnv({ INDEX_DO: indexDO }),
     );
 
     expect(response.status).toBe(204);
