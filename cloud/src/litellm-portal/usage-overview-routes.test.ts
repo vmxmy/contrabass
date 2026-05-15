@@ -166,4 +166,31 @@ describe("/api/admin/summary DO-backed", () => {
     const res = await app.fetch(req, env);
     expect(res.status).toBe(403);
   });
+
+  it("L3: graceful degradation — no USAGE_DO returns 200 with zeroed spend and zero litellmFetch", async () => {
+    // #given — env without USAGE_DO; INDEX_DO present for auth + summary index queries
+    // usageDOStub returns null → totalSpend=0, riskCount=0; buildSummary still reads index
+    const env = makeEnv();
+    const noUsageEnv = { ...env, USAGE_DO: undefined } as unknown as LiteLLMPortalEnv;
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      throw new Error("litellmFetch must not be called");
+    });
+
+    // #when
+    const req = new Request("https://x/api/admin/summary", {
+      headers: { Cookie: await cookie(env, ADMIN_EMAIL) },
+    });
+    const res = await app.fetch(req, noUsageEnv);
+
+    // #then — zero litellm calls; safe zeroed AdminSummary (totalSpend=0, riskCount=0)
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.totalSpend).toBe(0);
+    expect(body.riskCount).toBe(0);
+    expect(typeof body.userCount).toBe("number");
+    expect(typeof body.teamCount).toBe("number");
+    expect(body.limited).toBe(false);
+  });
 });
