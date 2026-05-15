@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { portalAppJs, portalBundleChunks } from "./app.generated";
 import { handleLiteLLMPortalRequest, type LiteLLMPortalEnv } from "./index";
 import { _clearRoleCacheForTests } from "./roles";
+import { issueSession, SESSION_COOKIE_NAME } from "./auth/session";
 
 const originalFetch = globalThis.fetch;
 
@@ -170,7 +171,6 @@ describe("litellm portal worker", () => {
       devRequest("https://portal.test/api/me", "xu@ziikoo.com"),
       portalEnv({
         LITELLM_PORTAL_ALLOWED_EMAILS: "blueyang@gmail.com,xu@ziikoo.com",
-        LITELLM_PORTAL_DEV_AUTH: "true",
       }),
     );
 
@@ -218,7 +218,7 @@ describe("litellm portal worker", () => {
 
     const response = await handleLiteLLMPortalRequest(
       devRequest("https://portal.test/api/keys", "liqingying@gz-zhiyun.com"),
-      portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      portalEnv(),
     );
 
     expect(response.status).toBe(200);
@@ -281,7 +281,6 @@ describe("litellm portal worker", () => {
       devRequest("https://portal.test/api/keys", "xu@ziikoo.com"),
       portalEnv({
         LITELLM_PORTAL_ALLOWED_EMAILS: "xu@ziikoo.com",
-        LITELLM_PORTAL_DEV_AUTH: "true",
       }),
     );
 
@@ -328,7 +327,6 @@ describe("litellm portal worker", () => {
       devRequest("https://portal.test/api/models", "jiangyufeng@gz-zhiyun.com"),
       portalEnv({
         LITELLM_ALLOWED_MODELS: undefined,
-        LITELLM_PORTAL_DEV_AUTH: "true",
       }),
     );
 
@@ -426,7 +424,6 @@ describe("litellm portal worker", () => {
       devRequest("https://portal.test/api/dashboard", "jiangyufeng@gz-zhiyun.com"),
       portalEnv({
         LITELLM_ALLOWED_MODELS: undefined,
-        LITELLM_PORTAL_DEV_AUTH: "true",
       }),
     );
 
@@ -543,7 +540,6 @@ describe("litellm portal worker", () => {
       portalEnv({
         LITELLM_ALLOWED_MODELS: undefined,
         LITELLM_PORTAL_ALLOWED_EMAILS: "xu@ziikoo.com",
-        LITELLM_PORTAL_DEV_AUTH: "true",
       }),
     );
 
@@ -635,7 +631,7 @@ describe("litellm portal worker", () => {
         "https://portal.test/api/usage/timeseries?grain=minute&window=1h&user_id=forged-user",
         "liqingying@gz-zhiyun.com",
       ),
-      portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      portalEnv(),
     );
 
     expect(response.status).toBe(200);
@@ -689,7 +685,7 @@ describe("litellm portal worker", () => {
 
     const response = await handleLiteLLMPortalRequest(
       devRequest("https://portal.test/api/usage/timeseries?grain=week", "liqingying@gz-zhiyun.com"),
-      portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      portalEnv(),
     );
 
     expect(response.status).toBe(400);
@@ -727,7 +723,7 @@ describe("litellm portal worker", () => {
 
     const response = await handleLiteLLMPortalRequest(
       devRequest("https://portal.test/api/usage/timeseries?grain=hour&window=24h", "liqingying@gz-zhiyun.com"),
-      portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+      portalEnv(),
     );
 
     expect(response.status).toBe(200);
@@ -776,7 +772,7 @@ describe("litellm portal worker", () => {
     const read = async (query: string) => {
       const response = await handleLiteLLMPortalRequest(
         devRequest(`https://portal.test/api/usage/timeseries?${query}`, "liqingying@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
       expect(response.status).toBe(200);
       return await response.json() as { source: string; buckets: Array<Record<string, unknown>> };
@@ -855,7 +851,7 @@ describe("litellm portal worker", () => {
           method: "POST",
           body: JSON.stringify({ keyAlias: "my-key", models: ["gpt-4o-mini"] }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       expect(response.status).toBe(201);
@@ -885,7 +881,7 @@ describe("litellm portal worker", () => {
           method: "POST",
           body: JSON.stringify({ models: ["gpt-4o-mini"] }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       expect(response.status).toBe(400);
@@ -915,7 +911,7 @@ describe("litellm portal worker", () => {
           method: "POST",
           body: JSON.stringify({ keyAlias: "my-key" }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       expect(response.status).toBe(409);
@@ -940,7 +936,7 @@ describe("litellm portal worker", () => {
           method: "POST",
           body: JSON.stringify({ keyAlias: "test" }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       expect(response.status).toBe(400);
@@ -972,7 +968,7 @@ describe("litellm portal worker", () => {
           method: "POST",
           body: JSON.stringify({ keyAlias: "test", user_id: "attacker" }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       expect(response.status).toBe(201);
@@ -1016,7 +1012,7 @@ describe("litellm portal worker", () => {
         devRequest("https://portal.test/api/keys/hash-owned", "liqingying@gz-zhiyun.com", {
           method: "DELETE",
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       expect(response.status).toBe(204);
@@ -1056,7 +1052,7 @@ describe("litellm portal worker", () => {
         devRequest("https://portal.test/api/keys/primary", "liqingying@gz-zhiyun.com", {
           method: "DELETE",
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       expect(response.status).toBe(204);
@@ -1095,7 +1091,7 @@ describe("litellm portal worker", () => {
         devRequest("https://portal.test/api/keys/hash-other", "liqingying@gz-zhiyun.com", {
           method: "DELETE",
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       expect(response.status).toBe(404);
@@ -1137,7 +1133,6 @@ describe("litellm portal worker", () => {
       devRequest("https://portal.test/api/usage", "xu@ziikoo.com"),
       portalEnv({
         LITELLM_PORTAL_ALLOWED_EMAILS: "xu@ziikoo.com",
-        LITELLM_PORTAL_DEV_AUTH: "true",
       }),
     );
 
@@ -1166,7 +1161,7 @@ describe("litellm portal worker", () => {
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/me", "admin@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       // #then
@@ -1182,7 +1177,7 @@ describe("litellm portal worker", () => {
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/me", "member@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       // #then
@@ -1198,7 +1193,7 @@ describe("litellm portal worker", () => {
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/me", "oncall@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       // #then
@@ -1224,7 +1219,7 @@ describe("litellm portal worker", () => {
         get: vi.fn(() => stub as unknown as DurableObjectStub),
       } as unknown as DurableObjectNamespace;
 
-      const env = portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", INDEX_DO: indexDO });
+      const env = portalEnv({ INDEX_DO: indexDO });
 
       // #when — two requests within 30s window
       const first = await handleLiteLLMPortalRequest(
@@ -1260,7 +1255,7 @@ describe("litellm portal worker", () => {
         get: vi.fn(() => stub as unknown as DurableObjectStub),
       } as unknown as DurableObjectNamespace;
 
-      const env = portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", INDEX_DO: indexDO });
+      const env = portalEnv({ INDEX_DO: indexDO });
 
       // #when — first request, then advance past 30s TTL, second request
       const first = await handleLiteLLMPortalRequest(
@@ -1285,7 +1280,7 @@ describe("litellm portal worker", () => {
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/users", "member@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       // #then
@@ -1302,7 +1297,7 @@ describe("litellm portal worker", () => {
         // #when
         const response = await handleLiteLLMPortalRequest(
           devRequest(`https://portal.test${path}`, "member@gz-zhiyun.com"),
-          portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+          portalEnv(),
         );
 
         // #then
@@ -1329,7 +1324,7 @@ describe("litellm portal worker", () => {
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/users", "admin@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       // #then
@@ -1368,7 +1363,7 @@ describe("litellm portal worker", () => {
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/summary", "admin@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       // #then
@@ -1408,7 +1403,7 @@ describe("litellm portal worker", () => {
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/teams", "admin@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       // #then
@@ -1443,7 +1438,7 @@ describe("litellm portal worker", () => {
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/audit", "admin@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       // #then
@@ -1469,7 +1464,7 @@ describe("litellm portal worker", () => {
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/usage/timeseries?grain=day&window=30d", "admin@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       // #then
@@ -1486,7 +1481,7 @@ describe("litellm portal worker", () => {
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/usage/timeseries?grain=invalid", "admin@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       // #then
@@ -1520,7 +1515,7 @@ describe("litellm portal worker", () => {
       };
 
       // #when - 5 mixed requests: 3 /api/admin/users and 2 /api/admin/audit
-      const env = portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", INDEX_DO: indexDO });
+      const env = portalEnv({ INDEX_DO: indexDO });
       for (let i = 0; i < 3; i++) {
         await handleLiteLLMPortalRequest(
           devRequest("https://portal.test/api/admin/users", "admin@gz-zhiyun.com"),
@@ -1553,7 +1548,7 @@ describe("litellm portal worker", () => {
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/audit?page=3&size=25", "admin@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       // #then
@@ -1568,7 +1563,7 @@ describe("litellm portal worker", () => {
       // #when — unknown@gz-zhiyun.com is not in the default IndexDO map
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/me", "unknown@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       // #then
@@ -1595,7 +1590,7 @@ describe("litellm portal worker", () => {
       // #when - no grain param
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/usage/timeseries?window=30d", "admin@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       // #then
@@ -1620,7 +1615,7 @@ describe("litellm portal worker", () => {
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/users?size=999", "admin@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       // #then
@@ -1651,7 +1646,7 @@ describe("litellm portal worker", () => {
         // #when
         const response = await handleLiteLLMPortalRequest(
           devRequest(`https://portal.test${path}`, "admin@gz-zhiyun.com"),
-          portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+          portalEnv(),
         );
 
         // #then
@@ -1679,7 +1674,7 @@ describe("litellm portal worker", () => {
           method: "POST",
           body: JSON.stringify({}),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       expect(response.status).toBe(400);
@@ -1701,7 +1696,7 @@ describe("litellm portal worker", () => {
           method: "POST",
           body: JSON.stringify({ keyAlias: "" }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
 
       expect(response.status).toBe(400);
@@ -1732,7 +1727,7 @@ describe("litellm portal worker", () => {
           method: "PATCH",
           body: JSON.stringify({ reason: "security_incident", disabled: true }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
       expect(response.status).toBe(404);
     });
@@ -1743,7 +1738,7 @@ describe("litellm portal worker", () => {
           method: "PATCH",
           body: JSON.stringify({ reason: "security_incident", disabled: true }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+        portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
       );
       expect(response.status).toBe(403);
     });
@@ -1755,7 +1750,7 @@ describe("litellm portal worker", () => {
           method: "PATCH",
           body: JSON.stringify({ disabled: true }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+        portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
       );
       expect(response.status).toBe(422);
       const body = await response.json() as Record<string, unknown>;
@@ -1781,7 +1776,7 @@ describe("litellm portal worker", () => {
           method: "PATCH",
           body: JSON.stringify({ reason: "security_incident", disabled: true }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+        portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
       );
 
       expect(response.status).toBe(200);
@@ -1811,7 +1806,7 @@ describe("litellm portal worker", () => {
           method: "PATCH",
           body: JSON.stringify({ reason: "security_incident", disabled: true }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+        portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
       );
 
       expect(response.status).toBe(200);
@@ -1840,7 +1835,7 @@ describe("litellm portal worker", () => {
           method: "PATCH",
           body: JSON.stringify({ reason: "budget_adjustment", rpmLimit: 100 }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
       expect(response.status).toBe(404);
     });
@@ -1851,7 +1846,7 @@ describe("litellm portal worker", () => {
           method: "PATCH",
           body: JSON.stringify({ reason: "budget_adjustment", rpmLimit: 100 }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+        portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
       );
       expect(response.status).toBe(403);
     });
@@ -1863,41 +1858,37 @@ describe("litellm portal worker", () => {
           method: "PATCH",
           body: JSON.stringify({ rpmLimit: 100 }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+        portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
       );
       expect(response.status).toBe(422);
     });
 
     it("updates team limits (happy path)", async () => {
-      let teamUpdateBody: Record<string, unknown> | undefined;
-      globalThis.fetch = async (input, init) => {
-        const url = String(input);
-        if (url.includes("/team/info?team_id=")) {
-          return Response.json({ team_info: { team_id: "team-1", team_alias: "ops", tpm_limit: null, rpm_limit: null, max_budget: null } });
-        }
-        if (url.includes("/team/update")) {
-          teamUpdateBody = JSON.parse(String((init as RequestInit).body));
-          return Response.json({ status: "ok" });
-        }
-        return new Response("not found", { status: 404 });
+      let putTeamCalled = false;
+      const teamConfigStub = {
+        getTeam: vi.fn(async () => ({ id: "team-1", alias: "ops", models: [], blocked: false, tpmLimit: undefined, rpmLimit: undefined, maxBudget: undefined })),
+        putTeam: vi.fn(async () => { putTeamCalled = true; }),
+        getSyncMetadata: vi.fn(async () => ({ lastSyncedAt: null, lastSyncError: null, dirty: false })),
       };
+      const teamConfigDO = {
+        idFromName: vi.fn(() => "team-1-id" as unknown as DurableObjectId),
+        get: vi.fn(() => teamConfigStub as unknown as DurableObjectStub),
+      } as unknown as DurableObjectNamespace;
 
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/teams/team-1/limits", "admin@gz-zhiyun.com", {
           method: "PATCH",
           body: JSON.stringify({ reason: "budget_adjustment", rpmLimit: 200, tpmLimit: 5000 }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+        portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true", TEAM_CONFIG_DO: teamConfigDO }),
       );
 
       expect(response.status).toBe(200);
       const body = await response.json() as Record<string, unknown>;
-      expect(body.teamId).toBe("team-1");
-      expect(body.rpmLimit).toBe(200);
-      expect(body.tpmLimit).toBe(5000);
-      expect(body.dryRun).toBe(false);
-      expect(teamUpdateBody?.team_id).toBe("team-1");
-      expect(teamUpdateBody?.rpm_limit).toBe(200);
+      expect((body.team as Record<string, unknown>).rpmLimit).toBe(200);
+      expect((body.team as Record<string, unknown>).tpmLimit).toBe(5000);
+      expect(body.enqueued).toBe(false); // no LITELLM_SYNC_QUEUE in test env
+      expect(putTeamCalled).toBe(true);
     });
   });
 
@@ -1920,7 +1911,7 @@ describe("litellm portal worker", () => {
           method: "PATCH",
           body: JSON.stringify({ reason: "user_request", role: "internal_user" }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
       expect(response.status).toBe(404);
     });
@@ -1931,7 +1922,7 @@ describe("litellm portal worker", () => {
           method: "PATCH",
           body: JSON.stringify({ reason: "user_request", role: "internal_user" }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+        portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
       );
       expect(response.status).toBe(403);
     });
@@ -1943,7 +1934,7 @@ describe("litellm portal worker", () => {
           method: "PATCH",
           body: JSON.stringify({ role: "internal_user" }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+        portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
       );
       expect(response.status).toBe(422);
     });
@@ -1967,7 +1958,7 @@ describe("litellm portal worker", () => {
           method: "PATCH",
           body: JSON.stringify({ reason: "user_request", role: "internal_user" }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+        portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
       );
 
       expect(response.status).toBe(200);
@@ -1998,7 +1989,7 @@ describe("litellm portal worker", () => {
           method: "DELETE",
           body: JSON.stringify({ reason: "security_incident", confirmAlias: "my-key" }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        portalEnv(),
       );
       expect(response.status).toBe(404);
     });
@@ -2009,7 +2000,7 @@ describe("litellm portal worker", () => {
           method: "DELETE",
           body: JSON.stringify({ reason: "security_incident", confirmAlias: "my-key" }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+        portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
       );
       expect(response.status).toBe(403);
     });
@@ -2021,7 +2012,7 @@ describe("litellm portal worker", () => {
           method: "DELETE",
           body: JSON.stringify({ confirmAlias: "my-key" }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+        portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
       );
       expect(response.status).toBe(422);
     });
@@ -2033,7 +2024,7 @@ describe("litellm portal worker", () => {
           method: "DELETE",
           body: JSON.stringify({ reason: "security_incident" }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+        portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
       );
       expect(response.status).toBe(422);
     });
@@ -2057,7 +2048,7 @@ describe("litellm portal worker", () => {
           method: "DELETE",
           body: JSON.stringify({ reason: "security_incident", confirmAlias: "my-key" }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+        portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
       );
 
       expect(response.status).toBe(200);
@@ -2086,7 +2077,7 @@ describe("litellm portal worker", () => {
           method: "DELETE",
           body: JSON.stringify({ reason: "security_incident", confirmAlias: "x" }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+        portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
       );
 
       expect(response.status).toBe(403);
@@ -2109,7 +2100,7 @@ describe("litellm portal worker", () => {
           method: "DELETE",
           body: JSON.stringify({ reason: "security_incident", confirmAlias: "anything" }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+        portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
       );
 
       expect(response.status).toBe(404);
@@ -2134,7 +2125,7 @@ describe("litellm portal worker", () => {
           method: "DELETE",
           body: JSON.stringify({ reason: "security_incident", confirmAlias: "my-key" }),
         }),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
+        portalEnv({ LITELLM_PORTAL_WRITE_OPS_ENABLED: "true" }),
       );
 
       expect(response.status).toBe(200);
@@ -2170,7 +2161,6 @@ describe("litellm portal worker", () => {
           body: JSON.stringify({ reason: "security_incident", disabled: true }),
         }),
         portalEnv({
-          LITELLM_PORTAL_DEV_AUTH: "true",
           LITELLM_PORTAL_WRITE_OPS_ENABLED: "true",
           AUDIT_AE: mockAuditAe,
         }),
@@ -2218,12 +2208,41 @@ function makeIndexDO(usersByEmail: Record<string, { role: "admin" | "user" } | n
   } as unknown as DurableObjectNamespace;
 }
 
+const TEST_SESSION_SECRET = "test-session-secret-for-dev-request";
+const _cookieCache = new Map<string, string>();
+
+const _testEmails = [
+  "admin@gz-zhiyun.com",
+  "member@gz-zhiyun.com",
+  "user@gz-zhiyun.com",
+  "liqingying@gz-zhiyun.com",
+  "xu@ziikoo.com",
+  "jiangyufeng@gz-zhiyun.com",
+  "oncall@gz-zhiyun.com",
+  "unknown@gz-zhiyun.com",
+  "cached@gz-zhiyun.com",
+  "ttl@gz-zhiyun.com",
+  "newuser@gz-zhiyun.com",
+  "test@gz-zhiyun.com",
+];
+
+beforeAll(async () => {
+  const env: LiteLLMPortalEnv = { PORTAL_SESSION_SECRET: TEST_SESSION_SECRET };
+  await Promise.all(
+    _testEmails.map(async (email) => {
+      const value = await issueSession(env, { email, userId: email });
+      _cookieCache.set(email, value);
+    }),
+  );
+});
+
 function portalEnv(overrides: Partial<LiteLLMPortalEnv> = {}): LiteLLMPortalEnv {
   return {
     LITELLM_ALLOWED_MODELS: "gpt-4o-mini",
     LITELLM_BASE_URL: "https://litellm.test",
     LITELLM_MASTER_KEY: "litellm-master",
     LITELLM_PORTAL_ALLOWED_EMAIL_DOMAIN: "gz-zhiyun.com",
+    PORTAL_SESSION_SECRET: TEST_SESSION_SECRET,
     INDEX_DO: makeIndexDO(DEFAULT_INDEX_DO_ROLES),
     ...overrides,
   };
@@ -2231,9 +2250,17 @@ function portalEnv(overrides: Partial<LiteLLMPortalEnv> = {}): LiteLLMPortalEnv 
 
 function devRequest(url: string, email: string, init: RequestInit = {}): Request {
   const headers = new Headers(init.headers);
-  headers.set("x-litellm-portal-dev-email", email);
   if (init.body !== undefined) {
     headers.set("content-type", "application/json");
+  }
+  const cookie = _cookieCache.get(email);
+  if (cookie === undefined) {
+    throw new Error(`devRequest: no cookie pre-minted for ${email}. Add it to _testEmails.`);
+  }
+  headers.set("Cookie", `${SESSION_COOKIE_NAME}=${cookie}`);
+  const method = (init.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+    headers.set("Origin", new URL(url).origin);
   }
   return new Request(url, { ...init, headers });
 }
