@@ -131,15 +131,10 @@ dataset = "portal-metrics"
 binding = "AUDIT_AE"
 dataset = "portal-audit"
 
-# TODO: Create the KV namespace first via:
-#   wrangler kv namespace create ROLE_CACHE_KV --config wrangler.litellm-portal.toml
-#   wrangler kv namespace create ROLE_CACHE_KV --preview --config wrangler.litellm-portal.toml
-# Then replace the placeholder id values below with the real namespace IDs.
-[[kv_namespaces]]
-binding = "ROLE_CACHE_KV"
-id = "8493d26272f84fe1bfa0c5bd6d564ad8"
-preview_id = "cba1b4b32c054bfba72439ef48f73cf6"
-
+# NOTE: ROLE_CACHE_KV KV namespace has been removed from this binding.
+# The physical namespace (id = 8493d26272f84fe1bfa0c5bd6d564ad8) still exists in
+# Cloudflare and can be deleted by an operator after confirming no traffic depends on it:
+#   wrangler kv namespace delete --namespace-id 8493d26272f84fe1bfa0c5bd6d564ad8
 [[kv_namespaces]]
 binding = "USER_PREFS_KV"
 id = "433b1ca91b414671a8840280951a96a6"

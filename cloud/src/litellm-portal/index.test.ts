@@ -304,10 +304,6 @@ describe("litellm portal worker", () => {
         auth: "Bearer litellm-master",
       },
       {
-        url: "https://litellm.test/user/list?user_email=liqingying%40gz-zhiyun.com",
-        auth: "Bearer litellm-master",
-      },
-      {
         url: "https://litellm.test/user/info?user_id=liqingying%40gz-zhiyun.com",
         auth: "Bearer litellm-master",
       },
@@ -400,7 +396,6 @@ describe("litellm portal worker", () => {
       teamIds: ["team-zhiyun"],
     });
     expect(seen).toEqual([
-      "https://litellm.test/user/list?user_email=jiangyufeng%40gz-zhiyun.com",
       "https://litellm.test/user/list?user_email=jiangyufeng%40gz-zhiyun.com",
       "https://litellm.test/team/info?team_id=team-zhiyun",
     ]);
@@ -1219,23 +1214,12 @@ describe("litellm portal worker", () => {
     });
     expect(seen).toEqual([
       "https://litellm.test/user/list?user_email=xu%40ziikoo.com",
-      "https://litellm.test/user/list?user_email=xu%40ziikoo.com",
       "https://litellm.test/user/info?user_id=laoxu",
     ]);
   });
 
   describe("/api/me role projection", () => {
-    it("projects proxy_admin to role=admin", async () => {
-      // #given
-      globalThis.fetch = async (input) => {
-        if (String(input) === "https://litellm.test/user/list?user_email=admin%40gz-zhiyun.com") {
-          return Response.json({
-          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-        });
-        }
-        return new Response("not found", { status: 404 });
-      };
-
+    it("returns role=admin for admin user from IndexDO", async () => {
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/me", "admin@gz-zhiyun.com"),
@@ -1246,22 +1230,12 @@ describe("litellm portal worker", () => {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toMatchObject({
         email: "admin@gz-zhiyun.com",
-        userId: "admin-uid",
+        userId: "admin@gz-zhiyun.com",
         role: "admin",
       });
     });
 
-    it("projects internal_user to role=user", async () => {
-      // #given
-      globalThis.fetch = async (input) => {
-        if (String(input) === "https://litellm.test/user/list?user_email=member%40gz-zhiyun.com") {
-          return Response.json({
-          users: [{ user_id: "member-uid", user_role: "internal_user", user_email: "member@gz-zhiyun.com" }],
-        });
-        }
-        return new Response("not found", { status: 404 });
-      };
-
+    it("returns role=user for regular user from IndexDO", async () => {
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/me", "member@gz-zhiyun.com"),
@@ -1272,20 +1246,12 @@ describe("litellm portal worker", () => {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toMatchObject({
         email: "member@gz-zhiyun.com",
-        userId: "member-uid",
+        userId: "member@gz-zhiyun.com",
         role: "user",
       });
     });
 
-    it("falls back to role=none when LiteLLM /user/list returns 5xx", async () => {
-      // #given
-      globalThis.fetch = async (input) => {
-        if (String(input) === "https://litellm.test/user/list?user_email=oncall%40gz-zhiyun.com") {
-          return new Response("boom", { status: 503 });
-        }
-        return new Response("not found", { status: 404 });
-      };
-
+    it("returns role=none when IndexDO has no record for email", async () => {
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/me", "oncall@gz-zhiyun.com"),
@@ -1301,84 +1267,78 @@ describe("litellm portal worker", () => {
       });
     });
 
-    it("caches successful role resolution so a second request hits LiteLLM only once", async () => {
-      // #given
-      let userListCalls = 0;
-      globalThis.fetch = async (input) => {
-        const url = String(input);
-        if (url === "https://litellm.test/user/list?user_email=cached%40gz-zhiyun.com") {
-          userListCalls += 1;
-          return Response.json({
-          users: [{ user_id: "cached-uid", user_role: "proxy_admin_viewer", user_email: "cached@gz-zhiyun.com" }],
-        });
-        }
-        return new Response("not found", { status: 404 });
+    it("caches role in 30s memory cache so IndexDO is queried only once per window", async () => {
+      // #given — use a custom IndexDO with a spy to count queries
+      let indexDOCalls = 0;
+      const stub = {
+        getUserByEmail: vi.fn(async (email: string) => {
+          indexDOCalls++;
+          return email === "cached@gz-zhiyun.com" ? { role: "admin" as const } : null;
+        }),
       };
+      const indexDO = {
+        idFromName: vi.fn(() => "idx-id" as unknown as DurableObjectId),
+        get: vi.fn(() => stub as unknown as DurableObjectStub),
+      } as unknown as DurableObjectNamespace;
 
-      // #when
+      const env = portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", INDEX_DO: indexDO });
+
+      // #when — two requests within 30s window
       const first = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/me", "cached@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        env,
       );
       const second = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/me", "cached@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        env,
       );
 
-      // #then
+      // #then — IndexDO queried only once
       expect(first.status).toBe(200);
       expect(second.status).toBe(200);
-      await expect(first.json()).resolves.toMatchObject({ role: "admin", userId: "cached-uid" });
-      await expect(second.json()).resolves.toMatchObject({ role: "admin", userId: "cached-uid" });
-      expect(userListCalls).toBe(1);
+      await expect(first.json()).resolves.toMatchObject({ role: "admin" });
+      await expect(second.json()).resolves.toMatchObject({ role: "admin" });
+      expect(indexDOCalls).toBe(1);
     });
 
-    it("refetches LiteLLM after the 5-minute role cache expires", async () => {
+    it("re-queries IndexDO after the 30s memory cache expires", async () => {
       // #given
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-05-10T00:00:00.000Z"));
-      let userListCalls = 0;
-      globalThis.fetch = async (input) => {
-        const url = String(input);
-        if (url === "https://litellm.test/user/list?user_email=ttl%40gz-zhiyun.com") {
-          userListCalls += 1;
-          return Response.json({
-          users: [{ user_id: "ttl-uid", user_role: "proxy_admin", user_email: "ttl@gz-zhiyun.com" }],
-        });
-        }
-        return new Response("not found", { status: 404 });
+      let indexDOCalls = 0;
+      const stub = {
+        getUserByEmail: vi.fn(async (email: string) => {
+          indexDOCalls++;
+          return email === "ttl@gz-zhiyun.com" ? { role: "admin" as const } : null;
+        }),
       };
+      const indexDO = {
+        idFromName: vi.fn(() => "idx-id" as unknown as DurableObjectId),
+        get: vi.fn(() => stub as unknown as DurableObjectStub),
+      } as unknown as DurableObjectNamespace;
 
-      // #when
+      const env = portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", INDEX_DO: indexDO });
+
+      // #when — first request, then advance past 30s TTL, second request
       const first = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/me", "ttl@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        env,
       );
-      vi.advanceTimersByTime(5 * 60 * 1000 + 1000);
+      vi.advanceTimersByTime(31 * 1000);
       const second = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/me", "ttl@gz-zhiyun.com"),
-        portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
+        env,
       );
 
-      // #then
+      // #then — IndexDO queried twice (once per TTL window)
       expect(first.status).toBe(200);
       expect(second.status).toBe(200);
-      expect(userListCalls).toBe(2);
+      expect(indexDOCalls).toBe(2);
     });
   });
 
   describe("/api/admin/* role gate", () => {
     it("rejects non-admin user calling /api/admin/users with 403", async () => {
-      // #given
-      globalThis.fetch = async (input) => {
-        if (String(input) === "https://litellm.test/user/list?user_email=member%40gz-zhiyun.com") {
-          return Response.json({
-          users: [{ user_id: "member-uid", user_role: "internal_user", user_email: "member@gz-zhiyun.com" }],
-        });
-        }
-        return new Response("not found", { status: 404 });
-      };
-
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/users", "member@gz-zhiyun.com"),
@@ -1392,14 +1352,6 @@ describe("litellm portal worker", () => {
 
     it("rejects non-admin user on all /api/admin/* paths", async () => {
       // #given
-      globalThis.fetch = async (input) => {
-        if (String(input) === "https://litellm.test/user/list?user_email=member%40gz-zhiyun.com") {
-          return Response.json({
-          users: [{ user_id: "member-uid", user_role: "internal_user", user_email: "member@gz-zhiyun.com" }],
-        });
-        }
-        return new Response("not found", { status: 404 });
-      };
 
       const paths = ["/api/admin/users", "/api/admin/summary", "/api/admin/teams", "/api/admin/audit", "/api/admin/usage/timeseries"];
 
@@ -1419,11 +1371,6 @@ describe("litellm portal worker", () => {
     it("admin user calling /api/admin/users receives 200 with users array and totalCount", async () => {
       // #given
       globalThis.fetch = async (input) => {
-        if (String(input) === "https://litellm.test/user/list?user_email=admin%40gz-zhiyun.com") {
-          return Response.json({
-          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-        });
-        }
         if (String(input).startsWith("https://litellm.test/user/list?")) {
           return Response.json({
             users: [
@@ -1456,11 +1403,6 @@ describe("litellm portal worker", () => {
       globalThis.fetch = async (input) => {
         const url = String(input);
         litellmUrls.push(url);
-        if (url === "https://litellm.test/user/list?user_email=admin%40gz-zhiyun.com") {
-          return Response.json({
-            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-          });
-        }
         if (url.startsWith("https://litellm.test/user/list?page=")) {
           return Response.json({
             users: [
@@ -1511,11 +1453,6 @@ describe("litellm portal worker", () => {
     it("admin user calling /api/admin/teams receives 200 with teams array", async () => {
       // #given
       globalThis.fetch = async (input) => {
-        if (String(input) === "https://litellm.test/user/list?user_email=admin%40gz-zhiyun.com") {
-          return Response.json({
-          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-        });
-        }
         if (String(input) === "https://litellm.test/team/list") {
           return Response.json([
             { team_id: "team-a", team_alias: "Alpha", models: ["gpt-4o-mini"], spend: 10.0 },
@@ -1541,11 +1478,6 @@ describe("litellm portal worker", () => {
     it("admin user calling /api/admin/audit receives 200 with events, totalCount, page, size", async () => {
       // #given
       globalThis.fetch = async (input) => {
-        if (String(input) === "https://litellm.test/user/list?user_email=admin%40gz-zhiyun.com") {
-          return Response.json({
-          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-        });
-        }
         if (String(input).startsWith("https://litellm.test/audit?")) {
           return Response.json({
             data: [
@@ -1585,11 +1517,6 @@ describe("litellm portal worker", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-05-10T12:00:00.000Z"));
       globalThis.fetch = async (input) => {
-        if (String(input) === "https://litellm.test/user/list?user_email=admin%40gz-zhiyun.com") {
-          return Response.json({
-          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-        });
-        }
         if (new URL(String(input)).pathname === "/spend/logs/v2") {
           return Response.json({ data: [], total_pages: 1 });
         }
@@ -1613,16 +1540,6 @@ describe("litellm portal worker", () => {
     });
 
     it("admin calling /api/admin/usage/timeseries?grain=invalid receives 400", async () => {
-      // #given
-      globalThis.fetch = async (input) => {
-        if (String(input) === "https://litellm.test/user/list?user_email=admin%40gz-zhiyun.com") {
-          return Response.json({
-          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-        });
-        }
-        return new Response("not found", { status: 404 });
-      };
-
       // #when
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/usage/timeseries?grain=invalid", "admin@gz-zhiyun.com"),
@@ -1634,19 +1551,22 @@ describe("litellm portal worker", () => {
       await expect(response.json()).resolves.toMatchObject({ error: "unsupported_usage_grain" });
     });
 
-    it("cache hit ratio: 5 mixed admin requests hit /v2/user/info only once", async () => {
-      // #given
-      let userListCalls = 0;
-      const litellmUrls: string[] = [];
+    it("cache hit ratio: 5 mixed admin requests query IndexDO only once (30s memory cache)", async () => {
+      // #given — spy on IndexDO getUserByEmail
+      let indexDOCalls = 0;
+      const stub = {
+        getUserByEmail: vi.fn(async (email: string) => {
+          indexDOCalls++;
+          return email === "admin@gz-zhiyun.com" ? { role: "admin" as const } : null;
+        }),
+      };
+      const indexDO = {
+        idFromName: vi.fn(() => "idx-id" as unknown as DurableObjectId),
+        get: vi.fn(() => stub as unknown as DurableObjectStub),
+      } as unknown as DurableObjectNamespace;
+
       globalThis.fetch = async (input) => {
         const url = String(input);
-        litellmUrls.push(url);
-        if (url === "https://litellm.test/user/list?user_email=admin%40gz-zhiyun.com") {
-          userListCalls += 1;
-          return Response.json({
-          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-        });
-        }
         if (url.startsWith("https://litellm.test/user/list?page=")) {
           return Response.json({ users: [], total_count: 0 });
         }
@@ -1656,8 +1576,8 @@ describe("litellm portal worker", () => {
         return new Response("not found", { status: 404 });
       };
 
-      // #when - 5 mixed requests: 3 /api/dashboard proxied through /api/admin/users and 2 /api/admin/users
-      const env = portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" });
+      // #when - 5 mixed requests: 3 /api/admin/users and 2 /api/admin/audit
+      const env = portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true", INDEX_DO: indexDO });
       for (let i = 0; i < 3; i++) {
         await handleLiteLLMPortalRequest(
           devRequest("https://portal.test/api/admin/users", "admin@gz-zhiyun.com"),
@@ -1671,8 +1591,8 @@ describe("litellm portal worker", () => {
         );
       }
 
-      // #then - /user/list?user_email called exactly once across all 5 requests
-      expect(userListCalls).toBe(1);
+      // #then — IndexDO queried only once across all 5 requests (memory cache hit)
+      expect(indexDOCalls).toBe(1);
     });
 
     it("audit pagination params: page=3&size=25 are forwarded to LiteLLM as page=3&page_size=25", async () => {
@@ -1681,11 +1601,6 @@ describe("litellm portal worker", () => {
       globalThis.fetch = async (input) => {
         const url = String(input);
         litellmUrls.push(url);
-        if (url === "https://litellm.test/user/list?user_email=admin%40gz-zhiyun.com") {
-          return Response.json({
-          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-        });
-        }
         if (url.includes("https://litellm.test/audit?")) {
           return Response.json({ data: [], total_count: 0 });
         }
@@ -1706,16 +1621,8 @@ describe("litellm portal worker", () => {
       expect(auditUrl).toContain("page_size=25");
     });
 
-    it("/user/list 404 yields role=none and /api/me body contains no master key material", async () => {
-      // #given
-      globalThis.fetch = async (input) => {
-        if (String(input) === "https://litellm.test/user/list?user_email=unknown%40gz-zhiyun.com") {
-          return new Response("not found", { status: 404 });
-        }
-        return new Response("not found", { status: 404 });
-      };
-
-      // #when
+    it("unknown email yields role=none and /api/me body contains no master key material", async () => {
+      // #when — unknown@gz-zhiyun.com is not in the default IndexDO map
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/me", "unknown@gz-zhiyun.com"),
         portalEnv({ LITELLM_PORTAL_DEV_AUTH: "true" }),
@@ -1736,11 +1643,6 @@ describe("litellm portal worker", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-05-10T12:00:00.000Z"));
       globalThis.fetch = async (input) => {
-        if (String(input) === "https://litellm.test/user/list?user_email=admin%40gz-zhiyun.com") {
-          return Response.json({
-          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-        });
-        }
         if (new URL(String(input)).pathname === "/spend/logs/v2") {
           return Response.json({ data: [], total_pages: 1 });
         }
@@ -1766,11 +1668,6 @@ describe("litellm portal worker", () => {
       globalThis.fetch = async (input) => {
         const url = String(input);
         litellmUrls.push(url);
-        if (url === "https://litellm.test/user/list?user_email=admin%40gz-zhiyun.com") {
-          return Response.json({
-          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-        });
-        }
         if (url.startsWith("https://litellm.test/user/list?")) {
           return Response.json({ users: [], total_count: 0 });
         }
@@ -1795,12 +1692,7 @@ describe("litellm portal worker", () => {
     it("LiteLLM 500 on all admin routes returns 502 and leaks no master key material", async () => {
       // #given
       _clearRoleCacheForTests();
-      globalThis.fetch = async (input) => {
-        if (String(input) === "https://litellm.test/user/list?user_email=admin%40gz-zhiyun.com") {
-          return Response.json({
-          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-        });
-        }
+      globalThis.fetch = async () => {
         return new Response(JSON.stringify({ error: "internal", key: "sk-secret", master: "litellm-master" }), { status: 500 });
       };
 
@@ -1881,11 +1773,6 @@ describe("litellm portal worker", () => {
   describe("PATCH /api/admin/keys/:id/disable", () => {
     const adminFetch = (input: string | URL | Request) => {
       const url = String(input);
-      if (url.includes("/user/list?user_email=admin")) {
-        return Promise.resolve(Response.json({
-          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-        }));
-      }
       if (url.includes("/key/info?key=")) {
         return Promise.resolve(Response.json({ info: { token: "key-abc", key_alias: "primary", blocked: false, user_id: "uid", team_id: "tid" } }));
       }
@@ -1908,14 +1795,6 @@ describe("litellm portal worker", () => {
     });
 
     it("returns 403 for non-admin users", async () => {
-      globalThis.fetch = async (input) => {
-        if (String(input).includes("/user/list?user_email=user")) {
-          return Response.json({
-            users: [{ user_id: "user-uid", user_role: "internal_user", user_email: "user@gz-zhiyun.com" }],
-          });
-        }
-        return new Response("not found", { status: 404 });
-      };
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/keys/key-abc/disable", "user@gz-zhiyun.com", {
           method: "PATCH",
@@ -1944,11 +1823,6 @@ describe("litellm portal worker", () => {
       let keyUpdateCalled = false;
       globalThis.fetch = async (input) => {
         const url = String(input);
-        if (url.includes("/user/list?user_email=admin")) {
-          return Response.json({
-            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-          });
-        }
         if (url.includes("/key/info?key=")) {
           return Response.json({ info: { token: "key-abc", key_alias: "primary", blocked: false } });
         }
@@ -1979,11 +1853,6 @@ describe("litellm portal worker", () => {
       let keyUpdateCalled = false;
       globalThis.fetch = async (input) => {
         const url = String(input);
-        if (url.includes("/user/list?user_email=admin")) {
-          return Response.json({
-            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-          });
-        }
         if (url.includes("/key/info?key=")) {
           return Response.json({ info: { token: "key-abc", key_alias: "primary", blocked: false } });
         }
@@ -2012,11 +1881,6 @@ describe("litellm portal worker", () => {
   describe("PATCH /api/admin/teams/:id/limits", () => {
     const adminFetch = (input: string | URL | Request) => {
       const url = String(input);
-      if (url.includes("/user/list?user_email=admin")) {
-        return Promise.resolve(Response.json({
-          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-        }));
-      }
       if (url.includes("/team/info?team_id=")) {
         return Promise.resolve(Response.json({ team_info: { team_id: "team-1", team_alias: "ops", tpm_limit: null, rpm_limit: null, max_budget: null } }));
       }
@@ -2039,14 +1903,6 @@ describe("litellm portal worker", () => {
     });
 
     it("returns 403 for non-admin users", async () => {
-      globalThis.fetch = async (input) => {
-        if (String(input).includes("/user/list?user_email=user")) {
-          return Response.json({
-            users: [{ user_id: "user-uid", user_role: "internal_user", user_email: "user@gz-zhiyun.com" }],
-          });
-        }
-        return new Response("not found", { status: 404 });
-      };
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/teams/team-1/limits", "user@gz-zhiyun.com", {
           method: "PATCH",
@@ -2073,11 +1929,6 @@ describe("litellm portal worker", () => {
       let teamUpdateBody: Record<string, unknown> | undefined;
       globalThis.fetch = async (input, init) => {
         const url = String(input);
-        if (url.includes("/user/list?user_email=admin")) {
-          return Response.json({
-            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-          });
-        }
         if (url.includes("/team/info?team_id=")) {
           return Response.json({ team_info: { team_id: "team-1", team_alias: "ops", tpm_limit: null, rpm_limit: null, max_budget: null } });
         }
@@ -2110,11 +1961,6 @@ describe("litellm portal worker", () => {
   describe("PATCH /api/admin/users/:id", () => {
     const adminFetch = (input: string | URL | Request) => {
       const url = String(input);
-      if (url.includes("/user/list?user_email=admin")) {
-        return Promise.resolve(Response.json({
-          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-        }));
-      }
       if (url.includes("/v2/user/info?user_id=")) {
         return Promise.resolve(Response.json({ user: { user_id: "user-123", user_role: "internal_user", max_budget: null } }));
       }
@@ -2137,14 +1983,6 @@ describe("litellm portal worker", () => {
     });
 
     it("returns 403 for non-admin users", async () => {
-      globalThis.fetch = async (input) => {
-        if (String(input).includes("/user/list?user_email=user")) {
-          return Response.json({
-            users: [{ user_id: "user-uid", user_role: "internal_user", user_email: "user@gz-zhiyun.com" }],
-          });
-        }
-        return new Response("not found", { status: 404 });
-      };
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/users/user-123", "user@gz-zhiyun.com", {
           method: "PATCH",
@@ -2171,11 +2009,6 @@ describe("litellm portal worker", () => {
       let userUpdateBody: Record<string, unknown> | undefined;
       globalThis.fetch = async (input, init) => {
         const url = String(input);
-        if (url.includes("/user/list?user_email=admin")) {
-          return Response.json({
-            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-          });
-        }
         if (url.includes("/v2/user/info?user_id=")) {
           return Response.json({ user: { user_id: "user-123", user_role: "internal_user", max_budget: null } });
         }
@@ -2206,11 +2039,6 @@ describe("litellm portal worker", () => {
   describe("DELETE /api/admin/keys/:id", () => {
     const adminFetch = (input: string | URL | Request) => {
       const url = String(input);
-      if (url.includes("/user/list?user_email=admin")) {
-        return Promise.resolve(Response.json({
-          users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-        }));
-      }
       if (url.includes("/key/info?key=")) {
         return Promise.resolve(Response.json({ info: { token: "key-abc", key_alias: "my-key", blocked: false, user_id: "uid", team_id: "tid" } }));
       }
@@ -2233,14 +2061,6 @@ describe("litellm portal worker", () => {
     });
 
     it("returns 403 for non-admin users", async () => {
-      globalThis.fetch = async (input) => {
-        if (String(input).includes("/user/list?user_email=user")) {
-          return Response.json({
-            users: [{ user_id: "user-uid", user_role: "internal_user", user_email: "user@gz-zhiyun.com" }],
-          });
-        }
-        return new Response("not found", { status: 404 });
-      };
       const response = await handleLiteLLMPortalRequest(
         devRequest("https://portal.test/api/admin/keys/key-abc", "user@gz-zhiyun.com", {
           method: "DELETE",
@@ -2279,11 +2099,6 @@ describe("litellm portal worker", () => {
       let deleteBody: Record<string, unknown> | undefined;
       globalThis.fetch = async (input, init) => {
         const url = String(input);
-        if (url.includes("/user/list?user_email=admin")) {
-          return Response.json({
-            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-          });
-        }
         if (url.includes("/key/info?key=")) {
           return Response.json({ info: { token: "key-abc", key_alias: "my-key", blocked: false } });
         }
@@ -2313,11 +2128,6 @@ describe("litellm portal worker", () => {
       let deleteKeyCallCount = 0;
       globalThis.fetch = async (input) => {
         const url = String(input);
-        if (url.includes("/user/list?user_email=admin")) {
-          return Response.json({
-            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-          });
-        }
         if (url.includes("/key/info?key=")) {
           return Response.json({ info: { token: "key-abc", key_alias: "production-key", blocked: false } });
         }
@@ -2345,11 +2155,6 @@ describe("litellm portal worker", () => {
     it("returns 404 when the key does not exist (cannot guess alias to bypass typed-confirm)", async () => {
       globalThis.fetch = async (input) => {
         const url = String(input);
-        if (url.includes("/user/list?user_email=admin")) {
-          return Response.json({
-            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-          });
-        }
         if (url.includes("/key/info?key=")) {
           return new Response("not found", { status: 404 });
         }
@@ -2371,11 +2176,6 @@ describe("litellm portal worker", () => {
       let deleteKeyCallCount = 0;
       globalThis.fetch = async (input) => {
         const url = String(input);
-        if (url.includes("/user/list?user_email=admin")) {
-          return Response.json({
-            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-          });
-        }
         if (url.includes("/key/info?key=")) {
           return Response.json({ info: { token: "key-abc", key_alias: "my-key", blocked: false } });
         }
@@ -2406,11 +2206,6 @@ describe("litellm portal worker", () => {
       const auditPoints: Array<{ blobs?: string[] }> = [];
       globalThis.fetch = async (input) => {
         const url = String(input);
-        if (url.includes("/user/list?user_email=admin")) {
-          return Response.json({
-            users: [{ user_id: "admin-uid", user_role: "proxy_admin", user_email: "admin@gz-zhiyun.com" }],
-          });
-        }
         if (url.includes("/key/info?key=")) {
           return Response.json({ info: { token: "key-abc", key_alias: "primary", blocked: false } });
         }
@@ -2454,6 +2249,32 @@ describe("litellm portal worker", () => {
 
 });
 
+// ---------------------------------------------------------------------------
+// Default IndexDO mock — covers the standard test identities
+// ---------------------------------------------------------------------------
+
+const DEFAULT_INDEX_DO_ROLES: Record<string, { role: "admin" | "user" }> = {
+  "admin@gz-zhiyun.com": { role: "admin" },
+  "user@gz-zhiyun.com": { role: "user" },
+  "member@gz-zhiyun.com": { role: "user" },
+  "liqingying@gz-zhiyun.com": { role: "user" },
+  "jiangyufeng@gz-zhiyun.com": { role: "user" },
+  "xu@ziikoo.com": { role: "user" },
+  "cached@gz-zhiyun.com": { role: "admin" },
+  "ttl@gz-zhiyun.com": { role: "admin" },
+  "oncall@gz-zhiyun.com": { role: "none" as unknown as "user" },
+};
+
+function makeIndexDO(usersByEmail: Record<string, { role: "admin" | "user" } | null>): DurableObjectNamespace {
+  const stub = {
+    getUserByEmail: vi.fn(async (email: string) => usersByEmail[email] ?? null),
+  };
+  return {
+    idFromName: vi.fn(() => "idx-id" as unknown as DurableObjectId),
+    get: vi.fn(() => stub as unknown as DurableObjectStub),
+  } as unknown as DurableObjectNamespace;
+}
+
 function portalEnv(overrides: Partial<LiteLLMPortalEnv> = {}): LiteLLMPortalEnv {
   return {
     CLOUDFLARE_ACCESS_AUD: "access-aud",
@@ -2462,6 +2283,7 @@ function portalEnv(overrides: Partial<LiteLLMPortalEnv> = {}): LiteLLMPortalEnv 
     LITELLM_BASE_URL: "https://litellm.test",
     LITELLM_MASTER_KEY: "litellm-master",
     LITELLM_PORTAL_ALLOWED_EMAIL_DOMAIN: "gz-zhiyun.com",
+    INDEX_DO: makeIndexDO(DEFAULT_INDEX_DO_ROLES),
     ...overrides,
   };
 }
