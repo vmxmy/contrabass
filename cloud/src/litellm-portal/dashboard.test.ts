@@ -145,22 +145,35 @@ describe("buildDashboard", () => {
     expect(res.empty).toBe(false);
   });
 
-  it("global summary sampled:true when user list exceeds the 200 cap", async () => {
-    const many = Array.from({ length: 200 }, (_, i) => ({
+  it("global summary sampled:true when user list exceeds the 200 cap; userCount reflects true total", async () => {
+    // Page 1: 200 regular users (no maxBudget → not budgeted, no risk probes)
+    // Page 2: 50 more users; cursor undefined → end of list; true total = 250
+    const page1 = Array.from({ length: 200 }, (_, i) => ({
       userId: `u${i}`,
       role: "user" as const,
       maxBudget: undefined,
     }));
+    const page2 = Array.from({ length: 50 }, (_, i) => ({
+      userId: `v${i}`,
+      role: "user" as const,
+      maxBudget: undefined,
+    }));
+    let call = 0;
     const idx: IndexDOLike = {
       listTeams: async () => [{ id: "t1", alias: "a" }],
-      listAllUsers: async () => ({ users: many, cursor: "next" }),
+      listAllUsers: async () => {
+        call += 1;
+        if (call === 1) return { users: page1, cursor: "page2" };
+        return { users: page2, cursor: undefined };
+      },
     };
     const res = await buildDashboard(
       { usage: usageStub(), index: idx, now: NOW },
       { scope: { kind: "global" }, window: "7d", grain: "day", grainFallback: false },
     );
     expect(res.summary?.sampled).toBe(true);
-    expect(res.summary?.userCount).toBe(200);
+    // userCount = true total (250), not the cap (200)
+    expect(res.summary?.userCount).toBe(250);
   });
 
   it("grainFallback:true is passed through to the response", async () => {
@@ -257,5 +270,45 @@ describe("buildSummary", () => {
       expect(c.currentFromMs).toBe(FROM_MS);
       expect(c.currentToMs).toBe(TO_MS);
     }
+  });
+
+  it("M2: userCount = true population; risk probes bounded to SUMMARY_USER_CAP budgeted users", async () => {
+    // 250 users total (2 pages): all have maxBudget=5 → budgeted
+    // Only SUMMARY_USER_CAP (200) should be risk-probed; userCount must be 250
+    const page1 = Array.from({ length: 200 }, (_, i) => ({
+      userId: `b${i}`,
+      role: "user" as const,
+      maxBudget: 5,
+    }));
+    const page2 = Array.from({ length: 50 }, (_, i) => ({
+      userId: `c${i}`,
+      role: "user" as const,
+      maxBudget: 5,
+    }));
+    let pageCall = 0;
+    const idx: IndexDOLike = {
+      listTeams: async () => [],
+      listAllUsers: async () => {
+        pageCall += 1;
+        if (pageCall === 1) return { users: page1, cursor: "p2" };
+        return { users: page2, cursor: undefined };
+      },
+    };
+    const probedUserIds: string[] = [];
+    const usage = usageStub({
+      queryKpiWithDelta: async (o) => {
+        if (o.scope.kind === "user") probedUserIds.push(o.scope.userId);
+        return {
+          current: { spend: 0, requests: 0, totalTokens: 0, source: "events" as const },
+          previous: { spend: 0, requests: 0, totalTokens: 0, source: "events" as const },
+        };
+      },
+    });
+    const summary = await buildSummary({ usage, index: idx, now: NOW }, 0, FROM_MS, TO_MS);
+    // True population
+    expect(summary.userCount).toBe(250);
+    expect(summary.sampled).toBe(true);
+    // Risk probes bounded — at most SUMMARY_USER_CAP probed
+    expect(probedUserIds.length).toBeLessThanOrEqual(200);
   });
 });

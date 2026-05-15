@@ -159,30 +159,36 @@ export async function buildSummary(
     return { userCount: 0, adminCount: 0, teamCount: 0, totalSpend, totalBudget: 0, riskCount: 0, sampled: false };
   }
   const teams = await deps.index.listTeams();
-  const users: Array<{ userId: string; role: "admin" | "user"; maxBudget?: number }> = [];
+  // Paginate the FULL user population to get accurate population stats.
+  // adminCount, totalBudget, and totalUserCount are computed over ALL pages.
+  // The per-user risk probe fan-out is separately bounded to SUMMARY_USER_CAP
+  // budgeted users — plain IndexDO SQL pages are cheap; the KPI probes are not.
+  let totalUserCount = 0;
+  let adminCount = 0;
+  let totalBudget = 0;
+  const budgetedSample: Array<{ userId: string; maxBudget: number }> = [];
   let cursor: string | undefined;
-  let sampled = false;
   for (;;) {
     const page = await deps.index.listAllUsers({ limit: 200, cursor });
-    users.push(...page.users);
+    for (const u of page.users) {
+      totalUserCount += 1;
+      if (u.role === "admin") adminCount += 1;
+      totalBudget += u.maxBudget ?? 0;
+      if (u.maxBudget != null && u.maxBudget > 0 && budgetedSample.length < SUMMARY_USER_CAP) {
+        budgetedSample.push({ userId: u.userId, maxBudget: u.maxBudget });
+      }
+    }
     cursor = page.cursor;
     if (cursor === undefined) break;
-    if (users.length >= SUMMARY_USER_CAP) {
-      sampled = true;
-      break;
-    }
   }
-  const adminCount = users.filter((u) => u.role === "admin").length;
-  const totalBudget = users.reduce((s, u) => s + (u.maxBudget ?? 0), 0);
-  // Risk = users whose retained-events spend exceeds their maxBudget. The
+  // sampled = true means risk probes cover only a sample of budgeted users
+  const sampled = totalUserCount > SUMMARY_USER_CAP;
+  // Risk = users whose IN-WINDOW spend exceeds their maxBudget. The
   // per-user KPI probe is an N-query fan-out, so run it with bounded
   // concurrency (NOT a serial await-in-loop) to keep the admin request
   // latency bounded even at SUMMARY_USER_CAP users.
   const usage = deps.usage;
-  const budgeted =
-    usage === null
-      ? []
-      : users.filter((u): u is typeof u & { maxBudget: number } => u.maxBudget != null && u.maxBudget > 0);
+  const budgeted = usage === null ? [] : budgetedSample;
   const RISK_CONCURRENCY = 10;
   let riskCount = 0;
   for (let i = 0; i < budgeted.length; i += RISK_CONCURRENCY) {
@@ -204,7 +210,7 @@ export async function buildSummary(
     });
   }
   return {
-    userCount: users.length,
+    userCount: totalUserCount,
     adminCount,
     teamCount: teams.length,
     totalSpend,
