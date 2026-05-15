@@ -306,6 +306,89 @@ describe("UsageDO hourOfDay + perUserSeries + userDetail", () => {
   });
 });
 
+describe("UsageDO clamps limit/topN (no unbounded LIMIT -1)", () => {
+  it("queryRecentEvents clamps a negative limit to >=1 (bounded, not unbounded)", async () => {
+    const obj = makeUsageDO();
+    await obj.writeSpendEvents([
+      {
+        requestId: "x1",
+        tsMs: 1000,
+        userId: "u1",
+        teamId: "t",
+        model: "m",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 1,
+        spend: 0,
+      },
+      {
+        requestId: "x2",
+        tsMs: 2000,
+        userId: "u1",
+        teamId: "t",
+        model: "m",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 1,
+        spend: 0,
+      },
+    ]);
+    // -1 must NOT mean "all rows"; clamp floor is 1.
+    const r = await obj.queryRecentEvents({ userId: "u1", limit: -1 });
+    expect(r).toHaveLength(1);
+  });
+
+  it("queryRecentEvents clamps a huge limit to <=1000", async () => {
+    const obj = makeUsageDO();
+    await obj.writeSpendEvents([
+      {
+        requestId: "y1",
+        tsMs: 1000,
+        userId: "u2",
+        teamId: "t",
+        model: "m",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 1,
+        spend: 0,
+      },
+    ]);
+    const r = await obj.queryRecentEvents({ userId: "u2", limit: 10_000_000 });
+    expect(r).toHaveLength(1); // only 1 row exists; assertion is that it doesn't throw / behaves bounded
+  });
+
+  it("queryPerUserSeries clamps a negative topN to >=1", async () => {
+    const obj = makeUsageDO();
+    await obj.writeSpendEvents([
+      {
+        requestId: "z1",
+        tsMs: 1000,
+        userId: "ua",
+        teamId: "t",
+        model: "m",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 1,
+        spend: 5,
+      },
+      {
+        requestId: "z2",
+        tsMs: 1000,
+        userId: "ub",
+        teamId: "t",
+        model: "m",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 1,
+        spend: 9,
+      },
+    ]);
+    const r = await obj.queryPerUserSeries({ grain: "day", fromMs: 0, toMs: 5000, topN: -5 });
+    expect(r).toHaveLength(1); // clamped to 1 → only the top spender (ub)
+    expect(r[0].userId).toBe("ub");
+  });
+});
+
 describe("UsageDO queryKpiWithDelta daily fallback excludes per-model rows", () => {
   it("sums only model='__all__' (no double-count with per-model rows)", async () => {
     const obj = makeUsageDO();

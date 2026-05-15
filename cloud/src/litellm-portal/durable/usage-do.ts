@@ -121,6 +121,9 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
   }): Promise<Array<{ tsMs: number; model: string; totalTokens: number; spend: number }>> {
     const sql = await this.sql();
     if (sql === null) return [];
+    // Clamp: SQLite LIMIT -1 means "no limit" — never let a caller request
+    // an unbounded scan.
+    const limit = Math.min(Math.max(1, Math.trunc(opts.limit)), 1000);
     const rows = sql
       .exec<SqlRow>(
         `SELECT ts_ms, model, total_tokens, spend
@@ -129,7 +132,7 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
         ORDER BY ts_ms DESC
         LIMIT ?`,
         opts.userId,
-        opts.limit,
+        limit,
       )
       .toArray();
     return rows.map((r) => ({
@@ -401,6 +404,8 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
   }): Promise<Array<{ userId: string; points: Array<{ startMs: number; spend: number }> }>> {
     const sql = await this.sql();
     if (sql === null) return [];
+    // Clamp: SQLite LIMIT -1 = "no limit"; bound topN to a sane range.
+    const topN = Math.min(Math.max(1, Math.trunc(opts.topN)), 100);
     const top = sql
       .exec<SqlRow>(
         `SELECT user_id, COALESCE(SUM(spend),0) AS s
@@ -411,7 +416,7 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
         LIMIT ?`,
         opts.fromMs,
         opts.toMs,
-        opts.topN,
+        topN,
       )
       .toArray()
       .map((r) => String(r.user_id));
