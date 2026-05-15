@@ -763,7 +763,7 @@ const adminUsersApp = new Hono<HonoEnv>()
     const url = new URL(c.req.url);
     const page = sanitizeIntParam(url.searchParams.get("page"), 1);
     const size = sanitizeIntParam(url.searchParams.get("size"), 50);
-    if (c.env.PORTAL_DO_SOT_ENABLED === "true") {
+    if (c.env.INDEX_DO && c.env.TEAM_CONFIG_DO) {
       return c.json(await adminUsersFromDO(c.env, { page, size }));
     }
     const result = await listAllUsers(c.env, { page, size });
@@ -787,7 +787,7 @@ const adminTeamsApp = new Hono<HonoEnv>()
   .use("/admin/*", applyAdminRateLimit)
   .use("/admin/*", requireAdmin)
   .get("/admin/teams", async (c) => {
-    if (c.env.PORTAL_DO_SOT_ENABLED === "true") {
+    if (c.env.INDEX_DO && c.env.TEAM_CONFIG_DO) {
       return c.json(await adminTeamsFromDO(c.env));
     }
     const teams = await listAllTeams(c.env);
@@ -927,10 +927,6 @@ const adminDisableKeyApp = new Hono<HonoEnv>()
   .patch("/admin/keys/:keyId/disable", async (c) => {
     if (!isWriteOpsEnabled(c.env)) return writeOpsDisabledResponse(c);
 
-    if (c.env.PORTAL_DO_SOT_ENABLED === "true") {
-      return c.json({ error: "key_writes_under_do_sot_not_yet_implemented" }, 501);
-    }
-
     const keyId = decodeURIComponent(c.req.param("keyId") ?? "").trim();
     if (!keyId) return c.json({ error: "key_id_required" }, 400);
 
@@ -981,7 +977,7 @@ const adminUpdateTeamLimitsApp = new Hono<HonoEnv>()
 
     const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
 
-    if (c.env.PORTAL_DO_SOT_ENABLED === "true") {
+    if (c.env.INDEX_DO && c.env.PORTAL_SESSION_SECRET) {
       return adminUpdateTeamLimitsDO(c.env, c, teamId, { tpmLimit, rpmLimit, maxBudget }, isDryRun);
     }
 
@@ -1041,7 +1037,7 @@ const adminUpdateUserApp = new Hono<HonoEnv>()
 
     const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
 
-    if (c.env.PORTAL_DO_SOT_ENABLED === "true") {
+    if (c.env.INDEX_DO && c.env.TEAM_CONFIG_DO) {
       return adminUpdateUserDO(c.env, c, userId, { role, maxBudget }, isDryRun);
     }
 
@@ -1085,10 +1081,6 @@ const adminDeleteKeyApp = new Hono<HonoEnv>()
   .use("/admin/*", requireAdmin)
   .delete("/admin/keys/:keyId", async (c) => {
     if (!isWriteOpsEnabled(c.env)) return writeOpsDisabledResponse(c);
-
-    if (c.env.PORTAL_DO_SOT_ENABLED === "true") {
-      return c.json({ error: "key_writes_under_do_sot_not_yet_implemented" }, 501);
-    }
 
     const keyId = decodeURIComponent(c.req.param("keyId") ?? "").trim();
     if (!keyId) return c.json({ error: "key_id_required" }, 400);

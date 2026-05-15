@@ -48,13 +48,11 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
   const csrfReject = checkCsrf(request, env);
   if (csrfReject) return csrfReject;
 
-  // Auth-bypass routes (login/magic-callback only when flag=true; logout always)
+  // Auth-bypass routes
   if (url.pathname === "/logout" && request.method === "POST") return handleLogout(request, env);
-  if (env.PORTAL_DO_SOT_ENABLED === "true") {
-    if (url.pathname === "/login" && request.method === "GET")  return handleLoginGet(request, env);
-    if (url.pathname === "/login" && request.method === "POST") return handleLoginPost(request, env);
-    if (url.pathname === "/magic-callback" && request.method === "GET") return handleMagicCallback(request, env);
-  }
+  if (url.pathname === "/login" && request.method === "GET")  return handleLoginGet(request, env);
+  if (url.pathname === "/login" && request.method === "POST") return handleLoginPost(request, env);
+  if (url.pathname === "/magic-callback" && request.method === "GET") return handleMagicCallback(request, env);
 
   // Serve the portal SPA shell for all non-asset GET requests so that
   // path-based routes like /admin, /admin/users, /admin/audit/:id can be
@@ -230,11 +228,7 @@ export default {
       return;
     }
     if (controller.cron === "* * * * *") {
-      if (env.PORTAL_DO_SOT_ENABLED === "true") {
-        ctx.waitUntil(runSpendSnapshotTick(env));
-      }
-      // flag=false: intentional no-op until cutover. The cron is still registered
-      // (for stability) but does no DO/LiteLLM work.
+      ctx.waitUntil(runSpendSnapshotTick(env));
       return;
     }
   },

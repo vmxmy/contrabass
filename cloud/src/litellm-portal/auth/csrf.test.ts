@@ -3,7 +3,7 @@ import { checkCsrf } from "./csrf";
 import type { LiteLLMPortalEnv } from "../types";
 
 function makeEnv(enabled = true): LiteLLMPortalEnv {
-  return { PORTAL_DO_SOT_ENABLED: enabled ? "true" : "false" } as LiteLLMPortalEnv;
+  return (enabled ? { PORTAL_SESSION_SECRET: "test-secret-32-bytes-paddingXXXX" } : {}) as LiteLLMPortalEnv;
 }
 
 function makeRequest(url: string, method = "POST", headers: Record<string, string> = {}): Request {
@@ -57,7 +57,7 @@ describe("checkCsrf", () => {
     });
   });
 
-  describe("disabled when PORTAL_DO_SOT_ENABLED is not true", () => {
+  describe("disabled when PORTAL_SESSION_SECRET is not configured", () => {
     it("always returns null when disabled", () => {
       const req = makeRequest("https://portal.example.com/api/some-action");
       const result = checkCsrf(req, makeEnv(false));

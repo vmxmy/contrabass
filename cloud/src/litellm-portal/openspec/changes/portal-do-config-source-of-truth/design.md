@@ -135,7 +135,7 @@ Alternatives considered:
 
 ### 8. Cutover is single-window, no dual-run
 Decision:
-- Deploy with `PORTAL_DO_SOT_ENABLED=true` inside a ≤30-minute maintenance window.
+- Deploy with `DO_SOT_FLAG=true` inside a ≤30-minute maintenance window.
 - Cloudflare Access policies are detached from the hostname after deploy verification.
 - Rollback = redeploy previous build and re-attach the Cloudflare Access policy in the Cloudflare dashboard.
 
@@ -175,11 +175,11 @@ Alternatives considered:
 ## Migration Plan
 
 1. Land schema modules (`durable/schemas.ts`, `types.ts` updates), DO classes (`IndexDO`, `TeamConfigDO`), and the wrangler bindings + DO `new_classes` migration entry. No behavior change yet; new code is unwired.
-2. Land magic-link auth (`auth/magic-link.ts`, `auth/session.ts`, `auth/allowlist.ts`), `/login`, `/magic-callback`, `/logout`. Still gated behind `PORTAL_DO_SOT_ENABLED=false`; CF Access still active.
+2. Land magic-link auth (`auth/magic-link.ts`, `auth/session.ts`, `auth/allowlist.ts`), `/login`, `/magic-callback`, `/logout`. Still gated behind `DO_SOT_FLAG=false`; CF Access still active.
 3. Land the queue (`litellm-sync` producer + consumer Worker) and spend cron. Still gated.
 4. Land the one-shot LiteLLM importer and the bootstrap admin path.
 5. Replace `authenticateRequest` and `requireAdmin` sources of identity/role behind the feature flag. Wire admin write endpoints to DO-first + enqueue. Wire admin reads to DO.
-6. Schedule a maintenance window. Flip `PORTAL_DO_SOT_ENABLED=true`, redeploy, allow `IndexDO.init()` to run, smoke-test login + admin write + spend mirror.
+6. Schedule a maintenance window. Flip `DO_SOT_FLAG=true`, redeploy, allow `IndexDO.init()` to run, smoke-test login + admin write + spend mirror.
 7. Detach Cloudflare Access from the hostname in the Cloudflare dashboard.
 8. In a follow-up cleanup commit, delete dead CF Access code paths, role-projection paths, and removed env vars from `types.ts`.
 

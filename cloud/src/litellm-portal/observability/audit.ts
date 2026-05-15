@@ -27,7 +27,7 @@ export function recordAudit(env: LiteLLMPortalEnv, point: AuditPoint): void {
 }
 
 export async function auditWrite(env: LiteLLMPortalEnv, point: AuditWritePoint): Promise<void> {
-  if (env.PORTAL_DO_SOT_ENABLED === "true" && env.INDEX_DO) {
+  if (env.INDEX_DO) {
     try {
       type IndexDOAuditStub = { appendAudit(event: AuditEvent): Promise<void> };
       const idxStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOAuditStub;

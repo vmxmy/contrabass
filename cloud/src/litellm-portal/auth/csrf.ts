@@ -2,9 +2,11 @@ import type { LiteLLMPortalEnv } from "../types";
 
 /** Returns null on success, a Response on rejection.
  *  Validates Origin / Referer header against the request URL's origin for
- *  state-changing requests. Only enforced when PORTAL_DO_SOT_ENABLED is "true". */
+ *  state-changing requests. Skipped when no session secret is configured
+ *  (no browser-session auth path active) or in dev-auth mode. */
 export function checkCsrf(request: Request, env: LiteLLMPortalEnv): Response | null {
-  if (env.PORTAL_DO_SOT_ENABLED !== "true") return null;
+  if (!env.PORTAL_SESSION_SECRET) return null;
+  if (env.LITELLM_PORTAL_DEV_AUTH) return null;
 
   const method = request.method.toUpperCase();
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return null;

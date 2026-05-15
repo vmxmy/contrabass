@@ -27,11 +27,9 @@ export type LiteLLMPortalEnv = {
   USER_PREFS_KV?: KVNamespace;
   ROLE_INVALIDATION_WEBHOOK_TOKEN?: string;
   RATE_LIMIT_DO?: DurableObjectNamespace;
-  /** HMAC secret used to sign portal session cookies (HS256). 7-day TTL.
-   *  Required when PORTAL_DO_SOT_ENABLED is "true". */
+  /** HMAC secret used to sign portal session cookies (HS256). 7-day TTL. */
   PORTAL_SESSION_SECRET?: string;
-  /** HMAC secret used to sign 15-minute magic-link tokens.
-   *  Required when PORTAL_DO_SOT_ENABLED is "true". */
+  /** HMAC secret used to sign 15-minute magic-link tokens. */
   PORTAL_MAGIC_LINK_SECRET?: string;
   /** Cloudflare Email Service Workers binding (paid plan, no recipient
    *  whitelist). Configure in wrangler.toml with `[[send_email]] name="EMAIL"
@@ -46,10 +44,6 @@ export type LiteLLMPortalEnv = {
   /** Comma-separated list of emails granted role=admin on first login or
    *  during the one-shot LiteLLM import. Survives removal from this var. */
   BOOTSTRAP_ADMIN_EMAILS?: string;
-  /** Feature flag that switches identity + admin reads/writes from the
-   *  Cloudflare Access + LiteLLM path to magic-link + Durable Objects.
-   *  Default "false" until cutover. */
-  PORTAL_DO_SOT_ENABLED?: "true" | "false";
   /** Singleton IndexDO owning team list, email→user index, magic-link nonces,
    *  bootstrap admins, and audit log. See openspec change
    *  `portal-do-config-source-of-truth` capability `portal-config-source-of-truth`. */
