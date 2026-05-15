@@ -101,6 +101,33 @@ describe("litellm portal worker", () => {
     expect(js).not.toContain("AdminAuditFeed");
   });
 
+  it("served portal bundle (entry + all chunks) contains no legacy endpoint calls", async () => {
+    // Fetch entry
+    const entryRes = await handleLiteLLMPortalRequest(new Request("https://portal.test/portal.js"), portalEnv());
+    const entryJs = await entryRes.text();
+
+    // Fetch each chunk served by the worker
+    const chunkJsParts = await Promise.all(
+      portalBundleChunks.map((chunk) =>
+        handleLiteLLMPortalRequest(
+          new Request(`https://portal.test/portal-chunks/${chunk.fileName}`),
+          portalEnv(),
+        ).then((r) => r.text()),
+      ),
+    );
+
+    const allJs = [entryJs, ...chunkJsParts].join("\n");
+
+    // Must NOT contain legacy endpoints deleted in L3
+    expect(allJs).not.toContain("/api/admin/summary");
+    expect(allJs).not.toContain("/api/usage/timeseries");
+    expect(allJs).not.toContain("/api/admin/usage/timeseries");
+
+    // MUST contain the L3 replacement endpoints
+    expect(allJs).toContain("/api/usage/overview");
+    expect(allJs).toContain("/api/admin/usage/overview");
+  });
+
   it("app.generated.ts contains no CustomEvent bridge, litellm-portal: events, or __litellmPortal globals", () => {
     expect(portalAppJs).not.toContain("CustomEvent");
     expect(portalAppJs).not.toContain("litellm-portal:");
