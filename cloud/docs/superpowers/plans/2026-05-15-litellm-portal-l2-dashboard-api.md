@@ -294,8 +294,8 @@ function usageStub(over: Partial<UsageDOStub> = {}): UsageDOStub {
     queryPerUserSeries: async () => [{ userId: "u1", points: [{ startMs: 1, spend: 1 }] }],
     queryRecentEvents: async () => [{ tsMs: 1, model: "gpt", totalTokens: 10, spend: 1 }],
     queryKpiWithDelta: async () => ({
-      current: { spend: 5, requests: 3, totalTokens: 50 },
-      previous: { spend: 4, requests: 2, totalTokens: 40 },
+      current: { spend: 5, requests: 3, totalTokens: 50, source: "events" as const },
+      previous: { spend: 4, requests: 2, totalTokens: 40, source: "events" as const },
     }),
     ...over,
   };
@@ -339,7 +339,7 @@ describe("buildDashboard", () => {
     expect(res.perUser).toHaveLength(1);
     expect(res.summary).toEqual({
       userCount: 2, adminCount: 1, teamCount: 2,
-      totalSpend: 5, totalBudget: 11, riskCount: 0, sampled: false,
+      totalSpend: 5, totalBudget: 11, riskCount: 1, sampled: false,
     });
   });
 
@@ -368,8 +368,8 @@ describe("buildDashboard", () => {
       queryModelBreakdown: async () => [],
       queryRecentEvents: async () => [],
       queryKpiWithDelta: async () => ({
-        current: { spend: 0, requests: 0, totalTokens: 0 },
-        previous: { spend: 0, requests: 0, totalTokens: 0 },
+        current: { spend: 0, requests: 0, totalTokens: 0, source: "events" as const },
+        previous: { spend: 0, requests: 0, totalTokens: 0, source: "events" as const },
       }),
     });
     const res = await buildDashboard(
