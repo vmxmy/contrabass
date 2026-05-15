@@ -221,6 +221,7 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
     currentToMs: number;
     previousFromMs: number;
     previousToMs: number;
+    eventsOnly?: boolean;
   }): Promise<{
     current: { spend: number; requests: number; totalTokens: number };
     previous: { spend: number; requests: number; totalTokens: number };
@@ -255,7 +256,7 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
     const current = agg(opts.currentFromMs, opts.currentToMs);
     // previous is intentionally event-only (no daily fallback); callers comparing current-vs-previous must treat the delta as approximate when current fell back to daily aggregates.
     const previous = agg(opts.previousFromMs, opts.previousToMs);
-    if (current.requests === 0 && current.spend === 0) {
+    if (!opts.eventsOnly && current.requests === 0 && current.spend === 0) {
       const dRow = firstRow(
         sql.exec<SqlRow>(
           `SELECT COALESCE(SUM(spend),0) AS s, COALESCE(SUM(total_tokens),0) AS t,
@@ -454,6 +455,7 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
         currentToMs: opts.toMs,
         previousFromMs: opts.fromMs,
         previousToMs: opts.fromMs,
+        eventsOnly: true,
       }),
     ]);
     return {

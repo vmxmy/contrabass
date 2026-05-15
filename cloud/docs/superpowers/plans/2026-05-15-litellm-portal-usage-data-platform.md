@@ -550,6 +550,7 @@ import { SpendEventSchema, type SpendEvent, DailyRowSchema, type DailyRow } from
     scope: { kind: "global" } | { kind: "user"; userId: string };
     currentFromMs: number; currentToMs: number;
     previousFromMs: number; previousToMs: number;
+    eventsOnly?: boolean;
   }): Promise<{
     current: { spend: number; requests: number; totalTokens: number };
     previous: { spend: number; requests: number; totalTokens: number };
@@ -584,7 +585,7 @@ import { SpendEventSchema, type SpendEvent, DailyRowSchema, type DailyRow } from
     // For global daily-only data fall back to cb_usage_daily when no events.
     const current = agg(opts.currentFromMs, opts.currentToMs);
     const previous = agg(opts.previousFromMs, opts.previousToMs);
-    if (current.requests === 0 && current.spend === 0) {
+    if (!opts.eventsOnly && current.requests === 0 && current.spend === 0) {
       const dRow = firstRow(sql.exec<SqlRow>(
         `SELECT COALESCE(SUM(spend),0) AS s, COALESCE(SUM(total_tokens),0) AS t,
                 COALESCE(SUM(requests),0) AS r
@@ -968,6 +969,7 @@ Expected: FAIL — `obj.queryHourOfDay is not a function`
         scope,
         currentFromMs: opts.fromMs, currentToMs: opts.toMs,
         previousFromMs: opts.fromMs, previousToMs: opts.fromMs,
+        eventsOnly: true,
       }),
     ]);
     return {

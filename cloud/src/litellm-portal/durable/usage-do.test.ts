@@ -275,4 +275,33 @@ describe("UsageDO hourOfDay + perUserSeries + userDetail", () => {
     expect(d.models).toEqual([{ model: "gpt", spend: 3, totalTokens: 5, requests: 2 }]);
     expect(d.hours[9]).toEqual({ hour: 9, totalTokens: 5, requests: 2, spend: 3 });
   });
+
+  it("queryUserDetail stays consistent for a user with daily rows but no events (no fallback)", async () => {
+    const obj = makeUsageDO();
+    await obj.upsertDailyRows([
+      {
+        date: "2026-05-13",
+        userId: "u9",
+        model: "gpt",
+        spend: 42,
+        totalTokens: 100,
+        promptTokens: 0,
+        completionTokens: 0,
+        requests: 7,
+        successRequests: 7,
+        failedRequests: 0,
+      },
+    ]);
+    const d = await obj.queryUserDetail({
+      userId: "u9",
+      fromMs: Date.parse("2026-05-13T00:00:00+08:00"),
+      toMs: Date.parse("2026-05-14T00:00:00+08:00"),
+    });
+    // KPI is events-only (eventsOnly: true) → consistent with empty models/hours, NOT the daily 42/7.
+    expect(d.spend).toBe(0);
+    expect(d.requests).toBe(0);
+    expect(d.totalTokens).toBe(0);
+    expect(d.models).toEqual([]);
+    expect(d.hours.every((h) => h.totalTokens === 0 && h.requests === 0 && h.spend === 0)).toBe(true);
+  });
 });
