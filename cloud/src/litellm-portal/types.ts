@@ -13,8 +13,6 @@ export type KVNamespace = {
 };
 
 export type LiteLLMPortalEnv = {
-  CLOUDFLARE_ACCESS_AUD?: string;
-  CLOUDFLARE_ACCESS_TEAM_DOMAIN?: string;
   LITELLM_ALLOWED_MODELS?: string;
   LITELLM_BASE_URL?: string;
   LITELLM_MASTER_KEY?: string;
@@ -73,22 +71,6 @@ export type PortalPrincipal = {
   email: string;
   userId: string;
   domain: string;
-};
-
-export type AccessJwtPayload = {
-  aud?: string | string[];
-  email?: string;
-  exp?: number;
-  iss?: string;
-  nbf?: number;
-};
-
-export type AccessJwk = JsonWebKey & {
-  kid?: string;
-};
-
-export type AccessJwksResponse = {
-  keys?: AccessJwk[];
 };
 
 export type AuthResult =

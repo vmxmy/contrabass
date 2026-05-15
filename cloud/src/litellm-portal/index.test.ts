@@ -5,9 +5,6 @@ import { handleLiteLLMPortalRequest, type LiteLLMPortalEnv } from "./index";
 import { _clearRoleCacheForTests } from "./roles";
 
 const originalFetch = globalThis.fetch;
-const accessTeamDomain = "https://gz-zhiyun.cloudflareaccess.com";
-let accessSigningKey: CryptoKeyPair | undefined;
-let accessPublicJwk: (JsonWebKey & { alg: string; kid: string; use: string }) | undefined;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
@@ -165,60 +162,6 @@ describe("litellm portal worker", () => {
     );
 
     expect(response.status).toBe(204);
-  });
-
-  it("rejects API requests without a Cloudflare Access assertion", async () => {
-    const response = await handleLiteLLMPortalRequest(
-      new Request("https://portal.test/api/me"),
-      portalEnv(),
-    );
-
-    expect(response.status).toBe(401);
-    await expect(response.json()).resolves.toEqual({ error: "access_jwt_missing" });
-  });
-
-  it("accepts a valid Access JWT and maps email to LiteLLM user_id", async () => {
-    const { jwt, jwk } = await accessJwt("liqingying@gz-zhiyun.com");
-    globalThis.fetch = async (input) => {
-      if (String(input) === `${accessTeamDomain}/cdn-cgi/access/certs`) {
-        return Response.json({ keys: [jwk] });
-      }
-      return new Response("not found", { status: 404 });
-    };
-
-    const response = await handleLiteLLMPortalRequest(
-      new Request("https://portal.test/api/me", {
-        headers: { "Cf-Access-Jwt-Assertion": jwt },
-      }),
-      portalEnv(),
-    );
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      email: "liqingying@gz-zhiyun.com",
-      userId: "liqingying@gz-zhiyun.com",
-      domain: "gz-zhiyun.com",
-    });
-  });
-
-  it("forbids valid Access users outside gz-zhiyun.com", async () => {
-    const { jwt, jwk } = await accessJwt("outsider@example.com");
-    globalThis.fetch = async (input) => {
-      if (String(input) === `${accessTeamDomain}/cdn-cgi/access/certs`) {
-        return Response.json({ keys: [jwk] });
-      }
-      return new Response("not found", { status: 404 });
-    };
-
-    const response = await handleLiteLLMPortalRequest(
-      new Request("https://portal.test/api/me", {
-        headers: { "Cf-Access-Jwt-Assertion": jwt },
-      }),
-      portalEnv(),
-    );
-
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toEqual({ error: "email_domain_forbidden" });
   });
 
   it("allows individually configured external emails", async () => {
@@ -2277,8 +2220,6 @@ function makeIndexDO(usersByEmail: Record<string, { role: "admin" | "user" } | n
 
 function portalEnv(overrides: Partial<LiteLLMPortalEnv> = {}): LiteLLMPortalEnv {
   return {
-    CLOUDFLARE_ACCESS_AUD: "access-aud",
-    CLOUDFLARE_ACCESS_TEAM_DOMAIN: accessTeamDomain,
     LITELLM_ALLOWED_MODELS: "gpt-4o-mini",
     LITELLM_BASE_URL: "https://litellm.test",
     LITELLM_MASTER_KEY: "litellm-master",
@@ -2297,50 +2238,3 @@ function devRequest(url: string, email: string, init: RequestInit = {}): Request
   return new Request(url, { ...init, headers });
 }
 
-async function accessJwt(email: string): Promise<{ jwt: string; jwk: JsonWebKey & { alg: string; kid: string; use: string } }> {
-  if (accessSigningKey === undefined || accessPublicJwk === undefined) {
-    accessSigningKey = await crypto.subtle.generateKey(
-      {
-        name: "RSASSA-PKCS1-v1_5",
-        modulusLength: 2048,
-        publicExponent: new Uint8Array([1, 0, 1]),
-        hash: "SHA-256",
-      },
-      true,
-      ["sign", "verify"],
-    ) as CryptoKeyPair;
-    const publicJwk = await crypto.subtle.exportKey("jwk", accessSigningKey.publicKey) as JsonWebKey;
-    accessPublicJwk = { ...publicJwk, kid: "test-key", alg: "RS256", use: "sig" };
-  }
-  const jwk = accessPublicJwk;
-  const now = Math.floor(Date.now() / 1000);
-  const header = base64UrlJson({ alg: "RS256", kid: "test-key", typ: "JWT" });
-  const payload = base64UrlJson({
-    aud: "access-aud",
-    email,
-    exp: now + 3600,
-    iss: accessTeamDomain,
-  });
-  const signature = await crypto.subtle.sign(
-    "RSASSA-PKCS1-v1_5",
-    accessSigningKey.privateKey,
-    new TextEncoder().encode(`${header}.${payload}`),
-  );
-
-  return {
-    jwt: `${header}.${payload}.${base64UrlBytes(new Uint8Array(signature))}`,
-    jwk,
-  };
-}
-
-function base64UrlJson(value: Record<string, unknown>): string {
-  return base64UrlBytes(new TextEncoder().encode(JSON.stringify(value)));
-}
-
-function base64UrlBytes(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/u, "");
-}
