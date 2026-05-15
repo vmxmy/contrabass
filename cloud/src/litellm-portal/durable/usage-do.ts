@@ -353,6 +353,117 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
       requests: Number(r.r),
     }));
   }
+
+  async queryHourOfDay(opts: {
+    scope: { kind: "global" } | { kind: "user"; userId: string };
+    fromMs: number;
+    toMs: number;
+  }): Promise<Array<{ hour: number; totalTokens: number; requests: number; spend: number }>> {
+    const sql = await this.sql();
+    const out = Array.from({ length: 24 }, (_, hour) => ({
+      hour,
+      totalTokens: 0,
+      requests: 0,
+      spend: 0,
+    }));
+    if (sql === null) return out;
+    const { clause, arg } = this.scopeClause(opts.scope);
+    const args: SqlStorageValue[] = arg === null ? [opts.fromMs, opts.toMs] : [opts.fromMs, opts.toMs, arg];
+    const rows = sql
+      .exec<SqlRow>(
+        `SELECT ts_ms, total_tokens, spend
+         FROM cb_usage_events
+        WHERE ts_ms >= ? AND ts_ms < ?${clause}`,
+        ...args,
+      )
+      .toArray();
+    for (const r of rows) {
+      const d = new Date(Number(r.ts_ms) + TZ_OFFSET_MS);
+      const h = d.getUTCHours();
+      out[h].totalTokens += Number(r.total_tokens);
+      out[h].requests += 1;
+      out[h].spend += Number(r.spend);
+    }
+    for (const b of out) b.spend = Math.round(b.spend * 1e6) / 1e6;
+    return out;
+  }
+
+  async queryPerUserSeries(opts: {
+    grain: "hour" | "day";
+    fromMs: number;
+    toMs: number;
+    topN: number;
+  }): Promise<Array<{ userId: string; points: Array<{ startMs: number; spend: number }> }>> {
+    const sql = await this.sql();
+    if (sql === null) return [];
+    const top = sql
+      .exec<SqlRow>(
+        `SELECT user_id, COALESCE(SUM(spend),0) AS s
+         FROM cb_usage_events
+        WHERE ts_ms >= ? AND ts_ms < ?
+        GROUP BY user_id
+        ORDER BY s DESC
+        LIMIT ?`,
+        opts.fromMs,
+        opts.toMs,
+        opts.topN,
+      )
+      .toArray()
+      .map((r) => String(r.user_id));
+    const series: Array<{ userId: string; points: Array<{ startMs: number; spend: number }> }> = [];
+    for (const userId of top) {
+      const rows = sql
+        .exec<SqlRow>(
+          `SELECT ts_ms, spend FROM cb_usage_events
+          WHERE user_id = ? AND ts_ms >= ? AND ts_ms < ?
+          ORDER BY ts_ms ASC`,
+          userId,
+          opts.fromMs,
+          opts.toMs,
+        )
+        .toArray();
+      const m = new Map<number, number>();
+      for (const r of rows) {
+        const key = opts.grain === "day" ? shanghaiDayStartMs(Number(r.ts_ms)) : shanghaiHourStartMs(Number(r.ts_ms));
+        m.set(key, (m.get(key) ?? 0) + Number(r.spend));
+      }
+      series.push({
+        userId,
+        points: [...m.entries()]
+          .sort((a, b) => a[0] - b[0])
+          .map(([startMs, spend]) => ({ startMs, spend: Math.round(spend * 1e6) / 1e6 })),
+      });
+    }
+    return series;
+  }
+
+  async queryUserDetail(opts: { userId: string; fromMs: number; toMs: number }): Promise<{
+    spend: number;
+    requests: number;
+    totalTokens: number;
+    models: Array<{ model: string; spend: number; totalTokens: number; requests: number }>;
+    hours: Array<{ hour: number; totalTokens: number; requests: number; spend: number }>;
+  }> {
+    const scope = { kind: "user" as const, userId: opts.userId };
+    const [models, hours, kpi] = await Promise.all([
+      this.queryModelBreakdown({ scope, fromMs: opts.fromMs, toMs: opts.toMs }),
+      this.queryHourOfDay({ scope, fromMs: opts.fromMs, toMs: opts.toMs }),
+      this.queryKpiWithDelta({
+        scope,
+        currentFromMs: opts.fromMs,
+        currentToMs: opts.toMs,
+        previousFromMs: opts.fromMs,
+        previousToMs: opts.fromMs,
+      }),
+    ]);
+    return {
+      spend: kpi.current.spend,
+      requests: kpi.current.requests,
+      totalTokens: kpi.current.totalTokens,
+      models,
+      hours,
+    };
+  }
 }
 
 export { firstRow };

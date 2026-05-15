@@ -189,3 +189,90 @@ describe("UsageDO queryTimeseries + queryModelBreakdown", () => {
     expect(r).toEqual([{ model: "gpt", spend: 3, totalTokens: 5, requests: 2 }]);
   });
 });
+
+describe("UsageDO hourOfDay + perUserSeries + userDetail", () => {
+  const t09 = Date.parse("2026-05-13T09:30:00+08:00");
+  const t09b = Date.parse("2026-05-13T09:45:00+08:00");
+  const t14 = Date.parse("2026-05-13T14:00:00+08:00");
+
+  async function seed(obj: UsageDO) {
+    await obj.writeSpendEvents([
+      {
+        requestId: "a",
+        tsMs: t09,
+        userId: "u1",
+        teamId: "t",
+        model: "gpt",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 2,
+        spend: 1,
+      },
+      {
+        requestId: "b",
+        tsMs: t09b,
+        userId: "u1",
+        teamId: "t",
+        model: "gpt",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 3,
+        spend: 2,
+      },
+      {
+        requestId: "c",
+        tsMs: t14,
+        userId: "u2",
+        teamId: "t",
+        model: "claude",
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 4,
+        spend: 3,
+      },
+    ]);
+  }
+
+  it("queryHourOfDay returns 24 buckets, summed into hour-of-day", async () => {
+    const obj = makeUsageDO();
+    await seed(obj);
+    const r = await obj.queryHourOfDay({
+      scope: { kind: "global" },
+      fromMs: Date.parse("2026-05-13T00:00:00+08:00"),
+      toMs: Date.parse("2026-05-14T00:00:00+08:00"),
+    });
+    expect(r).toHaveLength(24);
+    expect(r[9]).toEqual({ hour: 9, totalTokens: 5, requests: 2, spend: 3 });
+    expect(r[14]).toEqual({ hour: 14, totalTokens: 4, requests: 1, spend: 3 });
+    expect(r[0]).toEqual({ hour: 0, totalTokens: 0, requests: 0, spend: 0 });
+  });
+
+  it("queryPerUserSeries returns one series per user, topN by spend", async () => {
+    const obj = makeUsageDO();
+    await seed(obj);
+    const r = await obj.queryPerUserSeries({
+      grain: "day",
+      fromMs: Date.parse("2026-05-13T00:00:00+08:00"),
+      toMs: Date.parse("2026-05-14T00:00:00+08:00"),
+      topN: 5,
+    });
+    const u2 = r.find((s) => s.userId === "u2");
+    const u1 = r.find((s) => s.userId === "u1");
+    expect(u2?.points[0].spend).toBe(3);
+    expect(u1?.points[0].spend).toBe(3);
+  });
+
+  it("queryUserDetail aggregates models + hours for one user", async () => {
+    const obj = makeUsageDO();
+    await seed(obj);
+    const d = await obj.queryUserDetail({
+      userId: "u1",
+      fromMs: Date.parse("2026-05-13T00:00:00+08:00"),
+      toMs: Date.parse("2026-05-14T00:00:00+08:00"),
+    });
+    expect(d.spend).toBe(3);
+    expect(d.requests).toBe(2);
+    expect(d.models).toEqual([{ model: "gpt", spend: 3, totalTokens: 5, requests: 2 }]);
+    expect(d.hours[9]).toEqual({ hour: 9, totalTokens: 5, requests: 2, spend: 3 });
+  });
+});
