@@ -629,6 +629,33 @@ async function requireAdmin(c: Context<HonoEnv>, next: () => Promise<void>): Pro
   await next();
 }
 
+function tenantTeamIdFromReq(c: Context<HonoEnv>): string | null {
+  const p = c.req.param("teamId");
+  if (!p) return null;
+  try {
+    return decodeURIComponent(p).trim() || null;
+  } catch {
+    return null; // malformed → treated as no team id → requireTenantAdmin returns 403
+  }
+}
+
+async function requireTenantAdmin(c: Context<HonoEnv>, next: () => Promise<void>): Promise<Response | void> {
+  const id = c.get("identity");
+  // Platform admin is a superset (Owner / impersonation).
+  if (id.role === "admin") { await next(); return; }
+  const targetTeam = tenantTeamIdFromReq(c) ?? id.tenantTeamId;
+  if (
+    id.tenantRole === "tenant_admin" &&
+    id.tenantTeamId != null &&
+    targetTeam != null &&
+    targetTeam === id.tenantTeamId
+  ) {
+    await next();
+    return;
+  }
+  return c.json({ error: "tenant_admin_required" }, 403);
+}
+
 // ---------------------------------------------------------------------------
 // One-route-per-sub-app typed chains (avoids TS2589 from long accumulation)
 // ---------------------------------------------------------------------------
