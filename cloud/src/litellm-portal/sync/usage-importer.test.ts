@@ -188,6 +188,34 @@ describe("toSpendEvent userId/teamId field resolution", () => {
     expect(ev?.teamId).toBe("team-meta");
   });
 
+  it("(a2) resolves userId/teamId when metadata is a JSON-encoded STRING (LiteLLM key-auth shape)", async () => {
+    const ev = await extractEvent({
+      metadata: JSON.stringify({ user_api_key_user_id: "laoxu", user_api_key_team_id: "t1" }),
+      user_id: "wrong-user",
+      team_id: "wrong-team",
+    });
+    expect(ev?.userId).toBe("laoxu");
+    expect(ev?.teamId).toBe("t1");
+  });
+
+  it("(a3) falls back gracefully (no throw) when metadata is an invalid JSON string", async () => {
+    const ev = await extractEvent({
+      metadata: "{not valid json",
+      user_id: "fallback-user",
+      team_id: "fallback-team",
+    });
+    expect(ev?.userId).toBe("fallback-user");
+    expect(ev?.teamId).toBe("fallback-team");
+  });
+
+  it("(a4) metadata object still works (regression)", async () => {
+    const ev = await extractEvent({
+      metadata: { user_api_key_user_id: "obj-user", user_api_key_team_id: "obj-team" },
+    });
+    expect(ev?.userId).toBe("obj-user");
+    expect(ev?.teamId).toBe("obj-team");
+  });
+
   it("(b) falls back to top-level user when metadata is absent", async () => {
     const ev = await extractEvent({ user: "user-from-top-level" });
     expect(ev?.userId).toBe("user-from-top-level");
@@ -233,7 +261,7 @@ describe("toSpendEvent userId/teamId field resolution", () => {
 describe("ingestSpendLogs one-time mapping migration sentinel", () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it("calls resetSpendLogsCursorForMappingMigration when sentinel is absent", async () => {
+  it("calls resetSpendLogsCursorForMappingMigration with version 3 when sentinel is absent", async () => {
     const usage = makeUsageStub();
     const env = makeEnv(usage);
     globalThis.fetch = vi.fn().mockResolvedValue(
@@ -241,13 +269,28 @@ describe("ingestSpendLogs one-time mapping migration sentinel", () => {
     );
     await ingestSpendLogs(env);
     expect(usage.resetSpendLogsCursorForMappingMigration).toHaveBeenCalledOnce();
-    expect(usage.resetSpendLogsCursorForMappingMigration).toHaveBeenCalledWith(2);
+    expect(usage.resetSpendLogsCursorForMappingMigration).toHaveBeenCalledWith(3);
   });
 
-  it("does NOT call resetSpendLogsCursorForMappingMigration when sentinel already at version 2 (idempotent)", async () => {
+  it("re-fires the reset once when stored sentinel is the older version 2", async () => {
     const usage = makeUsageStub();
-    // Pre-seed the sentinel at version 2.
+    // Stored sentinel is v2 (the metadata-string fix bumped it to v3).
     await usage.resetSpendLogsCursorForMappingMigration(2);
+    usage.resetSpendLogsCursorForMappingMigration.mockClear();
+
+    const env = makeEnv(usage);
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: [], total_pages: 1 }), { status: 200 }),
+    );
+    await ingestSpendLogs(env);
+    expect(usage.resetSpendLogsCursorForMappingMigration).toHaveBeenCalledOnce();
+    expect(usage.resetSpendLogsCursorForMappingMigration).toHaveBeenCalledWith(3);
+  });
+
+  it("does NOT call resetSpendLogsCursorForMappingMigration when sentinel already at version 3 (idempotent)", async () => {
+    const usage = makeUsageStub();
+    // Pre-seed the sentinel at the current version 3.
+    await usage.resetSpendLogsCursorForMappingMigration(3);
     usage.resetSpendLogsCursorForMappingMigration.mockClear();
 
     const env = makeEnv(usage);

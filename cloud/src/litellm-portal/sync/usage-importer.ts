@@ -12,7 +12,9 @@ const BACKFILL_MS = 30 * 86400000;
 
 // Sentinel version for the one-time user_id/team_id mapping migration.
 // Increment this to force a re-backfill of the 30d spend_logs window.
-const SPEND_LOGS_MAPPING_VERSION = 2;
+// v3: metadata-as-JSON-string fix — re-pull 30d so `""`-userId rows that were
+// caused by `metadata` arriving as a serialized string get corrected in place.
+const SPEND_LOGS_MAPPING_VERSION = 3;
 const SPEND_LOGS_MAPPING_SOURCE = "spend_logs_userid_mapping_v";
 
 export type IngestResult = { ingested: number; error: string | null };
@@ -44,13 +46,33 @@ function parseEventDate(record: Record<string, unknown>): number | undefined {
 }
 
 /**
- * Safely read a string value from a nested path within a record.
- * `record.metadata` is `Record<string,unknown>|null`; guards with isRecord at each step.
+ * Return `record.metadata` as a record. LiteLLM `/spend/logs/v2` serializes the
+ * `SpendLogs.metadata` JSONB column as a JSON-encoded *string* for most key-auth
+ * traffic, but older/other shapes pass it as an object. Tolerate both; return
+ * undefined for anything else (including unparseable strings).
  */
-function nestedString(record: Record<string, unknown>, path: [string, string]): string | undefined {
-  const parent = record[path[0]];
-  if (!isRecord(parent)) return undefined;
-  const v = parent[path[1]];
+function metadataRecord(record: Record<string, unknown>): Record<string, unknown> | undefined {
+  const meta = record.metadata;
+  if (isRecord(meta)) return meta;
+  if (typeof meta === "string" && meta.trim().length > 0) {
+    try {
+      const parsed: unknown = JSON.parse(meta);
+      return isRecord(parsed) ? parsed : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Safely read a trimmed non-empty string value from `record.metadata[key]`,
+ * tolerating `metadata` being either an object or a JSON-encoded string.
+ */
+function metadataString(record: Record<string, unknown>, key: string): string | undefined {
+  const meta = metadataRecord(record);
+  if (meta === undefined) return undefined;
+  const v = meta[key];
   return typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
 }
 
@@ -61,7 +83,7 @@ function nestedString(record: Record<string, unknown>, path: [string, string]): 
  */
 function resolveUserId(record: Record<string, unknown>): string {
   return (
-    nestedString(record, ["metadata", "user_api_key_user_id"]) ??
+    metadataString(record, "user_api_key_user_id") ??
     firstString(record, ["user", "user_id", "userId", "end_user"]) ??
     ""
   );
@@ -74,7 +96,7 @@ function resolveUserId(record: Record<string, unknown>): string {
  */
 function resolveTeamId(record: Record<string, unknown>): string {
   return (
-    nestedString(record, ["metadata", "user_api_key_team_id"]) ??
+    metadataString(record, "user_api_key_team_id") ??
     firstString(record, ["team_id", "teamId"]) ??
     ""
   );
