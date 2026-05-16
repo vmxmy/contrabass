@@ -13,9 +13,15 @@ afterEach(() => {
 // Mock IndexDO factory
 // ---------------------------------------------------------------------------
 
-function makeIndexDO(usersByEmail: Record<string, { role: "admin" | "user" } | null>): DurableObjectNamespace {
+function makeIndexDO(
+  usersByEmail: Record<string, { role: "admin" | "user"; userId?: string } | null>,
+): DurableObjectNamespace {
   const stub = {
-    getUserByEmail: vi.fn(async (email: string) => usersByEmail[email] ?? null),
+    getUserByEmail: vi.fn(async (email: string) => {
+      const u = usersByEmail[email];
+      if (u == null) return null;
+      return { role: u.role, userId: u.userId ?? email };
+    }),
   };
   return {
     idFromName: vi.fn(() => "idx-id" as unknown as DurableObjectId),
@@ -82,22 +88,43 @@ function devRequest(url: string, email: string, init: RequestInit = {}): Request
 
 describe("role-cache", () => {
   describe("getRole", () => {
-    it("returns role from IndexDO", async () => {
-      const indexDO = makeIndexDO({ "alice@gz-zhiyun.com": { role: "user" } });
+    it("returns role and the IndexDO-stored litellm user_id (not the email)", async () => {
+      const indexDO = makeIndexDO({
+        "xu@gz-zhiyun.com": { role: "user", userId: "laoxu" },
+      });
       const env = baseEnv({ INDEX_DO: indexDO });
-      const result = await getRole(env, "alice@gz-zhiyun.com");
+      const result = await getRole(env, "xu@gz-zhiyun.com");
 
       expect(result.role).toBe("user");
-      expect(result.litellmUserId).toBe("alice@gz-zhiyun.com");
+      expect(result.litellmUserId).toBe("laoxu");
     });
 
-    it("returns admin role from IndexDO", async () => {
-      const indexDO = makeIndexDO({ "bob@gz-zhiyun.com": { role: "admin" } });
+    it("returns admin role from IndexDO with stored user_id", async () => {
+      const indexDO = makeIndexDO({
+        "bob@gz-zhiyun.com": { role: "admin", userId: "bob-uid" },
+      });
       const env = baseEnv({ INDEX_DO: indexDO });
       const result = await getRole(env, "bob@gz-zhiyun.com");
 
       expect(result.role).toBe("admin");
-      expect(result.litellmUserId).toBe("bob@gz-zhiyun.com");
+      expect(result.litellmUserId).toBe("bob-uid");
+    });
+
+    it("falls back to email as litellmUserId when the user is absent", async () => {
+      const indexDO = makeIndexDO({});
+      const env = baseEnv({ INDEX_DO: indexDO });
+      const result = await getRole(env, "ghost@gz-zhiyun.com");
+
+      expect(result.role).toBe("none");
+      expect(result.litellmUserId).toBe("ghost@gz-zhiyun.com");
+    });
+
+    it("falls back to email when INDEX_DO binding is absent", async () => {
+      const env = baseEnv();
+      const result = await getRole(env, "noidx@gz-zhiyun.com");
+
+      expect(result.role).toBe("none");
+      expect(result.litellmUserId).toBe("noidx@gz-zhiyun.com");
     });
 
     it("returns none when IndexDO has no user", async () => {
