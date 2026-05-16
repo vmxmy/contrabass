@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { UsageDO } from "./usage-do";
+import { SpendEventSchema } from "./usage-schemas";
 import type { LiteLLMPortalEnv } from "../types";
 import { makeTestSqlStorage } from "../../test/sql-storage";
 
@@ -779,5 +780,25 @@ describe("UsageDO queryKpiWithDelta Option A source resolution", () => {
     expect(k.previous.spend).toBe(8);
     expect(k.previous.totalTokens).toBe(52);
     expect(k.previous.requests).toBe(6);
+  });
+});
+
+describe("SpendEventSchema attributed", () => {
+  const base = {
+    requestId: "r1",
+    tsMs: 1000,
+    userId: "u1",
+    teamId: "",
+    model: "gpt",
+    promptTokens: 1,
+    completionTokens: 2,
+    totalTokens: 3,
+    spend: 0.5,
+  };
+  it("defaults attributed to true when omitted (fail-open)", () => {
+    expect(SpendEventSchema.parse(base).attributed).toBe(true);
+  });
+  it("preserves an explicit attributed=false", () => {
+    expect(SpendEventSchema.parse({ ...base, attributed: false }).attributed).toBe(false);
   });
 });

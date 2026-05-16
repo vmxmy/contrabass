@@ -12,6 +12,9 @@ export const SpendEventSchema = z
     completionTokens: z.number().int().nonnegative(),
     totalTokens: z.number().int().nonnegative(),
     spend: z.number().nonnegative(),
+    /** Whether userId belongs to the tenant's registered roster. Defaults true
+     *  so any write path that doesn't set it counts the row (fail-open). */
+    attributed: z.boolean().default(true),
   })
   .strict();
 export type SpendEvent = z.infer<typeof SpendEventSchema>;
