@@ -155,6 +155,7 @@ export class LiteLLMUsageSource implements UsageSource {
         totalTokens: v.totalTokens,
         requests: v.requests,
       }))
+      .filter((m) => m.requests > 0)
       .sort((a, b) => b.spend - a.spend || b.totalTokens - a.totalTokens);
   }
 }

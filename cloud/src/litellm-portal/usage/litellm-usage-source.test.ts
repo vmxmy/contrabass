@@ -31,6 +31,29 @@ describe("LiteLLMUsageSource", () => {
     expect(vi.mocked(globalThis.fetch).mock.calls[0][0]).toContain("user_id=laoxu");
   });
 
+  it("queryModelBreakdown excludes models with zero requests", async () => {
+    // #given a day whose breakdown has a used model and an unused (0-request) model
+    const body = { results: [{
+      date: "2026-05-16",
+      metrics: { spend: 5, api_requests: 50, total_tokens: 100 },
+      breakdown: { models: {
+        "gpt-5.5": { metrics: { spend: 5, api_requests: 50, total_tokens: 100 } },
+        "glm-zero": { metrics: { spend: 0, api_requests: 0, total_tokens: 0 } },
+      } },
+    }] };
+    const now = Date.parse("2026-05-16T23:00:00+08:00");
+    mockFetch(body);
+    const src = new LiteLLMUsageSource(env, now);
+    // #when
+    const models = await src.queryModelBreakdown({
+      scope: { kind: "user", userId: "u" },
+      fromMs: now - 86400000,
+      toMs: now,
+    });
+    // #then the zero-request model is filtered out
+    expect(models.map((m) => m.model)).toEqual(["gpt-5.5"]);
+  });
+
   it("global scope hits /aggregated (no user_id)", async () => {
     mockFetch({ results: [day("2026-05-16", 9, 90)] });
     const src = new LiteLLMUsageSource(env, Date.now());
