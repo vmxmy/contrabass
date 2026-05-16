@@ -134,6 +134,8 @@ describe("litellm portal worker", () => {
       .map((c) => "\\u" + c.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0"))
       .join("");
     expect(allJs).toContain(teamAvgNeedle);
+    // Drift guard: the series must also remain dashed (esbuild minifies `dashed: true` → `dashed:!0`).
+    expect(allJs).toContain("dashed:!0");
   });
 
   it("app.generated.ts contains no CustomEvent bridge, litellm-portal: events, or __litellmPortal globals", () => {
