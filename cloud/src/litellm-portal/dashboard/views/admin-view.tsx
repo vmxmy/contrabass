@@ -6,7 +6,6 @@ import { AlertPanel, type AlertItem } from "../panels/alert-panel";
 import { TrendChart } from "../charts/trend-chart";
 import { ModelDonut } from "../charts/model-donut";
 import { RankBar } from "../charts/rank-bar";
-import { HourBars } from "../charts/hour-bars";
 import { UserTable, type UserRow } from "../panels/user-table";
 import { useAdminUsers } from "../../hooks/use-admin-users";
 import { MemberOverlay } from "./member-overlay";
@@ -75,9 +74,6 @@ export function AdminView() {
           <ModelDonut slices={data.models.map((m) => ({ model: m.model, value: m.spend }))} />
         </Panel>
       </div>
-      <Panel title="团队时段分布">
-        <HourBars buckets={data.hourOfDay.map((h) => ({ hour: h.hour, value: h.totalTokens }))} />
-      </Panel>
       <Panel title="用户明细">
         <UserTable rows={userRows} onSelect={setMember} />
       </Panel>

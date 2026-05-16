@@ -3,8 +3,6 @@ import { useDashboard } from "../use-dashboard";
 import { KpiBand } from "../panels/kpi-band";
 import { TrendChart } from "../charts/trend-chart";
 import { ModelDonut } from "../charts/model-donut";
-import { HourBars } from "../charts/hour-bars";
-
 export function MemberOverlay({
   userId, maxBudget, onClose,
 }: {
@@ -77,9 +75,6 @@ export function MemberOverlay({
               <div className="rounded-xl border border-kumo-line bg-kumo-base p-5">
                 <ModelDonut slices={data.models.map((m) => ({ model: m.model, value: m.spend }))} />
               </div>
-            </div>
-            <div className="mt-4 rounded-xl border border-kumo-line bg-kumo-base p-5">
-              <HourBars buckets={data.hourOfDay.map((h) => ({ hour: h.hour, value: h.totalTokens }))} />
             </div>
           </>
         )}

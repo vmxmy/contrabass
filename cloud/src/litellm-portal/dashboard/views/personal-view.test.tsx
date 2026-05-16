@@ -22,8 +22,6 @@ const RESP = {
          totalTokens: { current: 1000, previous: 900, deltaPct: 11 } },
   trend: [{ startMs: 1, label: "05-01", totalTokens: 10, requests: 2, spend: 1 }],
   models: [{ model: "gpt", spend: 1, totalTokens: 10, requests: 2 }],
-  hourOfDay: Array.from({ length: 24 }, (_, h) => ({ hour: h, totalTokens: 0, requests: 0, spend: 0 })),
-  recent: [{ tsMs: 0, model: "gpt", totalTokens: 10, spend: 0.03 }],
 };
 
 describe("PersonalView", () => {

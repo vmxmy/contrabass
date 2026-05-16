@@ -22,7 +22,6 @@ const MEMBER_RESP = {
          totalTokens: { current: 3000, previous: 2500, deltaPct: 20 } },
   trend: [{ startMs: 1000, label: "05-01", totalTokens: 3000, requests: 150, spend: 20.5 }],
   models: [{ model: "gpt-4o", spend: 20.5, totalTokens: 3000, requests: 150 }],
-  hourOfDay: Array.from({ length: 24 }, (_, h) => ({ hour: h, totalTokens: h * 10, requests: 0, spend: 0 })),
 };
 
 const GLOBAL_RESP = {
@@ -33,7 +32,6 @@ const GLOBAL_RESP = {
          totalTokens: { current: 50000, previous: 40000, deltaPct: 25 } },
   trend: [{ startMs: 1000, label: "05-01", totalTokens: 50000, requests: 1247, spend: 128.5 }],
   models: [{ model: "gpt-4o", spend: 128.5, totalTokens: 50000, requests: 1247 }],
-  hourOfDay: Array.from({ length: 24 }, (_, h) => ({ hour: h, totalTokens: 0, requests: 0, spend: 0 })),
   summary: { userCount: 10, adminCount: 2, teamCount: 3, totalSpend: 128.5, totalBudget: 300, riskCount: 1, sampled: false },
 };
 
