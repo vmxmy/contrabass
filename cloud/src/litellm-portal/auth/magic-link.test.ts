@@ -78,8 +78,9 @@ describe("issueMagicLink + verifyMagicLink", () => {
 
   it("bad signature returns null", async () => {
     const token = await issueMagicLink(env, "alice@example.com");
-    // Flip last char of the signature portion
-    const tampered = token.slice(0, -1) + (token.slice(-1) === "A" ? "B" : "A");
+    // Tamper the second-to-last char (not the last — it encodes only 4 effective bits
+    // for a 32-byte HMAC, so certain substitutions produce identical decoded bytes).
+    const tampered = token.slice(0, -2) + (token.slice(-2, -1) === "A" ? "B" : "A") + token.slice(-1);
     const result = await verifyMagicLink(env, tampered);
     expect(result).toBeNull();
   });
