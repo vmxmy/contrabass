@@ -4,9 +4,8 @@
  */
 const messages: Record<string, string> = {
   // Header / platform
-  "Cloudflare Access 已保护": "Cloudflare Access 已保护",
-  "面向智云团队的 AI 能力自助台：只读查看个人 API Key、团队可用模型、预算与近 30 天用量，数据权限自动绑定当前登录邮箱。":
-    "面向智云团队的 AI 能力自助台：只读查看个人 API Key、团队可用模型、预算与近 30 天用量，数据权限自动绑定当前登录邮箱。",
+  "面向智云团队的 AI 能力自助台：仪表盘聚焦用量趋势、预算与模型分布，管理操作集中到独立管理区。":
+    "面向智云团队的 AI 能力自助台：仪表盘聚焦用量趋势、预算与模型分布，管理操作集中到独立管理区。",
 
   // HeaderActions
   "切换浅色模式": "切换浅色模式",
@@ -14,8 +13,9 @@ const messages: Record<string, string> = {
   "深色": "深色",
   "浅色": "浅色",
   "退出登录": "退出登录",
+  "退出当前登录会话": "退出当前登录会话",
 
-  // PortalTabs
+  // Dashboard scope
   "个人视图": "个人视图",
   "全局管理": "全局管理",
 

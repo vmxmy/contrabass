@@ -1,18 +1,16 @@
 /**
  * Root layout route.
  *
- * Renders the shared chrome (header, PortalTabs nav, PortalErrorBanner) and
- * an `<Outlet />` that the child routes fill in. This replaces the monolithic
- * `showUserPanel` / `showAdminPanel` hidden-div switching in the old App.
+ * Renders the shared chrome (header, actions, PortalErrorBanner) and an
+ * `<Outlet />` that the child routes fill in.
  *
  * Hash-compat shim: on first mount we detect `window.location.hash === "#admin"`
- * and replace it with `/admin` so old bookmarks still work.  This shim should be
+ * and replace it with `/` so old bookmarks still work. This shim should be
  * removed after ~4 weeks per tasks.md 5.2.
  */
 
 import React, { useEffect } from "react";
-import { Link, createRootRouteWithContext, Outlet, useRouter, useRouterState } from "@tanstack/react-router";
-import { Tabs } from "@cloudflare/kumo/components/tabs";
+import { Link, createRootRouteWithContext, Outlet, useRouter } from "@tanstack/react-router";
 import { Switch } from "@cloudflare/kumo/components/switch";
 import { Button, LinkButton } from "@cloudflare/kumo/components/button";
 import { Toasty } from "@cloudflare/kumo/components/toast";
@@ -82,7 +80,8 @@ function HeaderActions() {
   const isDark = resolvedMode === "dark";
   return (
     <>
-      <LinkButton href="/preferences" variant="ghost"><Trans>偏好设置</Trans></LinkButton>
+      <LinkButton href="/manage/preferences" variant="ghost"><Trans>偏好设置</Trans></LinkButton>
+      <LinkButton href="/manage" variant="secondary"><Trans>管理</Trans></LinkButton>
       <Switch
         controlFirst={false}
         checked={isDark}
@@ -119,40 +118,6 @@ function initialResolvedTheme(theme: "auto" | "dark" | "light"): "dark" | "light
   return theme === "dark" ? "dark" : "light";
 }
 
-// ---------------------------------------------------------------------------
-// PortalTabs — uses router state to highlight the active tab
-// ---------------------------------------------------------------------------
-
-function PortalTabs() {
-  const router = useRouter();
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
-
-  // Determine active tab from the current path.
-  const activeTab: "user" | "admin" = pathname.startsWith("/admin") ? "admin" : "user";
-
-  function handleTabSelect(next: string) {
-    if (next === "admin") {
-      void router.navigate({ to: "/admin" });
-    } else {
-      void router.navigate({ to: "/" });
-    }
-  }
-
-  return (
-    <Tabs
-      className="mb-10"
-      variant="segmented"
-      value={activeTab}
-      onValueChange={handleTabSelect}
-      tabs={[
-        { value: "user", label: "个人视图" },
-        { value: "admin", label: "全局管理" },
-      ]}
-    />
-  );
-}
-
-
 const KumoRouterLink = React.forwardRef<HTMLAnchorElement, LinkComponentProps>(function KumoRouterLink(
   { href, to, ...props },
   ref,
@@ -181,26 +146,15 @@ function CommandPaletteFallback() {
 function RootLayout() {
   const router = useRouter();
   const { data: me } = useMe();
-  const { data: preferences } = usePreferences();
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
   const isAdmin = me?.role === "admin";
-  const appliedDefaultTabRef = React.useRef(false);
 
-  // Hash-compat shim: redirect `/#admin` → `/admin` once, replacing history.
+  // Hash-compat shim: redirect `/#admin` -> `/` once, replacing history.
   // Remove this block after the compat period (see tasks.md 5.2).
   useEffect(() => {
     if (typeof window !== "undefined" && window.location.hash === "#admin") {
-      void router.navigate({ to: "/admin", replace: true });
+      void router.navigate({ to: "/", replace: true });
     }
   }, [router]);
-
-  useEffect(() => {
-    if (appliedDefaultTabRef.current || me === undefined || preferences === undefined) return;
-    appliedDefaultTabRef.current = true;
-    if (isAdmin && pathname === "/" && preferences.defaultTab === "admin") {
-      void router.navigate({ to: "/admin", replace: true });
-    }
-  }, [isAdmin, me, pathname, preferences, router]);
 
   const platformName = me?.company ?? "智云AI管理平台";
 
@@ -208,16 +162,12 @@ function RootLayout() {
     <main className="container mx-auto px-4 py-10 lg:px-10 lg:py-16">
       <header className="mb-12 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-4">
-          <span className="inline-flex w-fit items-center rounded-full bg-kumo-info-tint/70 px-2.5 py-1 text-xs font-semibold text-kumo-info">
-            Cloudflare Access 已保护
-          </span>
           <div className="space-y-3">
             <h1 className="text-3xl font-semibold tracking-tight text-kumo-strong lg:text-4xl">
               {platformName}
             </h1>
             <p className="max-w-3xl text-base leading-relaxed text-kumo-subtle">
-              面向智云团队的 AI 能力自助台：只读查看个人 API Key、团队可用模型、预算与近 30
-              天用量，数据权限自动绑定当前登录邮箱。
+              面向智云团队的 AI 能力自助台：仪表盘聚焦用量趋势、预算与模型分布，管理操作集中到独立管理区。
             </p>
           </div>
         </div>
@@ -225,12 +175,6 @@ function RootLayout() {
           <HeaderActions />
         </div>
       </header>
-
-      {isAdmin && (
-        <nav id="portal-tabs-root">
-          <PortalTabs />
-        </nav>
-      )}
 
       {isAdmin ? (
         <React.Suspense fallback={<CommandPaletteFallback />}>

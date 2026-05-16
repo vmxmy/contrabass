@@ -4,9 +4,8 @@
  */
 const messages: Record<string, string> = {
   // Header / platform
-  "Cloudflare Access 已保护": "Protected by Cloudflare Access",
-  "面向智云团队的 AI 能力自助台：只读查看个人 API Key、团队可用模型、预算与近 30 天用量，数据权限自动绑定当前登录邮箱。":
-    "AI capability self-service portal for the Zhiyun team: read-only access to personal API Keys, team-available models, budget, and usage for the past 30 days. Data permissions are automatically bound to the currently logged-in email.",
+  "面向智云团队的 AI 能力自助台：仪表盘聚焦用量趋势、预算与模型分布，管理操作集中到独立管理区。":
+    "AI capability self-service portal for the Zhiyun team: dashboards focus on usage trends, budgets, and model distribution; management actions live in the dedicated management area.",
 
   // HeaderActions
   "切换浅色模式": "Switch to light mode",
@@ -14,8 +13,9 @@ const messages: Record<string, string> = {
   "深色": "Dark",
   "浅色": "Light",
   "退出登录": "Log out",
+  "退出当前登录会话": "End the current login session",
 
-  // PortalTabs
+  // Dashboard scope
   "个人视图": "Personal view",
   "全局管理": "Global admin",
 

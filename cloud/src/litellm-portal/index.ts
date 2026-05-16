@@ -32,6 +32,24 @@ const portalChunkByFileName = new Map<string, { fileName: string; js: string }>(
   portalBundleChunks.map((chunk) => [chunk.fileName, chunk]),
 );
 
+function legacyPortalRedirectTarget(url: URL): string | null {
+  const search = url.search;
+  if (url.pathname === "/preferences") return `/manage/preferences${search}`;
+  if (url.pathname === "/admin" || url.pathname === "/admin/usage") return `/${search}`;
+  const mappings = [
+    ["/admin/users", "/manage/users"],
+    ["/admin/teams", "/manage/teams"],
+    ["/admin/audit", "/manage/audit"],
+  ] as const;
+  for (const [from, to] of mappings) {
+    if (url.pathname === from || url.pathname.startsWith(`${from}/`)) {
+      return `${to}${url.pathname.slice(from.length)}${search}`;
+    }
+  }
+  if (url.pathname === "/admin/settings") return `/manage/settings${search}`;
+  return null;
+}
+
 export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMPortalEnv): Promise<Response> {
   const url = new URL(request.url);
 
@@ -62,6 +80,17 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
     url.pathname !== "/favicon.ico";
 
   if (isPortalPage) {
+    const redirectTarget = legacyPortalRedirectTarget(url);
+    if (redirectTarget !== null) {
+      return new Response(null, {
+        status: 302,
+        headers: {
+          ...securityHeaders(),
+          location: redirectTarget,
+        },
+      });
+    }
+
     const nonce = crypto.randomUUID().replace(/-/g, "");
     const { renderPortalSSR } = await import("./server");
     try {

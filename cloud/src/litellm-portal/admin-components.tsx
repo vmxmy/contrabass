@@ -11,7 +11,6 @@ import { Tooltip } from "@cloudflare/kumo/components/tooltip";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { UsageTimeseries } from "./chart";
 import { fmt, fmtInt } from "./lib/format";
-import { AdminView } from "./dashboard/views/admin-view";
 
 function text(value: unknown): string {
   return value == null || value === "" ? "—" : String(value);
@@ -646,7 +645,6 @@ export function AdminSection({ role }: { role: PortalRole }) {
         <Text variant="heading2" as="h2">全局管理（只读）</Text>
         <Badge variant="secondary" className="rounded-full bg-kumo-warning-tint text-kumo-warning">仅管理员可见</Badge>
       </div>
-      <AdminView />
       <div className="space-y-4">
         <div>
           <Text variant="secondary" as="p" className="font-semibold uppercase tracking-wider">资源与权限</Text>
@@ -724,64 +722,3 @@ export function SyncStatusBadge({ lastSyncedAt, lastSyncError, dirty }: SyncStat
   }
   return null;
 }
-
-type TabKey = "user" | "admin";
-
-let portalRolePromise: Promise<PortalRole> | null = null;
-function fetchPortalRoleOnce(): Promise<PortalRole> {
-  if (portalRolePromise) return portalRolePromise;
-  portalRolePromise = fetch("/api/me", { headers: { "content-type": "application/json" } })
-    .then(async (response): Promise<PortalRole> => {
-      if (!response.ok) return "none";
-      const body = await response.json().catch(() => ({}));
-      if (body && (body.role === "admin" || body.role === "user" || body.role === "none")) {
-        return body.role as PortalRole;
-      }
-      return "none";
-    })
-    .catch((): PortalRole => "none");
-  return portalRolePromise;
-}
-
-function usePortalRole(initialRole?: PortalRole): { role: PortalRole; ready: boolean } {
-  const [role, setRole] = useState<PortalRole>(initialRole ?? "none");
-  const [ready, setReady] = useState(initialRole !== undefined);
-  useEffect(() => {
-    if (initialRole !== undefined) return;
-    let cancelled = false;
-    fetchPortalRoleOnce().then((next) => {
-      if (cancelled) return;
-      setRole(next);
-      setReady(true);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [initialRole]);
-  return { role, ready };
-}
-
-export function readTabFromHash(role: PortalRole): TabKey {
-  void role;
-  const hash = typeof window !== "undefined" ? window.location.hash : "";
-  if (hash === "#admin") return "admin";
-  if (hash === "#user") return "user";
-  return "user";
-}
-
-
-export function PortalTabs({ tab, onSelect }: { tab: TabKey; onSelect: (next: TabKey) => void }) {
-  return (
-    <Tabs
-      className="mb-10"
-      variant="segmented"
-      value={tab}
-      onValueChange={(next) => onSelect(next as TabKey)}
-      tabs={[
-        { value: "user", label: "个人视图" },
-        { value: "admin", label: "全局管理" },
-      ]}
-    />
-  );
-}
-

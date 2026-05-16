@@ -17,7 +17,6 @@ import {
   HeroStats,
   TeamsAccessCard,
   ApiKeysCard,
-  PortalTabs,
   HeaderActions,
   type InitialDashboardData,
 } from "./app";
@@ -215,39 +214,6 @@ export const AdminSectionNone: StoryObj<typeof AdminSection> = {
 export const AdminSectionVisible: StoryObj<typeof AdminSection> = {
   name: "Visible (admin role)",
   args: { role: "admin" },
-};
-
-// ---------------------------------------------------------------------------
-// PortalTabs
-// ---------------------------------------------------------------------------
-
-export const PortalTabsMeta: Meta<typeof PortalTabs> = {
-  title: "LiteLLM Portal/PortalTabs",
-  component: PortalTabs,
-  parameters: { layout: "padded" },
-  tags: ["autodocs"],
-  argTypes: {
-    tab: { control: "radio", options: ["user", "admin"] },
-    onSelect: { action: "onSelect" },
-  },
-};
-
-export const PortalTabsUserSelected: StoryObj<typeof PortalTabs> = {
-  name: "User tab selected",
-  args: { tab: "user" },
-};
-
-export const PortalTabsAdminSelected: StoryObj<typeof PortalTabs> = {
-  name: "Admin tab selected",
-  args: { tab: "admin" },
-};
-
-export const PortalTabsInteractive: StoryObj<typeof PortalTabs> = {
-  name: "Interactive",
-  render: () => {
-    const [tab, setTab] = React.useState<"user" | "admin">("user");
-    return <PortalTabs tab={tab} onSelect={setTab} />;
-  },
 };
 
 // ---------------------------------------------------------------------------

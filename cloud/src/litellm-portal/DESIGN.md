@@ -610,10 +610,12 @@ Role 解析**只在 Worker 端进行**（`roles.ts:resolveIdentity`），使用 
 | `routes.ts` | `adminUsersFromDO`, `adminTeamsFromDO`, `adminAuditApp`, `adminUsageOverviewApp` | DO-backed 只读 admin handler（CQRS，零 `litellmFetch`） |
 | `dashboard.ts` | `buildDashboard`, `buildSummary` | 聚合装配层（`UsageDO` + `IndexDO`） |
 | `index.ts` | `requireAdmin` | 中间件守卫，统一 403 兜底 |
-| `dashboard/views/` | `admin-view.tsx`, `member-overlay.tsx`, `personal-view.tsx` | 前端 Kumo 看板与只读成员下钻 |
+| `dashboard/views/` | `usage-dashboard.tsx`, `member-overlay.tsx` | 统一 self/global Kumo 看板与只读成员下钻 |
 
 ---
 
 2026-05-12 `litellm-portal-admin-view` 新增管理员视图章节：role 投影表、trust 边界、5 分钟缓存策略、/api/admin/* 路由清单及只读边界说明。
 
 2026-05-12 `litellm-portal-admin-dashboard-alignment` 对齐管理员与个人 dashboard 心智模型：tabs 改为 `个人视图` / `全局管理`，管理员默认进入个人视图；全局管理按「概览 → 趋势 → 资源与权限 → 审计与风险」排序，并新增有界 `/api/admin/summary` 概览数据。
+
+2026-05-17 `litellm-portal-layout-unification` 将个人/全局用量统一到 `/` 的 `UsageDashboard` 范围切换；管理操作迁移到 `/manage/*` 顶部 tab 区，旧 `/admin/*` 与 `/preferences` 路径保留临时重定向。
