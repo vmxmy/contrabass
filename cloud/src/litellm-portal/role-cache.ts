@@ -16,9 +16,21 @@ const MEM_TTL_MS = 30 * 1000; // 30 seconds
  *  `userId` here (the stored LiteLLM user_id). */
 type IndexDOStub = {
   getUserByEmail(email: string): Promise<{ role: "admin" | "user"; userId: string } | null>;
+  getTenantRole(
+    userId: string,
+    teamId: string,
+  ): Promise<{ tenantRole: "tenant_admin" | "member" } | null>;
 };
 
-type DOCacheEntry = { role: PortalRole; litellmUserId: string | null; expiresAt: number };
+type TenantRole = "tenant_admin" | "member" | null;
+
+type DOCacheEntry = {
+  role: PortalRole;
+  litellmUserId: string | null;
+  tenantRole: TenantRole;
+  tenantTeamId: string | null;
+  expiresAt: number;
+};
 const doCache = new Map<string, DOCacheEntry>();
 
 /**
@@ -32,24 +44,60 @@ const doCache = new Map<string, DOCacheEntry>();
  * Falls back to the email when LiteLLM is unreachable or has no match — never
  * locks the user out (the caller's catch path still applies).
  */
-async function resolveLitellmUserId(env: LiteLLMPortalEnv, email: string): Promise<string> {
+async function resolveLitellmUserAndTeam(
+  env: LiteLLMPortalEnv,
+  email: string,
+): Promise<{ litellmUserId: string; tenantTeamId: string | null }> {
   try {
     const user = await resolveLiteLLMUser(env, email);
-    return user.found && user.userId.trim().length > 0 ? user.userId : email;
+    const litellmUserId =
+      user.found && user.userId.trim().length > 0 ? user.userId : email;
+    const tenantTeamId = user.teamIds.find((id) => id.trim().length > 0)?.trim() ?? null;
+    return { litellmUserId, tenantTeamId };
   } catch {
-    return email;
+    return { litellmUserId: email, tenantTeamId: null };
   }
+}
+
+async function resolveTenantRole(
+  env: LiteLLMPortalEnv,
+  litellmUserId: string | null,
+  tenantTeamId: string | null,
+): Promise<TenantRole> {
+  try {
+    if (env.INDEX_DO && litellmUserId && tenantTeamId) {
+      const idxStub = env.INDEX_DO.get(
+        env.INDEX_DO.idFromName("index"),
+      ) as unknown as IndexDOStub;
+      const rec = await idxStub.getTenantRole(litellmUserId, tenantTeamId);
+      return rec?.tenantRole ?? null;
+    }
+  } catch (err) {
+    // fail-open for the tenant facet; platform role unaffected
+    console.warn("[role-cache] getTenantRole failed (non-fatal):", String(err).slice(0, 120));
+  }
+  return null;
 }
 
 async function resolveRoleAndUserId(
   env: LiteLLMPortalEnv,
   email: string,
-): Promise<{ role: PortalRole; litellmUserId: string | null }> {
+): Promise<{
+  role: PortalRole;
+  litellmUserId: string | null;
+  tenantRole: TenantRole;
+  tenantTeamId: string | null;
+}> {
   const key = email.toLowerCase();
   const now = Date.now();
   const cached = doCache.get(key);
   if (cached && cached.expiresAt > now) {
-    return { role: cached.role, litellmUserId: cached.litellmUserId };
+    return {
+      role: cached.role,
+      litellmUserId: cached.litellmUserId,
+      tenantRole: cached.tenantRole,
+      tenantTeamId: cached.tenantTeamId,
+    };
   }
 
   // Role comes from IndexDO/role-cache (fast). litellmUserId is resolved
@@ -60,9 +108,16 @@ async function resolveRoleAndUserId(
     const user = await idxStub.getUserByEmail(key);
     role = user == null ? "none" : (user.role as PortalRole);
   }
-  const litellmUserId: string | null = await resolveLitellmUserId(env, key);
-  doCache.set(key, { role, litellmUserId, expiresAt: now + MEM_TTL_MS });
-  return { role, litellmUserId };
+  const { litellmUserId, tenantTeamId } = await resolveLitellmUserAndTeam(env, key);
+  const tenantRole = await resolveTenantRole(env, litellmUserId, tenantTeamId);
+  doCache.set(key, {
+    role,
+    litellmUserId,
+    tenantRole,
+    tenantTeamId,
+    expiresAt: now + MEM_TTL_MS,
+  });
+  return { role, litellmUserId, tenantRole, tenantTeamId };
 }
 
 async function getRoleViaIndexDO(env: LiteLLMPortalEnv, email: string): Promise<PortalRole> {
@@ -82,9 +137,17 @@ export async function getRoleForEmail(env: LiteLLMPortalEnv, email: string): Pro
 export async function getRole(
   env: LiteLLMPortalEnv,
   email: string,
-): Promise<{ role: PortalRole; litellmUserId: string }> {
-  const { role, litellmUserId } = await resolveRoleAndUserId(env, email);
-  return { role, litellmUserId: litellmUserId ?? email };
+): Promise<{
+  role: PortalRole;
+  litellmUserId: string;
+  tenantRole: TenantRole;
+  tenantTeamId: string | null;
+}> {
+  const { role, litellmUserId, tenantRole, tenantTeamId } = await resolveRoleAndUserId(
+    env,
+    email,
+  );
+  return { role, litellmUserId: litellmUserId ?? email, tenantRole, tenantTeamId };
 }
 
 export async function invalidateRole(env: LiteLLMPortalEnv, email: string): Promise<void> {

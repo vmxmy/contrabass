@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getRole, getRoleForEmail, invalidateRole, _resetMemoryRoleCacheForTests } from "./role-cache";
 import { handleLiteLLMPortalRequest, type LiteLLMPortalEnv } from "./index";
-import { _clearRoleCacheForTests } from "./roles";
+import { _clearRoleCacheForTests, resolveIdentity } from "./roles";
 import { issueSession, SESSION_COOKIE_NAME } from "./auth/session";
 import * as litellm from "./litellm";
 import type { LiteLLMUser } from "./types";
@@ -39,12 +39,16 @@ afterEach(() => {
 
 function makeIndexDO(
   usersByEmail: Record<string, { role: "admin" | "user"; userId?: string } | null>,
+  tenantRolesByKey: Record<string, { tenantRole: "tenant_admin" | "member" } | null> = {},
 ): DurableObjectNamespace {
   const stub = {
     getUserByEmail: vi.fn(async (email: string) => {
       const u = usersByEmail[email];
       if (u == null) return null;
       return { role: u.role, userId: u.userId ?? email };
+    }),
+    getTenantRole: vi.fn(async (userId: string, teamId: string) => {
+      return tenantRolesByKey[`${userId}|${teamId}`] ?? null;
     }),
   };
   return {
@@ -229,6 +233,53 @@ describe("role-cache", () => {
 
       expect((indexDO.get as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore + 1);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unit tests: resolveIdentity tenant facet (fail-open)
+// ---------------------------------------------------------------------------
+
+describe("resolveIdentity tenant facet", () => {
+  it("populates tenantRole + tenantTeamId from IndexDO", async () => {
+    vi.spyOn(litellm, "resolveLiteLLMUser").mockResolvedValue(
+      litellmUser({ userId: "laoxu", email: "t1user@gz-zhiyun.com", teamIds: ["t1"] }),
+    );
+    const indexDO = makeIndexDO(
+      { "t1user@gz-zhiyun.com": { role: "user" } },
+      { "laoxu|t1": { tenantRole: "tenant_admin" } },
+    );
+    const env = baseEnv({ INDEX_DO: indexDO });
+
+    const result = await resolveIdentity(env, {
+      email: "t1user@gz-zhiyun.com",
+      userId: "t1user@gz-zhiyun.com",
+      domain: "gz-zhiyun.com",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.identity.tenantRole).toBe("tenant_admin");
+    expect(result.identity.tenantTeamId).toBe("t1");
+  });
+
+  it("defaults tenantRole=null when no mapping", async () => {
+    vi.spyOn(litellm, "resolveLiteLLMUser").mockResolvedValue(
+      litellmUser({ userId: "laoxu", email: "nomap@gz-zhiyun.com", teamIds: ["t1"] }),
+    );
+    const indexDO = makeIndexDO({ "nomap@gz-zhiyun.com": { role: "user" } });
+    const env = baseEnv({ INDEX_DO: indexDO });
+
+    const result = await resolveIdentity(env, {
+      email: "nomap@gz-zhiyun.com",
+      userId: "nomap@gz-zhiyun.com",
+      domain: "gz-zhiyun.com",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.identity.tenantRole).toBeNull();
+    expect(result.identity.tenantTeamId).toBe("t1");
   });
 });
 

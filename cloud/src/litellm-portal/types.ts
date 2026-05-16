@@ -80,6 +80,10 @@ export type PortalRole = "admin" | "user" | "none";
 export type PortalIdentity = PortalPrincipal & {
   litellmUserId: string;
   role: PortalRole;
+  /** Portal-level tenant role within the user's team (decoupled from LiteLLM user_role). */
+  tenantRole: "tenant_admin" | "member" | null;
+  /** The team this identity is scoped to for tenant-role purposes (null if none). */
+  tenantTeamId: string | null;
 };
 
 export type IdentityResult =

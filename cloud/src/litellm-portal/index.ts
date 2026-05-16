@@ -124,7 +124,7 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
     }
     const html = await renderPortalSSR(
       env,
-      { email: "", userId: "", domain: "", litellmUserId: "", role: "none" },
+      { email: "", userId: "", domain: "", litellmUserId: "", role: "none", tenantRole: null, tenantTeamId: null },
       null,
       nonce,
       request.url,

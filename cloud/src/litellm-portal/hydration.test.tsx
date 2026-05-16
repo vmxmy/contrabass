@@ -45,6 +45,8 @@ function makeIdentity(role: PortalRole): PortalIdentity {
     domain: "gz-zhiyun.com",
     litellmUserId: "litellm_operator",
     role,
+    tenantRole: null,
+    tenantTeamId: null,
   };
 }
 
