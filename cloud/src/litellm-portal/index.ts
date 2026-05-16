@@ -79,7 +79,14 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
           }
           const initialData: JsonValue =
             dashboard !== null ? dashboard : { error: dashboardError ?? "dashboard_load_failed" };
-          const html = await renderPortalSSR(env, identityResult.identity, initialData, nonce, request.url);
+          const html = await renderPortalSSR(
+            env,
+            identityResult.identity,
+            initialData,
+            nonce,
+            request.url,
+            request.headers.get("accept-language"),
+          );
           return htmlResponse(html, nonce);
         }
       }
@@ -92,6 +99,7 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
       null,
       nonce,
       request.url,
+      request.headers.get("accept-language"),
     );
     return htmlResponse(html, nonce);
   }
