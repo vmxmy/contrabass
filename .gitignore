@@ -64,3 +64,6 @@ cloud/pnpm-lock.yaml
 # Cloudflare Workers local secrets (never commit)
 .dev.vars
 **/.dev.vars
+
+# Superpowers brainstorm artifacts
+.superpowers/
