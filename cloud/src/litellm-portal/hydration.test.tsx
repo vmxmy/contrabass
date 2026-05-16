@@ -21,10 +21,10 @@ import { RouterProvider } from "@tanstack/react-router";
 import { renderPortalSSR } from "./server-impl";
 import { AppShell } from "./routes/__root";
 import { Shell } from "./shell";
+import { readClientHydrationState } from "./client-hydration-state";
 import { createPortalRouter, createBrowserHistory } from "./router";
 import { detectLocale, setupI18n } from "./i18n/setup";
 import type { LiteLLMPortalEnv, PortalIdentity } from "./types";
-import type { UserPreferences } from "./schemas";
 
 // React.act requires this flag to be set in non-RTL test environments;
 // without it React logs a noisy (non-hydration) console.error on every
@@ -51,37 +51,16 @@ function makeIdentity(role: PortalRole): PortalIdentity {
 /**
  * Mirror the real client bootstrap (client.tsx): parse the #initial-data
  * script the server emitted, build a browser router, and hydrate the existing
- * #root subtree WITHOUT a seeded query client — the client only has the
+ * document WITHOUT a seeded query client — the client only has the
  * dehydrated state, exactly the production client condition.
  */
 async function hydrateLikeClient(): Promise<void> {
   const { hydrateRoot } = await import("react-dom/client");
-
-  let dehydratedState: unknown = undefined;
-  let role: PortalRole | undefined;
-  const dataEl = document.getElementById("initial-data");
-  if (dataEl?.textContent) {
-    const parsed = JSON.parse(dataEl.textContent) as {
-      queryClient?: unknown;
-      role?: unknown;
-    };
-    dehydratedState = parsed.queryClient;
-    const r = parsed.role;
-    role = r === "admin" || r === "user" || r === "none" ? r : undefined;
-  }
+  const { title, nonce, shellInitialData, dehydratedState, role, initialTheme } = readClientHydrationState(document);
 
   const ssrLocale = document.documentElement.lang || null;
   const locale = detectLocale(ssrLocale);
   const i18n = setupI18n(locale);
-
-  // Read Shell props back from the rendered DOM — mirrors client.tsx exactly.
-  const title = document.title;
-  const modeAttr = document.documentElement.dataset.mode;
-  const initialTheme: UserPreferences["theme"] =
-    modeAttr === "dark" || modeAttr === "light" ? modeAttr : "auto";
-  // Read nonce from the foucScript <script> tag so it matches the server value.
-  const nonceScript = document.head.querySelector("script[nonce]");
-  const nonce = nonceScript?.getAttribute("nonce") ?? "";
 
   const history = createBrowserHistory();
   const router = createPortalRouter(history, { role });
@@ -102,7 +81,7 @@ async function hydrateLikeClient(): Promise<void> {
         <Shell
           title={title}
           nonce={nonce}
-          initialData={null}
+          initialData={shellInitialData}
           initialTheme={initialTheme}
           locale={locale}
         >
@@ -149,6 +128,31 @@ describe("litellm-portal SSR hydration (#418 guard)", () => {
   afterEach(() => {
     errorSpy.mockRestore();
     warnSpy.mockRestore();
+  });
+
+  it("client bootstrap reuses the server Shell head payload", async () => {
+    const html = await renderPortalSSR(
+      makeEnv(),
+      makeIdentity("admin"),
+      { role: "admin" } as unknown as Parameters<typeof renderPortalSSR>[2],
+      "test-nonce",
+      "http://localhost/",
+      "zh-CN",
+    );
+    loadSsrDocument(html);
+
+    // The FOUC script may have resolved auto -> dark/light before hydration, but
+    // the client Shell must still render the original server theme ("auto") so
+    // the inline script text matches during hydration.
+    document.documentElement.dataset.mode = "dark";
+    const state = readClientHydrationState(document);
+
+    expect(state.nonce).toBe("test-nonce");
+    expect(state.initialTheme).toBe("auto");
+    expect(state.shellInitialData).not.toBeNull();
+    expect(state.shellInitialData).toHaveProperty("queryClient");
+    expect(state.initialData).not.toHaveProperty("queryClient");
+    expect(state.role).toBe("admin");
   });
 
   for (const role of ["user", "admin"] as const) {

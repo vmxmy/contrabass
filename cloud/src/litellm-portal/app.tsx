@@ -395,7 +395,7 @@ export function HeaderActions() {
   const { data: preferences } = usePreferences();
   const updatePreferences = useUpdatePreferences();
   const theme = preferences?.theme ?? "auto";
-  const [resolvedMode, setResolvedMode] = useState<"dark" | "light">(() => resolvedTheme(theme));
+  const [resolvedMode, setResolvedMode] = useState<"dark" | "light">(() => initialResolvedTheme(theme));
 
   useEffect(() => {
     const syncTheme = () => {
@@ -443,6 +443,12 @@ function resolvedTheme(theme: "auto" | "dark" | "light"): "dark" | "light" {
     return "dark";
   }
   return "light";
+}
+
+function initialResolvedTheme(theme: "auto" | "dark" | "light"): "dark" | "light" {
+  // Keep SSR and the client's first hydration render deterministic; browser
+  // state is applied by HeaderActions' effect after hydration.
+  return theme === "dark" ? "dark" : "light";
 }
 
 function StatTile({

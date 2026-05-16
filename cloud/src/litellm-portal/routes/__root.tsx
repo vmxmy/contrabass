@@ -64,7 +64,7 @@ function HeaderActions() {
   const { data: preferences } = usePreferences();
   const updatePreferences = useUpdatePreferences();
   const theme = preferences?.theme ?? "auto";
-  const [resolvedMode, setResolvedMode] = React.useState<"dark" | "light">(() => resolvedTheme(theme));
+  const [resolvedMode, setResolvedMode] = React.useState<"dark" | "light">(() => initialResolvedTheme(theme));
 
   useEffect(() => {
     const syncTheme = () => {
@@ -110,6 +110,13 @@ function resolvedTheme(theme: "auto" | "dark" | "light"): "dark" | "light" {
     return "dark";
   }
   return "light";
+}
+
+function initialResolvedTheme(theme: "auto" | "dark" | "light"): "dark" | "light" {
+  // Hydration's first render must not read browser-only state. For "auto",
+  // SSR and client both start at light; the effect above syncs the real system
+  // preference immediately after hydration.
+  return theme === "dark" ? "dark" : "light";
 }
 
 // ---------------------------------------------------------------------------

@@ -144,13 +144,13 @@ describe("litellm portal worker", () => {
     expect(portalAppJs).not.toContain("__litellmPortal");
   });
 
-  it("app.generated.ts hydrates #root from initial-data script (not window.__INITIAL_DATA__)", () => {
+  it("app.generated.ts hydrates the document from initial-data script (not window.__INITIAL_DATA__)", () => {
     // P0-01 SSR contract: client must read JSON from <script id="initial-data"> and
-    // hydrate the #root div, not bind window.__INITIAL_DATA__ or hydrate the whole document.
-    // This guards against shipping a stale bundle that doesn't match the SSR shell.
+    // hydrate the full document so the client tree includes Shell/head nodes and
+    // matches the SSR shell exactly.
     expect(portalAppJs).not.toContain("__INITIAL_DATA__");
     expect(portalAppJs).toContain("initial-data");
-    expect(portalAppJs).toContain('"root"');
+    expect(portalAppJs).toContain("document");
   });
 
   it("app.generated.ts records admin code in a separate lazy chunk", () => {
