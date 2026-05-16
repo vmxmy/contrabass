@@ -579,15 +579,16 @@ Role 解析**只在 Worker 端进行**（`roles.ts:resolveIdentity`），使用 
 
 ### /api/admin/* 路由清单
 
-以下路由均为只读，由 `admin.ts` 中的五个 handler 实现：
+以下路由均为只读，由 `routes.ts` 中的 DO-backed handler 实现（CQRS 改造后，原 `admin.ts` 直读 LiteLLM 的实现已删除；用量/概览数据来自 `UsageDO` / `IndexDO`，请求路径零 `litellmFetch`）：
 
-| 路由 | Handler | 说明 |
+| 路由 | 实现 | 说明 |
 |---|---|---|
-| `GET /api/admin/summary` | `adminSummary` | 有界聚合全局用户、团队、花费、预算、角色和风险概览 |
-| `GET /api/admin/users` | `adminListUsers` | 分页列出所有用户（支持 `page` / `size` 查询参数） |
-| `GET /api/admin/teams` | `adminListTeams` | 列出所有团队（含脱敏后的公开字段） |
-| `GET /api/admin/audit` | `adminListAuditEvents` | 分页列出审计事件（支持 `page` / `size`） |
-| `GET /api/admin/usage/timeseries` | `adminGlobalUsageTimeseries` | 全局 Token 用量时序数据（复用 `parseUsageTimeseriesRequest` 参数规范） |
+| `GET /api/admin/users` | `adminUsersFromDO`（routes.ts） | 分页列出所有用户（`IndexDO`，支持 `page` / `size`） |
+| `GET /api/admin/teams` | `adminTeamsFromDO`（routes.ts） | 列出所有团队（`IndexDO`，脱敏公开字段） |
+| `GET /api/admin/audit` | `adminAuditApp`（routes.ts） | 分页列出审计事件（支持 `page` / `size`） |
+| `GET /api/admin/usage/overview[?member=]` | `adminUsageOverviewApp`（routes.ts → `buildDashboard`） | 全局 / 成员用量聚合（KPI 环比、趋势、模型、时段、多线、summary），`UsageDO` + `IndexDO` |
+
+> 已删除：`/api/admin/summary`、`/api/admin/usage/timeseries`（旧直读 LiteLLM 路径，由 `/api/admin/usage/overview` 取代，见 L2/L3 spec）。
 
 未匹配路径或角色不足时，`requireAdmin` 中间件统一返回 `403 { error: "admin_required" }`。
 
@@ -595,9 +596,9 @@ Role 解析**只在 Worker 端进行**（`roles.ts:resolveIdentity`），使用 
 
 本期 portal 管理员视图**不提供任何写操作**。修改用户角色、调整 budget、变更团队归属等操作均需通过 LiteLLM 原生管理 UI 完成；删除 API Key 只在个人视图中按当前用户所有权执行。portal 管理员区的职责仅限于：
 
-- 查看全局概览：用户数、管理员数、团队数、花费、预算和风险项
-- 查看全局 Token 用量时序图，交互方式与个人视图一致：preset rail、Auto grain、手动 grain chip、Kumo Chart brush、bucket table 和 top models
-- 查看全局用户列表与消费分布
+- 查看全局概览：用户数、管理员数、团队数、花费、预算和风险项（`/api/admin/usage/overview` 的 `summary`）
+- 查看全局用量看板（Kumo dashboard）：KPI 环比、消费趋势、模型占比、时段分布、团队多线、用户排行、状态点告警
+- 查看全局用户列表与消费分布，点行进入只读成员下钻 overlay
 - 查看团队列表
 - 查看操作审计日志
 
@@ -606,9 +607,10 @@ Role 解析**只在 Worker 端进行**（`roles.ts:resolveIdentity`），使用 
 | 文件 | 关键标识符 | 说明 |
 |---|---|---|
 | `roles.ts` | `resolveIdentity`, `projectRole` | Role 解析与缓存逻辑 |
-| `admin.ts` | `adminSummary`, `adminListUsers`, `adminListTeams`, `adminListAuditEvents`, `adminGlobalUsageTimeseries` | 5 个只读 handler |
+| `routes.ts` | `adminUsersFromDO`, `adminTeamsFromDO`, `adminAuditApp`, `adminUsageOverviewApp` | DO-backed 只读 admin handler（CQRS，零 `litellmFetch`） |
+| `dashboard.ts` | `buildDashboard`, `buildSummary` | 聚合装配层（`UsageDO` + `IndexDO`） |
 | `index.ts` | `requireAdmin` | 中间件守卫，统一 403 兜底 |
-| `app.tsx` | `AdminSection`, `AdminHeroStats`, `AdminGlobalUsage` | 前端管理员区渲染入口与全局 dashboard 叙事 |
+| `dashboard/views/` | `admin-view.tsx`, `member-overlay.tsx`, `personal-view.tsx` | 前端 Kumo 看板与只读成员下钻 |
 
 ---
 
