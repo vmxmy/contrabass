@@ -268,6 +268,12 @@ describe("litellm portal worker", () => {
       ],
     });
     expect(seen).toEqual([
+      // Identity resolution resolves the authoritative LiteLLM user_id first
+      // (auth-path-independent), then the route handler resolves + lists keys.
+      {
+        url: "https://litellm.test/user/list?user_email=liqingying%40gz-zhiyun.com",
+        auth: "Bearer litellm-master",
+      },
       {
         url: "https://litellm.test/user/list?user_email=liqingying%40gz-zhiyun.com",
         auth: "Bearer litellm-master",
@@ -363,6 +369,8 @@ describe("litellm portal worker", () => {
       teamIds: ["team-zhiyun"],
     });
     expect(seen).toEqual([
+      // Leading /user/list is identity resolution (authoritative litellm user_id).
+      "https://litellm.test/user/list?user_email=jiangyufeng%40gz-zhiyun.com",
       "https://litellm.test/user/list?user_email=jiangyufeng%40gz-zhiyun.com",
       "https://litellm.test/team/info?team_id=team-zhiyun",
     ]);
@@ -960,6 +968,8 @@ describe("litellm portal worker", () => {
       ],
     });
     expect(seen).toEqual([
+      // Leading /user/list is identity resolution (authoritative litellm user_id).
+      "https://litellm.test/user/list?user_email=xu%40ziikoo.com",
       "https://litellm.test/user/list?user_email=xu%40ziikoo.com",
       "https://litellm.test/user/info?user_id=laoxu",
     ]);

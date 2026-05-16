@@ -1,4 +1,5 @@
 import type { LiteLLMPortalEnv, PortalRole } from "./types";
+import { resolveLiteLLMUser } from "./litellm";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -20,6 +21,26 @@ type IndexDOStub = {
 type DOCacheEntry = { role: PortalRole; litellmUserId: string | null; expiresAt: number };
 const doCache = new Map<string, DOCacheEntry>();
 
+/**
+ * Resolve the authoritative LiteLLM user_id for an email.
+ *
+ * This portal authenticates via Cloudflare Access (no magic-link), so the
+ * IndexDO row that `getRole` reads is never reconciled and its `userId` is the
+ * stale email. Spend/usage events are keyed by the real LiteLLM user_id (e.g.
+ * `laoxu`), so self-scope queries must use `resolveLiteLLMUser`'s value.
+ *
+ * Falls back to the email when LiteLLM is unreachable or has no match — never
+ * locks the user out (the caller's catch path still applies).
+ */
+async function resolveLitellmUserId(env: LiteLLMPortalEnv, email: string): Promise<string> {
+  try {
+    const user = await resolveLiteLLMUser(env, email);
+    return user.found && user.userId.trim().length > 0 ? user.userId : email;
+  } catch {
+    return email;
+  }
+}
+
 async function resolveRoleAndUserId(
   env: LiteLLMPortalEnv,
   email: string,
@@ -31,14 +52,15 @@ async function resolveRoleAndUserId(
     return { role: cached.role, litellmUserId: cached.litellmUserId };
   }
 
-  if (!env.INDEX_DO) return { role: "none", litellmUserId: null };
-  const idxStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOStub;
-  const user = await idxStub.getUserByEmail(key);
-  const role: PortalRole = user == null ? "none" : (user.role as PortalRole);
-  const litellmUserId: string | null =
-    user != null && typeof user.userId === "string" && user.userId.length > 0
-      ? user.userId
-      : null;
+  // Role comes from IndexDO/role-cache (fast). litellmUserId is resolved
+  // authoritatively via LiteLLM /user/list so it is auth-path-independent.
+  let role: PortalRole = "none";
+  if (env.INDEX_DO) {
+    const idxStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOStub;
+    const user = await idxStub.getUserByEmail(key);
+    role = user == null ? "none" : (user.role as PortalRole);
+  }
+  const litellmUserId: string | null = await resolveLitellmUserId(env, key);
   doCache.set(key, { role, litellmUserId, expiresAt: now + MEM_TTL_MS });
   return { role, litellmUserId };
 }
