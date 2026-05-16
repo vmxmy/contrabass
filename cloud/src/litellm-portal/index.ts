@@ -1,13 +1,7 @@
 import { portalAppJs, portalBundleChunks } from "./app.generated";
 import { kumoStandaloneCss } from "./kumo-css.generated";
 import { authenticateRequest } from "./auth";
-import {
-  cssResponse,
-  htmlResponse,
-  javascriptResponse,
-  jsonResponse,
-  securityHeaders,
-} from "./utils";
+import { cssResponse, htmlResponse, javascriptResponse, jsonResponse, securityHeaders } from "./utils";
 import { resolveIdentity } from "./roles";
 import { app as honoApp, loadDashboard } from "./routes";
 import { detectLeakInResponse } from "./security/leak-detector";
@@ -19,14 +13,10 @@ import { checkClientErrorRateLimit, recordClientError } from "./observability/cl
 import type { ClientErrorPayload } from "./observability/client-error";
 import { scanBudgetThresholds } from "./notifications";
 import { runSpendSnapshotTick } from "./sync/spend-snapshot-cron";
+import { ingestSpendLogs, refreshDailyActivity, pruneUsageRetention } from "./sync/usage-importer";
 import { handleLiteLLMSyncBatch } from "./sync/queue-consumer";
 import type { SyncMessage } from "./durable/schemas";
-import {
-  handleLoginGet,
-  handleLoginPost,
-  handleMagicCallback,
-  handleLogout,
-} from "./auth/login-routes";
+import { handleLoginGet, handleLoginPost, handleMagicCallback, handleLogout } from "./auth/login-routes";
 import { checkCsrf } from "./auth/csrf";
 
 export type { LiteLLMPortalEnv } from "./types";
@@ -37,6 +27,7 @@ export type { LiteLLMPortalEnv } from "./types";
 export { RateLimitDO as RateLimitDOSQLite } from "./security/rate-limit-do";
 export { IndexDO as IndexDOSQLite } from "./durable/index-do";
 export { TeamConfigDO as TeamConfigDOSQLite } from "./durable/team-config-do";
+export { UsageDO as UsageDOSQLite } from "./durable/usage-do";
 
 const portalChunkByFileName = new Map<string, { fileName: string; js: string }>(
   portalBundleChunks.map((chunk) => [chunk.fileName, chunk]),
@@ -54,7 +45,7 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
 
   // Auth-bypass routes
   if (url.pathname === "/logout" && request.method === "POST") return handleLogout(request, env);
-  if (url.pathname === "/login" && request.method === "GET")  return handleLoginGet(request, env);
+  if (url.pathname === "/login" && request.method === "GET") return handleLoginGet(request, env);
   if (url.pathname === "/login" && request.method === "POST") return handleLoginPost(request, env);
   if (url.pathname === "/magic-callback" && request.method === "GET") return handleMagicCallback(request, env);
 
@@ -63,7 +54,8 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
   // directly linked and deep-linked.  Asset paths (/kumo.css, /portal.js,
   // /favicon.ico) are handled by their own branches below; /api/* goes to
   // the Hono app at the end of this handler.
-  const isPortalPage = request.method === "GET" &&
+  const isPortalPage =
+    request.method === "GET" &&
     !url.pathname.startsWith("/api/") &&
     !url.pathname.startsWith("/portal-chunks/") &&
     url.pathname !== "/kumo.css" &&
@@ -85,9 +77,8 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
           } catch (err) {
             dashboardError = err instanceof Error ? err.message : "dashboard_load_failed";
           }
-          const initialData: JsonValue = dashboard !== null
-            ? dashboard
-            : { error: dashboardError ?? "dashboard_load_failed" };
+          const initialData: JsonValue =
+            dashboard !== null ? dashboard : { error: dashboardError ?? "dashboard_load_failed" };
           const html = await renderPortalSSR(env, identityResult.identity, initialData, nonce, request.url);
           return htmlResponse(html, nonce);
         }
@@ -95,7 +86,13 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
     } catch {
       // fall through to unauthenticated shell
     }
-    const html = await renderPortalSSR(env, { email: "", userId: "", domain: "", litellmUserId: "", role: "none" }, null, nonce, request.url);
+    const html = await renderPortalSSR(
+      env,
+      { email: "", userId: "", domain: "", litellmUserId: "", role: "none" },
+      null,
+      nonce,
+      request.url,
+    );
     return htmlResponse(html, nonce);
   }
 
@@ -156,9 +153,7 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
   try {
     const apiResponse = await honoApp.fetch(request, env);
     // Apply leak detector only on admin routes where master-key material could appear.
-    const scanned = url.pathname.startsWith("/api/admin/")
-      ? await detectLeakInResponse(apiResponse)
-      : apiResponse;
+    const scanned = url.pathname.startsWith("/api/admin/") ? await detectLeakInResponse(apiResponse) : apiResponse;
     const securedResponse = withSecurityHeaders(scanned);
     recordMetric(env, {
       route: url.pathname,
@@ -188,7 +183,7 @@ async function handleClientError(request: Request, env: LiteLLMPortalEnv): Promi
   const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
   let payload: ClientErrorPayload;
   try {
-    payload = await request.json() as ClientErrorPayload;
+    payload = (await request.json()) as ClientErrorPayload;
   } catch {
     return jsonResponse({ error: "invalid_json" }, 400);
   }
@@ -212,12 +207,16 @@ async function handleClientError(request: Request, env: LiteLLMPortalEnv): Promi
 
   for (const event of payload.events) {
     if (typeof event?.message === "string" && typeof event?.sessionId === "string") {
-      recordClientError(env, {
-        message: event.message,
-        stack: typeof event.stack === "string" ? event.stack : undefined,
-        sessionId: event.sessionId,
-        ts: typeof event.ts === "string" ? event.ts : new Date().toISOString(),
-      }, ip);
+      recordClientError(
+        env,
+        {
+          message: event.message,
+          stack: typeof event.stack === "string" ? event.stack : undefined,
+          sessionId: event.sessionId,
+          ts: typeof event.ts === "string" ? event.ts : new Date().toISOString(),
+        },
+        ip,
+      );
     }
   }
 
@@ -229,10 +228,19 @@ export default {
   async scheduled(controller, env, ctx) {
     if (controller.cron === "0 9 * * *") {
       ctx.waitUntil(scanBudgetThresholds(env));
+      ctx.waitUntil(pruneUsageRetention(env));
       return;
     }
     if (controller.cron === "* * * * *") {
       ctx.waitUntil(runSpendSnapshotTick(env));
+      return;
+    }
+    if (controller.cron === "*/5 * * * *") {
+      ctx.waitUntil(ingestSpendLogs(env));
+      return;
+    }
+    if (controller.cron === "0 * * * *") {
+      ctx.waitUntil(refreshDailyActivity(env));
       return;
     }
   },

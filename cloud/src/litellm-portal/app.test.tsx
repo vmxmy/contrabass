@@ -58,8 +58,13 @@ vi.mock("@cloudflare/kumo/components/dropdown", async () => {
   const ReactModule = await import("react");
   const DropdownMenu = ({ children }: { children: React.ReactNode }) =>
     ReactModule.createElement("div", { "data-testid": "dropdown-menu" }, children);
-  DropdownMenu.Trigger = ({ children, "aria-label": ariaLabel }: { children: React.ReactNode; "aria-label"?: string }) =>
-    ReactModule.createElement("div", { role: "button", "aria-label": ariaLabel }, children);
+  DropdownMenu.Trigger = ({
+    children,
+    "aria-label": ariaLabel,
+  }: {
+    children: React.ReactNode;
+    "aria-label"?: string;
+  }) => ReactModule.createElement("div", { role: "button", "aria-label": ariaLabel }, children);
   DropdownMenu.Content = ({ children }: { children: React.ReactNode }) =>
     ReactModule.createElement("div", { role: "menu" }, children);
   DropdownMenu.Item = ({ children, onClick }: { children: React.ReactNode; onClick?: () => void }) =>
@@ -92,23 +97,18 @@ vi.mock("@cloudflare/kumo/components/chart", async () => {
       ReactModule.createElement(
         "div",
         { "data-testid": "kumo-timeseries-chart-wrapper" },
-        ReactModule.createElement(
-          "div",
-          {
-            "data-testid": "kumo-timeseries-chart",
-            "data-series": JSON.stringify(data),
-            role: "img",
-            "aria-label": ariaDescription,
-          },
-        ),
+        ReactModule.createElement("div", {
+          "data-testid": "kumo-timeseries-chart",
+          "data-series": JSON.stringify(data),
+          role: "img",
+          "aria-label": ariaDescription,
+        }),
         ReactModule.createElement(
           "button",
           {
             type: "button",
-            onClick: () => onTimeRangeChange?.(
-              Date.parse("2024-01-01T00:00:00.000Z"),
-              Date.parse("2024-01-08T00:00:00.000Z"),
-            ),
+            onClick: () =>
+              onTimeRangeChange?.(Date.parse("2024-01-01T00:00:00.000Z"), Date.parse("2024-01-08T00:00:00.000Z")),
           },
           "模拟图表范围",
         ),
@@ -116,7 +116,15 @@ vi.mock("@cloudflare/kumo/components/chart", async () => {
   };
 });
 
-import { ApiKeysCard, CreateKeyButton, HeroStats, ModelAccessCard, PortalErrorBanner, PortalTabs, readTabFromHash, UsagePanel } from "./app";
+import {
+  ApiKeysCard,
+  CreateKeyButton,
+  HeroStats,
+  ModelAccessCard,
+  PortalErrorBanner,
+  PortalTabs,
+  readTabFromHash,
+} from "./app";
 import { AdminSection } from "./admin-components";
 import { UsageChart, type UsageTimeseries } from "./chart";
 
@@ -134,8 +142,26 @@ const usageData: UsageTimeseries = {
   limited: false,
   maxPages: null,
   buckets: [
-    { start: "2024-01-01T00:00:00.000Z", end: "2024-01-02T00:00:00.000Z", label: "01-01", totalTokens: 1000, promptTokens: 400, completionTokens: 600, requests: 10, spend: 0.5 },
-    { start: "2024-01-02T00:00:00.000Z", end: "2024-01-03T00:00:00.000Z", label: "01-02", totalTokens: 2000, promptTokens: 800, completionTokens: 1200, requests: 20, spend: 1.0 },
+    {
+      start: "2024-01-01T00:00:00.000Z",
+      end: "2024-01-02T00:00:00.000Z",
+      label: "01-01",
+      totalTokens: 1000,
+      promptTokens: 400,
+      completionTokens: 600,
+      requests: 10,
+      spend: 0.5,
+    },
+    {
+      start: "2024-01-02T00:00:00.000Z",
+      end: "2024-01-03T00:00:00.000Z",
+      label: "01-02",
+      totalTokens: 2000,
+      promptTokens: 800,
+      completionTokens: 1200,
+      requests: 20,
+      spend: 1.0,
+    },
   ],
   totals: { totalTokens: 3000, promptTokens: 1200, completionTokens: 1800, requests: 30, spend: 1.5 },
   topModels: [{ model: "gpt-4o-mini", spend: 1.5, totalTokens: 3000, requests: 30 }],
@@ -247,151 +273,24 @@ describe("UsageChart", () => {
   });
 });
 
-describe("UsagePanel", () => {
-  it("fetches default usage data and renders one-click time preset controls", async () => {
-    installPortalConfig();
-    const seen: string[] = [];
-    globalThis.fetch = vi.fn(async (input) => {
-      seen.push(String(input));
-      return Response.json(usageData);
-    }) as typeof fetch;
-
-    const { container } = renderWithI18n(<UsagePanel />);
-
-    expect(screen.queryByRole("group", { name: "时间范围预设" })).not.toBeNull();
-    expect(screen.queryByText("时间粒度")).not.toBeNull();
-    expect(screen.queryByRole("button", { name: "近 7 天" })).not.toBeNull();
-    expect(screen.queryByRole("button", { name: "近 30 天" })).not.toBeNull();
-    expect(screen.queryByRole("button", { name: "自动" })).not.toBeNull();
-    expect(screen.queryByText("自动粒度：天")).not.toBeNull();
-    await waitFor(() => {
-      expect(screen.queryByText(/峰值/)).not.toBeNull();
-    });
-    expect(seen[0]).toContain("/api/usage/timeseries?grain=day&window=30d");
-    await expectNoAxe(container);
-  });
-
-  it("uses the preferred default usage window when provided", async () => {
-    installPortalConfig();
-    const seen: string[] = [];
-    globalThis.fetch = vi.fn(async (input) => {
-      seen.push(String(input));
-      return Response.json(usageData);
-    }) as typeof fetch;
-
-    render(<UsagePanel defaultUsageWindow="7d" />);
-
-    await waitFor(() => {
-      expect(seen[0]).toContain("/api/usage/timeseries?grain=day&window=7d");
-    });
-  });
-
-  it("uses preset auto grain and allows one-click manual grain when valid", async () => {
-    installPortalConfig();
-    const seen: string[] = [];
-    globalThis.fetch = vi.fn(async (input) => {
-      seen.push(String(input));
-      return Response.json(usageData);
-    }) as typeof fetch;
-
-    render(<UsagePanel />);
-
-    await waitFor(() => {
-      expect(seen[0]).toContain("grain=day&window=30d");
-    });
-
-    const hourButton = screen.getByRole("button", { name: "小时" }) as HTMLButtonElement;
-    expect(hourButton.disabled).toBe(true);
-
-    fireEvent.click(screen.getByRole("button", { name: "近 7 天" }));
-    await waitFor(() => {
-      expect(seen.some((url) => url.includes("grain=day&window=7d"))).toBe(true);
-    });
-
-    await waitFor(() => {
-      expect(hourButton.disabled).toBe(false);
-    });
-    fireEvent.click(hourButton);
-    await waitFor(() => {
-      expect(seen.some((url) => url.includes("grain=hour&window=7d"))).toBe(true);
-      expect(screen.queryByText("手动粒度：小时")).not.toBeNull();
-    });
-  });
-
-  it("falls back to auto grain when a manual grain does not support the selected preset", async () => {
-    installPortalConfig();
-    const seen: string[] = [];
-    globalThis.fetch = vi.fn(async (input) => {
-      seen.push(String(input));
-      return Response.json(usageData);
-    }) as typeof fetch;
-
-    render(<UsagePanel />);
-
-    fireEvent.click(screen.getByRole("button", { name: "近 7 天" }));
-    const hourButton = screen.getByRole("button", { name: "小时" }) as HTMLButtonElement;
-    await waitFor(() => {
-      expect(hourButton.disabled).toBe(false);
-    });
-    fireEvent.click(hourButton);
-    await waitFor(() => {
-      expect(seen.some((url) => url.includes("grain=hour&window=7d"))).toBe(true);
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "近 30 天" }));
-    await waitFor(() => {
-      expect(seen.some((url) => url.includes("grain=day&window=30d"))).toBe(true);
-      expect(screen.queryByText(/已切回 自动粒度：天/)).not.toBeNull();
-    });
-  });
-
-  it("syncs Kumo chart native range selection to the nearest usage preset", async () => {
-    installPortalConfig();
-    const seen: string[] = [];
-    globalThis.fetch = vi.fn(async (input) => {
-      seen.push(String(input));
-      return Response.json(usageData);
-    }) as typeof fetch;
-
-    render(<UsagePanel />);
-
-    await waitFor(() => {
-      expect(screen.queryByTestId("kumo-timeseries-chart")).not.toBeNull();
-    });
-    fireEvent.click(screen.getByText("模拟图表范围"));
-
-    await waitFor(() => {
-      expect(seen.some((url) => url.includes("grain=day&window=7d"))).toBe(true);
-      expect(screen.queryByText(/已按图表选择切换到 近 7 天 · 自动粒度：天/)).not.toBeNull();
-    });
-  });
-
-  it("renders semantic error state when usage fetch fails", async () => {
-    installPortalConfig();
-    globalThis.fetch = vi.fn(async () => Response.json({ error: "boom" }, { status: 502 })) as typeof fetch;
-
-    render(<UsagePanel />);
-
-    await waitFor(() => {
-      expect(screen.queryByText("用量数据加载失败")).not.toBeNull();
-      expect(screen.queryAllByText("boom").length).toBeGreaterThan(0);
-    });
-  });
-});
-
 describe("ApiKeysCard", () => {
   it("renders API keys with clipboard text and collapsible model detail", async () => {
-    const dashData = { keys: { totalCount: 1, items: [
-      {
-        id: "key-1",
-        alias: "primary",
-        displayKey: "sk-lit...cret",
-        models: ["gpt-4o", "gpt-4o-mini", "deepseek-v3", "text-embedding-3-small"],
-        spend: 12.5,
-        maxBudget: 20,
-        expiresAt: "—",
+    const dashData = {
+      keys: {
+        totalCount: 1,
+        items: [
+          {
+            id: "key-1",
+            alias: "primary",
+            displayKey: "sk-lit...cret",
+            models: ["gpt-4o", "gpt-4o-mini", "deepseek-v3", "text-embedding-3-small"],
+            spend: 12.5,
+            maxBudget: 20,
+            expiresAt: "—",
+          },
+        ],
       },
-    ] } };
+    };
     const { container } = renderWithI18n(<ApiKeysCard />, dashData);
 
     expect(screen.queryByText("API Keys")).not.toBeNull();
@@ -403,26 +302,31 @@ describe("ApiKeysCard", () => {
   });
 
   it("renders model lists for multiple API keys", () => {
-    const dashData = { keys: { totalCount: 2, items: [
-      {
-        id: "key-1",
-        alias: "team-inherited",
-        displayKey: "sk-lit...one1",
-        models: ["deepseek-v4-pro", "gpt-5.5"],
-        spend: 1,
-        maxBudget: 20,
-        expiresAt: null,
+    const dashData = {
+      keys: {
+        totalCount: 2,
+        items: [
+          {
+            id: "key-1",
+            alias: "team-inherited",
+            displayKey: "sk-lit...one1",
+            models: ["deepseek-v4-pro", "gpt-5.5"],
+            spend: 1,
+            maxBudget: 20,
+            expiresAt: null,
+          },
+          {
+            id: "key-2",
+            alias: "explicit",
+            displayKey: "sk-lit...one2",
+            models: ["gpt-5.5"],
+            spend: 2,
+            maxBudget: 20,
+            expiresAt: null,
+          },
+        ],
       },
-      {
-        id: "key-2",
-        alias: "explicit",
-        displayKey: "sk-lit...one2",
-        models: ["gpt-5.5"],
-        spend: 2,
-        maxBudget: 20,
-        expiresAt: null,
-      },
-    ] } };
+    };
     render(<ApiKeysCard />, { wrapper: createWrapper(dashData) });
 
     expect(screen.queryByText("team-inherited")).not.toBeNull();
@@ -432,9 +336,22 @@ describe("ApiKeysCard", () => {
   });
 
   it("renders initial keys from initialData prop", () => {
-    const dashData = { keys: { totalCount: 1, items: [
-      { id: "k1", alias: "init-key", displayKey: "sk-lit...init", models: [], spend: 0, maxBudget: null, expiresAt: null },
-    ] } };
+    const dashData = {
+      keys: {
+        totalCount: 1,
+        items: [
+          {
+            id: "k1",
+            alias: "init-key",
+            displayKey: "sk-lit...init",
+            models: [],
+            spend: 0,
+            maxBudget: null,
+            expiresAt: null,
+          },
+        ],
+      },
+    };
     render(<ApiKeysCard />, { wrapper: createWrapper(dashData) });
     expect(screen.queryByText("init-key")).not.toBeNull();
   });
@@ -442,17 +359,22 @@ describe("ApiKeysCard", () => {
   it("deletes an API key after confirmation", async () => {
     globalThis.fetch = vi.fn(async () => new Response(null, { status: 204 })) as typeof fetch;
 
-    const dashData = { keys: { totalCount: 1, items: [
-      {
-        id: "key-1",
-        alias: "primary",
-        displayKey: "sk-lit...cret",
-        models: ["gpt-5.5"],
-        spend: 1,
-        maxBudget: 20,
-        expiresAt: null,
+    const dashData = {
+      keys: {
+        totalCount: 1,
+        items: [
+          {
+            id: "key-1",
+            alias: "primary",
+            displayKey: "sk-lit...cret",
+            models: ["gpt-5.5"],
+            spend: 1,
+            maxBudget: 20,
+            expiresAt: null,
+          },
+        ],
       },
-    ] } };
+    };
     render(<ApiKeysCard />, { wrapper: createWrapper(dashData) });
     fireEvent.click(screen.getByText("删除"));
 
@@ -484,260 +406,274 @@ describe("PortalErrorBanner", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-describe("CreateKeyButton", () => {
-  it("renders create key trigger button", async () => {
-    const { container } = renderWithI18n(<CreateKeyButton />);
-    expect(screen.queryByText("创建 Key")).not.toBeNull();
-    await expectNoAxe(container);
-  });
-
-  it("shows validation error when submitting without alias", async () => {
-    render(<CreateKeyButton />, { wrapper: createWrapper() });
-    const trigger = screen.getByText("创建 Key");
-    fireEvent.click(trigger);
-
-    await waitFor(() => {
-      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+  describe("CreateKeyButton", () => {
+    it("renders create key trigger button", async () => {
+      const { container } = renderWithI18n(<CreateKeyButton />);
+      expect(screen.queryByText("创建 Key")).not.toBeNull();
+      await expectNoAxe(container);
     });
 
-    const submitButtons = screen.getAllByText("创建");
-    const submitBtn = submitButtons.find((el) => el.closest("button"));
-    if (submitBtn) fireEvent.click(submitBtn);
+    it("shows validation error when submitting without alias", async () => {
+      render(<CreateKeyButton />, { wrapper: createWrapper() });
+      const trigger = screen.getByText("创建 Key");
+      fireEvent.click(trigger);
 
-    await waitFor(() => {
-      expect(screen.queryByText("请输入 Key 名称")).not.toBeNull();
+      await waitFor(() => {
+        expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+      });
+
+      const submitButtons = screen.getAllByText("创建");
+      const submitBtn = submitButtons.find((el) => el.closest("button"));
+      if (submitBtn) fireEvent.click(submitBtn);
+
+      await waitFor(() => {
+        expect(screen.queryByText("请输入 Key 名称")).not.toBeNull();
+      });
     });
-  });
 
-  it("shows a precise duplicate-name error when key alias already exists", async () => {
-    globalThis.fetch = vi.fn(async (input, init) => {
-      const url = String(input);
-      if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
-        return Response.json({
-          error: "key_alias_conflict",
-          keyAlias: "test-key",
-          message: "API Key name already exists",
-        }, { status: 409 });
+    it("shows a precise duplicate-name error when key alias already exists", async () => {
+      globalThis.fetch = vi.fn(async (input, init) => {
+        const url = String(input);
+        if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
+          return Response.json(
+            {
+              error: "key_alias_conflict",
+              keyAlias: "test-key",
+              message: "API Key name already exists",
+            },
+            { status: 409 },
+          );
+        }
+        return Response.json({});
+      }) as typeof fetch;
+
+      render(<CreateKeyButton />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByText("创建 Key"));
+
+      await waitFor(() => {
+        expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+      });
+
+      const aliasInput = document.getElementById("create-key-alias");
+      if (aliasInput) {
+        fireEvent.change(aliasInput, { target: { value: "test-key" } });
       }
-      return Response.json({});
-    }) as typeof fetch;
 
-    render(<CreateKeyButton />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByText("创建 Key"));
+      const submitButtons = screen.getAllByText("创建");
+      const submitBtn = submitButtons.find((el) => el.closest("button"));
+      if (submitBtn) fireEvent.click(submitBtn);
 
-    await waitFor(() => {
-      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+      await waitFor(() => {
+        expect(screen.queryByText("名称「test-key」已存在，请换一个名称。")).not.toBeNull();
+      });
     });
 
-    const aliasInput = document.getElementById("create-key-alias");
-    if (aliasInput) {
-      fireEvent.change(aliasInput, { target: { value: "test-key" } });
-    }
+    it("copies the newly created full key with kumo SensitiveInput", async () => {
+      const writeText = vi.fn(async () => {});
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText },
+      });
+      globalThis.fetch = vi.fn(async (input, init) => {
+        const url = String(input);
+        if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
+          return Response.json(
+            {
+              rawKey: "sk-new-key-123",
+              keyAlias: "test-key",
+              expires: null,
+              keyId: "tok-new",
+            },
+            { status: 201 },
+          );
+        }
+        return Response.json({});
+      }) as typeof fetch;
 
-    const submitButtons = screen.getAllByText("创建");
-    const submitBtn = submitButtons.find((el) => el.closest("button"));
-    if (submitBtn) fireEvent.click(submitBtn);
+      render(<CreateKeyButton />, { wrapper: createWrapper({ models: { models: ["gpt-4o-mini"] } }) });
+      fireEvent.click(screen.getByText("创建 Key"));
 
-    await waitFor(() => {
-      expect(screen.queryByText("名称「test-key」已存在，请换一个名称。")).not.toBeNull();
-    });
-  });
+      await waitFor(() => {
+        expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+      });
 
-  it("copies the newly created full key with kumo SensitiveInput", async () => {
-    const writeText = vi.fn(async () => {});
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
-    globalThis.fetch = vi.fn(async (input, init) => {
-      const url = String(input);
-      if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
-        return Response.json({
-          rawKey: "sk-new-key-123",
-          keyAlias: "test-key",
-          expires: null,
-          keyId: "tok-new",
-        }, { status: 201 });
+      const aliasInput = document.getElementById("create-key-alias");
+      if (aliasInput) {
+        fireEvent.change(aliasInput, { target: { value: "test-key" } });
       }
-      return Response.json({});
-    }) as typeof fetch;
 
-    render(<CreateKeyButton />, { wrapper: createWrapper({ models: { models: ["gpt-4o-mini"] } }) });
-    fireEvent.click(screen.getByText("创建 Key"));
+      const submitButtons = screen.getAllByText("创建");
+      const submitBtn = submitButtons.find((el) => el.closest("button"));
+      if (submitBtn) fireEvent.click(submitBtn);
 
-    await waitFor(() => {
-      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+      await waitFor(() => {
+        expect(screen.queryByText("Key 已创建")).not.toBeNull();
+      });
+
+      // SensitiveInput renders a "Copy to clipboard" button (aria-label from kumo)
+      fireEvent.click(screen.getByRole("button", { name: "Copy to clipboard" }));
+
+      await waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith("sk-new-key-123");
+      });
     });
 
-    const aliasInput = document.getElementById("create-key-alias");
-    if (aliasInput) {
-      fireEvent.change(aliasInput, { target: { value: "test-key" } });
-    }
+    it("shows raw key after successful creation", async () => {
+      const calls: { method?: string; url: string }[] = [];
+      globalThis.fetch = vi.fn(async (input, init) => {
+        const url = String(input);
+        calls.push({ method: (init as RequestInit)?.method, url });
+        if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
+          return Response.json(
+            {
+              rawKey: "sk-new-key-123",
+              keyAlias: "test-key",
+              expires: null,
+              keyId: "tok-new",
+            },
+            { status: 201 },
+          );
+        }
+        return Response.json({});
+      }) as typeof fetch;
 
-    const submitButtons = screen.getAllByText("创建");
-    const submitBtn = submitButtons.find((el) => el.closest("button"));
-    if (submitBtn) fireEvent.click(submitBtn);
+      render(<CreateKeyButton />, { wrapper: createWrapper({ models: { models: ["gpt-4o-mini"] } }) });
+      const trigger = screen.getByText("创建 Key");
+      fireEvent.click(trigger);
 
-    await waitFor(() => {
-      expect(screen.queryByText("Key 已创建")).not.toBeNull();
-    });
+      await waitFor(() => {
+        expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+      });
 
-    // SensitiveInput renders a "Copy to clipboard" button (aria-label from kumo)
-    fireEvent.click(screen.getByRole("button", { name: "Copy to clipboard" }));
-
-    await waitFor(() => {
-      expect(writeText).toHaveBeenCalledWith("sk-new-key-123");
-    });
-  });
-
-  it("shows raw key after successful creation", async () => {
-    const calls: { method?: string; url: string }[] = [];
-    globalThis.fetch = vi.fn(async (input, init) => {
-      const url = String(input);
-      calls.push({ method: (init as RequestInit)?.method, url });
-      if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
-        return Response.json({
-          rawKey: "sk-new-key-123",
-          keyAlias: "test-key",
-          expires: null,
-          keyId: "tok-new",
-        }, { status: 201 });
+      const aliasInput = document.getElementById("create-key-alias");
+      if (aliasInput) {
+        fireEvent.change(aliasInput, { target: { value: "test-key" } });
       }
-      return Response.json({});
-    }) as typeof fetch;
 
-    render(<CreateKeyButton />, { wrapper: createWrapper({ models: { models: ["gpt-4o-mini"] } }) });
-    const trigger = screen.getByText("创建 Key");
-    fireEvent.click(trigger);
+      const submitButtons = screen.getAllByText("创建");
+      const submitBtn = submitButtons.find((el) => el.closest("button"));
+      if (submitBtn) fireEvent.click(submitBtn);
 
-    await waitFor(() => {
-      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+      await waitFor(() => {
+        expect(screen.queryByText("Key 已创建")).not.toBeNull();
+        // SensitiveInput masks the value by default; check the underlying input element's value
+        const keyInput = document.querySelector<HTMLInputElement>("input[value='sk-new-key-123']");
+        expect(keyInput).not.toBeNull();
+      });
     });
 
-    const aliasInput = document.getElementById("create-key-alias");
-    if (aliasInput) {
-      fireEvent.change(aliasInput, { target: { value: "test-key" } });
-    }
+    it("shows Field error on alias when submitting empty form (spec 6.2)", async () => {
+      render(<CreateKeyButton />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByText("创建 Key"));
 
-    const submitButtons = screen.getAllByText("创建");
-    const submitBtn = submitButtons.find((el) => el.closest("button"));
-    if (submitBtn) fireEvent.click(submitBtn);
+      await waitFor(() => {
+        expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+      });
 
-    await waitFor(() => {
-      expect(screen.queryByText("Key 已创建")).not.toBeNull();
-      // SensitiveInput masks the value by default; check the underlying input element's value
-      const keyInput = document.querySelector<HTMLInputElement>("input[value='sk-new-key-123']");
+      // Submit without filling alias — Field should show error message
+      const submitButtons = screen.getAllByText("创建");
+      const submitBtn = submitButtons.find((el) => el.closest("button"));
+      if (submitBtn) fireEvent.click(submitBtn);
+
+      await waitFor(() => {
+        expect(screen.queryByText("请输入 Key 名称")).not.toBeNull();
+      });
+    });
+
+    it("shows Field error for duplicate alias returned from backend (spec 6.2)", async () => {
+      globalThis.fetch = vi.fn(async (input, init) => {
+        const url = String(input);
+        if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
+          return Response.json(
+            { error: "key_alias_conflict", keyAlias: "my-key", message: "already exists" },
+            { status: 409 },
+          );
+        }
+        return Response.json({});
+      }) as typeof fetch;
+
+      render(<CreateKeyButton />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByText("创建 Key"));
+
+      await waitFor(() => {
+        expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+      });
+
+      const aliasInput = document.getElementById("create-key-alias");
+      if (aliasInput) fireEvent.change(aliasInput, { target: { value: "my-key" } });
+
+      const submitBtn = screen.getAllByText("创建").find((el) => el.closest("button"));
+      if (submitBtn) fireEvent.click(submitBtn);
+
+      await waitFor(() => {
+        expect(screen.queryByText("名称「my-key」已存在，请换一个名称。")).not.toBeNull();
+      });
+    });
+
+    it("renders Combobox for model selection when models are available (spec 6.3)", async () => {
+      render(<CreateKeyButton />, {
+        wrapper: createWrapper({ models: { models: ["gpt-4o-mini", "claude-3-5-sonnet"] } }),
+      });
+      fireEvent.click(screen.getByText("创建 Key"));
+
+      await waitFor(() => {
+        expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+      });
+
+      // Combobox trigger input should be rendered with the model selection placeholder
+      await waitFor(() => {
+        const comboInput = document.querySelector<HTMLInputElement>("[placeholder='选择模型…']");
+        expect(comboInput).not.toBeNull();
+      });
+
+      // The "允许模型" label and "(optional)" indicator must be present
+      expect(screen.queryByText("允许模型")).not.toBeNull();
+      expect(document.querySelector("[placeholder='选择模型…']")).not.toBeNull();
+    });
+
+    it("SensitiveInput defaults to masked (spec 6.4)", async () => {
+      globalThis.fetch = vi.fn(async (input, init) => {
+        const url = String(input);
+        if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
+          return Response.json(
+            {
+              rawKey: "sk-secret-abc",
+              keyAlias: "my-key",
+              expires: null,
+              keyId: "tok-1",
+            },
+            { status: 201 },
+          );
+        }
+        return Response.json({});
+      }) as typeof fetch;
+
+      render(<CreateKeyButton />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByText("创建 Key"));
+
+      await waitFor(() => {
+        expect(screen.queryByText("创建新 API Key")).not.toBeNull();
+      });
+
+      const aliasInput = document.getElementById("create-key-alias");
+      if (aliasInput) fireEvent.change(aliasInput, { target: { value: "my-key" } });
+
+      const submitBtn = screen.getAllByText("创建").find((el) => el.closest("button"));
+      if (submitBtn) fireEvent.click(submitBtn);
+
+      await waitFor(() => {
+        expect(screen.queryByText("Key 已创建")).not.toBeNull();
+      });
+
+      // SensitiveInput should render with type="password" (masked) by default
+      const keyInput = document.querySelector<HTMLInputElement>("input[value='sk-secret-abc']");
       expect(keyInput).not.toBeNull();
+      expect(keyInput?.type).toBe("password");
+
+      // The "Reveal value" button must be present (eye icon)
+      expect(screen.getByRole("button", { name: "Reveal value" })).not.toBeNull();
     });
   });
-
-  it("shows Field error on alias when submitting empty form (spec 6.2)", async () => {
-    render(<CreateKeyButton />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByText("创建 Key"));
-
-    await waitFor(() => {
-      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
-    });
-
-    // Submit without filling alias — Field should show error message
-    const submitButtons = screen.getAllByText("创建");
-    const submitBtn = submitButtons.find((el) => el.closest("button"));
-    if (submitBtn) fireEvent.click(submitBtn);
-
-    await waitFor(() => {
-      expect(screen.queryByText("请输入 Key 名称")).not.toBeNull();
-    });
-  });
-
-  it("shows Field error for duplicate alias returned from backend (spec 6.2)", async () => {
-    globalThis.fetch = vi.fn(async (input, init) => {
-      const url = String(input);
-      if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
-        return Response.json(
-          { error: "key_alias_conflict", keyAlias: "my-key", message: "already exists" },
-          { status: 409 },
-        );
-      }
-      return Response.json({});
-    }) as typeof fetch;
-
-    render(<CreateKeyButton />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByText("创建 Key"));
-
-    await waitFor(() => {
-      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
-    });
-
-    const aliasInput = document.getElementById("create-key-alias");
-    if (aliasInput) fireEvent.change(aliasInput, { target: { value: "my-key" } });
-
-    const submitBtn = screen.getAllByText("创建").find((el) => el.closest("button"));
-    if (submitBtn) fireEvent.click(submitBtn);
-
-    await waitFor(() => {
-      expect(screen.queryByText("名称「my-key」已存在，请换一个名称。")).not.toBeNull();
-    });
-  });
-
-  it("renders Combobox for model selection when models are available (spec 6.3)", async () => {
-    render(<CreateKeyButton />, { wrapper: createWrapper({ models: { models: ["gpt-4o-mini", "claude-3-5-sonnet"] } }) });
-    fireEvent.click(screen.getByText("创建 Key"));
-
-    await waitFor(() => {
-      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
-    });
-
-    // Combobox trigger input should be rendered with the model selection placeholder
-    await waitFor(() => {
-      const comboInput = document.querySelector<HTMLInputElement>("[placeholder='选择模型…']");
-      expect(comboInput).not.toBeNull();
-    });
-
-    // The "允许模型" label and "(optional)" indicator must be present
-    expect(screen.queryByText("允许模型")).not.toBeNull();
-    expect(document.querySelector("[placeholder='选择模型…']")).not.toBeNull();
-  });
-
-  it("SensitiveInput defaults to masked (spec 6.4)", async () => {
-    globalThis.fetch = vi.fn(async (input, init) => {
-      const url = String(input);
-      if (url.includes("/api/keys") && (init as RequestInit)?.method === "POST") {
-        return Response.json({
-          rawKey: "sk-secret-abc",
-          keyAlias: "my-key",
-          expires: null,
-          keyId: "tok-1",
-        }, { status: 201 });
-      }
-      return Response.json({});
-    }) as typeof fetch;
-
-    render(<CreateKeyButton />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByText("创建 Key"));
-
-    await waitFor(() => {
-      expect(screen.queryByText("创建新 API Key")).not.toBeNull();
-    });
-
-    const aliasInput = document.getElementById("create-key-alias");
-    if (aliasInput) fireEvent.change(aliasInput, { target: { value: "my-key" } });
-
-    const submitBtn = screen.getAllByText("创建").find((el) => el.closest("button"));
-    if (submitBtn) fireEvent.click(submitBtn);
-
-    await waitFor(() => {
-      expect(screen.queryByText("Key 已创建")).not.toBeNull();
-    });
-
-    // SensitiveInput should render with type="password" (masked) by default
-    const keyInput = document.querySelector<HTMLInputElement>("input[value='sk-secret-abc']");
-    expect(keyInput).not.toBeNull();
-    expect(keyInput?.type).toBe("password");
-
-    // The "Reveal value" button must be present (eye icon)
-    expect(screen.getByRole("button", { name: "Reveal value" })).not.toBeNull();
-  });
-});
 });
 
 describe("AdminSection", () => {
@@ -749,8 +685,22 @@ describe("AdminSection", () => {
       if (url.includes("/api/admin/users")) {
         return Response.json({
           users: [
-            { userId: "u1", email: "alice@gz-zhiyun.com", spend: 1.5, maxBudget: 100, teamIds: [], role: "internal_user" },
-            { userId: "u2", email: "bob@gz-zhiyun.com", spend: 2.0, maxBudget: null, teamIds: ["t1"], role: "proxy_admin" },
+            {
+              userId: "u1",
+              email: "alice@gz-zhiyun.com",
+              spend: 1.5,
+              maxBudget: 100,
+              teamIds: [],
+              role: "internal_user",
+            },
+            {
+              userId: "u2",
+              email: "bob@gz-zhiyun.com",
+              spend: 2.0,
+              maxBudget: null,
+              teamIds: ["t1"],
+              role: "proxy_admin",
+            },
           ],
           totalCount: 2,
           page: 1,
@@ -797,11 +747,12 @@ describe("AdminSection", () => {
           size: 50,
         });
       }
-      return Response.json({ teams: [], users: [], buckets: [], totals: {}, topModels: [] });
+      if (url.includes("/api/admin/usage/overview")) return Response.json({ available: false, empty: true, scope: "global", window: "7d", grain: "day", grainFallback: false, timezone: "Asia/Shanghai", kpi: { spend: { current: 0, previous: null, deltaPct: null }, requests: { current: 0, previous: null, deltaPct: null }, totalTokens: { current: 0, previous: null, deltaPct: null } }, trend: [], models: [], hourOfDay: [], perUser: [] });
+      return Response.json({ teams: [], users: [], totalCount: 0, page: 1, size: 50, buckets: [], totals: {}, topModels: [] });
     }) as typeof fetch;
 
     // #when
-    render(<AdminSection role="admin" />);
+    render(<AdminSection role="admin" />, { wrapper: createWrapper() });
 
     // wait for initial load
     await waitFor(() => {
@@ -824,77 +775,6 @@ describe("AdminSection", () => {
     });
   });
 
-  it("AdminGlobalUsage switches to hour grain and includes grain=hour in fetch URL", async () => {
-    // #given
-    installPortalConfig();
-    const fetchUrls: string[] = [];
-    const globalUsageData = {
-      available: true,
-      grain: "hour",
-      window: "48h",
-      windowLabel: "近 48 小时",
-      start: "2024-01-01T00:00:00.000Z",
-      end: "2024-01-03T00:00:00.000Z",
-      source: "spend_logs_v2_global",
-      timezone: "Asia/Shanghai",
-      limited: false,
-      maxPages: null,
-      buckets: [
-        { start: "2024-01-01T00:00:00.000Z", end: "2024-01-02T00:00:00.000Z", label: "01-01", totalTokens: 120, promptTokens: 50, completionTokens: 70, requests: 3, spend: 0.2 },
-      ],
-      totals: { totalTokens: 120, promptTokens: 50, completionTokens: 70, requests: 3, spend: 0.2 },
-      topModels: [],
-    };
-    globalThis.fetch = vi.fn(async (input) => {
-      const url = String(input);
-      fetchUrls.push(url);
-      if (url.includes("/api/admin/usage/timeseries")) {
-        return Response.json(globalUsageData);
-      }
-      return Response.json({ teams: [], users: [], events: [], totalCount: 0, page: 1, size: 50, buckets: [], totals: {}, topModels: [] });
-    }) as typeof fetch;
-
-    // #when
-    render(<AdminSection role="admin" />);
-
-    // wait for initial render
-    await waitFor(() => {
-      expect(screen.queryByText("全局用量趋势")).not.toBeNull();
-    });
-
-    // First switch to the "近 7 天" window preset — this window supports hour grain
-    // (30d is the default but it only supports day grain, not hour)
-    const sevenDayButtons = screen.getAllByText("近 7 天");
-    fireEvent.click(sevenDayButtons[sevenDayButtons.length - 1]);
-
-    // wait for the 7d fetch to complete so hour button becomes enabled
-    await waitFor(() => {
-      expect(fetchUrls.some((u) => u.includes("/api/admin/usage/timeseries") && u.includes("window=7d"))).toBe(true);
-    });
-
-    // Now click the "小时" grain button (should be enabled for 7d window)
-    const hourButtons = screen.getAllByText("小时");
-    const enabledHourButton = hourButtons.find(
-      (el) => el.closest("button") && !(el.closest("button") as HTMLButtonElement).disabled,
-    );
-    expect(enabledHourButton).toBeDefined();
-    fireEvent.click(enabledHourButton!);
-
-    // #then - a fetch with grain=hour is made
-    await waitFor(() => {
-      const hourCall = fetchUrls.find((u) => u.includes("/api/admin/usage/timeseries") && u.includes("grain=hour"));
-      expect(hourCall).toBeDefined();
-    });
-
-    // Expand the collapsed bucket table to verify "01-01" label appears
-    const expandTriggers = screen.getAllByRole("button", { name: /展开或折叠分时段用量明细/i });
-    fireEvent.click(expandTriggers[expandTriggers.length - 1]);
-
-    await waitFor(() => {
-      expect(screen.queryByText("01-01")).not.toBeNull();
-    });
-  });
-
   it("renders nothing when role is not admin", () => {
     const { container } = render(<AdminSection role="user" />);
     expect(container.firstChild).toBeNull();
@@ -911,26 +791,21 @@ describe("AdminSection", () => {
       const url = String(input);
       if (url.includes("/api/admin/users")) {
         return Response.json({
-          users: [{ userId: "u1", email: "admin@test.com", spend: 1.5, maxBudget: 100, teamIds: [], role: "proxy_admin" }],
+          users: [
+            { userId: "u1", email: "admin@test.com", spend: 1.5, maxBudget: 100, teamIds: [], role: "proxy_admin" },
+          ],
           totalCount: 1,
           page: 1,
           size: 50,
         });
       }
-      if (url.includes("/api/admin/summary")) return Response.json({ userCount: 1 });
+      if (url.includes("/api/admin/usage/overview")) return Response.json({ available: false, empty: true, scope: "global", window: "7d", grain: "day", grainFallback: false, timezone: "Asia/Shanghai", kpi: { spend: { current: 0, previous: null, deltaPct: null }, requests: { current: 0, previous: null, deltaPct: null }, totalTokens: { current: 0, previous: null, deltaPct: null } }, trend: [], models: [], hourOfDay: [], perUser: [] });
       if (url.includes("/api/admin/teams")) return Response.json({ teams: [] });
       if (url.includes("/api/admin/audit")) return Response.json({ events: [], totalCount: 0, page: 1, size: 50 });
-      if (url.includes("/api/admin/usage/timeseries")) return Response.json({
-        available: true, grain: "day", window: "30d", windowLabel: "近 30 天",
-        start: "2024-01-01T00:00:00.000Z", end: "2024-01-30T23:59:59.999Z",
-        source: "spend_logs_v2_global", timezone: "Asia/Shanghai", limited: false, maxPages: null,
-        buckets: [], totals: { totalTokens: 0, promptTokens: 0, completionTokens: 0, requests: 0, spend: 0 },
-        topModels: [],
-      });
       return Response.json({});
     }) as typeof fetch;
 
-    render(<AdminSection role="admin" />);
+    render(<AdminSection role="admin" />, { wrapper: createWrapper() });
 
     // Wait for users table to render the user row
     await waitFor(() => {
@@ -948,29 +823,15 @@ describe("AdminSection", () => {
       const url = String(input);
       if (url.includes("/api/admin/users")) {
         return Response.json({
-          users: [{ userId: "u1", email: "admin@test.com", spend: 1.5, maxBudget: 100, teamIds: ["t1"], role: "proxy_admin" }],
+          users: [
+            { userId: "u1", email: "admin@test.com", spend: 1.5, maxBudget: 100, teamIds: ["t1"], role: "proxy_admin" },
+          ],
           totalCount: 1,
           page: 1,
           size: 50,
         });
       }
-      if (url.includes("/api/admin/summary")) {
-        return Response.json({
-          userCount: 1,
-          sampledUserCount: 1,
-          limited: false,
-          teamCount: 1,
-          adminCount: 1,
-          unmanagedRoleCount: 0,
-          noTeamUserCount: 0,
-          overBudgetUserCount: 0,
-          overBudgetTeamCount: 0,
-          riskCount: 0,
-          totalSpend: 1.5,
-          teamSpend: 0.5,
-          totalBudget: 100,
-        });
-      }
+      if (url.includes("/api/admin/usage/overview")) return Response.json({ available: false, empty: true, scope: "global", window: "7d", grain: "day", grainFallback: false, timezone: "Asia/Shanghai", kpi: { spend: { current: 0, previous: null, deltaPct: null }, requests: { current: 0, previous: null, deltaPct: null }, totalTokens: { current: 0, previous: null, deltaPct: null } }, trend: [], models: [], hourOfDay: [], perUser: [] });
       if (url.includes("/api/admin/teams")) {
         return Response.json({
           teams: [{ id: "t1", alias: "Test Team", models: ["gpt-4o"], spend: 0.5, tpmLimit: null, rpmLimit: null }],
@@ -984,34 +845,15 @@ describe("AdminSection", () => {
           size: 50,
         });
       }
-      if (url.includes("/api/admin/usage/timeseries")) {
-        return Response.json({
-          available: true,
-          grain: "day",
-          window: "30d",
-          windowLabel: "近 30 天",
-          start: "2024-01-01T00:00:00.000Z",
-          end: "2024-01-30T23:59:59.999Z",
-          source: "spend_logs_v2_global",
-          timezone: "Asia/Shanghai",
-          limited: false,
-          maxPages: null,
-          buckets: [],
-          totals: { totalTokens: 0, promptTokens: 0, completionTokens: 0, requests: 0, spend: 0 },
-          topModels: [],
-        });
-      }
       return Response.json({});
     }) as typeof fetch;
 
-    render(<AdminSection role="admin" />);
+    render(<AdminSection role="admin" />, { wrapper: createWrapper() });
 
     expect(screen.queryByText("全局管理（只读）")).not.toBeNull();
     await waitFor(() => {
-      expect(screen.queryByText("全局账户")).not.toBeNull();
       expect(screen.queryByText("全员账户")).not.toBeNull();
       expect(screen.queryByText("全部团队")).not.toBeNull();
-      expect(screen.queryByText("全局用量趋势")).not.toBeNull();
       expect(screen.queryByText("资源与权限")).not.toBeNull();
       expect(screen.queryByText("审计与风险")).not.toBeNull();
       expect(screen.queryByText("审计日志")).not.toBeNull();
@@ -1039,9 +881,7 @@ describe("useToast — CreateKeyButton integration", () => {
     fireEvent.click(screen.getByRole("button", { name: "创建" }));
 
     await waitFor(() => {
-      expect(toastAddSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ variant: "success" }),
-      );
+      expect(toastAddSpy).toHaveBeenCalledWith(expect.objectContaining({ variant: "success" }));
     });
   });
 
@@ -1049,10 +889,10 @@ describe("useToast — CreateKeyButton integration", () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
       if (url.includes("/api/models")) return Response.json({ models: [] });
-      return new Response(
-        JSON.stringify({ error: "key_alias_conflict", keyAlias: "my-key" }),
-        { status: 409, headers: { "content-type": "application/json" } },
-      );
+      return new Response(JSON.stringify({ error: "key_alias_conflict", keyAlias: "my-key" }), {
+        status: 409,
+        headers: { "content-type": "application/json" },
+      });
     }) as typeof fetch;
 
     render(<CreateKeyButton />, { wrapper: createWrapper() });
@@ -1067,9 +907,7 @@ describe("useToast — CreateKeyButton integration", () => {
     fireEvent.click(screen.getByRole("button", { name: "创建" }));
 
     await waitFor(() => {
-      expect(toastAddSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ variant: "error" }),
-      );
+      expect(toastAddSpy).toHaveBeenCalledWith(expect.objectContaining({ variant: "error" }));
     });
   });
 });
@@ -1078,10 +916,9 @@ describe("Tooltip — HeroStats truncated email", () => {
   it("renders email text without title= attribute (Tooltip replaces it)", () => {
     // HeroStats uses <Tooltip> instead of title= for truncated email.
     // The mock passes children through transparently; verify no title attr.
-    const { container } = render(
-      <HeroStats initialData={{ me: { email: "truncated-long-email@example.com" } }} />,
-      { wrapper: createWrapper({ me: { email: "truncated-long-email@example.com" } }) },
-    );
+    const { container } = render(<HeroStats initialData={{ me: { email: "truncated-long-email@example.com" } }} />, {
+      wrapper: createWrapper({ me: { email: "truncated-long-email@example.com" } }),
+    });
     const emailEl = container.querySelector("p.truncate");
     expect(emailEl).not.toBeNull();
     expect(emailEl?.getAttribute("title")).toBeNull();
@@ -1096,24 +933,21 @@ describe("DropdownMenu — AdminUsersTable row actions", () => {
       const url = String(input);
       if (url.includes("/api/admin/users")) {
         return Response.json({
-          users: [{ userId: "u2", email: "user@example.com", spend: 0, maxBudget: null, teamIds: [], role: "proxy_user" }],
-          totalCount: 1, page: 1, size: 50,
+          users: [
+            { userId: "u2", email: "user@example.com", spend: 0, maxBudget: null, teamIds: [], role: "proxy_user" },
+          ],
+          totalCount: 1,
+          page: 1,
+          size: 50,
         });
       }
-      if (url.includes("/api/admin/summary")) return Response.json({ userCount: 1 });
+      if (url.includes("/api/admin/usage/overview")) return Response.json({ available: false, empty: true, scope: "global", window: "7d", grain: "day", grainFallback: false, timezone: "Asia/Shanghai", kpi: { spend: { current: 0, previous: null, deltaPct: null }, requests: { current: 0, previous: null, deltaPct: null }, totalTokens: { current: 0, previous: null, deltaPct: null } }, trend: [], models: [], hourOfDay: [], perUser: [] });
       if (url.includes("/api/admin/teams")) return Response.json({ teams: [] });
       if (url.includes("/api/admin/audit")) return Response.json({ events: [], totalCount: 0, page: 1, size: 50 });
-      if (url.includes("/api/admin/usage/timeseries")) return Response.json({
-        available: true, grain: "day", window: "30d", windowLabel: "近 30 天",
-        start: "2024-01-01T00:00:00.000Z", end: "2024-01-30T23:59:59.999Z",
-        source: "spend_logs_v2_global", timezone: "Asia/Shanghai", limited: false, maxPages: null,
-        buckets: [], totals: { totalTokens: 0, promptTokens: 0, completionTokens: 0, requests: 0, spend: 0 },
-        topModels: [],
-      });
       return Response.json({});
     }) as typeof fetch;
 
-    render(<AdminSection role="admin" />);
+    render(<AdminSection role="admin" />, { wrapper: createWrapper() });
 
     // Wait for users table to render
     await waitFor(() => {
