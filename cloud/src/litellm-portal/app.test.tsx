@@ -122,8 +122,6 @@ import {
   HeroStats,
   ModelAccessCard,
   PortalErrorBanner,
-  PortalTabs,
-  readTabFromHash,
 } from "./app";
 import { AdminSection } from "./admin-components";
 import { UsageChart, type UsageTimeseries } from "./chart";
@@ -205,24 +203,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   toastAddSpy.mockClear();
   delete window.__PORTAL_CONFIG;
-});
-
-describe("PortalTabs", () => {
-  it("uses persona-oriented labels", async () => {
-    const { container } = renderWithI18n(<PortalTabs tab="user" onSelect={() => {}} />);
-    expect(screen.queryByText("个人视图")).not.toBeNull();
-    expect(screen.queryByText("全局管理")).not.toBeNull();
-    await expectNoAxe(container);
-  });
-
-  it("keeps admins on personal view unless #admin is explicit", () => {
-    window.history.replaceState(null, "", "/");
-    expect(readTabFromHash("admin")).toBe("user");
-    window.history.replaceState(null, "", "/#admin");
-    expect(readTabFromHash("admin")).toBe("admin");
-    window.history.replaceState(null, "", "/#user");
-    expect(readTabFromHash("admin")).toBe("user");
-  });
 });
 
 describe("ModelAccessCard", () => {

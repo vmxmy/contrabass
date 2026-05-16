@@ -1,13 +1,8 @@
 import React from "react";
 import { createRoute } from "@tanstack/react-router";
 import { rootRoute } from "./__root";
-import {
-  HeroStats,
-  TeamsAccessCard,
-  ModelAccessCard,
-  ApiKeysCard,
-} from "../app";
-import { PersonalView } from "../dashboard/views/personal-view";
+import { IdentityBar } from "../identity-bar";
+import { UsageDashboard } from "../dashboard/views/usage-dashboard";
 
 export const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -18,26 +13,11 @@ export const indexRoute = createRoute({
 function UserView() {
   return (
     <>
-      <div id="hero-stats-root" className="mb-14">
-        <HeroStats />
-      </div>
+      <IdentityBar />
 
       <section id="usage-panel-root" className="mb-14">
-        <PersonalView />
+        <UsageDashboard />
       </section>
-
-      <section className="mb-10 grid grid-cols-1 gap-5 md:grid-cols-[1fr_2fr]">
-        <div id="teams-root">
-          <TeamsAccessCard />
-        </div>
-        <div id="models-root">
-          <ModelAccessCard />
-        </div>
-      </section>
-
-      <div id="keys-root">
-        <ApiKeysCard />
-      </div>
     </>
   );
 }

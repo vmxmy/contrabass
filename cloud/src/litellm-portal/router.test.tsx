@@ -5,63 +5,60 @@ import { describe, expect, it } from "vitest";
 import { createPortalRouter, createMemoryHistory } from "./router";
 
 describe("createPortalRouter", () => {
-  it("creates a router with the expected route paths", () => {
-    const history = createMemoryHistory({ initialEntries: ["/"] });
-    const router = createPortalRouter(history, { role: "admin" });
-
-    const flatRoutes = router.routeTree.children ?? [];
-    // The route tree is a flat list of top-level route IDs.  We verify by
-    // navigating to each path and confirming no notFound is triggered.
-    expect(router).toBeDefined();
-    expect(router.routeTree).toBeDefined();
-  });
-
-  it("resolves / to the index route for a user-role context", async () => {
+  it("resolves / to the unified usage dashboard for a user-role context", async () => {
     const history = createMemoryHistory({ initialEntries: ["/"] });
     const router = createPortalRouter(history, { role: "user" });
     await router.load();
 
-    const state = router.state;
-    expect(state.location.pathname).toBe("/");
-    // Should not have a notFound route active
-    expect(state.matches.some((m) => m.routeId === "__root__/404")).toBe(false);
+    expect(router.state.location.pathname).toBe("/");
+    expect(router.state.matches.some((m) => m.routeId === "__root__/404")).toBe(false);
   });
 
-  it("redirects non-admin to / when navigating to /admin (role guard)", async () => {
-    const history = createMemoryHistory({ initialEntries: ["/admin"] });
+  it("redirects /manage to /manage/keys", async () => {
+    const history = createMemoryHistory({ initialEntries: ["/manage"] });
     const router = createPortalRouter(history, { role: "user" });
     await router.load();
 
-    // The beforeLoad in admin/route.tsx throws redirect({ to: "/" }).
-    // After load(), the router state should be at "/" not "/admin".
-    const state = router.state;
-    expect(state.location.pathname).toBe("/");
+    expect(router.state.location.pathname).toBe("/manage/keys");
   });
 
-  it("allows admin to access /admin (role guard passes)", async () => {
-    const history = createMemoryHistory({ initialEntries: ["/admin"] });
-    const router = createPortalRouter(history, { role: "admin" });
+  it("allows non-admin users to access /manage/keys", async () => {
+    const history = createMemoryHistory({ initialEntries: ["/manage/keys"] });
+    const router = createPortalRouter(history, { role: "user" });
     await router.load();
 
-    const state = router.state;
-    expect(state.location.pathname).toBe("/admin");
+    expect(router.state.location.pathname).toBe("/manage/keys");
   });
 
-  it("allows admin to access /admin/audit/:eventId deep link", async () => {
-    const history = createMemoryHistory({ initialEntries: ["/admin/audit/abc123"] });
-    const router = createPortalRouter(history, { role: "admin" });
-    await router.load();
-
-    const state = router.state;
-    expect(state.location.pathname).toBe("/admin/audit/abc123");
-  });
-
-  it("redirects non-admin from /admin/audit/:eventId to /", async () => {
-    const history = createMemoryHistory({ initialEntries: ["/admin/audit/abc123"] });
+  it("redirects non-admin users away from admin-only manage routes", async () => {
+    const history = createMemoryHistory({ initialEntries: ["/manage/audit/abc123"] });
     const router = createPortalRouter(history, { role: "none" });
     await router.load();
 
-    const state = router.state;
-    expect(state.location.pathname).toBe("/");
+    expect(router.state.location.pathname).toBe("/");
+  });
+
+  it("allows admin users to access admin-only manage routes", async () => {
+    const history = createMemoryHistory({ initialEntries: ["/manage/audit/abc123"] });
+    const router = createPortalRouter(history, { role: "admin" });
+    await router.load();
+
+    expect(router.state.location.pathname).toBe("/manage/audit/abc123");
+  });
+
+  it("redirects legacy /admin links to the new destinations", async () => {
+    const history = createMemoryHistory({ initialEntries: ["/admin/users/alice%40example.com"] });
+    const router = createPortalRouter(history, { role: "admin" });
+    await router.load();
+
+    expect(router.state.location.pathname).toBe("/manage/users/alice%40example.com");
+  });
+
+  it("redirects legacy /preferences to /manage/preferences", async () => {
+    const history = createMemoryHistory({ initialEntries: ["/preferences"] });
+    const router = createPortalRouter(history, { role: "user" });
+    await router.load();
+
+    expect(router.state.location.pathname).toBe("/manage/preferences");
   });
 });

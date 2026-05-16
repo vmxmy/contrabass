@@ -14,50 +14,70 @@
 
 import {
   createRouter,
-  createRootRoute,
-  createRoute,
   createMemoryHistory,
   createBrowserHistory,
   redirect,
 } from "@tanstack/react-router";
 import { rootRoute } from "./routes/__root";
 import { indexRoute } from "./routes/index";
-import { preferencesRoute } from "./routes/preferences";
-import { adminRoute } from "./routes/admin/route";
-import { adminIndexRoute } from "./routes/admin/index";
-import { adminUsersRoute } from "./routes/admin/users/route";
-import { adminUsersIndexRoute } from "./routes/admin/users/index";
-import { adminUsersUserIdRoute } from "./routes/admin/users/$userId";
-import { adminTeamsRoute } from "./routes/admin/teams/route";
-import { adminTeamsIndexRoute } from "./routes/admin/teams/index";
-import { adminTeamsTeamIdRoute } from "./routes/admin/teams/$teamId";
-import { adminAuditRoute } from "./routes/admin/audit/route";
-import { adminAuditIndexRoute } from "./routes/admin/audit/index";
-import { adminAuditEventIdRoute } from "./routes/admin/audit/$eventId";
-import { adminUsageRoute } from "./routes/admin/usage/route";
-import { adminSettingsRoute } from "./routes/admin/settings";
+import { manageRoute } from "./routes/manage/route";
+import { manageIndexRoute } from "./routes/manage/index";
+import { manageKeysRoute } from "./routes/manage/keys";
+import { managePreferencesRoute } from "./routes/manage/preferences";
+import { manageUsersRoute } from "./routes/manage/users/route";
+import { manageUsersIndexRoute } from "./routes/manage/users/index";
+import { manageUsersUserIdRoute } from "./routes/manage/users/$userId";
+import { manageTeamsRoute } from "./routes/manage/teams/route";
+import { manageTeamsIndexRoute } from "./routes/manage/teams/index";
+import { manageTeamsTeamIdRoute } from "./routes/manage/teams/$teamId";
+import { manageAuditRoute } from "./routes/manage/audit/route";
+import { manageAuditIndexRoute } from "./routes/manage/audit/index";
+import { manageAuditEventIdRoute } from "./routes/manage/audit/$eventId";
+import { manageSettingsRoute } from "./routes/manage/settings";
+import {
+  legacyAdminAuditEventRoute,
+  legacyAdminAuditRoute,
+  legacyAdminRoute,
+  legacyAdminSettingsRoute,
+  legacyAdminTeamDetailRoute,
+  legacyAdminTeamsRoute,
+  legacyAdminUsageRoute,
+  legacyAdminUserDetailRoute,
+  legacyAdminUsersRoute,
+  legacyPreferencesRoute,
+} from "./routes/legacy/redirects";
 
 // Wire up parent/child relationships using `addChildren`.
 const routeTree = rootRoute.addChildren([
   indexRoute,
-  preferencesRoute,
-  adminRoute.addChildren([
-    adminIndexRoute,
-    adminUsersRoute.addChildren([
-      adminUsersIndexRoute,
-      adminUsersUserIdRoute,
+  manageRoute.addChildren([
+    manageIndexRoute,
+    manageKeysRoute,
+    managePreferencesRoute,
+    manageUsersRoute.addChildren([
+      manageUsersIndexRoute,
+      manageUsersUserIdRoute,
     ]),
-    adminTeamsRoute.addChildren([
-      adminTeamsIndexRoute,
-      adminTeamsTeamIdRoute,
+    manageTeamsRoute.addChildren([
+      manageTeamsIndexRoute,
+      manageTeamsTeamIdRoute,
     ]),
-    adminAuditRoute.addChildren([
-      adminAuditIndexRoute,
-      adminAuditEventIdRoute,
+    manageAuditRoute.addChildren([
+      manageAuditIndexRoute,
+      manageAuditEventIdRoute,
     ]),
-    adminUsageRoute,
-    adminSettingsRoute,
+    manageSettingsRoute,
   ]),
+  legacyAdminRoute,
+  legacyAdminUsageRoute,
+  legacyAdminUsersRoute,
+  legacyAdminUserDetailRoute,
+  legacyAdminTeamsRoute,
+  legacyAdminTeamDetailRoute,
+  legacyAdminAuditRoute,
+  legacyAdminAuditEventRoute,
+  legacyAdminSettingsRoute,
+  legacyPreferencesRoute,
 ]);
 
 export type RouterContext = {

@@ -56,7 +56,7 @@ function logout() {
 }
 
 function openCreateKey() {
-  window.location.href = "/#create-key";
+  window.location.href = "/manage/keys#create-key";
 }
 
 export function PortalCommandPalette() {
@@ -93,7 +93,7 @@ export function PortalCommandPalette() {
         description: user.userId,
         breadcrumbs: [t`跳转`, t`用户`],
         icon: <UserIcon className="size-4" />,
-        href: `/admin/users/${encodeURIComponent(user.userId)}`,
+        href: `/manage/users/${encodeURIComponent(user.userId)}`,
       })),
       ...(teamsQuery.data?.teams ?? []).map((team) => ({
         id: `team:${team.id}`,
@@ -102,7 +102,7 @@ export function PortalCommandPalette() {
         description: team.id,
         breadcrumbs: [t`跳转`, t`团队`],
         icon: <UsersThreeIcon className="size-4" />,
-        href: `/admin/teams/${encodeURIComponent(team.id)}`,
+        href: `/manage/teams/${encodeURIComponent(team.id)}`,
       })),
       ...(auditQuery.data?.events ?? []).map((event) => ({
         id: `audit:${event.id}`,
@@ -111,7 +111,7 @@ export function PortalCommandPalette() {
         description: event.actorUserEmail ?? event.actorUserId ?? event.id,
         breadcrumbs: [t`跳转`, t`审计`],
         icon: <ActivityIcon className="size-4" />,
-        href: `/admin/audit/${encodeURIComponent(event.id)}`,
+        href: `/manage/audit/${encodeURIComponent(event.id)}`,
       })),
     ];
 
@@ -120,7 +120,7 @@ export function PortalCommandPalette() {
         id: "action:create-key",
         group: "action",
         title: t`新建 Key`,
-        description: t`打开个人视图的 Key 创建入口`,
+        description: t`打开管理区的 Key 创建入口`,
         breadcrumbs: [t`操作`],
         icon: <KeyIcon className="size-4" />,
         action: openCreateKey,
@@ -138,7 +138,7 @@ export function PortalCommandPalette() {
         id: "action:logout",
         group: "action",
         title: t`退出登录`,
-        description: t`跳转到 Cloudflare Access 退出登录`,
+        description: t`退出当前登录会话`,
         breadcrumbs: [t`操作`],
         icon: <SignOutIcon className="size-4" />,
         action: logout,

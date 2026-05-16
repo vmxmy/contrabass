@@ -4,7 +4,6 @@ import { Button } from "@cloudflare/kumo/components/button";
 import { Collapsible } from "@cloudflare/kumo/components/collapsible";
 import { Combobox } from "@cloudflare/kumo/components/combobox";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
-import { DropdownMenu } from "@cloudflare/kumo/components/dropdown";
 import { Empty } from "@cloudflare/kumo/components/empty";
 import { Field } from "@cloudflare/kumo/components/field";
 import { Grid, GridItem } from "@cloudflare/kumo/components/grid";
@@ -13,7 +12,6 @@ import { LayerCard } from "@cloudflare/kumo/components/layer-card";
 import { Loader, SkeletonLine } from "@cloudflare/kumo/components/loader";
 import { Meter } from "@cloudflare/kumo/components/meter";
 import { Surface } from "@cloudflare/kumo/components/surface";
-import { Pagination } from "@cloudflare/kumo/components/pagination";
 import { Popover } from "@cloudflare/kumo/components/popover";
 import { Select } from "@cloudflare/kumo/components/select";
 import { SensitiveInput } from "@cloudflare/kumo/components/sensitive-input";
@@ -23,14 +21,15 @@ import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { Text } from "@cloudflare/kumo/components/text";
 import { Toasty } from "@cloudflare/kumo/components/toast";
 import { Tooltip, TooltipProvider } from "@cloudflare/kumo/components/tooltip";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { QueryClient, QueryClientProvider, HydrationBoundary } from "@tanstack/react-query";
 import { fmt, fmtInt } from "./lib/format";
 import { useToast } from "./hooks/use-toast";
 import { useDashboard } from "./hooks/use-dashboard";
 import { applyThemePreference, useLegacyThemeMigration, usePreferences, useUpdatePreferences } from "./hooks/use-preferences";
 import type { Dashboard } from "./schemas";
-import { PersonalView } from "./dashboard/views/personal-view";
+import { IdentityBar } from "./identity-bar";
+import { UsageDashboard } from "./dashboard/views/usage-dashboard";
 
 export type InitialDashboardData = {
   me?: { email?: string | null; domain?: string | null; company?: string | null } | null;
@@ -1031,117 +1030,14 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
   );
 }
 
-type PortalRole = "admin" | "user" | "none";
-
-type TabKey = "user" | "admin";
-
-let portalRolePromise: Promise<PortalRole> | null = null;
-function fetchPortalRoleOnce(): Promise<PortalRole> {
-  if (portalRolePromise) return portalRolePromise;
-  portalRolePromise = fetch("/api/me", { headers: { "content-type": "application/json" } })
-    .then(async (response): Promise<PortalRole> => {
-      if (!response.ok) return "none";
-      const body = await response.json().catch(() => ({}));
-      if (body && (body.role === "admin" || body.role === "user" || body.role === "none")) {
-        return body.role as PortalRole;
-      }
-      return "none";
-    })
-    .catch((): PortalRole => "none");
-  return portalRolePromise;
-}
-
-function usePortalRole(initialRole?: PortalRole): { role: PortalRole; ready: boolean } {
-  const [role, setRole] = useState<PortalRole>(initialRole ?? "none");
-  const [ready, setReady] = useState(initialRole !== undefined);
-  useEffect(() => {
-    if (initialRole !== undefined) return;
-    let cancelled = false;
-    fetchPortalRoleOnce().then((next) => {
-      if (cancelled) return;
-      setRole(next);
-      setReady(true);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [initialRole]);
-  return { role, ready };
-}
-
-export function readTabFromHash(role: PortalRole): TabKey {
-  void role;
-  const hash = typeof window !== "undefined" ? window.location.hash : "";
-  if (hash === "#admin") return "admin";
-  if (hash === "#user") return "user";
-  return "user";
-}
-
-export function PortalTabs({ tab, onSelect }: { tab: TabKey; onSelect: (next: TabKey) => void }) {
-  return (
-    <Tabs
-      className="mb-10"
-      variant="segmented"
-      value={tab}
-      onValueChange={(next) => onSelect(next as TabKey)}
-      tabs={[
-        { value: "user", label: "个人视图" },
-        { value: "admin", label: "全局管理" },
-      ]}
-    />
-  );
-}
-
-function PreferencesBootstrap() {
-  useLegacyThemeMigration();
-  return null;
-}
-
-type AppProps = {
+export type AppProps = {
   initialData?: InitialDashboardData | null;
-  role?: PortalRole;
+  role?: "admin" | "user" | "none";
   dehydratedState?: unknown;
 };
 
-function createQueryClient(): QueryClient {
-  return new QueryClient({
-    defaultOptions: {
-      queries: {
-        staleTime: 60_000,
-        refetchOnWindowFocus: false,
-      },
-    },
-  });
-}
-
-const LazyAdminSection = React.lazy(async () => {
-  const module = await import("./admin-components");
-  return { default: module.AdminSection };
-});
-
-function AdminSectionFallback() {
-  return (
-    <div className="flex items-center justify-center py-10" aria-live="polite">
-      <Loader aria-label="正在加载管理员视图" />
-    </div>
-  );
-}
-
-export function App({ initialData, role: initialRole, dehydratedState }: AppProps) {
+export function App({ initialData, dehydratedState }: AppProps) {
   const [queryClient] = useState(createQueryClient);
-  const { role, ready } = usePortalRole(initialRole);
-  const [tab, setTab] = useState<TabKey>(() => readTabFromHash(initialRole ?? "none"));
-
-  const handleTabSelect = useCallback((next: TabKey) => {
-    setTab(next);
-    if (typeof history !== "undefined") {
-      history.replaceState(null, "", "#" + next);
-    }
-  }, []);
-
-  const isAdmin = role === "admin";
-  const showUserPanel = tab === "user" || !isAdmin;
-  const showAdminPanel = isAdmin && tab === "admin";
   const platformName = initialData?.me?.company ?? "智云AI管理平台";
 
   return (
@@ -1153,10 +1049,9 @@ export function App({ initialData, role: initialRole, dehydratedState }: AppProp
             <main className="container mx-auto px-4 py-10 lg:px-10 lg:py-16">
               <header className="mb-12 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                 <div className="space-y-4">
-                  <span className="inline-flex w-fit items-center rounded-full bg-kumo-info-tint/70 px-2.5 py-1 text-xs font-semibold text-kumo-info">Cloudflare Access 已保护</span>
                   <div className="space-y-3">
                     <Text variant="heading1" as="h1">{platformName}</Text>
-                    <Text variant="secondary" as="p" className="max-w-3xl leading-relaxed">面向智云团队的 AI 能力自助台：只读查看个人 API Key、团队可用模型、预算与近 30 天用量，数据权限自动绑定当前登录邮箱。</Text>
+                    <Text variant="secondary" as="p" className="max-w-3xl leading-relaxed">面向智云团队的 AI 能力自助台：仪表盘聚焦用量趋势、预算与模型分布，管理操作集中到独立管理区。</Text>
                   </div>
                 </div>
                 <div id="header-actions-root" className="flex flex-wrap items-center gap-3 sm:self-auto">
@@ -1164,44 +1059,11 @@ export function App({ initialData, role: initialRole, dehydratedState }: AppProp
                 </div>
               </header>
 
-              {ready && isAdmin && (
-                <nav id="portal-tabs-root">
-                  <PortalTabs tab={tab} onSelect={handleTabSelect} />
-                </nav>
-              )}
+              <IdentityBar />
 
-              {showUserPanel && (
-                <div id="user-panel">
-                  <div id="hero-stats-root" className="mb-14">
-                    <HeroStats />
-                  </div>
-
-                  <section id="usage-panel-root" className="mb-14">
-                    <PersonalView />
-                  </section>
-
-                  <section className="mb-10 grid grid-cols-1 gap-5 md:grid-cols-[1fr_2fr]">
-                    <div id="teams-root">
-                      <TeamsAccessCard />
-                    </div>
-                    <div id="models-root">
-                      <ModelAccessCard />
-                    </div>
-                  </section>
-
-                  <div id="keys-root">
-                    <ApiKeysCard />
-                  </div>
-                </div>
-              )}
-
-              {isAdmin && showAdminPanel ? (
-                <div id="admin-root">
-                  <React.Suspense fallback={<AdminSectionFallback />}>
-                    <LazyAdminSection role={role} />
-                  </React.Suspense>
-                </div>
-              ) : null}
+              <section id="usage-panel-root" className="mb-14">
+                <UsageDashboard />
+              </section>
 
               <div id="portal-error-root">
                 <PortalErrorBanner initialData={initialData} />
