@@ -9,6 +9,8 @@ import {
   type MagicLinkNonce,
   AuditEventSchema,
   type AuditEvent,
+  TenantRoleRecordSchema,
+  type TenantRoleRecord,
 } from "./schemas";
 import type { LiteLLMPortalEnv } from "../types";
 import {
@@ -57,6 +59,10 @@ function nonceKey(token: string): string {
 
 function inviteKey(emailLc: string): string {
   return `invite:${emailLc.toLowerCase()}`;
+}
+
+function tenantRoleKey(userId: string, teamId: string): string {
+  return `trole:${userId}:${teamId}`;
 }
 
 function auditKey(ts: string, id: string): string {
@@ -114,6 +120,16 @@ function inviteFromRow(row: SqlRow): InviteRecord {
     invitedBy: String(row.invited_by),
     createdAt: String(row.created_at),
     consumedAt: row.consumed_at === null ? null : String(row.consumed_at),
+  });
+}
+
+function tenantRoleFromRow(row: SqlRow): TenantRoleRecord {
+  return TenantRoleRecordSchema.parse({
+    userId: String(row.user_id),
+    teamId: String(row.team_id),
+    tenantRole: String(row.tenant_role),
+    updatedBy: String(row.updated_by),
+    updatedAt: String(row.updated_at),
   });
 }
 
@@ -220,6 +236,16 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
       );
       CREATE INDEX IF NOT EXISTS cb_index_invites_status_idx
         ON cb_index_invites (status, email_lc);
+      CREATE TABLE IF NOT EXISTS cb_index_tenant_roles (
+        user_id TEXT NOT NULL,
+        team_id TEXT NOT NULL,
+        tenant_role TEXT NOT NULL CHECK (tenant_role IN ('tenant_admin', 'member')),
+        updated_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, team_id)
+      );
+      CREATE INDEX IF NOT EXISTS cb_index_tenant_roles_team_idx
+        ON cb_index_tenant_roles (team_id, user_id);
     `);
 
     const marker = firstRow(sql.exec<{ value_json: string }>(
@@ -253,6 +279,11 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
     const audits = await this.ctx.storage.list<unknown>({ prefix: "audit:" });
     for (const raw of audits.values()) {
       this.putAuditSql(sql, AuditEventSchema.parse(raw));
+    }
+
+    const tenantRoles = await this.ctx.storage.list<unknown>({ prefix: "trole:" });
+    for (const raw of tenantRoles.values()) {
+      this.putTenantRoleSql(sql, TenantRoleRecordSchema.parse(raw));
     }
 
     const imported = await this.ctx.storage.get<unknown>(KEY_META_IMPORTED);
@@ -360,6 +391,20 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
       parsed.createdAt,
       parsed.consumedAt,
       new Date().toISOString(),
+    );
+  }
+
+  private putTenantRoleSql(sql: SqlStorage, record: TenantRoleRecord): void {
+    const parsed = TenantRoleRecordSchema.parse(record);
+    sql.exec(
+      `INSERT INTO cb_index_tenant_roles (
+         user_id, team_id, tenant_role, updated_by, updated_at
+       ) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(user_id, team_id) DO UPDATE SET
+         tenant_role = excluded.tenant_role,
+         updated_by = excluded.updated_by,
+         updated_at = excluded.updated_at`,
+      parsed.userId, parsed.teamId, parsed.tenantRole, parsed.updatedBy, parsed.updatedAt,
     );
   }
 
@@ -596,6 +641,61 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
     const revoked: InviteRecord = { ...current, status: "revoked" };
     await this.putInvite(revoked);
     return revoked;
+  }
+
+  // -------------------------------------------------------------------------
+  // Tenant roles (portal-level, decoupled from LiteLLM user_role)
+  // -------------------------------------------------------------------------
+
+  async putTenantRole(record: TenantRoleRecord): Promise<void> {
+    const parsed = TenantRoleRecordSchema.parse(record);
+    const sql = await this.sql();
+    if (sql !== null) {
+      this.putTenantRoleSql(sql, parsed);
+      return;
+    }
+    await this.ctx.storage.put(tenantRoleKey(parsed.userId, parsed.teamId), parsed);
+  }
+
+  async getTenantRole(userId: string, teamId: string): Promise<TenantRoleRecord | null> {
+    if (typeof userId !== "string" || userId.length === 0) {
+      throw new Error("getTenantRole: userId must be a non-empty string");
+    }
+    if (typeof teamId !== "string" || teamId.length === 0) {
+      throw new Error("getTenantRole: teamId must be a non-empty string");
+    }
+    const sql = await this.sql();
+    if (sql !== null) {
+      const row = firstRow(sql.exec<SqlRow>(
+        "SELECT * FROM cb_index_tenant_roles WHERE user_id = ? AND team_id = ?",
+        userId, teamId,
+      ));
+      return row == null ? null : tenantRoleFromRow(row);
+    }
+    const raw = await this.ctx.storage.get<unknown>(tenantRoleKey(userId, teamId));
+    return raw == null ? null : TenantRoleRecordSchema.parse(raw);
+  }
+
+  async listTenantRoles(opts?: { teamId?: string }): Promise<TenantRoleRecord[]> {
+    const teamId = opts?.teamId;
+    const sql = await this.sql();
+    if (sql !== null) {
+      const rows = teamId == null
+        ? sql.exec<SqlRow>("SELECT * FROM cb_index_tenant_roles ORDER BY team_id, user_id").toArray()
+        : sql.exec<SqlRow>(
+          "SELECT * FROM cb_index_tenant_roles WHERE team_id = ? ORDER BY user_id",
+          teamId,
+        ).toArray();
+      return rows.map(tenantRoleFromRow);
+    }
+    const entries = await this.ctx.storage.list<unknown>({ prefix: "trole:" });
+    const out: TenantRoleRecord[] = [];
+    for (const raw of entries.values()) {
+      const rec = TenantRoleRecordSchema.parse(raw);
+      if (teamId == null || rec.teamId === teamId) out.push(rec);
+    }
+    return out.sort((a, b) =>
+      a.teamId === b.teamId ? a.userId.localeCompare(b.userId) : a.teamId.localeCompare(b.teamId));
   }
 
   // -------------------------------------------------------------------------
