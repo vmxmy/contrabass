@@ -296,7 +296,7 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
                 COALESCE(SUM(total_tokens),0) AS t,
                 COUNT(*) AS r
            FROM cb_usage_events
-          WHERE ts_ms >= ? AND ts_ms < ?${where}`,
+          WHERE ts_ms >= ? AND ts_ms < ? AND attributed = 1${where}`,
           ...args,
         ),
       );
@@ -353,7 +353,9 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
     clause: string;
     arg: string | null;
   } {
-    return scope.kind === "user" ? { clause: " AND user_id = ?", arg: scope.userId } : { clause: "", arg: null };
+    return scope.kind === "user"
+      ? { clause: " AND attributed = 1 AND user_id = ?", arg: scope.userId }
+      : { clause: " AND attributed = 1", arg: null };
   }
 
   async queryTimeseries(opts: {
@@ -475,7 +477,7 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
       .exec<SqlRow>(
         `SELECT user_id, COALESCE(SUM(spend),0) AS s
          FROM cb_usage_events
-        WHERE ts_ms >= ? AND ts_ms < ?
+        WHERE ts_ms >= ? AND ts_ms < ? AND attributed = 1
         GROUP BY user_id
         ORDER BY s DESC
         LIMIT ?`,
@@ -490,7 +492,7 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
       const rows = sql
         .exec<SqlRow>(
           `SELECT ts_ms, spend FROM cb_usage_events
-          WHERE user_id = ? AND ts_ms >= ? AND ts_ms < ?
+          WHERE user_id = ? AND ts_ms >= ? AND ts_ms < ? AND attributed = 1
           ORDER BY ts_ms ASC`,
           userId,
           opts.fromMs,

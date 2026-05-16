@@ -826,3 +826,41 @@ describe("SpendEventSchema attributed", () => {
     expect(SpendEventSchema.parse({ ...base, attributed: false }).attributed).toBe(false);
   });
 });
+
+describe("UsageDO global queries drop un-attributed junk", () => {
+  async function seed() {
+    const obj = makeUsageDO();
+    await obj.writeSpendEvents([
+      { requestId: "j1", tsMs: 1000, userId: "", teamId: "", model: "gpt",
+        promptTokens: 0, completionTokens: 0, totalTokens: 10, spend: 100, attributed: false },
+      { requestId: "g1", tsMs: 1100, userId: "laoxu", teamId: "", model: "gpt",
+        promptTokens: 0, completionTokens: 0, totalTokens: 5, spend: 7, attributed: true },
+    ]);
+    return obj;
+  }
+  it("KPI/timeseries/model/perUser exclude junk; user scope still works", async () => {
+    const obj = await seed();
+    const win = { fromMs: 0, toMs: 2000 };
+    const kpi = await obj.queryKpiWithDelta({
+      scope: { kind: "global" }, currentFromMs: 0, currentToMs: 2000,
+      previousFromMs: 0, previousToMs: 0, eventsOnly: true,
+    });
+    expect(kpi.current.spend).toBe(7);
+    expect(kpi.current.requests).toBe(1);
+
+    const ts = await obj.queryTimeseries({ scope: { kind: "global" }, grain: "day", ...win });
+    expect(ts.reduce((s, b) => s + b.spend, 0)).toBe(7);
+
+    const mb = await obj.queryModelBreakdown({ scope: { kind: "global" }, ...win });
+    expect(mb.reduce((s, m) => s + m.spend, 0)).toBe(7);
+
+    const pu = await obj.queryPerUserSeries({ grain: "day", ...win, topN: 10 });
+    expect(pu.map((s) => s.userId)).toEqual(["laoxu"]);
+
+    const self = await obj.queryKpiWithDelta({
+      scope: { kind: "user", userId: "laoxu" }, currentFromMs: 0, currentToMs: 2000,
+      previousFromMs: 0, previousToMs: 0, eventsOnly: true,
+    });
+    expect(self.current.spend).toBe(7);
+  });
+});
