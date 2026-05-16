@@ -443,6 +443,17 @@ export const AdminCreateInviteBodySchema = z.object({
 
 export type AdminCreateInviteBody = z.infer<typeof AdminCreateInviteBodySchema>;
 
+// POST /api/tenant/invites — teamId is pinned to the caller's tenant team and
+// MUST NOT be supplied by the client; an optional teamId in the body is ignored.
+export const TenantCreateInviteBodySchema = z.object({
+  reason: WriteReasonSchema,
+  email: z.string().email(),
+  teamId: z.string().optional(),
+  teamRole: z.enum(["admin", "user"]).default("user"),
+});
+
+export type TenantCreateInviteBody = z.infer<typeof TenantCreateInviteBodySchema>;
+
 export const AdminInviteSchema = z.object({
   email: z.string(),
   teamId: z.string(),
