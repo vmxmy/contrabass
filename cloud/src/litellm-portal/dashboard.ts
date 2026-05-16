@@ -84,7 +84,7 @@ export async function buildDashboard(deps: BuildDeps, opts: BuildOpts): Promise<
   const prevToMs = fromMs;
   const prevFromMs = fromMs - WINDOW_SPEC[opts.window].lenMs;
   // NOTE: EVENT_RETENTION_MS here (dashboard-schemas.ts) must stay in lockstep
-  // with UsageDO.EVENT_RETENTION_MS (durable/usage-do.ts). L2 nulls the 30d
+  // with the retention window used by the usage source. L2 nulls the 30d
   // `previous` deliberately (current=events vs previous=daily would be
   // apples-to-oranges); this is a stricter presentation policy than L1's own
   // data-availability source resolution, by design (L2 spec §3).

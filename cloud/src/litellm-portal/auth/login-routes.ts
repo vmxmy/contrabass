@@ -348,9 +348,9 @@ export async function handleMagicCallback(request: Request, env: LiteLLMPortalEn
     } else {
       const bootstrap = parseBootstrapAdminEmails(env);
       const role: "admin" | "user" = bootstrap.has(emailLc) ? "admin" : "user";
-      // Prefer the canonical LiteLLM user_id so self-scope usage attribution
-      // (cb_usage_events.user_id) lines up. Fall back to the email only when
-      // LiteLLM does not yet know this user (no stable id available).
+      // Prefer the canonical LiteLLM user_id so self-scope usage queries
+      // line up with LiteLLM's own user records. Fall back to the email only
+      // when LiteLLM does not yet know this user (no stable id available).
       let resolvedUserId = emailLc;
       try {
         const litellmUser = await resolveLiteLLMUser(env, emailLc);

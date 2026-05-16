@@ -13,7 +13,6 @@ import { checkClientErrorRateLimit, recordClientError } from "./observability/cl
 import type { ClientErrorPayload } from "./observability/client-error";
 import { scanBudgetThresholds } from "./notifications";
 import { runSpendSnapshotTick } from "./sync/spend-snapshot-cron";
-import { refreshDailyActivity, pruneUsageRetention } from "./sync/usage-importer";
 import { runUsageRollup } from "./usage/usage-rollup";
 import { handleLiteLLMSyncBatch } from "./sync/queue-consumer";
 import type { SyncMessage } from "./durable/schemas";
@@ -28,7 +27,6 @@ export type { LiteLLMPortalEnv } from "./types";
 export { RateLimitDO as RateLimitDOSQLite } from "./security/rate-limit-do";
 export { IndexDO as IndexDOSQLite } from "./durable/index-do";
 export { TeamConfigDO as TeamConfigDOSQLite } from "./durable/team-config-do";
-export { UsageDO as UsageDOSQLite } from "./durable/usage-do";
 
 const portalChunkByFileName = new Map<string, { fileName: string; js: string }>(
   portalBundleChunks.map((chunk) => [chunk.fileName, chunk]),
@@ -237,7 +235,6 @@ export default {
   async scheduled(controller, env, ctx) {
     if (controller.cron === "0 9 * * *") {
       ctx.waitUntil(scanBudgetThresholds(env));
-      ctx.waitUntil(pruneUsageRetention(env));
       return;
     }
     if (controller.cron === "* * * * *") {
@@ -246,10 +243,6 @@ export default {
     }
     if (controller.cron === "*/30 * * * *") {
       ctx.waitUntil(runUsageRollup(env));
-      return;
-    }
-    if (controller.cron === "0 * * * *") {
-      ctx.waitUntil(refreshDailyActivity(env));
       return;
     }
   },
