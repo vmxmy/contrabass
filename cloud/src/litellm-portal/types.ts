@@ -24,6 +24,7 @@ export type LiteLLMPortalEnv = {
   METRICS_AE?: AnalyticsEngineDataset;
   AUDIT_AE?: AnalyticsEngineDataset;
   USER_PREFS_KV?: KVNamespace;
+  USAGE_ROLLUP_KV?: KVNamespace;
   ROLE_INVALIDATION_WEBHOOK_TOKEN?: string;
   RATE_LIMIT_DO?: DurableObjectNamespace;
   /** HMAC secret used to sign portal session cookies (HS256). 7-day TTL. */
