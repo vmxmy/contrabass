@@ -29,6 +29,18 @@ export const UserRecordSchema = z.object({
 
 export type UserRecord = z.infer<typeof UserRecordSchema>;
 
+export const InviteRecordSchema = z.object({
+  emailLc: z.string(),
+  teamId: z.string(),
+  teamRole: z.enum(["admin", "user"]),
+  status: z.enum(["pending", "consumed", "revoked"]),
+  invitedBy: z.string(),
+  createdAt: z.string().datetime(),
+  consumedAt: z.string().datetime().nullable(),
+}).strict();
+
+export type InviteRecord = z.infer<typeof InviteRecordSchema>;
+
 export const KeyRecordSchema = z.object({
   id: z.string(),
   alias: z.string(),
@@ -52,6 +64,14 @@ export const SpendSnapshotSchema = z.object({
 }).strict();
 
 export type SpendSnapshot = z.infer<typeof SpendSnapshotSchema>;
+
+export const TeamAlertWebhookSchema = z.object({
+  url: z.string().url(),
+  updatedAt: z.string().datetime(),
+  updatedBy: z.string(),
+}).strict();
+
+export type TeamAlertWebhook = z.infer<typeof TeamAlertWebhookSchema>;
 
 export const MagicLinkNonceSchema = z.object({
   token: z.string(),

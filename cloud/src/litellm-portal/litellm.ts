@@ -516,6 +516,61 @@ export async function updateTeamLimits(
   });
 }
 
+export type CreateTeamParams = {
+  alias: string;
+  models: string[];
+  maxBudget?: number | null;
+  tpmLimit?: number | null;
+  rpmLimit?: number | null;
+  budgetDuration?: string;
+};
+
+export type CreatedTeam = {
+  teamId: string;
+  alias: string;
+  models: string[];
+  maxBudget: number | null;
+};
+
+export async function createTeam(
+  env: LiteLLMPortalEnv,
+  params: CreateTeamParams,
+  changedBy?: string,
+): Promise<CreatedTeam> {
+  const headers = new Headers();
+  if (changedBy && changedBy.trim().length > 0) {
+    headers.set("litellm-changed-by", changedBy.trim());
+  }
+  // Intentionally omit team_id — LiteLLM generates the canonical id. This avoids
+  // duplicate-id error handling and keeps LiteLLM authoritative for team identity.
+  const body: Record<string, unknown> = {
+    team_alias: params.alias,
+    models: params.models,
+  };
+  if (params.maxBudget != null) body.max_budget = params.maxBudget;
+  if (params.tpmLimit != null) body.tpm_limit = params.tpmLimit;
+  if (params.rpmLimit != null) body.rpm_limit = params.rpmLimit;
+  if (params.budgetDuration && params.budgetDuration.trim().length > 0) {
+    body.budget_duration = params.budgetDuration.trim();
+  }
+  const response = await litellmFetch(env, "/team/new", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  const json = await readJson(response);
+  const teamId = isRecord(json) && typeof json.team_id === "string" ? json.team_id.trim() : "";
+  if (teamId.length === 0) {
+    throw new LiteLLMRequestError(502, { error: "litellm_team_new_missing_team_id", body: json });
+  }
+  return {
+    teamId,
+    alias: params.alias,
+    models: params.models,
+    maxBudget: params.maxBudget ?? null,
+  };
+}
+
 export async function updateUser(
   env: LiteLLMPortalEnv,
   userId: string,

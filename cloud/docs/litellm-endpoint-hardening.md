@@ -37,7 +37,70 @@
 - Admin/management routes reachable only by the portal service identity + named admins.
 - 48h `/spend/logs/v2` volume and the no-user fraction fall sharply on re-measure.
 
+## Optional: Cloudflare AI Gateway in front of LiteLLM
+
+If you want **response caching, provider failover, unified billing**, and **observability** in a single dashboard, point LiteLLM's model endpoints at Cloudflare AI Gateway instead of directly to OpenAI / Anthropic / etc.
+
+### What to do
+
+Edit LiteLLM's `config.yaml` on the VPS. For each model entry in `model_list`, change `litellm_params.api_base` from the direct provider to the gateway:
+
+**Before:**
+```yaml
+model_list:
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_base: https://api.openai.com/v1
+      api_key: sk-...
+```
+
+**After:**
+```yaml
+model_list:
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_base: https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/openai
+      api_key: sk-...
+```
+
+Repeat for each provider: replace `https://api.openai.com/v1` → `https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/openai`, `https://api.anthropic.com` → `https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/anthropic`, etc. Find your account ID and gateway ID in the [Cloudflare AI Gateway dashboard](https://dash.cloudflare.com/?to=/:account/ai/ai-gateway/).
+
+Restart LiteLLM. Requests now flow through Cloudflare's cache and observe traffic in the AI Gateway dashboard.
+
+### Why
+
+- **Response caching:** Cache identical prompts for instant returns (e.g. RAG queries on the same document).
+- **Provider failover:** If OpenAI is degraded, failover to Anthropic at the gateway level without re-engineering LiteLLM.
+- **Unified billing & observability:** One dashboard for all models + spend + request metadata, instead of per-provider portals.
+- **Rate-limit aggregation:** Gateway-level rate-limit can absorb spikes across all tenants before hitting the origin.
+
+### Verification
+
+1. Send a test inference through the portal (or direct curl to LiteLLM):
+   ```bash
+   curl https://litellm.ziikoo.com/v1/chat/completions \
+     -H "Authorization: Bearer <portal-key>" \
+     -d '{"model":"gpt-4o","messages":[{"role":"user","content":"test"}]}'
+   ```
+2. Check the [Cloudflare AI Gateway dashboard](https://dash.cloudflare.com/?to=/:account/ai/ai-gateway/) for a **new request** in the gateway ID's traffic log.
+3. Look for the **`cf-cache-status`** header in the response (or in the gateway dashboard):
+   - `HIT` = response came from Cloudflare cache (fast).
+   - `MISS` = first request to this model; cache is being populated.
+
+### Rollback
+
+If you need to disable the gateway, revert `api_base` back to the direct provider endpoint and restart LiteLLM. **No portal or data migration is needed.** The gateway is transparent; the portal architecture does not change.
+
+### Caveats
+
+- **Streaming:** The gateway passes streaming (`stream: true`) through to the origin. Verify streaming works end-to-end.
+- **Per-provider paths:** Each provider has a different gateway path. See the [Cloudflare AI Gateway docs](https://developers.cloudflare.com/ai-gateway/) for the exact path for your provider (e.g. `/anthropic`, `/cohere`, `/huggingface`).
+- **Keys in logs:** Do not log the provider's API key. Ensure LiteLLM's access logs don't emit the `Authorization` header or `api_key` field.
+
 ## Out of scope / notes
 
 - Portal code needs **no further change** for this; it already reads per-user (`/user/daily/activity?user_id=`) and never the global firehose.
 - Do not relax the portal Worker's master-key path while locking admin routes — verify the Worker's service token/IP is allow-listed before enforcing Access, or the dashboard breaks (weak-degradation will show `available:false`).
+- Cloudflare AI Gateway config is **LiteLLM-side only**; it does not modify the Worker, wrangler config, or any portal code.

@@ -8,10 +8,15 @@ function makeIdxStub(teams: Array<{ id: string; alias: string }>) {
   };
 }
 
-function makeTeamStub() {
+function makeTeamStub(webhookUrl: string | null = null) {
   return {
     putSpend: vi.fn().mockResolvedValue(undefined),
     recordSpendError: vi.fn().mockResolvedValue(undefined),
+    getAlertWebhook: vi.fn().mockResolvedValue(
+      webhookUrl ? { url: webhookUrl, updatedAt: new Date().toISOString(), updatedBy: "a@x.com" } : null,
+    ),
+    hasBudgetAlertForCycle: vi.fn().mockResolvedValue(false),
+    markBudgetAlertForCycle: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -101,5 +106,82 @@ describe("runSpendSnapshotTick", () => {
     expect(r.scannedTeams).toBe(0);
     expect(r.errors[0].teamId).toBe("(global)");
     expect(r.errors[0].reason).toContain("TEAM_CONFIG_DO");
+  });
+
+  describe("per-team budget webhook alert", () => {
+    const WEBHOOK = "https://hooks.example.com/budget";
+
+    function fetchMock(teamSpend: number, teamMax: number | null, webhookStatus = 200) {
+      return vi.fn(async (url: string) => {
+        if (String(url).includes(WEBHOOK)) {
+          return new Response("", { status: webhookStatus });
+        }
+        return new Response(
+          JSON.stringify({ team_id: "t1", spend: teamSpend, max_budget: teamMax }),
+          { status: 200 },
+        );
+      });
+    }
+
+    it("fires the webhook and marks the cycle when ratio ≥ 0.8", async () => {
+      const stub = makeTeamStub(WEBHOOK);
+      const env = makeEnv([{ id: "t1", alias: "Acme" }], () => stub);
+      globalThis.fetch = fetchMock(90, 100) as unknown as typeof fetch;
+
+      const r = await runSpendSnapshotTick(env);
+
+      expect(r.refreshedTeams).toBe(1);
+      expect(stub.getAlertWebhook).toHaveBeenCalled();
+      expect(stub.markBudgetAlertForCycle).toHaveBeenCalledTimes(1);
+      const calls = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+      expect(calls.some((a) => String(a[0]).includes(WEBHOOK))).toBe(true);
+    });
+
+    it("does not fire when ratio < 0.8", async () => {
+      const stub = makeTeamStub(WEBHOOK);
+      const env = makeEnv([{ id: "t1", alias: "Acme" }], () => stub);
+      globalThis.fetch = fetchMock(10, 100) as unknown as typeof fetch;
+
+      await runSpendSnapshotTick(env);
+
+      expect(stub.getAlertWebhook).not.toHaveBeenCalled();
+      expect(stub.markBudgetAlertForCycle).not.toHaveBeenCalled();
+    });
+
+    it("does not fire when no webhook is configured", async () => {
+      const stub = makeTeamStub(null);
+      const env = makeEnv([{ id: "t1", alias: "Acme" }], () => stub);
+      globalThis.fetch = fetchMock(95, 100) as unknown as typeof fetch;
+
+      await runSpendSnapshotTick(env);
+
+      expect(stub.getAlertWebhook).toHaveBeenCalled();
+      expect(stub.markBudgetAlertForCycle).not.toHaveBeenCalled();
+    });
+
+    it("skips when this budget cycle was already alerted", async () => {
+      const stub = makeTeamStub(WEBHOOK);
+      stub.hasBudgetAlertForCycle.mockResolvedValue(true);
+      const env = makeEnv([{ id: "t1", alias: "Acme" }], () => stub);
+      globalThis.fetch = fetchMock(99, 100) as unknown as typeof fetch;
+
+      await runSpendSnapshotTick(env);
+
+      expect(stub.markBudgetAlertForCycle).not.toHaveBeenCalled();
+      const calls = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+      expect(calls.some((a) => String(a[0]).includes(WEBHOOK))).toBe(false);
+    });
+
+    it("webhook POST failure: snapshot still written, cycle not marked, loop continues", async () => {
+      const stub = makeTeamStub(WEBHOOK);
+      const env = makeEnv([{ id: "t1", alias: "Acme" }], () => stub);
+      globalThis.fetch = fetchMock(99, 100, 500) as unknown as typeof fetch;
+
+      const r = await runSpendSnapshotTick(env);
+
+      expect(r.refreshedTeams).toBe(1);
+      expect(stub.putSpend).toHaveBeenCalled();
+      expect(stub.markBudgetAlertForCycle).not.toHaveBeenCalled();
+    });
   });
 });

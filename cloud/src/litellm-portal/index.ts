@@ -13,6 +13,7 @@ import { checkClientErrorRateLimit, recordClientError } from "./observability/cl
 import type { ClientErrorPayload } from "./observability/client-error";
 import { scanBudgetThresholds } from "./notifications";
 import { runSpendSnapshotTick } from "./sync/spend-snapshot-cron";
+import { runMonthlyBillingArchive } from "./sync/billing-archive-cron";
 import { runUsageRollup } from "./usage/usage-rollup";
 import { handleLiteLLMSyncBatch } from "./sync/queue-consumer";
 import type { SyncMessage } from "./durable/schemas";
@@ -272,6 +273,10 @@ export default {
     }
     if (controller.cron === "*/30 * * * *") {
       ctx.waitUntil(runUsageRollup(env));
+      return;
+    }
+    if (controller.cron === "0 2 1 * *") {
+      ctx.waitUntil(runMonthlyBillingArchive(env));
       return;
     }
   },

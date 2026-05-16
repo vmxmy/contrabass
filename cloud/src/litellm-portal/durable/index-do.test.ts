@@ -438,4 +438,114 @@ describe("IndexDO", () => {
     expect((await obj.listAllUsers()).users.map((u) => u.userId)).toEqual(["u2"]);
   });
 
+  // -------------------------------------------------------------------------
+  // Invites (admin-invite tenant onboarding)
+  // -------------------------------------------------------------------------
+
+  function pendingInvite(overrides: Partial<{ emailLc: string; teamId: string; teamRole: "admin" | "user"; invitedBy: string }> = {}) {
+    return {
+      emailLc: "invitee@x.com",
+      teamId: "t1",
+      teamRole: "user" as const,
+      status: "pending" as const,
+      invitedBy: "admin@x.com",
+      createdAt: new Date().toISOString(),
+      consumedAt: null,
+      ...overrides,
+    };
+  }
+
+  for (const [label, make] of [
+    ["KV", makeIndexDO],
+    ["SQL", makeSqlIndexDO],
+  ] as const) {
+    it(`putInvite + getInvite roundtrip (${label})`, async () => {
+      // #given
+      const { obj } = make();
+      const inv = pendingInvite();
+      // #when
+      await obj.putInvite(inv);
+      // #then
+      expect(await obj.getInvite("invitee@x.com")).toEqual(inv);
+    });
+
+    it(`getInvite returns null for unknown email (${label})`, async () => {
+      const { obj } = make();
+      expect(await obj.getInvite("nobody@x.com")).toBeNull();
+    });
+
+    it(`putInvite upserts on emailLc — re-invite overwrites (${label})`, async () => {
+      // #given an existing pending invite to t1
+      const { obj } = make();
+      await obj.putInvite(pendingInvite({ teamId: "t1" }));
+      // #when re-invited to a different team
+      await obj.putInvite(pendingInvite({ teamId: "t2", teamRole: "admin" }));
+      // #then latest wins, single row
+      const got = await obj.getInvite("invitee@x.com");
+      expect(got?.teamId).toBe("t2");
+      expect(got?.teamRole).toBe("admin");
+      expect((await obj.listInvites()).length).toBe(1);
+    });
+
+    it(`listInvites filters by status (${label})`, async () => {
+      const { obj } = make();
+      await obj.putInvite(pendingInvite({ emailLc: "a@x.com" }));
+      await obj.putInvite(pendingInvite({ emailLc: "b@x.com" }));
+      await obj.markInviteConsumed("b@x.com");
+      expect((await obj.listInvites({ status: "pending" })).map((i) => i.emailLc)).toEqual(["a@x.com"]);
+      expect((await obj.listInvites({ status: "consumed" })).map((i) => i.emailLc)).toEqual(["b@x.com"]);
+      expect((await obj.listInvites()).length).toBe(2);
+    });
+
+    it(`markInviteConsumed is idempotent (${label})`, async () => {
+      // #given
+      const { obj } = make();
+      await obj.putInvite(pendingInvite());
+      // #when consumed once
+      const first = await obj.markInviteConsumed("invitee@x.com");
+      // #then status flips and consumedAt set
+      expect(first?.status).toBe("consumed");
+      expect(first?.consumedAt).not.toBeNull();
+      // #when consumed again — no-op, returns the already-consumed record unchanged
+      const second = await obj.markInviteConsumed("invitee@x.com");
+      expect(second?.status).toBe("consumed");
+      expect(second?.consumedAt).toBe(first?.consumedAt);
+    });
+
+    it(`markInviteConsumed returns null for unknown email (${label})`, async () => {
+      const { obj } = make();
+      expect(await obj.markInviteConsumed("nobody@x.com")).toBeNull();
+    });
+
+    it(`revokeInvite flips pending → revoked (${label})`, async () => {
+      const { obj } = make();
+      await obj.putInvite(pendingInvite());
+      const revoked = await obj.revokeInvite("invitee@x.com");
+      expect(revoked?.status).toBe("revoked");
+      expect((await obj.getInvite("invitee@x.com"))?.status).toBe("revoked");
+    });
+
+    it(`revokeInvite on a consumed invite returns it unchanged (caller maps 409) (${label})`, async () => {
+      const { obj } = make();
+      await obj.putInvite(pendingInvite());
+      await obj.markInviteConsumed("invitee@x.com");
+      const result = await obj.revokeInvite("invitee@x.com");
+      expect(result?.status).toBe("consumed");
+      // must NOT have been downgraded to revoked
+      expect((await obj.getInvite("invitee@x.com"))?.status).toBe("consumed");
+    });
+
+    it(`revokeInvite returns null for unknown email (${label})`, async () => {
+      const { obj } = make();
+      expect(await obj.revokeInvite("nobody@x.com")).toBeNull();
+    });
+  }
+
+  it("SQL path stores invites without creating legacy KV keys", async () => {
+    const { obj, data } = makeSqlIndexDO();
+    await obj.putInvite(pendingInvite());
+    expect(data.size).toBe(0);
+    expect((await obj.getInvite("invitee@x.com"))?.teamId).toBe("t1");
+  });
+
 });
