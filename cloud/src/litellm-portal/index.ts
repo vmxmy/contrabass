@@ -13,7 +13,8 @@ import { checkClientErrorRateLimit, recordClientError } from "./observability/cl
 import type { ClientErrorPayload } from "./observability/client-error";
 import { scanBudgetThresholds } from "./notifications";
 import { runSpendSnapshotTick } from "./sync/spend-snapshot-cron";
-import { ingestSpendLogs, refreshDailyActivity, pruneUsageRetention } from "./sync/usage-importer";
+import { refreshDailyActivity, pruneUsageRetention } from "./sync/usage-importer";
+import { runUsageRollup } from "./usage/usage-rollup";
 import { handleLiteLLMSyncBatch } from "./sync/queue-consumer";
 import type { SyncMessage } from "./durable/schemas";
 import { handleLoginGet, handleLoginPost, handleMagicCallback, handleLogout } from "./auth/login-routes";
@@ -243,8 +244,8 @@ export default {
       ctx.waitUntil(runSpendSnapshotTick(env));
       return;
     }
-    if (controller.cron === "*/5 * * * *") {
-      ctx.waitUntil(ingestSpendLogs(env));
+    if (controller.cron === "*/30 * * * *") {
+      ctx.waitUntil(runUsageRollup(env));
       return;
     }
     if (controller.cron === "0 * * * *") {

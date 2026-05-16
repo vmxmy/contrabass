@@ -33,8 +33,10 @@ import {
   updateUser,
 } from "./litellm";
 import { parseDashboardRequest, buildDashboard, buildSummary, SUMMARY_USER_CAP } from "./dashboard";
-import type { UsageDOStub, IndexDOLike } from "./dashboard-schemas";
+import type { IndexDOLike, UsageRollup, DashboardWindow } from "./dashboard-schemas";
 import { WINDOW_SPEC } from "./dashboard-schemas";
+import { LiteLLMUsageSource } from "./usage/litellm-usage-source";
+import { ROLLUP_KEY } from "./usage/usage-rollup";
 import { readUserDailyActivity } from "./usage";
 import {
   MeSchema,
@@ -878,9 +880,18 @@ const adminAuditApp = new Hono<HonoEnv>()
     );
   });
 
-function usageDOStub(env: LiteLLMPortalEnv): UsageDOStub | null {
-  if (!env.USAGE_DO) return null;
-  return env.USAGE_DO.get(env.USAGE_DO.idFromName("usage")) as unknown as UsageDOStub;
+async function loadRollup(env: LiteLLMPortalEnv): Promise<UsageRollup | null> {
+  if (!env.USAGE_ROLLUP_KV) return null;
+  try {
+    const raw = await env.USAGE_ROLLUP_KV.get(ROLLUP_KEY);
+    return raw ? (JSON.parse(raw) as UsageRollup) : null;
+  } catch (err) { console.warn("[dashboard] rollup KV parse error", String(err).slice(0, 80)); return null; }
+}
+function emptyDashboard(scopeLabel: string, window: DashboardWindow) {
+  return { scope: scopeLabel, window, grain: "day" as const, grainFallback: false,
+    timezone: "Asia/Shanghai" as const, available: false, empty: false,
+    kpi: { spend:{current:0,previous:null,deltaPct:null}, requests:{current:0,previous:null,deltaPct:null}, totalTokens:{current:0,previous:null,deltaPct:null} },
+    trend: [], models: [] };
 }
 function indexDOLike(env: LiteLLMPortalEnv): IndexDOLike | null {
   if (!env.INDEX_DO) return null;
@@ -891,16 +902,24 @@ const usageOverviewApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get(
   const parsed = parseDashboardRequest(new URL(c.req.url));
   if (!parsed.ok) return c.json(parsed.body, 400);
   const identity = c.get("identity");
-  const res = await buildDashboard(
-    { usage: usageDOStub(c.env), index: indexDOLike(c.env), now: Date.now() },
-    {
-      scope: { kind: "self", userId: identity.litellmUserId },
-      window: parsed.window,
-      grain: parsed.grain,
-      grainFallback: parsed.grainFallback,
-    },
-  );
-  return c.json(res);
+  const opts = {
+    scope: { kind: "self" as const, userId: identity.litellmUserId },
+    window: parsed.window,
+    grain: parsed.grain,
+    grainFallback: parsed.grainFallback,
+  };
+  try {
+    const res = await buildDashboard(
+      { usage: new LiteLLMUsageSource(c.env), index: indexDOLike(c.env), rollup: null, now: Date.now() },
+      opts,
+    );
+    return c.json(res);
+  } catch (e) {
+    if (e && typeof e === "object" && (e as { kind?: string }).kind === "unavailable") {
+      return c.json(emptyDashboard("self", parsed.window), 200);
+    }
+    throw e;
+  }
 });
 
 const adminUsageOverviewApp = new Hono<HonoEnv>()
@@ -914,11 +933,21 @@ const adminUsageOverviewApp = new Hono<HonoEnv>()
     const member = url.searchParams.get("member");
     const scope =
       member != null && member.length > 0 ? { kind: "member" as const, userId: member } : { kind: "global" as const };
-    const res = await buildDashboard(
-      { usage: usageDOStub(c.env), index: indexDOLike(c.env), now: Date.now() },
-      { scope, window: parsed.window, grain: parsed.grain, grainFallback: parsed.grainFallback },
-    );
-    return c.json(res);
+    const rollup = await loadRollup(c.env);
+    const opts = { scope, window: parsed.window, grain: parsed.grain, grainFallback: parsed.grainFallback };
+    try {
+      const res = await buildDashboard(
+        { usage: new LiteLLMUsageSource(c.env), index: indexDOLike(c.env), rollup, now: Date.now() },
+        opts,
+      );
+      return c.json(res);
+    } catch (e) {
+      if (e && typeof e === "object" && (e as { kind?: string }).kind === "unavailable") {
+        const label = scope.kind === "global" ? "global" : `member:${scope.userId}`;
+        return c.json(emptyDashboard(label, parsed.window), 200);
+      }
+      throw e;
+    }
   });
 
 const adminRolesInvalidateApp = new Hono<HonoEnv>()

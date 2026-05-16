@@ -148,9 +148,9 @@ dead_letter_queue = "litellm-sync-dlq"
 
 # Spend snapshot mirror — pulls LiteLLM /team/info into TeamConfigDO every minute.
 # See openspec change portal-do-config-source-of-truth, capability portal-litellm-config-sync.
-# */5 * * * * → UsageDO spend-logs ingest; 0 * * * * → UsageDO daily-activity refresh; daily 0 9 also prunes UsageDO retention.
+# */30 * * * * → usage rollup (KV); 0 * * * * → UsageDO daily-activity refresh; daily 0 9 also prunes UsageDO retention.
 [triggers]
-crons = ["0 9 * * *", "* * * * *", "*/5 * * * *", "0 * * * *"]
+crons = ["0 9 * * *", "* * * * *", "*/30 * * * *", "0 * * * *"]
 
 [observability]
 enabled = true

@@ -283,6 +283,18 @@ describe("buildSummary", () => {
   });
 });
 
+it("global perUser + riskCount derive from rollup, no usage fan-out", async () => {
+  const usage = {
+    queryTimeseries: async () => [], queryModelBreakdown: async () => [],
+    queryKpiWithDelta: async () => ({ current: { spend: 0, requests: 0, totalTokens: 0 }, previous: { spend: 0, requests: 0, totalTokens: 0 } }),
+  };
+  const index = { listTeams: async () => [{ id: "t", alias: "T" }], listAllUsers: async () => ({ users: [{ userId: "a", role: "user" as const, maxBudget: 1 }], cursor: undefined }) };
+  const rollup = { generatedAt: "x", users: [{ userId: "a", maxBudget: 1, win: { "24h": { spend: 0, requests: 0, totalTokens: 0 }, "48h": { spend: 0, requests: 0, totalTokens: 0 }, "7d": { spend: 0, requests: 0, totalTokens: 0 }, "30d": { spend: 9, requests: 3, totalTokens: 5 } } }] };
+  const res = await buildDashboard({ usage, index, rollup, now: Date.now() }, { scope: { kind: "global" }, window: "30d", grain: "day", grainFallback: false });
+  expect(res.perUser).toEqual([{ userId: "a", points: [{ startMs: expect.any(Number), spend: 9 }] }]);
+  expect(res.summary?.riskCount).toBe(1);
+});
+
 describe("DashboardResponse contract (direct+cache)", () => {
   it("has no hourOfDay/recent keys and grain is constant 'day'", () => {
     const shape = DashboardResponseSchema.shape;
