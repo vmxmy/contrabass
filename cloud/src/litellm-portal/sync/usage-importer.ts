@@ -10,6 +10,11 @@ const LOOKBACK_MS = 5 * 60 * 1000;
 // Must stay == UsageDO.EVENT_RETENTION_MS (30d): backfill window matches event retention.
 const BACKFILL_MS = 30 * 86400000;
 
+// Sentinel version for the one-time user_id/team_id mapping migration.
+// Increment this to force a re-backfill of the 30d spend_logs window.
+const SPEND_LOGS_MAPPING_VERSION = 2;
+const SPEND_LOGS_MAPPING_SOURCE = "spend_logs_userid_mapping_v";
+
 export type IngestResult = { ingested: number; error: string | null };
 
 function usageStub(env: LiteLLMPortalEnv): UsageDO | null {
@@ -38,13 +43,51 @@ function parseEventDate(record: Record<string, unknown>): number | undefined {
   return undefined;
 }
 
+/**
+ * Safely read a string value from a nested path within a record.
+ * `record.metadata` is `Record<string,unknown>|null`; guards with isRecord at each step.
+ */
+function nestedString(record: Record<string, unknown>, path: [string, string]): string | undefined {
+  const parent = record[path[0]];
+  if (!isRecord(parent)) return undefined;
+  const v = parent[path[1]];
+  return typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
+}
+
+/**
+ * Resolve the per-request user id from a LiteLLM /spend/logs/v2 record.
+ * Primary: metadata.user_api_key_user_id (canonical LiteLLM field).
+ * Fallback: top-level user, user_id, userId, end_user (legacy/other shapes).
+ */
+function resolveUserId(record: Record<string, unknown>): string {
+  return (
+    nestedString(record, ["metadata", "user_api_key_user_id"]) ??
+    firstString(record, ["user", "user_id", "userId", "end_user"]) ??
+    ""
+  );
+}
+
+/**
+ * Resolve the per-request team id from a LiteLLM /spend/logs/v2 record.
+ * Primary: metadata.user_api_key_team_id (canonical LiteLLM field).
+ * Fallback: top-level team_id, teamId (legacy/other shapes).
+ */
+function resolveTeamId(record: Record<string, unknown>): string {
+  return (
+    nestedString(record, ["metadata", "user_api_key_team_id"]) ??
+    firstString(record, ["team_id", "teamId"]) ??
+    ""
+  );
+}
+
 function toSpendEvent(record: Record<string, unknown>): SpendEvent | null {
   const tsMs = parseEventDate(record);
   if (tsMs === undefined) return null;
-  // Synthetic fallback is lossy by design: two requests in the same ms+user+model dedupe to one (ON CONFLICT DO NOTHING). LiteLLM virtually always supplies request_id.
+  const userId = resolveUserId(record);
+  // Synthetic fallback is lossy by design: two requests in the same ms+user+model dedupe to one (ON CONFLICT DO UPDATE). LiteLLM virtually always supplies request_id.
   const requestId =
     firstString(record, ["request_id", "requestId", "id", "log_id"]) ??
-    `${tsMs}:${firstString(record, ["user_id", "userId"]) ?? ""}:${firstString(record, ["model", "model_name"]) ?? ""}`;
+    `${tsMs}:${userId}:${firstString(record, ["model", "model_name"]) ?? ""}`;
   const prompt = numberLikeField(record, "prompt_tokens") ?? numberLikeField(record, "promptTokens") ?? 0;
   const completion = numberLikeField(record, "completion_tokens") ?? numberLikeField(record, "completionTokens") ?? 0;
   const total =
@@ -52,8 +95,8 @@ function toSpendEvent(record: Record<string, unknown>): SpendEvent | null {
   return {
     requestId,
     tsMs,
-    userId: firstString(record, ["user_id", "userId"]) ?? "",
-    teamId: firstString(record, ["team_id", "teamId"]) ?? "",
+    userId,
+    teamId: resolveTeamId(record),
     model: firstString(record, ["model", "model_name", "modelName", "model_id", "modelGroup", "model_group"]) ?? "",
     promptTokens: Math.max(0, Math.trunc(prompt)),
     completionTokens: Math.max(0, Math.trunc(completion)),
@@ -74,6 +117,15 @@ function extractRows(body: unknown): Array<Record<string, unknown>> {
 export async function ingestSpendLogs(env: LiteLLMPortalEnv): Promise<IngestResult> {
   const stub = usageStub(env);
   if (stub === null) return { ingested: 0, error: "USAGE_DO binding not configured" };
+
+  // One-time migration: if the user_id mapping version sentinel is absent or stale,
+  // reset the spend_logs cursor so the next pull re-backfills the full 30d window.
+  // The DO-UPDATE upsert in writeSpendEvents corrects existing rows in place.
+  // Runs exactly once per DO instance (idempotent: sentinel written atomically).
+  const mappingVersion = await stub.getSyncCursor(SPEND_LOGS_MAPPING_SOURCE);
+  if (mappingVersion === null || mappingVersion < SPEND_LOGS_MAPPING_VERSION) {
+    await stub.resetSpendLogsCursorForMappingMigration(SPEND_LOGS_MAPPING_VERSION);
+  }
 
   const now = Date.now();
   const cursor = await stub.getSyncCursor("spend_logs");

@@ -101,7 +101,9 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
         `INSERT INTO cb_usage_events
            (request_id, ts_ms, user_id, team_id, model, prompt_tokens, completion_tokens, total_tokens, spend)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(request_id) DO NOTHING`,
+         ON CONFLICT(request_id) DO UPDATE SET
+           user_id = excluded.user_id,
+           team_id = excluded.team_id`,
         e.requestId,
         e.tsMs,
         e.userId,
@@ -113,6 +115,32 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
         e.spend,
       );
     }
+  }
+
+  /**
+   * Atomically resets the spend_logs cursor (to force a full 30d re-backfill)
+   * and writes the mapping-migration sentinel version. Called exactly once per
+   * DO instance when the sentinel is absent or below the target version.
+   */
+  async resetSpendLogsCursorForMappingMigration(sentinelVersion: number): Promise<void> {
+    const sql = await this.sql();
+    if (sql === null) return;
+    // Null out the spend_logs cursor so the next ingestSpendLogs pull starts from now-30d.
+    sql.exec(
+      `INSERT INTO cb_usage_sync_state (source, cursor_ms, last_run_iso, last_error)
+       VALUES ('spend_logs', NULL, ?, NULL)
+       ON CONFLICT(source) DO UPDATE SET cursor_ms = NULL`,
+      new Date().toISOString(),
+    );
+    // Write (or update) the sentinel so this migration never runs again.
+    sql.exec(
+      `INSERT INTO cb_usage_sync_state (source, cursor_ms, last_run_iso, last_error)
+       VALUES (?, ?, ?, NULL)
+       ON CONFLICT(source) DO UPDATE SET cursor_ms = excluded.cursor_ms`,
+      "spend_logs_userid_mapping_v",
+      sentinelVersion,
+      new Date().toISOString(),
+    );
   }
 
   async queryRecentEvents(opts: {
