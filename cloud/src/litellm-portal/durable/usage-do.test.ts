@@ -783,6 +783,30 @@ describe("UsageDO queryKpiWithDelta Option A source resolution", () => {
   });
 });
 
+describe("UsageDO attributed column", () => {
+  it("persists attributed and re-tags it on conflicting re-write", async () => {
+    const obj = makeUsageDO();
+    const ev = {
+      requestId: "r1", tsMs: 1000, userId: "junk", teamId: "", model: "gpt",
+      promptTokens: 1, completionTokens: 2, totalTokens: 3, spend: 0.5,
+      attributed: false,
+    };
+    await obj.writeSpendEvents([ev]);
+    const k1 = await obj.queryKpiWithDelta({
+      scope: { kind: "global" }, currentFromMs: 0, currentToMs: 2000,
+      previousFromMs: 0, previousToMs: 0, eventsOnly: true,
+    });
+    expect(k1.current.requests).toBe(0);
+    await obj.writeSpendEvents([{ ...ev, attributed: true }]);
+    const k2 = await obj.queryKpiWithDelta({
+      scope: { kind: "global" }, currentFromMs: 0, currentToMs: 2000,
+      previousFromMs: 0, previousToMs: 0, eventsOnly: true,
+    });
+    expect(k2.current.requests).toBe(1);
+    expect(k2.current.spend).toBe(0.5);
+  });
+});
+
 describe("SpendEventSchema attributed", () => {
   const base = {
     requestId: "r1",

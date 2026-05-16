@@ -18,6 +18,8 @@ export const SpendEventSchema = z
   })
   .strict();
 export type SpendEvent = z.infer<typeof SpendEventSchema>;
+/** Pre-parse input shape: `attributed` is optional (schema default fills it). */
+export type SpendEventInput = z.input<typeof SpendEventSchema>;
 
 /** One daily-activity rollup row. userId is "__global__" for aggregated source. */
 export const DailyRowSchema = z

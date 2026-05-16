@@ -1,6 +1,6 @@
 import type { LiteLLMPortalEnv } from "../types";
 import type { UsageDO } from "../durable/usage-do";
-import type { SpendEvent, DailyRow } from "../durable/usage-schemas";
+import type { SpendEventInput, DailyRow } from "../durable/usage-schemas";
 import { litellmFetch, firstString, numberLikeField, litellmDateTime } from "../litellm";
 import { readJson, isRecord } from "../utils";
 
@@ -102,7 +102,7 @@ function resolveTeamId(record: Record<string, unknown>): string {
   );
 }
 
-function toSpendEvent(record: Record<string, unknown>): SpendEvent | null {
+function toSpendEvent(record: Record<string, unknown>): SpendEventInput | null {
   const tsMs = parseEventDate(record);
   if (tsMs === undefined) return null;
   const userId = resolveUserId(record);
@@ -170,7 +170,7 @@ export async function ingestSpendLogs(env: LiteLLMPortalEnv): Promise<IngestResu
       const response = await litellmFetch(env, `/spend/logs/v2?${params.toString()}`);
       const body = await readJson(response);
       const rows = extractRows(body);
-      const events: SpendEvent[] = [];
+      const events: SpendEventInput[] = [];
       for (const row of rows) {
         const e = toSpendEvent(row);
         if (e !== null) {

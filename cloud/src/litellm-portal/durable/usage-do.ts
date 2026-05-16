@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { LiteLLMPortalEnv } from "../types";
-import { SpendEventSchema, type SpendEvent, DailyRowSchema, type DailyRow } from "./usage-schemas";
+import { SpendEventSchema, DailyRowSchema, type DailyRow, type SpendEventInput } from "./usage-schemas";
 
 type SqlRow = Record<string, SqlStorageValue>;
 type SqlCapableStorage = DurableObjectStorage & { sql?: SqlStorage };
@@ -62,7 +62,8 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
         prompt_tokens INTEGER NOT NULL DEFAULT 0,
         completion_tokens INTEGER NOT NULL DEFAULT 0,
         total_tokens INTEGER NOT NULL DEFAULT 0,
-        spend REAL NOT NULL DEFAULT 0
+        spend REAL NOT NULL DEFAULT 0,
+        attributed INTEGER NOT NULL DEFAULT 1
       );
       CREATE INDEX IF NOT EXISTS cb_usage_events_ts_idx ON cb_usage_events (ts_ms);
       CREATE INDEX IF NOT EXISTS cb_usage_events_user_ts_idx ON cb_usage_events (user_id, ts_ms);
@@ -89,21 +90,30 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
         last_error TEXT
       );
     `);
+    const hasAttributed = sql
+      .exec<{ cnt: number }>(
+        "SELECT COUNT(*) AS cnt FROM pragma_table_info('cb_usage_events') WHERE name = 'attributed'",
+      )
+      .toArray()[0]?.cnt ?? 0;
+    if (Number(hasAttributed) === 0) {
+      sql.exec("ALTER TABLE cb_usage_events ADD COLUMN attributed INTEGER NOT NULL DEFAULT 1");
+    }
     return sql;
   }
 
-  async writeSpendEvents(events: SpendEvent[]): Promise<void> {
+  async writeSpendEvents(events: SpendEventInput[]): Promise<void> {
     const sql = await this.sql();
     if (sql === null) return;
     for (const raw of events) {
       const e = SpendEventSchema.parse(raw);
       sql.exec(
         `INSERT INTO cb_usage_events
-           (request_id, ts_ms, user_id, team_id, model, prompt_tokens, completion_tokens, total_tokens, spend)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (request_id, ts_ms, user_id, team_id, model, prompt_tokens, completion_tokens, total_tokens, spend, attributed)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(request_id) DO UPDATE SET
            user_id = excluded.user_id,
-           team_id = excluded.team_id`,
+           team_id = excluded.team_id,
+           attributed = excluded.attributed`,
         e.requestId,
         e.tsMs,
         e.userId,
@@ -113,6 +123,7 @@ export class UsageDO extends DurableObject<LiteLLMPortalEnv> {
         e.completionTokens,
         e.totalTokens,
         e.spend,
+        e.attributed ? 1 : 0,
       );
     }
   }
