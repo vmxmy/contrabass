@@ -12,12 +12,14 @@ import { portalCompanyName, roundCurrency, sumDefinedNumbers, uniqueSorted } fro
 import {
   configuredAllowedModels,
   createKey,
+  createTeam,
   deleteKey,
   deleteKeyById,
   getKeyInfo,
   getTeamInfo,
   getUserInfo,
   KeyAliasConflictError,
+  LiteLLMRequestError,
   listAllTeams,
   listAllUsers,
   listAuditEvents,
@@ -64,6 +66,15 @@ import {
   UpdateUserResultSchema,
   AdminDeleteKeyBodySchema,
   AdminDeleteKeyResultSchema,
+  AdminCreateTeamBodySchema,
+  AdminCreateTeamResultSchema,
+  AdminCreateInviteBodySchema,
+  AdminCreateInviteResultSchema,
+  AdminInviteListSchema,
+  AdminRevokeInviteBodySchema,
+  AdminRevokeInviteResultSchema,
+  SetTeamAlertWebhookBodySchema,
+  TeamAlertWebhookResultSchema,
 } from "./schemas";
 import { auditWrite } from "./observability/audit";
 import { enqueueSync } from "./sync/queue-producer";
@@ -191,6 +202,44 @@ type IndexDOWriteStub = {
     maxBudget?: number;
     createdAt: string;
   }): Promise<void>;
+};
+
+type InviteRecordShape = {
+  emailLc: string;
+  teamId: string;
+  teamRole: "admin" | "user";
+  status: "pending" | "consumed" | "revoked";
+  invitedBy: string;
+  createdAt: string;
+  consumedAt: string | null;
+};
+
+type IndexDOInviteStub = {
+  listTeams(): Promise<Array<{ id: string; alias: string }>>;
+  setTeamsList(list: Array<{ id: string; alias: string }>): Promise<void>;
+  putInvite(record: InviteRecordShape): Promise<void>;
+  getInvite(emailLc: string): Promise<InviteRecordShape | null>;
+  listInvites(opts?: { status?: "pending" | "consumed" | "revoked" }): Promise<InviteRecordShape[]>;
+  revokeInvite(emailLc: string): Promise<InviteRecordShape | null>;
+};
+
+function inviteToPublic(record: InviteRecordShape) {
+  return {
+    email: record.emailLc,
+    teamId: record.teamId,
+    teamRole: record.teamRole,
+    status: record.status,
+    invitedBy: record.invitedBy,
+    createdAt: record.createdAt,
+    consumedAt: record.consumedAt,
+  };
+}
+
+type TeamConfigDOAlertStub = {
+  getTeam(): Promise<{ id: string } | null>;
+  getAlertWebhook(): Promise<{ url: string; updatedAt: string; updatedBy: string } | null>;
+  setAlertWebhook(webhook: { url: string; updatedAt: string; updatedBy: string }): Promise<void>;
+  clearAlertWebhook(): Promise<void>;
 };
 
 // ---------------------------------------------------------------------------
@@ -1288,6 +1337,377 @@ const adminDeleteKeyApp = new Hono<HonoEnv>()
   });
 
 // ---------------------------------------------------------------------------
+// Admin-invite tenant onboarding — POST /api/admin/teams
+// ---------------------------------------------------------------------------
+
+const adminCreateTeamApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
+  .use("/admin/*", requireAdmin)
+  .post("/admin/teams", async (c) => {
+    if (!isWriteOpsEnabled(c.env)) return writeOpsDisabledResponse(c);
+
+    const parsed = await parseWriteBody(c, AdminCreateTeamBodySchema);
+    if (!parsed.ok) return parsed.response;
+    const { reason, alias, models, maxBudget, tpmLimit, rpmLimit, budgetDuration } = parsed.data;
+
+    const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
+    if (isDryRun) {
+      return c.json(
+        AdminCreateTeamResultSchema.parse({
+          teamId: "(dry-run)",
+          alias,
+          models,
+          maxBudget: maxBudget ?? null,
+          dryRun: true,
+        }),
+      );
+    }
+
+    const identity = c.get("identity");
+
+    let created;
+    try {
+      created = await createTeam(
+        c.env,
+        {
+          alias,
+          models,
+          maxBudget: maxBudget ?? null,
+          tpmLimit: tpmLimit ?? null,
+          rpmLimit: rpmLimit ?? null,
+          ...(budgetDuration ? { budgetDuration } : {}),
+        },
+        identity.email,
+      );
+    } catch (err) {
+      if (err instanceof LiteLLMRequestError) {
+        const status = err.status === 422 ? 422 : 502;
+        return c.json({ error: "litellm_team_create_failed", detail: err.body }, status);
+      }
+      throw err;
+    }
+
+    // LiteLLM is authoritative for team identity. DO materialization is
+    // best-effort: if it fails, the spend/teams crons reconcile from listTeams.
+    try {
+      if (c.env.TEAM_CONFIG_DO) {
+        const teamStub = c.env.TEAM_CONFIG_DO.get(
+          c.env.TEAM_CONFIG_DO.idFromName(created.teamId),
+        ) as unknown as TeamConfigDOWriteStub;
+        await teamStub.putTeam({
+          id: created.teamId,
+          alias: created.alias,
+          models: created.models,
+          blocked: false,
+          ...(created.maxBudget != null ? { maxBudget: created.maxBudget } : {}),
+          ...(tpmLimit != null ? { tpmLimit } : {}),
+          ...(rpmLimit != null ? { rpmLimit } : {}),
+          ...(budgetDuration ? { budgetDuration } : {}),
+        });
+      }
+      if (c.env.INDEX_DO) {
+        const idx = c.env.INDEX_DO.get(
+          c.env.INDEX_DO.idFromName("index"),
+        ) as unknown as IndexDOInviteStub;
+        const existing = await idx.listTeams();
+        await idx.setTeamsList([
+          ...existing.filter((t) => t.id !== created.teamId),
+          { id: created.teamId, alias: created.alias },
+        ]);
+      }
+    } catch (err) {
+      console.error("[admin_team_create] DO materialization failed (non-fatal):", err);
+    }
+
+    await auditWrite(c.env, {
+      actor: identity.email,
+      action: "admin_team_create",
+      target: created.teamId,
+      ip: c.req.header("cf-connecting-ip") ?? "unknown",
+      ts: new Date().toISOString(),
+      before: "null",
+      after: JSON.stringify(created),
+      reason,
+    });
+
+    return c.json(
+      AdminCreateTeamResultSchema.parse({
+        teamId: created.teamId,
+        alias: created.alias,
+        models: created.models,
+        maxBudget: created.maxBudget,
+        dryRun: false,
+      }),
+    );
+  });
+
+// ---------------------------------------------------------------------------
+// Admin-invite tenant onboarding — /api/admin/invites
+// ---------------------------------------------------------------------------
+
+const adminInvitesApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
+  .use("/admin/*", requireAdmin)
+  .get("/admin/invites", async (c) => {
+    if (!c.env.INDEX_DO) return c.json({ error: "index_do_unavailable" }, 503);
+    const statusParam = new URL(c.req.url).searchParams.get("status");
+    const status =
+      statusParam === "pending" || statusParam === "consumed" || statusParam === "revoked"
+        ? statusParam
+        : undefined;
+    const idx = c.env.INDEX_DO.get(
+      c.env.INDEX_DO.idFromName("index"),
+    ) as unknown as IndexDOInviteStub;
+    const invites = await idx.listInvites(status ? { status } : undefined);
+    return c.json(AdminInviteListSchema.parse({ invites: invites.map(inviteToPublic) }));
+  })
+  .post("/admin/invites", async (c) => {
+    if (!isWriteOpsEnabled(c.env)) return writeOpsDisabledResponse(c);
+
+    const parsed = await parseWriteBody(c, AdminCreateInviteBodySchema);
+    if (!parsed.ok) return parsed.response;
+    const { reason, email, teamId, teamRole } = parsed.data;
+    const emailLc = email.toLowerCase();
+
+    if (!c.env.TEAM_CONFIG_DO) return c.json({ error: "team_config_do_unavailable" }, 503);
+    if (!c.env.INDEX_DO) return c.json({ error: "index_do_unavailable" }, 503);
+
+    const teamStub = c.env.TEAM_CONFIG_DO.get(
+      c.env.TEAM_CONFIG_DO.idFromName(teamId),
+    ) as unknown as TeamConfigDOAdminStub;
+    const team = await teamStub.getTeam();
+    if (!team) return c.json({ error: "team_not_found" }, 404);
+
+    const idx = c.env.INDEX_DO.get(
+      c.env.INDEX_DO.idFromName("index"),
+    ) as unknown as IndexDOInviteStub;
+    const prior = await idx.getInvite(emailLc);
+    if (prior && prior.status === "consumed") {
+      return c.json({ error: "invite_already_consumed" }, 409);
+    }
+
+    const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
+    const record: InviteRecordShape = {
+      emailLc,
+      teamId,
+      teamRole,
+      status: "pending",
+      invitedBy: c.get("identity").email,
+      createdAt: new Date().toISOString(),
+      consumedAt: null,
+    };
+
+    if (isDryRun) {
+      return c.json(
+        AdminCreateInviteResultSchema.parse({ invite: inviteToPublic(record), dryRun: true }),
+      );
+    }
+
+    await idx.putInvite(record);
+    await auditWrite(c.env, {
+      actor: c.get("identity").email,
+      action: "admin_invite_create",
+      target: emailLc,
+      ip: c.req.header("cf-connecting-ip") ?? "unknown",
+      ts: new Date().toISOString(),
+      before: prior ? JSON.stringify(inviteToPublic(prior)) : "null",
+      after: JSON.stringify(inviteToPublic(record)),
+      reason,
+    });
+
+    return c.json(
+      AdminCreateInviteResultSchema.parse({ invite: inviteToPublic(record), dryRun: false }),
+    );
+  })
+  .delete("/admin/invites/:email", async (c) => {
+    if (!isWriteOpsEnabled(c.env)) return writeOpsDisabledResponse(c);
+
+    const email = decodeURIComponent(c.req.param("email") ?? "").trim();
+    if (!email) return c.json({ error: "email_required" }, 400);
+    const emailLc = email.toLowerCase();
+
+    const parsed = await parseWriteBody(c, AdminRevokeInviteBodySchema);
+    if (!parsed.ok) return parsed.response;
+    const { reason, confirmEmail } = parsed.data;
+    if (confirmEmail.trim().toLowerCase() !== emailLc) {
+      return c.json({ error: "confirm_email_mismatch" }, 403);
+    }
+
+    if (!c.env.INDEX_DO) return c.json({ error: "index_do_unavailable" }, 503);
+    const idx = c.env.INDEX_DO.get(
+      c.env.INDEX_DO.idFromName("index"),
+    ) as unknown as IndexDOInviteStub;
+
+    const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
+    if (isDryRun) {
+      const preview = await idx.getInvite(emailLc);
+      if (!preview) return c.json({ error: "invite_not_found" }, 404);
+      if (preview.status === "consumed") return c.json({ error: "invite_already_consumed" }, 409);
+      return c.json(
+        AdminRevokeInviteResultSchema.parse({ email: emailLc, status: preview.status, dryRun: true }),
+      );
+    }
+
+    const result = await idx.revokeInvite(emailLc);
+    if (!result) return c.json({ error: "invite_not_found" }, 404);
+    // revokeInvite returns a consumed invite unchanged — joining is not undone.
+    if (result.status === "consumed") {
+      return c.json({ error: "invite_already_consumed" }, 409);
+    }
+
+    await auditWrite(c.env, {
+      actor: c.get("identity").email,
+      action: "admin_invite_revoke",
+      target: emailLc,
+      ip: c.req.header("cf-connecting-ip") ?? "unknown",
+      ts: new Date().toISOString(),
+      before: "pending",
+      after: result.status,
+      reason,
+    });
+
+    return c.json(
+      AdminRevokeInviteResultSchema.parse({ email: emailLc, status: result.status, dryRun: false }),
+    );
+  });
+
+// ---------------------------------------------------------------------------
+// Per-team budget alert webhook — /api/admin/teams/:teamId/alert-webhook
+// ---------------------------------------------------------------------------
+
+const adminTeamAlertWebhookApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
+  .use("/admin/*", requireAdmin)
+  .get("/admin/teams/:teamId/alert-webhook", async (c) => {
+    const teamId = decodeURIComponent(c.req.param("teamId") ?? "").trim();
+    if (!teamId) return c.json({ error: "team_id_required" }, 400);
+    if (!c.env.TEAM_CONFIG_DO) return c.json({ error: "team_config_do_unavailable" }, 503);
+    const stub = c.env.TEAM_CONFIG_DO.get(
+      c.env.TEAM_CONFIG_DO.idFromName(teamId),
+    ) as unknown as TeamConfigDOAlertStub;
+    const webhook = await stub.getAlertWebhook();
+    return c.json(
+      TeamAlertWebhookResultSchema.parse({
+        teamId,
+        url: webhook?.url ?? null,
+        updatedAt: webhook?.updatedAt ?? null,
+      }),
+    );
+  })
+  .put("/admin/teams/:teamId/alert-webhook", async (c) => {
+    if (!isWriteOpsEnabled(c.env)) return writeOpsDisabledResponse(c);
+
+    const teamId = decodeURIComponent(c.req.param("teamId") ?? "").trim();
+    if (!teamId) return c.json({ error: "team_id_required" }, 400);
+
+    const parsed = await parseWriteBody(c, SetTeamAlertWebhookBodySchema);
+    if (!parsed.ok) return parsed.response;
+    const { reason, url } = parsed.data;
+
+    if (!c.env.TEAM_CONFIG_DO) return c.json({ error: "team_config_do_unavailable" }, 503);
+    const stub = c.env.TEAM_CONFIG_DO.get(
+      c.env.TEAM_CONFIG_DO.idFromName(teamId),
+    ) as unknown as TeamConfigDOAlertStub;
+    const team = await stub.getTeam();
+    if (!team) return c.json({ error: "team_not_found" }, 404);
+
+    const identity = c.get("identity");
+    const prior = await stub.getAlertWebhook();
+    const updatedAt = new Date().toISOString();
+    await stub.setAlertWebhook({ url, updatedAt, updatedBy: identity.email });
+
+    await auditWrite(c.env, {
+      actor: identity.email,
+      action: "admin_team_alert_webhook_set",
+      target: teamId,
+      ip: c.req.header("cf-connecting-ip") ?? "unknown",
+      ts: updatedAt,
+      before: prior ? JSON.stringify({ url: prior.url }) : "null",
+      after: JSON.stringify({ url }),
+      reason,
+    });
+
+    return c.json(TeamAlertWebhookResultSchema.parse({ teamId, url, updatedAt }));
+  })
+  .delete("/admin/teams/:teamId/alert-webhook", async (c) => {
+    if (!isWriteOpsEnabled(c.env)) return writeOpsDisabledResponse(c);
+
+    const teamId = decodeURIComponent(c.req.param("teamId") ?? "").trim();
+    if (!teamId) return c.json({ error: "team_id_required" }, 400);
+
+    const parsed = await parseWriteBody(c, AdminRevokeInviteBodySchema.pick({ reason: true }));
+    if (!parsed.ok) return parsed.response;
+
+    if (!c.env.TEAM_CONFIG_DO) return c.json({ error: "team_config_do_unavailable" }, 503);
+    const stub = c.env.TEAM_CONFIG_DO.get(
+      c.env.TEAM_CONFIG_DO.idFromName(teamId),
+    ) as unknown as TeamConfigDOAlertStub;
+    const identity = c.get("identity");
+    const prior = await stub.getAlertWebhook();
+    await stub.clearAlertWebhook();
+
+    await auditWrite(c.env, {
+      actor: identity.email,
+      action: "admin_team_alert_webhook_clear",
+      target: teamId,
+      ip: c.req.header("cf-connecting-ip") ?? "unknown",
+      ts: new Date().toISOString(),
+      before: prior ? JSON.stringify({ url: prior.url }) : "null",
+      after: "null",
+      reason: parsed.data.reason,
+    });
+
+    return c.json(TeamAlertWebhookResultSchema.parse({ teamId, url: null, updatedAt: null }));
+  });
+
+const adminBillingArchiveApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
+  .use("/admin/*", requireAdmin)
+  .get("/admin/billing", async (c) => {
+    if (!c.env.BILLING_ARCHIVE_R2) return c.json({ error: "billing_archive_unavailable" }, 503);
+    const listed = await c.env.BILLING_ARCHIVE_R2.list({ prefix: "billing/" });
+    const periods: string[] = [];
+    for (const obj of listed.objects) {
+      const match = /^billing\/(\d{4})\/(\d{2})\.csv$/u.exec(obj.key);
+      if (match) periods.push(`${match[1]}-${match[2]}`);
+    }
+    return c.json({ periods });
+  })
+  .get("/admin/billing/:yearMonth", async (c) => {
+    const yearMonth = decodeURIComponent(c.req.param("yearMonth") ?? "").trim();
+    const match = /^(\d{4})-(\d{2})$/u.exec(yearMonth);
+    if (!match) return c.json({ error: "invalid_period" }, 400);
+    if (!c.env.BILLING_ARCHIVE_R2) return c.json({ error: "billing_archive_unavailable" }, 503);
+
+    const key = `billing/${match[1]}/${match[2]}.csv`;
+    const obj = await c.env.BILLING_ARCHIVE_R2.get(key);
+    if (!obj) return c.json({ error: "billing_archive_not_found" }, 404);
+
+    await auditWrite(c.env, {
+      actor: c.get("identity").email,
+      action: "admin_billing_archive_download",
+      target: yearMonth,
+      ip: c.req.header("cf-connecting-ip") ?? "unknown",
+      ts: new Date().toISOString(),
+      before: "",
+      after: "",
+      reason: "",
+    });
+
+    return new Response(obj.body, {
+      headers: {
+        "content-type": "text/csv",
+        "content-disposition": `attachment; filename="billing-${yearMonth}.csv"`,
+        "cache-control": "private, no-store",
+      },
+    });
+  });
+
+// ---------------------------------------------------------------------------
 // Top-level app mounts /api/* with global error handler
 // ---------------------------------------------------------------------------
 
@@ -1321,6 +1741,10 @@ const app = new Hono<{ Bindings: LiteLLMPortalEnv }>()
   .route("/api", adminUpdateTeamLimitsApp)
   .route("/api", adminUpdateUserApp)
   .route("/api", adminDeleteKeyApp)
+  .route("/api", adminCreateTeamApp)
+  .route("/api", adminInvitesApp)
+  .route("/api", adminTeamAlertWebhookApp)
+  .route("/api", adminBillingArchiveApp)
   .all("/*", (c) => c.json({ error: "not_found" }, 404));
 
 export { app };

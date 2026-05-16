@@ -25,6 +25,10 @@ export type LiteLLMPortalEnv = {
   AUDIT_AE?: AnalyticsEngineDataset;
   USER_PREFS_KV?: KVNamespace;
   USAGE_ROLLUP_KV?: KVNamespace;
+  /** R2 bucket holding monthly per-team billing CSV archives. Written by the
+   *  `0 2 1 * *` cron (runMonthlyBillingArchive), read by the admin billing
+   *  download routes. Bucket must be created out-of-band. */
+  BILLING_ARCHIVE_R2?: R2Bucket;
   ROLE_INVALIDATION_WEBHOOK_TOKEN?: string;
   RATE_LIMIT_DO?: DurableObjectNamespace;
   /** HMAC secret used to sign portal session cookies (HS256). 7-day TTL. */

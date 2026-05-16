@@ -3,6 +3,8 @@ import { isEmailAllowed } from "./allowlist";
 import { issueMagicLink, sendMagicLink, verifyMagicLink } from "./magic-link";
 import { issueSession, buildSessionCookieHeader, clearSessionHeader } from "./session";
 import { resolveLiteLLMUser } from "../litellm";
+import { enqueueSync } from "../sync/queue-producer";
+import { invalidateRole } from "../role-cache";
 
 // ---------------------------------------------------------------------------
 // Inline IndexDO stub type (avoids pulling DO module into test transform chain)
@@ -64,6 +66,16 @@ type IndexDOStub = {
     maxBudget?: number;
     createdAt: string;
   }): Promise<void>;
+  getInvite(emailLc: string): Promise<{
+    emailLc: string;
+    teamId: string;
+    teamRole: "admin" | "user";
+    status: "pending" | "consumed" | "revoked";
+    invitedBy: string;
+    createdAt: string;
+    consumedAt: string | null;
+  } | null>;
+  markInviteConsumed(emailLc: string): Promise<unknown>;
 };
 
 function parseBootstrapAdminEmails(env: LiteLLMPortalEnv): Set<string> {
@@ -372,6 +384,33 @@ export async function handleMagicCallback(request: Request, env: LiteLLMPortalEn
     }
   } catch {
     return htmlResp(expiredLinkPage(), 500);
+  }
+
+  // Admin-invite auto-join. Fail-open: an invite/DO/LiteLLM error here must
+  // never block a successful login (mirrors role-cache fail-open philosophy).
+  try {
+    if (env.INDEX_DO) {
+      const inviteStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOStub;
+      const invite = await inviteStub.getInvite(emailLc);
+      if (invite && invite.status === "pending") {
+        const current = await inviteStub.getUserByEmail(emailLc);
+        if (current && current.teamId !== invite.teamId) {
+          await inviteStub.putUser({ ...current, teamId: invite.teamId });
+          // Best-effort reconcile to LiteLLM; enqueueSync never throws.
+          await enqueueSync(env, {
+            kind: "user.update",
+            entityId: current.userId,
+            payload: { user_id: current.userId, team_id: invite.teamId },
+          });
+        }
+        // Idempotent: only a pending invite is consumed.
+        await inviteStub.markInviteConsumed(emailLc);
+        // Drop the short role-cache so the new teamId is visible immediately.
+        await invalidateRole(env, emailLc);
+      }
+    }
+  } catch (err) {
+    console.error("[auth] invite auto-join failed (non-fatal):", err);
   }
 
   let sessionValue: string;

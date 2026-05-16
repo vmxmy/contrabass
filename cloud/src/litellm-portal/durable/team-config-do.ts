@@ -4,9 +4,11 @@ import {
   KeyRecordSchema,
   SpendSnapshotSchema,
   TeamRecordSchema,
+  TeamAlertWebhookSchema,
   type KeyRecord,
   type SpendSnapshot,
   type TeamRecord,
+  type TeamAlertWebhook,
 } from "./schemas";
 import type { LiteLLMPortalEnv } from "../types";
 
@@ -34,6 +36,10 @@ type TeamConfigMigrationState = {
 
 const SQL_BACKFILL_META_KEY = "sql_backfilled_from_kv_v1";
 const SQL_LEGACY_KV_DELETED_META_KEY = "legacy_kv_deleted_v1";
+const ALERT_WEBHOOK_META_KEY = "alert_webhook_v1";
+const ALERT_WEBHOOK_KV_KEY = "meta:alertWebhook";
+const ALERT_DEDUPE_META_PREFIX = "budget_alert_sent:";
+const ALERT_DEDUPE_KV_PREFIX = "meta:budgetAlertSent:";
 
 function firstRow<T extends SqlRow>(cursor: SqlStorageCursor<T>): T | undefined {
   return cursor.toArray()[0];
@@ -514,6 +520,66 @@ export class TeamConfigDO extends DurableObject<LiteLLMPortalEnv> {
     }
 
     await this.ctx.storage.put("meta:lastSpendError", truncated);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Per-team budget alert webhook + budget-cycle dedupe
+  // ---------------------------------------------------------------------------
+
+  async getAlertWebhook(): Promise<TeamAlertWebhook | null> {
+    const sql = await this.sql();
+    if (sql !== null) {
+      const raw = this.getMetaSql<unknown>(sql, ALERT_WEBHOOK_META_KEY, null);
+      if (raw == null) return null;
+      return TeamAlertWebhookSchema.parse(raw);
+    }
+    const raw = await this.ctx.storage.get<unknown>(ALERT_WEBHOOK_KV_KEY);
+    return raw == null ? null : TeamAlertWebhookSchema.parse(raw);
+  }
+
+  async setAlertWebhook(webhook: TeamAlertWebhook): Promise<void> {
+    const parsed = TeamAlertWebhookSchema.parse(webhook);
+    const sql = await this.sql();
+    if (sql !== null) {
+      this.putMetaSql(sql, ALERT_WEBHOOK_META_KEY, parsed);
+      return;
+    }
+    await this.ctx.storage.put(ALERT_WEBHOOK_KV_KEY, parsed);
+  }
+
+  async clearAlertWebhook(): Promise<void> {
+    const sql = await this.sql();
+    if (sql !== null) {
+      this.putMetaSql(sql, ALERT_WEBHOOK_META_KEY, null);
+      return;
+    }
+    await this.ctx.storage.delete(ALERT_WEBHOOK_KV_KEY);
+  }
+
+  async hasBudgetAlertForCycle(cycleKey: string): Promise<boolean> {
+    const sql = await this.sql();
+    if (sql !== null) {
+      return this.getMetaSql<unknown>(sql, `${ALERT_DEDUPE_META_PREFIX}${cycleKey}`, null) != null;
+    }
+    return (await this.ctx.storage.get<unknown>(`${ALERT_DEDUPE_KV_PREFIX}${cycleKey}`)) != null;
+  }
+
+  async markBudgetAlertForCycle(cycleKey: string): Promise<void> {
+    const sql = await this.sql();
+    if (sql !== null) {
+      this.putMetaSql(sql, `${ALERT_DEDUPE_META_PREFIX}${cycleKey}`, { sentAt: new Date().toISOString() });
+      this.pruneOldAlertMarkersSql(sql);
+      return;
+    }
+    await this.ctx.storage.put(`${ALERT_DEDUPE_KV_PREFIX}${cycleKey}`, { sentAt: new Date().toISOString() });
+  }
+
+  private pruneOldAlertMarkersSql(sql: SqlStorage): void {
+    sql.exec(
+      `DELETE FROM cb_team_meta
+       WHERE key LIKE '${ALERT_DEDUPE_META_PREFIX}%'
+         AND updated_at < datetime('now', '-60 days')`,
+    );
   }
 
   // ---------------------------------------------------------------------------

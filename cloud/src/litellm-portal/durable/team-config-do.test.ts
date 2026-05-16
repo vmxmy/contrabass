@@ -225,4 +225,30 @@ describe("TeamConfigDO", () => {
     });
   });
 
+  for (const [label, make] of [["KV", makeDO], ["SQL", makeSqlDO]] as const) {
+    it(`alert webhook set/get/clear roundtrip (${label})`, async () => {
+      const { obj } = make();
+      expect(await obj.getAlertWebhook()).toBeNull();
+
+      const webhook = {
+        url: "https://hooks.example.com/x",
+        updatedAt: new Date().toISOString(),
+        updatedBy: "admin@x.com",
+      };
+      await obj.setAlertWebhook(webhook);
+      expect(await obj.getAlertWebhook()).toEqual(webhook);
+
+      await obj.clearAlertWebhook();
+      expect(await obj.getAlertWebhook()).toBeNull();
+    });
+
+    it(`budget-cycle dedupe marker roundtrip (${label})`, async () => {
+      const { obj } = make();
+      expect(await obj.hasBudgetAlertForCycle("2026-05")).toBe(false);
+      await obj.markBudgetAlertForCycle("2026-05");
+      expect(await obj.hasBudgetAlertForCycle("2026-05")).toBe(true);
+      expect(await obj.hasBudgetAlertForCycle("2026-06")).toBe(false);
+    });
+  }
+
 });

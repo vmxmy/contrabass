@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isSafeWebhookHost } from "./observability/alert-webhook";
 
 // ---------------------------------------------------------------------------
 // Primitive helpers
@@ -408,6 +409,99 @@ export const AdminDeleteKeyResultSchema = z.object({
 });
 
 export type AdminDeleteKeyResult = z.infer<typeof AdminDeleteKeyResultSchema>;
+
+// POST /api/admin/teams (admin-invite tenant onboarding)
+export const AdminCreateTeamBodySchema = z.object({
+  reason: WriteReasonSchema,
+  alias: z.string().min(1).max(128),
+  models: z.array(z.string()).default([]),
+  maxBudget: z.number().nonnegative().nullable().optional(),
+  tpmLimit: z.number().nonnegative().int().nullable().optional(),
+  rpmLimit: z.number().nonnegative().int().nullable().optional(),
+  budgetDuration: z.string().min(1).max(32).optional(),
+});
+
+export type AdminCreateTeamBody = z.infer<typeof AdminCreateTeamBodySchema>;
+
+export const AdminCreateTeamResultSchema = z.object({
+  teamId: z.string(),
+  alias: z.string(),
+  models: z.array(z.string()),
+  maxBudget: z.number().nullable(),
+  dryRun: z.boolean(),
+});
+
+export type AdminCreateTeamResult = z.infer<typeof AdminCreateTeamResultSchema>;
+
+// /api/admin/invites
+export const AdminCreateInviteBodySchema = z.object({
+  reason: WriteReasonSchema,
+  email: z.string().email(),
+  teamId: z.string().min(1),
+  teamRole: z.enum(["admin", "user"]).default("user"),
+});
+
+export type AdminCreateInviteBody = z.infer<typeof AdminCreateInviteBodySchema>;
+
+export const AdminInviteSchema = z.object({
+  email: z.string(),
+  teamId: z.string(),
+  teamRole: z.enum(["admin", "user"]),
+  status: z.enum(["pending", "consumed", "revoked"]),
+  invitedBy: z.string(),
+  createdAt: z.string(),
+  consumedAt: z.string().nullable(),
+});
+
+export type AdminInvite = z.infer<typeof AdminInviteSchema>;
+
+export const AdminInviteListSchema = z.object({ invites: z.array(AdminInviteSchema) });
+
+export type AdminInviteList = z.infer<typeof AdminInviteListSchema>;
+
+export const AdminCreateInviteResultSchema = z.object({
+  invite: AdminInviteSchema,
+  dryRun: z.boolean(),
+});
+
+export type AdminCreateInviteResult = z.infer<typeof AdminCreateInviteResultSchema>;
+
+// DELETE /api/admin/invites/:email
+export const AdminRevokeInviteBodySchema = z.object({
+  reason: WriteReasonSchema,
+  confirmEmail: z.string().email(),
+});
+
+export type AdminRevokeInviteBody = z.infer<typeof AdminRevokeInviteBodySchema>;
+
+export const AdminRevokeInviteResultSchema = z.object({
+  email: z.string(),
+  status: z.enum(["pending", "consumed", "revoked"]),
+  dryRun: z.boolean(),
+});
+
+export type AdminRevokeInviteResult = z.infer<typeof AdminRevokeInviteResultSchema>;
+
+// PUT/DELETE/GET /api/admin/teams/:teamId/alert-webhook
+export const SetTeamAlertWebhookBodySchema = z.object({
+  reason: WriteReasonSchema,
+  url: z
+    .string()
+    .url()
+    .max(2048)
+    .refine((u) => u.startsWith("https://"), "https_required")
+    .refine(isSafeWebhookHost, "blocked_host"),
+});
+
+export type SetTeamAlertWebhookBody = z.infer<typeof SetTeamAlertWebhookBodySchema>;
+
+export const TeamAlertWebhookResultSchema = z.object({
+  teamId: z.string(),
+  url: z.string().nullable(),
+  updatedAt: z.string().nullable(),
+});
+
+export type TeamAlertWebhookResult = z.infer<typeof TeamAlertWebhookResultSchema>;
 
 // ---------------------------------------------------------------------------
 // /api/_internal/role-changed

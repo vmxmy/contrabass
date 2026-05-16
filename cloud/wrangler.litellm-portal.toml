@@ -157,8 +157,9 @@ dead_letter_queue = "litellm-sync-dlq"
 # Spend snapshot mirror — pulls LiteLLM /team/info into TeamConfigDO every minute.
 # See openspec change portal-do-config-source-of-truth, capability portal-litellm-config-sync.
 # */30 * * * * → usage rollup (KV); daily 0 9 → budget-threshold scan.
+# 0 2 1 * * → monthly per-team billing CSV archive to R2 (previous full month).
 [triggers]
-crons = ["0 9 * * *", "* * * * *", "*/30 * * * *"]
+crons = ["0 9 * * *", "* * * * *", "*/30 * * * *", "0 2 1 * *"]
 
 [observability]
 enabled = true
@@ -187,3 +188,9 @@ preview_id = "018d861aecd54a61af541a841c9fc0fa"
 [[kv_namespaces]]
 binding = "USAGE_ROLLUP_KV"
 id = "b5099b41816a43fcbd093617dec2553a"
+
+# Monthly per-team billing CSV archive. The bucket must be created out-of-band:
+#   npx wrangler r2 bucket create litellm-portal-billing-archive --config wrangler.litellm-portal.toml
+[[r2_buckets]]
+binding = "BILLING_ARCHIVE_R2"
+bucket_name = "litellm-portal-billing-archive"

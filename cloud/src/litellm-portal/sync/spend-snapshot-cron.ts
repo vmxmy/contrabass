@@ -1,6 +1,11 @@
 import { litellmFetch, teamInfoRecord, numberField } from "../litellm";
 import { readJson } from "../utils";
+import { postAlertWebhook } from "../observability/alert-webhook";
 import type { LiteLLMPortalEnv } from "../types";
+
+/** Budget ratio at/over which a per-team webhook alert fires. Fixed (no
+ *  tenant-facing config) — the per-user email threshold is separate. */
+const BUDGET_ALERT_RATIO = 0.8;
 
 /** Minimal IndexDO surface we need. Inline to avoid pulling cloudflare:workers into tests. */
 type IndexDOStub = {
@@ -11,6 +16,9 @@ type IndexDOStub = {
 type TeamConfigDOStub = {
   putSpend(snapshot: { teamId: string; currentSpend: number; maxBudget: number | null; fetchedAt: string }): Promise<void>;
   recordSpendError(reason: string): Promise<void>;
+  getAlertWebhook(): Promise<{ url: string; updatedAt: string; updatedBy: string } | null>;
+  hasBudgetAlertForCycle(cycleKey: string): Promise<boolean>;
+  markBudgetAlertForCycle(cycleKey: string): Promise<void>;
 };
 
 /** Result summary of one spend-snapshot cron tick. */
@@ -59,6 +67,33 @@ export async function runSpendSnapshotTick(env: LiteLLMPortalEnv): Promise<Spend
         fetchedAt: new Date().toISOString(),
       });
       refreshedTeams++;
+
+      // Per-team budget webhook alert. Own try/catch so a webhook failure
+      // never aborts the snapshot loop (at-least-once: not marked on failure).
+      try {
+        if (maxBudget != null && maxBudget > 0 && currentSpend / maxBudget >= BUDGET_ALERT_RATIO) {
+          const webhook = await stub.getAlertWebhook();
+          if (webhook) {
+            const cycleKey = new Date().toISOString().slice(0, 7); // YYYY-MM
+            if (!(await stub.hasBudgetAlertForCycle(cycleKey))) {
+              const res = await postAlertWebhook(webhook.url, {
+                type: "budget_threshold",
+                teamId: team.id,
+                teamAlias: team.alias ?? null,
+                currentSpend,
+                maxBudget,
+                ratio: currentSpend / maxBudget,
+                threshold: BUDGET_ALERT_RATIO,
+                cycleKey,
+                firedAt: new Date().toISOString(),
+              });
+              if (res.ok) await stub.markBudgetAlertForCycle(cycleKey);
+            }
+          }
+        }
+      } catch (alertErr) {
+        console.error(`[spend-snapshot] alert webhook failed for ${team.id}:`, alertErr);
+      }
     } catch (err) {
       const reason = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
       errors.push({ teamId: team.id, reason });

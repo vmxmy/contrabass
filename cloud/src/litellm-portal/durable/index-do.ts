@@ -3,6 +3,8 @@ import { z } from "zod";
 import {
   UserRecordSchema,
   type UserRecord,
+  InviteRecordSchema,
+  type InviteRecord,
   MagicLinkNonceSchema,
   type MagicLinkNonce,
   AuditEventSchema,
@@ -53,6 +55,10 @@ function nonceKey(token: string): string {
   return `nonce:${token}`;
 }
 
+function inviteKey(emailLc: string): string {
+  return `invite:${emailLc.toLowerCase()}`;
+}
+
 function auditKey(ts: string, id: string): string {
   return `audit:${ts}:${id}`;
 }
@@ -97,6 +103,18 @@ function userFromRow(row: SqlRow): UserRecord {
     createdAt: String(row.created_at),
   };
   return UserRecordSchema.parse(record);
+}
+
+function inviteFromRow(row: SqlRow): InviteRecord {
+  return InviteRecordSchema.parse({
+    emailLc: String(row.email_lc),
+    teamId: String(row.team_id),
+    teamRole: row.team_role,
+    status: row.status,
+    invitedBy: String(row.invited_by),
+    createdAt: String(row.created_at),
+    consumedAt: row.consumed_at === null ? null : String(row.consumed_at),
+  });
 }
 
 function nonceFromRow(row: SqlRow): MagicLinkNonce {
@@ -190,6 +208,18 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
         value_json TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS cb_index_invites (
+        email_lc TEXT PRIMARY KEY,
+        team_id TEXT NOT NULL,
+        team_role TEXT NOT NULL CHECK (team_role IN ('admin', 'user')),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'consumed', 'revoked')),
+        invited_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        consumed_at TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS cb_index_invites_status_idx
+        ON cb_index_invites (status, email_lc);
     `);
 
     const marker = firstRow(sql.exec<{ value_json: string }>(
@@ -303,6 +333,31 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
       parsed.token,
       parsed.email,
       parsed.expiresAt,
+      parsed.consumedAt,
+      new Date().toISOString(),
+    );
+  }
+
+  private putInviteSql(sql: SqlStorage, record: InviteRecord): void {
+    const parsed = InviteRecordSchema.parse(record);
+    sql.exec(
+      `INSERT INTO cb_index_invites (
+         email_lc, team_id, team_role, status, invited_by, created_at, consumed_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(email_lc) DO UPDATE SET
+         team_id = excluded.team_id,
+         team_role = excluded.team_role,
+         status = excluded.status,
+         invited_by = excluded.invited_by,
+         created_at = excluded.created_at,
+         consumed_at = excluded.consumed_at,
+         updated_at = excluded.updated_at`,
+      parsed.emailLc,
+      parsed.teamId,
+      parsed.teamRole,
+      parsed.status,
+      parsed.invitedBy,
+      parsed.createdAt,
       parsed.consumedAt,
       new Date().toISOString(),
     );
@@ -459,6 +514,88 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
       await txn.put(userKey(parsed.userId), parsed);
       await txn.put(emailKey(parsed.email), pointer);
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Invites (admin-invite tenant onboarding)
+  // -------------------------------------------------------------------------
+
+  async putInvite(record: InviteRecord): Promise<void> {
+    const parsed = InviteRecordSchema.parse(record);
+    const sql = await this.sql();
+    if (sql !== null) {
+      this.putInviteSql(sql, parsed);
+      return;
+    }
+    await this.ctx.storage.put(inviteKey(parsed.emailLc), parsed);
+  }
+
+  async getInvite(emailLc: string): Promise<InviteRecord | null> {
+    if (typeof emailLc !== "string" || emailLc.length === 0) {
+      throw new Error("getInvite: emailLc must be a non-empty string");
+    }
+    const key = emailLc.toLowerCase();
+    const sql = await this.sql();
+    if (sql !== null) {
+      const row = firstRow(sql.exec<SqlRow>(
+        "SELECT * FROM cb_index_invites WHERE email_lc = ?",
+        key,
+      ));
+      return row == null ? null : inviteFromRow(row);
+    }
+    const raw = await this.ctx.storage.get<unknown>(inviteKey(key));
+    if (raw == null) return null;
+    return InviteRecordSchema.parse(raw);
+  }
+
+  async listInvites(opts?: { status?: "pending" | "consumed" | "revoked" }): Promise<InviteRecord[]> {
+    const status = opts?.status;
+    const sql = await this.sql();
+    if (sql !== null) {
+      const rows = status == null
+        ? sql.exec<SqlRow>("SELECT * FROM cb_index_invites ORDER BY email_lc ASC").toArray()
+        : sql.exec<SqlRow>(
+          "SELECT * FROM cb_index_invites WHERE status = ? ORDER BY email_lc ASC",
+          status,
+        ).toArray();
+      return rows.map(inviteFromRow);
+    }
+    const entries = await this.ctx.storage.list<unknown>({ prefix: "invite:" });
+    const invites: InviteRecord[] = [];
+    for (const raw of entries.values()) {
+      const inv = InviteRecordSchema.parse(raw);
+      if (status == null || inv.status === status) invites.push(inv);
+    }
+    invites.sort((a, b) => a.emailLc.localeCompare(b.emailLc));
+    return invites;
+  }
+
+  // Idempotent: only a pending invite transitions to consumed. A second call
+  // (or a call on a non-pending invite) returns the current record unchanged
+  // so concurrent logins cannot double-consume.
+  async markInviteConsumed(emailLc: string): Promise<InviteRecord | null> {
+    const current = await this.getInvite(emailLc);
+    if (current == null) return null;
+    if (current.status !== "pending") return current;
+    const consumed: InviteRecord = {
+      ...current,
+      status: "consumed",
+      consumedAt: new Date().toISOString(),
+    };
+    await this.putInvite(consumed);
+    return consumed;
+  }
+
+  // pending/revoked → revoked. A consumed invite is returned unchanged so the
+  // caller can map it to 409 (revoking does not un-join an already-joined user).
+  async revokeInvite(emailLc: string): Promise<InviteRecord | null> {
+    const current = await this.getInvite(emailLc);
+    if (current == null) return null;
+    if (current.status === "consumed") return current;
+    if (current.status === "revoked") return current;
+    const revoked: InviteRecord = { ...current, status: "revoked" };
+    await this.putInvite(revoked);
+    return revoked;
   }
 
   // -------------------------------------------------------------------------
