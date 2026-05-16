@@ -29,8 +29,13 @@ export type ShellProps = {
 };
 
 export function Shell({ title, nonce, initialData, children, locale = "zh-CN", initialTheme = "auto" }: ShellProps) {
+  // foucScript sets documentElement.dataset.mode before hydration, so the live
+  // <html> has a data-mode attribute the SSR markup lacks. Without
+  // suppressHydrationWarning, React 19 treats it as a hydration mismatch and
+  // regenerates the whole tree client-side (React #418). The suppression scopes
+  // the tolerance to <html>'s own attributes; children still hydrate normally.
   return (
-    <html lang={locale} data-theme="kumo">
+    <html lang={locale} data-theme="kumo" suppressHydrationWarning>
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -46,11 +51,15 @@ export function Shell({ title, nonce, initialData, children, locale = "zh-CN", i
           />
         )}
       </head>
+      {/* The /portal.js entry is injected by React via renderToReadableStream's
+          `bootstrapModules` (see server-impl.tsx), NOT rendered as a child here.
+          React appends bootstrap scripts outside the hydrated tree, so they
+          can't cause a <body>-level whitespace/script hydration mismatch
+          (React #418). Do not re-add a manual <script src="/portal.js">. */}
       <body className="min-h-screen bg-kumo-canvas text-kumo-default">
         <div id="root">
           {children}
         </div>
-        <script type="module" src="/portal.js" />
       </body>
     </html>
   );

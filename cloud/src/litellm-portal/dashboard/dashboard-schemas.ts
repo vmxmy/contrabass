@@ -30,9 +30,6 @@ export const DashboardResponseSchema = z.object({
   models: z.array(z.object({
     model: z.string(), spend: z.number(), totalTokens: z.number(), requests: z.number(),
   })),
-  hourOfDay: z.array(z.object({
-    hour: z.number(), totalTokens: z.number(), requests: z.number(), spend: z.number(),
-  })),
   perUser: z.array(z.object({
     userId: z.string(),
     points: z.array(z.object({ startMs: z.number(), spend: z.number() })),
@@ -42,8 +39,5 @@ export const DashboardResponseSchema = z.object({
     totalSpend: z.number(), totalBudget: z.number(), riskCount: z.number(),
     sampled: z.boolean(),
   }).optional(),
-  recent: z.array(z.object({
-    tsMs: z.number(), model: z.string(), totalTokens: z.number(), spend: z.number(),
-  })).optional(),
 });
 export type DashboardResponse = z.infer<typeof DashboardResponseSchema>;

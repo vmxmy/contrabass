@@ -249,6 +249,67 @@ describe("importUsers", () => {
     const storedRoles = Array.from(idx.users.values()).map((u) => u.role);
     expect(storedRoles).toEqual(["admin", "admin", "user", "user", "user"]);
   });
+
+  it("stores the canonical LiteLLM user_id (not the email) and keeps email separate", async () => {
+    const idx = makeIndexStub();
+    const team = makeTeamStub();
+    const env = makeEnv(idx, team);
+
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+      const urlStr = String(url);
+      if (urlStr.includes("page=1")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              users: [
+                { user_id: "laoxu", user_email: "xu@gz-zhiyun.com", email: "xu@gz-zhiyun.com", role: "internal_user", team_ids: [] },
+              ],
+            }),
+            { status: 200 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(JSON.stringify({ users: [] }), { status: 200 }));
+    });
+
+    const result = await importUsers(env);
+
+    expect(result.insertedUsers).toBe(1);
+    const stored = idx.users.get("xu@gz-zhiyun.com");
+    expect(stored?.userId).toBe("laoxu");
+    expect(stored?.email).toBe("xu@gz-zhiyun.com");
+  });
+
+  it("does not silently store the email as user_id when user_id is missing", async () => {
+    const idx = makeIndexStub();
+    const team = makeTeamStub();
+    const env = makeEnv(idx, team);
+
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+      const urlStr = String(url);
+      if (urlStr.includes("page=1")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              users: [
+                { email: "noid@x.com", user_email: "noid@x.com", role: "internal_user", team_ids: [] },
+              ],
+            }),
+            { status: 200 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(JSON.stringify({ users: [] }), { status: 200 }));
+    });
+
+    const result = await importUsers(env);
+
+    // The record is rejected (no user_id/id) rather than stored with the email
+    // masquerading as the LiteLLM user_id.
+    expect(result.insertedUsers).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(idx.users.get("noid@x.com")).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -7,8 +7,6 @@ import { cleanup, render } from "@testing-library/react";
 import { TrendChart } from "./trend-chart";
 import { ModelDonut } from "./model-donut";
 import { RankBar } from "./rank-bar";
-import { HourBars } from "./hour-bars";
-
 afterEach(cleanup);
 
 describe("TrendChart", () => {
@@ -48,16 +46,3 @@ describe("RankBar", () => {
   });
 });
 
-describe("HourBars", () => {
-  it("empty state when all zero", () => {
-    const { getByText } = render(
-      <HourBars buckets={Array.from({ length: 24 }, (_, h) => ({ hour: h, value: 0 }))} />,
-    );
-    expect(getByText("暂无数据")).toBeTruthy();
-  });
-  it("renders container with data", () => {
-    const b = Array.from({ length: 24 }, (_, h) => ({ hour: h, value: h }));
-    const { container } = render(<HourBars buckets={b} />);
-    expect(container.querySelector("[data-chart='hour-bars']")).toBeTruthy();
-  });
-});

@@ -13,7 +13,7 @@ import { checkClientErrorRateLimit, recordClientError } from "./observability/cl
 import type { ClientErrorPayload } from "./observability/client-error";
 import { scanBudgetThresholds } from "./notifications";
 import { runSpendSnapshotTick } from "./sync/spend-snapshot-cron";
-import { ingestSpendLogs, refreshDailyActivity, pruneUsageRetention } from "./sync/usage-importer";
+import { runUsageRollup } from "./usage/usage-rollup";
 import { handleLiteLLMSyncBatch } from "./sync/queue-consumer";
 import type { SyncMessage } from "./durable/schemas";
 import { handleLoginGet, handleLoginPost, handleMagicCallback, handleLogout } from "./auth/login-routes";
@@ -27,7 +27,6 @@ export type { LiteLLMPortalEnv } from "./types";
 export { RateLimitDO as RateLimitDOSQLite } from "./security/rate-limit-do";
 export { IndexDO as IndexDOSQLite } from "./durable/index-do";
 export { TeamConfigDO as TeamConfigDOSQLite } from "./durable/team-config-do";
-export { UsageDO as UsageDOSQLite } from "./durable/usage-do";
 
 const portalChunkByFileName = new Map<string, { fileName: string; js: string }>(
   portalBundleChunks.map((chunk) => [chunk.fileName, chunk]),
@@ -79,7 +78,14 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
           }
           const initialData: JsonValue =
             dashboard !== null ? dashboard : { error: dashboardError ?? "dashboard_load_failed" };
-          const html = await renderPortalSSR(env, identityResult.identity, initialData, nonce, request.url);
+          const html = await renderPortalSSR(
+            env,
+            identityResult.identity,
+            initialData,
+            nonce,
+            request.url,
+            request.headers.get("accept-language"),
+          );
           return htmlResponse(html, nonce);
         }
       }
@@ -92,6 +98,7 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
       null,
       nonce,
       request.url,
+      request.headers.get("accept-language"),
     );
     return htmlResponse(html, nonce);
   }
@@ -228,19 +235,14 @@ export default {
   async scheduled(controller, env, ctx) {
     if (controller.cron === "0 9 * * *") {
       ctx.waitUntil(scanBudgetThresholds(env));
-      ctx.waitUntil(pruneUsageRetention(env));
       return;
     }
     if (controller.cron === "* * * * *") {
       ctx.waitUntil(runSpendSnapshotTick(env));
       return;
     }
-    if (controller.cron === "*/5 * * * *") {
-      ctx.waitUntil(ingestSpendLogs(env));
-      return;
-    }
-    if (controller.cron === "0 * * * *") {
-      ctx.waitUntil(refreshDailyActivity(env));
+    if (controller.cron === "*/30 * * * *") {
+      ctx.waitUntil(runUsageRollup(env));
       return;
     }
   },

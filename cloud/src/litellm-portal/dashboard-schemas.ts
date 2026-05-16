@@ -40,18 +40,6 @@ const ModelSlice = z.object({
   totalTokens: z.number(),
   requests: z.number(),
 });
-const HourBucket = z.object({
-  hour: z.number(),
-  totalTokens: z.number(),
-  requests: z.number(),
-  spend: z.number(),
-});
-const RecentEvent = z.object({
-  tsMs: z.number(),
-  model: z.string(),
-  totalTokens: z.number(),
-  spend: z.number(),
-});
 const PerUser = z.object({
   userId: z.string(),
   points: z.array(z.object({ startMs: z.number(), spend: z.number() })),
@@ -78,53 +66,37 @@ export const DashboardResponseSchema = z
     kpi: z.object({ spend: KpiMetric, requests: KpiMetric, totalTokens: KpiMetric }),
     trend: z.array(TrendPoint),
     models: z.array(ModelSlice),
-    hourOfDay: z.array(HourBucket),
     perUser: z.array(PerUser).optional(),
     summary: Summary.optional(),
-    recent: z.array(RecentEvent).optional(),
   })
   .strict();
 export type DashboardResponse = z.infer<typeof DashboardResponseSchema>;
 
-/** L1 UsageDO 方法子集(镜像当前真实签名,解耦编译)。 */
-export type UsageDOStub = {
+/** Read interface buildDashboard depends on (direct-source backed). */
+export type UsageSource = {
   queryTimeseries(o: {
-    scope: UsageScope;
-    grain: DashboardGrain;
-    fromMs: number;
-    toMs: number;
+    scope: UsageScope; grain: DashboardGrain; fromMs: number; toMs: number;
   }): Promise<Array<{ startMs: number; label: string; totalTokens: number; requests: number; spend: number }>>;
   queryModelBreakdown(o: {
-    scope: UsageScope;
-    fromMs: number;
-    toMs: number;
+    scope: UsageScope; fromMs: number; toMs: number;
   }): Promise<Array<{ model: string; spend: number; totalTokens: number; requests: number }>>;
-  queryHourOfDay(o: {
-    scope: UsageScope;
-    fromMs: number;
-    toMs: number;
-  }): Promise<Array<{ hour: number; totalTokens: number; requests: number; spend: number }>>;
-  queryPerUserSeries(o: {
-    grain: DashboardGrain;
-    fromMs: number;
-    toMs: number;
-    topN: number;
-  }): Promise<Array<{ userId: string; points: Array<{ startMs: number; spend: number }> }>>;
-  queryRecentEvents(o: {
-    userId: string;
-    limit: number;
-  }): Promise<Array<{ tsMs: number; model: string; totalTokens: number; spend: number }>>;
   queryKpiWithDelta(o: {
     scope: UsageScope;
-    currentFromMs: number;
-    currentToMs: number;
-    previousFromMs: number;
-    previousToMs: number;
-    eventsOnly?: boolean;
-    nowMs?: number;
+    currentFromMs: number; currentToMs: number;
+    previousFromMs: number; previousToMs: number;
   }): Promise<{
-    current: { spend: number; requests: number; totalTokens: number; source: "events" | "daily" | "split" };
-    previous: { spend: number; requests: number; totalTokens: number; source: "events" | "daily" | "split" };
+    current: { spend: number; requests: number; totalTokens: number };
+    previous: { spend: number; requests: number; totalTokens: number };
+  }>;
+};
+
+/** Per-tenant rollup written by the /30 cron, read by the admin path. */
+export type UsageRollup = {
+  generatedAt: string;
+  users: Array<{
+    userId: string;
+    maxBudget: number;
+    win: Record<DashboardWindow, { spend: number; requests: number; totalTokens: number }>;
   }>;
 };
 

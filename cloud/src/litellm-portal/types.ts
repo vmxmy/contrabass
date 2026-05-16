@@ -24,6 +24,7 @@ export type LiteLLMPortalEnv = {
   METRICS_AE?: AnalyticsEngineDataset;
   AUDIT_AE?: AnalyticsEngineDataset;
   USER_PREFS_KV?: KVNamespace;
+  USAGE_ROLLUP_KV?: KVNamespace;
   ROLE_INVALIDATION_WEBHOOK_TOKEN?: string;
   RATE_LIMIT_DO?: DurableObjectNamespace;
   /** HMAC secret used to sign portal session cookies (HS256). 7-day TTL. */
@@ -51,10 +52,6 @@ export type LiteLLMPortalEnv = {
    *  spend snapshot, and sync metadata. See openspec change
    *  `portal-do-config-source-of-truth`. */
   TEAM_CONFIG_DO?: DurableObjectNamespace;
-  /** Singleton UsageDO owning spend-event + daily-activity SQLite tables.
-   *  Sync cron writes; request path reads only. See spec
-   *  docs/superpowers/specs/2026-05-15-litellm-portal-usage-data-platform-design.md */
-  USAGE_DO?: DurableObjectNamespace;
   /** Producer binding for the `litellm-sync` Cloudflare Queue. Each admin
    *  write enqueues a SyncMessage after the DO commit; a consumer Worker
    *  materializes the desired state into LiteLLM with retries + DLQ. */

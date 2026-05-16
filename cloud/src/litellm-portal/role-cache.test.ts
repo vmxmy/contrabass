@@ -1,11 +1,35 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getRole, getRoleForEmail, invalidateRole, _resetMemoryRoleCacheForTests } from "./role-cache";
 import { handleLiteLLMPortalRequest, type LiteLLMPortalEnv } from "./index";
 import { _clearRoleCacheForTests } from "./roles";
 import { issueSession, SESSION_COOKIE_NAME } from "./auth/session";
+import * as litellm from "./litellm";
+import type { LiteLLMUser } from "./types";
+
+function litellmUser(overrides: Partial<LiteLLMUser> = {}): LiteLLMUser {
+  return {
+    userId: "laoxu",
+    email: "stub@gz-zhiyun.com",
+    spend: null,
+    maxBudget: null,
+    teamIds: [],
+    role: null,
+    found: true,
+    raw: null,
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  // Default: LiteLLM resolves the authoritative user_id "laoxu" for any email.
+  vi.spyOn(litellm, "resolveLiteLLMUser").mockImplementation(async (_env, email) =>
+    litellmUser({ email: email.toLowerCase() }),
+  );
+});
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
   _resetMemoryRoleCacheForTests();
 });
 
@@ -13,9 +37,15 @@ afterEach(() => {
 // Mock IndexDO factory
 // ---------------------------------------------------------------------------
 
-function makeIndexDO(usersByEmail: Record<string, { role: "admin" | "user" } | null>): DurableObjectNamespace {
+function makeIndexDO(
+  usersByEmail: Record<string, { role: "admin" | "user"; userId?: string } | null>,
+): DurableObjectNamespace {
   const stub = {
-    getUserByEmail: vi.fn(async (email: string) => usersByEmail[email] ?? null),
+    getUserByEmail: vi.fn(async (email: string) => {
+      const u = usersByEmail[email];
+      if (u == null) return null;
+      return { role: u.role, userId: u.userId ?? email };
+    }),
   };
   return {
     idFromName: vi.fn(() => "idx-id" as unknown as DurableObjectId),
@@ -82,22 +112,61 @@ function devRequest(url: string, email: string, init: RequestInit = {}): Request
 
 describe("role-cache", () => {
   describe("getRole", () => {
-    it("returns role from IndexDO", async () => {
-      const indexDO = makeIndexDO({ "alice@gz-zhiyun.com": { role: "user" } });
+    it("resolves litellmUserId via resolveLiteLLMUser even when IndexDO row is stale (userId=email)", async () => {
+      // IndexDO row is stale: Cloudflare Access path never reconciles it, so
+      // userId is the email. resolveLiteLLMUser returns the real id "laoxu".
+      const indexDO = makeIndexDO({
+        "xu@gz-zhiyun.com": { role: "user", userId: "xu@gz-zhiyun.com" },
+      });
       const env = baseEnv({ INDEX_DO: indexDO });
-      const result = await getRole(env, "alice@gz-zhiyun.com");
+      const result = await getRole(env, "xu@gz-zhiyun.com");
 
       expect(result.role).toBe("user");
-      expect(result.litellmUserId).toBe("alice@gz-zhiyun.com");
+      expect(result.litellmUserId).toBe("laoxu");
     });
 
-    it("returns admin role from IndexDO", async () => {
-      const indexDO = makeIndexDO({ "bob@gz-zhiyun.com": { role: "admin" } });
+    it("keeps role from IndexDO (admin) but litellmUserId from resolveLiteLLMUser", async () => {
+      vi.spyOn(litellm, "resolveLiteLLMUser").mockResolvedValue(
+        litellmUser({ userId: "bob-litellm", email: "bob@gz-zhiyun.com" }),
+      );
+      const indexDO = makeIndexDO({
+        "bob@gz-zhiyun.com": { role: "admin", userId: "bob-uid" },
+      });
       const env = baseEnv({ INDEX_DO: indexDO });
       const result = await getRole(env, "bob@gz-zhiyun.com");
 
       expect(result.role).toBe("admin");
-      expect(result.litellmUserId).toBe("bob@gz-zhiyun.com");
+      expect(result.litellmUserId).toBe("bob-litellm");
+    });
+
+    it("falls back to email when resolveLiteLLMUser reports found:false", async () => {
+      vi.spyOn(litellm, "resolveLiteLLMUser").mockResolvedValue(
+        litellmUser({ userId: "ghost@gz-zhiyun.com", email: "ghost@gz-zhiyun.com", found: false }),
+      );
+      const indexDO = makeIndexDO({});
+      const env = baseEnv({ INDEX_DO: indexDO });
+      const result = await getRole(env, "ghost@gz-zhiyun.com");
+
+      expect(result.role).toBe("none");
+      expect(result.litellmUserId).toBe("ghost@gz-zhiyun.com");
+    });
+
+    it("falls back to email when resolveLiteLLMUser throws (no login lockout)", async () => {
+      vi.spyOn(litellm, "resolveLiteLLMUser").mockRejectedValue(new Error("litellm down"));
+      const indexDO = makeIndexDO({ "down@gz-zhiyun.com": { role: "user", userId: "down@gz-zhiyun.com" } });
+      const env = baseEnv({ INDEX_DO: indexDO });
+      const result = await getRole(env, "down@gz-zhiyun.com");
+
+      expect(result.role).toBe("user");
+      expect(result.litellmUserId).toBe("down@gz-zhiyun.com");
+    });
+
+    it("falls back to email when INDEX_DO binding is absent", async () => {
+      const env = baseEnv();
+      const result = await getRole(env, "noidx@gz-zhiyun.com");
+
+      expect(result.role).toBe("none");
+      expect(result.litellmUserId).toBe("laoxu");
     });
 
     it("returns none when IndexDO has no user", async () => {
@@ -115,7 +184,10 @@ describe("role-cache", () => {
       expect(result.role).toBe("none");
     });
 
-    it("serves from 30s memory cache on second call", async () => {
+    it("serves from 30s memory cache on second call (IndexDO + resolveLiteLLMUser not re-queried)", async () => {
+      const resolveSpy = vi.spyOn(litellm, "resolveLiteLLMUser").mockResolvedValue(
+        litellmUser({ userId: "carol-id", email: "carol@gz-zhiyun.com" }),
+      );
       const indexDO = makeIndexDO({ "carol@gz-zhiyun.com": { role: "admin" } });
       const stub = (indexDO.get as ReturnType<typeof vi.fn>).mock?.results?.[0]?.value;
       const env = baseEnv({ INDEX_DO: indexDO });
@@ -124,9 +196,12 @@ describe("role-cache", () => {
       const second = await getRole(env, "carol@gz-zhiyun.com");
 
       expect(first.role).toBe("admin");
-      expect(second.role).toBe("admin");
-      // IndexDO.get is called only once (second call hits memory)
+      expect(first.litellmUserId).toBe("carol-id");
+      expect(second.litellmUserId).toBe("carol-id");
+      // IndexDO.get and resolveLiteLLMUser are each called only once
+      // (second call hits the 30s memory cache).
       expect((indexDO.get as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+      expect(resolveSpy).toHaveBeenCalledTimes(1);
       void stub;
     });
   });

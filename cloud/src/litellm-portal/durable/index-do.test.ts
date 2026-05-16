@@ -147,6 +147,55 @@ describe("IndexDO", () => {
     expect(found).toBeNull();
   });
 
+  it("putUser reconciles a stale email-keyed placeholder to the canonical user_id (KV)", async () => {
+    const { obj } = makeIndexDO();
+    // Simulate a first-login placeholder keyed by email.
+    await obj.putUser({
+      userId: "xu@gz-zhiyun.com",
+      email: "xu@gz-zhiyun.com",
+      role: "user",
+      teamId: null,
+      createdAt: new Date().toISOString(),
+    });
+    // Importer later learns the real LiteLLM user_id for the same email.
+    await obj.putUser({
+      userId: "laoxu",
+      email: "xu@gz-zhiyun.com",
+      role: "user",
+      teamId: null,
+      createdAt: new Date().toISOString(),
+    });
+
+    const byEmail = await obj.getUserByEmail("xu@gz-zhiyun.com");
+    expect(byEmail?.userId).toBe("laoxu");
+    // The stale email-keyed record must be gone.
+    expect(await obj.getUserById("xu@gz-zhiyun.com")).toBeNull();
+    expect((await obj.getUserById("laoxu"))?.email).toBe("xu@gz-zhiyun.com");
+  });
+
+  it("putUser reconciles a stale email-keyed placeholder to the canonical user_id (SQL)", async () => {
+    const { obj } = makeSqlIndexDO();
+    await obj.putUser({
+      userId: "xu@gz-zhiyun.com",
+      email: "xu@gz-zhiyun.com",
+      role: "user",
+      teamId: null,
+      createdAt: new Date().toISOString(),
+    });
+    await obj.putUser({
+      userId: "laoxu",
+      email: "xu@gz-zhiyun.com",
+      role: "user",
+      teamId: null,
+      createdAt: new Date().toISOString(),
+    });
+
+    const byEmail = await obj.getUserByEmail("xu@gz-zhiyun.com");
+    expect(byEmail?.userId).toBe("laoxu");
+    expect(await obj.getUserById("xu@gz-zhiyun.com")).toBeNull();
+    expect((await obj.listAllUsers()).users.map((u) => u.userId)).toEqual(["laoxu"]);
+  });
+
   it("isImported returns false before markImported", async () => {
     const { obj } = makeIndexDO();
     expect(await obj.isImported()).toBe(false);

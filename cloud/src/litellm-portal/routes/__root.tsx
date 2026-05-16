@@ -64,7 +64,7 @@ function HeaderActions() {
   const { data: preferences } = usePreferences();
   const updatePreferences = useUpdatePreferences();
   const theme = preferences?.theme ?? "auto";
-  const [resolvedMode, setResolvedMode] = React.useState<"dark" | "light">(() => resolvedTheme(theme));
+  const [resolvedMode, setResolvedMode] = React.useState<"dark" | "light">(() => initialResolvedTheme(theme));
 
   useEffect(() => {
     const syncTheme = () => {
@@ -110,6 +110,13 @@ function resolvedTheme(theme: "auto" | "dark" | "light"): "dark" | "light" {
     return "dark";
   }
   return "light";
+}
+
+function initialResolvedTheme(theme: "auto" | "dark" | "light"): "dark" | "light" {
+  // Hydration's first render must not read browser-only state. For "auto",
+  // SSR and client both start at light; the effect above syncs the real system
+  // preference immediately after hydration.
+  return theme === "dark" ? "dark" : "light";
 }
 
 // ---------------------------------------------------------------------------
@@ -252,11 +259,18 @@ function PreferencesBootstrap() {
 
 export type AppShellProps = {
   dehydratedState?: unknown;
+  // SSR passes a per-request, already-seeded QueryClient so renderToString
+  // renders WITH the prefetched data (me/dashboard). Without this the server
+  // rendered against the empty singleton (HydrationBoundary populates too late
+  // for the first render) while the client hydrated WITH the data — a
+  // server/client first-render divergence (React #418, e.g. the header title
+  // falling back server-side but resolving me.company client-side).
+  queryClient?: QueryClient;
   children: React.ReactNode;
 };
 
-export function AppShell({ dehydratedState, children }: AppShellProps) {
-  const queryClient = getQueryClient();
+export function AppShell({ dehydratedState, queryClient: providedClient, children }: AppShellProps) {
+  const queryClient = providedClient ?? getQueryClient();
   return (
     <QueryClientProvider client={queryClient}>
       <HydrationBoundary state={dehydratedState}>

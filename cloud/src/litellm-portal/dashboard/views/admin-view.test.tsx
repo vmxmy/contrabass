@@ -22,7 +22,6 @@ const GLOBAL = {
          totalTokens: { current: 5000, previous: 4000, deltaPct: 25 } },
   trend: [{ startMs: 1, label: "05-01", totalTokens: 10, requests: 2, spend: 1 }],
   models: [{ model: "gpt", spend: 1, totalTokens: 10, requests: 2 }],
-  hourOfDay: Array.from({ length: 24 }, (_, h) => ({ hour: h, totalTokens: h, requests: 0, spend: 0 })),
   perUser: [{ userId: "u1", points: [{ startMs: 1, spend: 5 }] }],
   summary: { userCount: 10, adminCount: 2, teamCount: 3, totalSpend: 128.5, totalBudget: 300, riskCount: 1, sampled: false },
 };

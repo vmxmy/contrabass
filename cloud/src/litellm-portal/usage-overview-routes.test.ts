@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { app } from "./routes";
 import { issueSession, SESSION_COOKIE_NAME } from "./auth/session";
 import { _clearRoleCacheForTests } from "./roles";
@@ -8,53 +8,36 @@ const ADMIN_EMAIL = "admin@gz-zhiyun.com";
 const USER_EMAIL = "bob@gz-zhiyun.com";
 const SESSION_SECRET = "test-secret-32bytes-paddedXXXXXX";
 
-const USERS = [
-  {
-    userId: ADMIN_EMAIL,
-    email: ADMIN_EMAIL,
-    role: "admin" as const,
-    teamId: "t1",
-    createdAt: new Date().toISOString(),
-  },
-  { userId: USER_EMAIL, email: USER_EMAIL, role: "user" as const, teamId: "t1", createdAt: new Date().toISOString() },
-];
+const ROLES: Record<string, { role: "admin" | "user" }> = {
+  [ADMIN_EMAIL]: { role: "admin" },
+  [USER_EMAIL]: { role: "user" },
+};
 
-function emptyArrays() {
-  return {
-    queryTimeseries: vi.fn().mockResolvedValue([]),
-    queryModelBreakdown: vi.fn().mockResolvedValue([]),
-    queryHourOfDay: vi
-      .fn()
-      .mockResolvedValue(Array.from({ length: 24 }, (_, h) => ({ hour: h, totalTokens: 0, requests: 0, spend: 0 }))),
-    queryPerUserSeries: vi.fn().mockResolvedValue([]),
-    queryRecentEvents: vi.fn().mockResolvedValue([]),
-    queryKpiWithDelta: vi.fn().mockResolvedValue({
-      current: { spend: 0, requests: 0, totalTokens: 0 },
-      previous: { spend: 0, requests: 0, totalTokens: 0 },
-    }),
+function makeIndexDO(): DurableObjectNamespace {
+  const stub = {
+    getUserByEmail: vi.fn(async (email: string) => ROLES[email] ?? null),
+    listTeams: vi.fn(async () => [{ id: "t1", alias: "alpha" }]),
+    listAllUsers: vi.fn(async () => ({
+      users: [
+        { userId: ADMIN_EMAIL, email: ADMIN_EMAIL, role: "admin" as const, maxBudget: 100 },
+        { userId: USER_EMAIL, email: USER_EMAIL, role: "user" as const, maxBudget: 50 },
+      ],
+      cursor: undefined,
+    })),
   };
+  return {
+    idFromName: vi.fn(() => "idx-id" as unknown as DurableObjectId),
+    get: vi.fn(() => stub as unknown as DurableObjectStub),
+  } as unknown as DurableObjectNamespace;
 }
 
 function makeEnv(): LiteLLMPortalEnv {
-  const indexStub = {
-    listTeams: vi.fn().mockResolvedValue([{ id: "t1", alias: "a" }]),
-    listAllUsers: vi.fn().mockResolvedValue({ users: USERS, cursor: undefined }),
-    getUserByEmail: vi.fn(async (e: string) => USERS.find((u) => u.email === e) ?? null),
-    getUserById: vi.fn(async (i: string) => USERS.find((u) => u.userId === i) ?? null),
-  };
   return {
     PORTAL_SESSION_SECRET: SESSION_SECRET,
     PORTAL_ALLOWED_EMAIL_DOMAINS: "gz-zhiyun.com",
     LITELLM_BASE_URL: "https://litellm.test",
     LITELLM_MASTER_KEY: "k",
-    INDEX_DO: {
-      idFromName: vi.fn().mockReturnValue({}),
-      get: vi.fn().mockReturnValue(indexStub),
-    } as unknown as DurableObjectNamespace,
-    USAGE_DO: {
-      idFromName: vi.fn().mockReturnValue({}),
-      get: vi.fn().mockReturnValue(emptyArrays()),
-    } as unknown as DurableObjectNamespace,
+    INDEX_DO: makeIndexDO(),
   } as unknown as LiteLLMPortalEnv;
 }
 
@@ -62,71 +45,102 @@ async function cookie(env: LiteLLMPortalEnv, email: string): Promise<string> {
   return `${SESSION_COOKIE_NAME}=${await issueSession(env, { email, userId: email })}`;
 }
 
+const day = (d: string, spend: number, reqs: number) => ({
+  date: d,
+  metrics: { spend, api_requests: reqs, total_tokens: reqs * 2 },
+  breakdown: { models: { gpt: { metrics: { spend, api_requests: reqs, total_tokens: reqs * 2 } } } },
+});
+
+const originalFetch = globalThis.fetch;
+
 afterEach(() => {
+  globalThis.fetch = originalFetch;
   _clearRoleCacheForTests();
   vi.restoreAllMocks();
 });
 
-describe("usage overview endpoints", () => {
-  it("GET /api/usage/overview requires auth (401 without cookie)", async () => {
+describe("usage overview HTTP routes", () => {
+  it("GET /api/usage/overview without auth cookie -> 401", async () => {
+    // #given an env with no session cookie on the request
     const env = makeEnv();
+    // #when the unauthenticated request hits the auth-gated route
     const res = await app.fetch(new Request("https://x/api/usage/overview"), env);
+    // #then the auth middleware rejects before any LiteLLM call
     expect(res.status).toBe(401);
   });
 
-  it("self overview returns available + self scope, no perUser", async () => {
-    const env = makeEnv();
-    const req = new Request("https://x/api/usage/overview?window=7d", {
-      headers: { Cookie: await cookie(env, USER_EMAIL) },
-    });
-    const res = await app.fetch(req, env);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as Record<string, unknown>;
-    expect(body.scope).toBe("self");
-    expect(body.available).toBe(true);
-    expect(body).not.toHaveProperty("perUser");
-  });
-
-  it("invalid window -> 400", async () => {
+  it("GET /api/usage/overview?window=90d (authed) -> 400 unsupported_usage_window", async () => {
+    // #given an authenticated non-admin user requesting an unsupported window
     const env = makeEnv();
     const req = new Request("https://x/api/usage/overview?window=90d", {
       headers: { Cookie: await cookie(env, USER_EMAIL) },
     });
+    // #when parseDashboardRequest validates the window before any LiteLLM call
     const res = await app.fetch(req, env);
+    // #then the request is rejected deterministically
     expect(res.status).toBe(400);
     expect(((await res.json()) as Record<string, unknown>).error).toBe("unsupported_usage_window");
   });
 
-  it("non-admin gets 403 on /api/admin/usage/overview", async () => {
+  it("GET /api/admin/usage/overview as non-admin -> 403", async () => {
+    // #given an authenticated user without the admin role
     const env = makeEnv();
     const req = new Request("https://x/api/admin/usage/overview", {
       headers: { Cookie: await cookie(env, USER_EMAIL) },
     });
+    // #when the admin gate runs before the handler
     const res = await app.fetch(req, env);
+    // #then access is denied
     expect(res.status).toBe(403);
   });
 
-  it("admin global overview has perUser + summary, no recent", async () => {
-    const env = makeEnv();
-    const req = new Request("https://x/api/admin/usage/overview?window=7d", {
-      headers: { Cookie: await cookie(env, ADMIN_EMAIL) },
+  describe("happy-path 200 contract (LiteLLM mocked available)", () => {
+    beforeEach(() => {
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ results: [day("2026-05-16", 7, 70), day("2026-05-15", 5, 50)] }), {
+            status: 200,
+          }),
+        );
     });
-    const res = await app.fetch(req, env);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as Record<string, unknown>;
-    expect(body.scope).toBe("global");
-    expect(body).toHaveProperty("perUser");
-    expect(body).toHaveProperty("summary");
-    expect(body).not.toHaveProperty("recent");
-  });
 
-  it("old timeseries endpoints are gone (404)", async () => {
-    const env = makeEnv();
-    const c = await cookie(env, ADMIN_EMAIL);
-    const a = await app.fetch(new Request("https://x/api/usage/timeseries", { headers: { Cookie: c } }), env);
-    const b = await app.fetch(new Request("https://x/api/admin/usage/timeseries", { headers: { Cookie: c } }), env);
-    expect(a.status).toBe(404);
-    expect(b.status).toBe(404);
+    it("self overview -> 200 scope=self, available, kpi/trend/models, no recent/hourOfDay", async () => {
+      // #given an authenticated self user with LiteLLM returning daily-activity data
+      const env = makeEnv();
+      const req = new Request("https://x/api/usage/overview?window=7d", {
+        headers: { Cookie: await cookie(env, USER_EMAIL) },
+      });
+      // #when the dashboard is built from the live LiteLLM source
+      const res = await app.fetch(req, env);
+      // #then the new self contract is returned
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.scope).toBe("self");
+      expect(body.available).toBe(true);
+      expect(body).toHaveProperty("kpi");
+      expect(body).toHaveProperty("trend");
+      expect(body).toHaveProperty("models");
+      expect(body).not.toHaveProperty("recent");
+      expect(body).not.toHaveProperty("hourOfDay");
+    });
+
+    it("admin global overview -> 200 scope=global, perUser+summary, no recent/hourOfDay", async () => {
+      // #given an authenticated admin with LiteLLM returning aggregated data
+      const env = makeEnv();
+      const req = new Request("https://x/api/admin/usage/overview?window=7d", {
+        headers: { Cookie: await cookie(env, ADMIN_EMAIL) },
+      });
+      // #when the admin dashboard is built from the live LiteLLM source
+      const res = await app.fetch(req, env);
+      // #then the new global contract is returned
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.scope).toBe("global");
+      expect(body).toHaveProperty("perUser");
+      expect(body).toHaveProperty("summary");
+      expect(body).not.toHaveProperty("recent");
+      expect(body).not.toHaveProperty("hourOfDay");
+    });
   });
 });
-

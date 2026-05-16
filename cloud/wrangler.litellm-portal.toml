@@ -40,10 +40,6 @@ class_name = "IndexDOSQLite"
 name = "TEAM_CONFIG_DO"
 class_name = "TeamConfigDOSQLite"
 
-[[durable_objects.bindings]]
-name = "USAGE_DO"
-class_name = "UsageDOSQLite"
-
 [[migrations]]
 tag = "v1"
 new_classes = ["RateLimitDO"]
@@ -89,6 +85,18 @@ deleted_classes = ["RateLimitDO", "IndexDO", "TeamConfigDO"]
 [[migrations]]
 tag = "v5"
 new_sqlite_classes = ["UsageDOSQLite"]
+
+# Step: retire the usage data platform (SQLite firehose + UsageDO + attribution
+# filter). The USAGE_DO binding has been removed above, so no live deployment
+# references the class — like the v4 step-2 delete, this no longer hits error
+# 10061. UsageDOSQLite was only ever created via v5 new_sqlite_classes (it never
+# had a legacy KV form), so the registered runtime class name to delete is
+# "UsageDOSQLite" (matching the *SQLite naming used by v3/v5). This permanently
+# destroys the orphaned UsageDO instance + its spend-event/daily-activity tables
+# (authorized — usage now reads from LiteLLM directly + the KV rollup).
+[[migrations]]
+tag = "v6"
+deleted_classes = ["UsageDOSQLite"]
 
 # ---------------------------------------------------------------------------
 # Workers Secret Store (opt-in — requires manual provisioning)
@@ -148,9 +156,9 @@ dead_letter_queue = "litellm-sync-dlq"
 
 # Spend snapshot mirror — pulls LiteLLM /team/info into TeamConfigDO every minute.
 # See openspec change portal-do-config-source-of-truth, capability portal-litellm-config-sync.
-# */5 * * * * → UsageDO spend-logs ingest; 0 * * * * → UsageDO daily-activity refresh; daily 0 9 also prunes UsageDO retention.
+# */30 * * * * → usage rollup (KV); daily 0 9 → budget-threshold scan.
 [triggers]
-crons = ["0 9 * * *", "* * * * *", "*/5 * * * *", "0 * * * *"]
+crons = ["0 9 * * *", "* * * * *", "*/30 * * * *"]
 
 [observability]
 enabled = true
@@ -175,3 +183,7 @@ dataset = "portal-audit"
 binding = "USER_PREFS_KV"
 id = "433b1ca91b414671a8840280951a96a6"
 preview_id = "018d861aecd54a61af541a841c9fc0fa"
+
+[[kv_namespaces]]
+binding = "USAGE_ROLLUP_KV"
+id = "b5099b41816a43fcbd093617dec2553a"

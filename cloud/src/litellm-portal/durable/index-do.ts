@@ -257,6 +257,16 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
 
   private putUserSql(sql: SqlStorage, record: UserRecord): void {
     const parsed = UserRecordSchema.parse(record);
+    // Reconcile a stale row that shares this email but was keyed by a different
+    // user_id (e.g. a first-login placeholder keyed by email before the LiteLLM
+    // importer learned the canonical user_id). Without this delete the INSERT
+    // below would violate the email_lc UNIQUE constraint and the canonical
+    // mapping (cb_index_users.user_id = real LiteLLM user_id) would never land.
+    sql.exec(
+      "DELETE FROM cb_index_users WHERE email_lc = ? AND user_id <> ?",
+      parsed.email.toLowerCase(),
+      parsed.userId,
+    );
     sql.exec(
       `INSERT INTO cb_index_users (
          user_id, email, email_lc, role, team_id, max_budget, created_at, updated_at
@@ -434,7 +444,18 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
       teamId: parsed.teamId,
       role: parsed.role,
     });
+    const existingPointer = await this.ctx.storage.get<unknown>(emailKey(parsed.email));
+    const staleUserId =
+      existingPointer == null
+        ? null
+        : (() => {
+            const p = EmailPointerSchema.parse(existingPointer);
+            return p.userId !== parsed.userId ? p.userId : null;
+          })();
     await this.ctx.storage.transaction(async (txn) => {
+      if (staleUserId != null) {
+        await txn.delete(userKey(staleUserId));
+      }
       await txn.put(userKey(parsed.userId), parsed);
       await txn.put(emailKey(parsed.email), pointer);
     });

@@ -6,7 +6,8 @@ import {
   type DashboardGrain,
   type DashboardScope,
   type UsageScope,
-  type UsageDOStub,
+  type UsageSource,
+  type UsageRollup,
   type IndexDOLike,
   type DashboardResponse,
 } from "./dashboard-schemas";
@@ -40,7 +41,7 @@ export function toUsageScope(scope: DashboardScope): UsageScope {
   return scope.kind === "global" ? { kind: "global" } : { kind: "user", userId: scope.userId };
 }
 
-type BuildDeps = { usage: UsageDOStub | null; index: IndexDOLike | null; now: number };
+type BuildDeps = { usage: UsageSource | null; index: IndexDOLike | null; rollup: UsageRollup | null; now: number };
 type BuildOpts = {
   scope: DashboardScope;
   window: DashboardWindow;
@@ -75,7 +76,6 @@ export async function buildDashboard(deps: BuildDeps, opts: BuildOpts): Promise<
       kpi: emptyKpi(),
       trend: [],
       models: [],
-      hourOfDay: emptyHours(),
     };
   }
 
@@ -84,17 +84,16 @@ export async function buildDashboard(deps: BuildDeps, opts: BuildOpts): Promise<
   const prevToMs = fromMs;
   const prevFromMs = fromMs - WINDOW_SPEC[opts.window].lenMs;
   // NOTE: EVENT_RETENTION_MS here (dashboard-schemas.ts) must stay in lockstep
-  // with UsageDO.EVENT_RETENTION_MS (durable/usage-do.ts). L2 nulls the 30d
+  // with the retention window used by the usage source. L2 nulls the 30d
   // `previous` deliberately (current=events vs previous=daily would be
   // apples-to-oranges); this is a stricter presentation policy than L1's own
   // data-availability source resolution, by design (L2 spec §3).
   const prevComparable = prevFromMs >= deps.now - EVENT_RETENTION_MS;
   const us = toUsageScope(opts.scope);
 
-  const [trend, models, hourOfDay, kpiRaw] = await Promise.all([
+  const [trend, models, kpiRaw] = await Promise.all([
     deps.usage.queryTimeseries({ scope: us, grain: opts.grain, fromMs, toMs }),
     deps.usage.queryModelBreakdown({ scope: us, fromMs, toMs }),
-    deps.usage.queryHourOfDay({ scope: us, fromMs, toMs }),
     deps.usage.queryKpiWithDelta({
       scope: us,
       currentFromMs: fromMs,
@@ -125,18 +124,15 @@ export async function buildDashboard(deps: BuildDeps, opts: BuildOpts): Promise<
     kpi,
     trend,
     models,
-    hourOfDay,
   };
 
   if (opts.scope.kind === "global") {
-    const [perUser, summary] = await Promise.all([
-      deps.usage.queryPerUserSeries({ grain: opts.grain, fromMs, toMs, topN: 8 }),
-      buildSummary(deps, kpiRaw.current.spend, fromMs, toMs),
-    ]);
-    result.perUser = perUser;
-    result.summary = summary;
-  } else {
-    result.recent = await deps.usage.queryRecentEvents({ userId: opts.scope.userId, limit: 20 });
+    result.perUser = (deps.rollup?.users ?? [])
+      .map((u) => ({ userId: u.userId, points: [{ startMs: fromMs, spend: u.win[opts.window]?.spend ?? 0 }] }))
+      .filter((p) => p.points[0].spend > 0)
+      .sort((a, b) => b.points[0].spend - a.points[0].spend)
+      .slice(0, 8);
+    result.summary = await buildSummary(deps, kpiRaw.current.spend, opts.window);
   }
   return result;
 }
@@ -145,15 +141,10 @@ function emptyKpi() {
   const z = { current: 0, previous: null, deltaPct: null };
   return { spend: { ...z }, requests: { ...z }, totalTokens: { ...z } };
 }
-function emptyHours() {
-  return Array.from({ length: 24 }, (_, hour) => ({ hour, totalTokens: 0, requests: 0, spend: 0 }));
-}
-
 export async function buildSummary(
   deps: BuildDeps,
   totalSpend: number,
-  windowFromMs: number,
-  windowToMs: number,
+  window: DashboardWindow,
 ): Promise<NonNullable<DashboardResponse["summary"]>> {
   if (deps.index === null) {
     return { userCount: 0, adminCount: 0, teamCount: 0, totalSpend, totalBudget: 0, riskCount: 0, sampled: false };
@@ -161,12 +152,9 @@ export async function buildSummary(
   const teams = await deps.index.listTeams();
   // Paginate the FULL user population to get accurate population stats.
   // adminCount, totalBudget, and totalUserCount are computed over ALL pages.
-  // The per-user risk probe fan-out is separately bounded to SUMMARY_USER_CAP
-  // budgeted users — plain IndexDO SQL pages are cheap; the KPI probes are not.
   let totalUserCount = 0;
   let adminCount = 0;
   let totalBudget = 0;
-  const budgetedSample: Array<{ userId: string; maxBudget: number }> = [];
   let cursor: string | undefined;
   for (;;) {
     const page = await deps.index.listAllUsers({ limit: 200, cursor });
@@ -174,41 +162,14 @@ export async function buildSummary(
       totalUserCount += 1;
       if (u.role === "admin") adminCount += 1;
       totalBudget += u.maxBudget ?? 0;
-      if (u.maxBudget != null && u.maxBudget > 0 && budgetedSample.length < SUMMARY_USER_CAP) {
-        budgetedSample.push({ userId: u.userId, maxBudget: u.maxBudget });
-      }
     }
     cursor = page.cursor;
     if (cursor === undefined) break;
   }
-  // sampled = true means risk probes cover only a sample of budgeted users
-  const sampled = totalUserCount > SUMMARY_USER_CAP;
-  // Risk = users whose IN-WINDOW spend exceeds their maxBudget. The
-  // per-user KPI probe is an N-query fan-out, so run it with bounded
-  // concurrency (NOT a serial await-in-loop) to keep the admin request
-  // latency bounded even at SUMMARY_USER_CAP users.
-  const usage = deps.usage;
-  const budgeted = usage === null ? [] : budgetedSample;
-  const RISK_CONCURRENCY = 10;
+  const sampled = false;
   let riskCount = 0;
-  for (let i = 0; i < budgeted.length; i += RISK_CONCURRENCY) {
-    const chunk = budgeted.slice(i, i + RISK_CONCURRENCY);
-    const spends = await Promise.all(
-      chunk.map(async (u) => {
-        const k = await usage!.queryKpiWithDelta({
-          scope: { kind: "user", userId: u.userId },
-          currentFromMs: windowFromMs,
-          currentToMs: windowToMs,
-          // previous range intentionally empty — only current.spend is consumed here
-          previousFromMs: 0,
-          previousToMs: 0,
-        });
-        return k.current.spend;
-      }),
-    );
-    spends.forEach((s, j) => {
-      if (s > chunk[j].maxBudget) riskCount += 1;
-    });
+  for (const u of deps.rollup?.users ?? []) {
+    if (u.maxBudget > 0 && (u.win[window]?.spend ?? 0) > u.maxBudget) riskCount += 1;
   }
   return {
     userCount: totalUserCount,

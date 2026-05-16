@@ -144,13 +144,13 @@ describe("litellm portal worker", () => {
     expect(portalAppJs).not.toContain("__litellmPortal");
   });
 
-  it("app.generated.ts hydrates #root from initial-data script (not window.__INITIAL_DATA__)", () => {
+  it("app.generated.ts hydrates the document from initial-data script (not window.__INITIAL_DATA__)", () => {
     // P0-01 SSR contract: client must read JSON from <script id="initial-data"> and
-    // hydrate the #root div, not bind window.__INITIAL_DATA__ or hydrate the whole document.
-    // This guards against shipping a stale bundle that doesn't match the SSR shell.
+    // hydrate the full document so the client tree includes Shell/head nodes and
+    // matches the SSR shell exactly.
     expect(portalAppJs).not.toContain("__INITIAL_DATA__");
     expect(portalAppJs).toContain("initial-data");
-    expect(portalAppJs).toContain('"root"');
+    expect(portalAppJs).toContain("document");
   });
 
   it("app.generated.ts records admin code in a separate lazy chunk", () => {
@@ -268,6 +268,12 @@ describe("litellm portal worker", () => {
       ],
     });
     expect(seen).toEqual([
+      // Identity resolution resolves the authoritative LiteLLM user_id first
+      // (auth-path-independent), then the route handler resolves + lists keys.
+      {
+        url: "https://litellm.test/user/list?user_email=liqingying%40gz-zhiyun.com",
+        auth: "Bearer litellm-master",
+      },
       {
         url: "https://litellm.test/user/list?user_email=liqingying%40gz-zhiyun.com",
         auth: "Bearer litellm-master",
@@ -363,6 +369,8 @@ describe("litellm portal worker", () => {
       teamIds: ["team-zhiyun"],
     });
     expect(seen).toEqual([
+      // Leading /user/list is identity resolution (authoritative litellm user_id).
+      "https://litellm.test/user/list?user_email=jiangyufeng%40gz-zhiyun.com",
       "https://litellm.test/user/list?user_email=jiangyufeng%40gz-zhiyun.com",
       "https://litellm.test/team/info?team_id=team-zhiyun",
     ]);
@@ -960,6 +968,8 @@ describe("litellm portal worker", () => {
       ],
     });
     expect(seen).toEqual([
+      // Leading /user/list is identity resolution (authoritative litellm user_id).
+      "https://litellm.test/user/list?user_email=xu%40ziikoo.com",
       "https://litellm.test/user/list?user_email=xu%40ziikoo.com",
       "https://litellm.test/user/info?user_id=laoxu",
     ]);

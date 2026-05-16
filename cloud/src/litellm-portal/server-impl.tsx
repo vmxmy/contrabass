@@ -1,5 +1,5 @@
 import React from "react";
-import { renderToString } from "react-dom/server";
+import { renderToReadableStream } from "react-dom/server";
 import { RouterProvider } from "@tanstack/react-router";
 import { I18nProvider } from "@lingui/react";
 import { QueryClient, dehydrate } from "@tanstack/react-query";
@@ -7,7 +7,7 @@ import type { JsonValue, LiteLLMPortalEnv, PortalIdentity } from "./types";
 import { Shell } from "./shell";
 import { AppShell } from "./routes/__root";
 import { portalDisplayName, portalCompanyName } from "./utils";
-import { setupI18n } from "./i18n/setup";
+import { setupI18n, detectLocale } from "./i18n/setup";
 import { DASHBOARD_QUERY_KEY } from "./hooks/use-dashboard";
 import { ME_QUERY_KEY } from "./hooks/use-me";
 import { DashboardSchema, MeSchema } from "./schemas";
@@ -22,11 +22,16 @@ export async function renderPortalSSR(
   initialData: JsonValue | null,
   nonce: string,
   requestUrl?: string,
+  acceptLanguage?: string | null,
 ): Promise<string> {
   const title = portalDisplayName(env);
 
-  // Default to zh-CN; client-side i18n re-initialises from navigator.languages.
-  const i18n = setupI18n("zh-CN");
+  // Resolve locale from the request's Accept-Language. The client MUST hydrate
+  // with this exact locale (it reads it back from <html lang>) — re-detecting
+  // from navigator.languages before hydrate causes a server/client first-render
+  // divergence (React #418).
+  const locale = detectLocale(acceptLanguage);
+  const i18n = setupI18n(locale);
 
   const dataWithIdentity: JsonValue | null = initialData !== null
     ? {
@@ -121,21 +126,45 @@ export async function renderPortalSSR(
     // Preload is best-effort; the client will still hydrate the lazy chunk.
   }
 
-  const markup = renderToString(
+  // renderToReadableStream (Suspense-aware) instead of renderToString:
+  // renderToString aborts Suspense boundaries it encounters and emits partial
+  // markup, advancing React's internal useId counter in a way that diverges
+  // from the client's clean (non-suspending) hydration render. Every Base UI
+  // component that calls useId() (Switch, Tabs, Dialog trigger, …) then gets a
+  // different server vs client id → React #418 attribute mismatches on the
+  // whole tree. renderToReadableStream waits for all Suspense boundaries to
+  // resolve (allReady) before streaming, so the counter sequence is identical
+  // to the client's first render.
+  const stream = await renderToReadableStream(
     React.createElement(
       I18nProvider,
       { i18n },
       React.createElement(
         Shell,
-        { title, nonce, initialData: shellData, initialTheme },
+        { title, nonce, initialData: shellData, initialTheme, locale },
         React.createElement(
           AppShell,
-          { dehydratedState },
+          { dehydratedState, queryClient: serverQueryClient },
           React.createElement(RouterProvider, { router }),
         ),
       ),
     ),
+    // React injects the entry module itself (outside the hydrated tree) so it
+    // never causes a <body>-level script/whitespace hydration mismatch. The
+    // manual <script src="/portal.js"> was removed from Shell accordingly.
+    { bootstrapModules: ["/portal.js"] },
   );
+
+  // Wait for all Suspense boundaries to resolve before reading the markup.
+  await stream.allReady;
+
+  const chunks: string[] = [];
+  const decoder = new TextDecoder();
+  for await (const chunk of stream as AsyncIterable<Uint8Array>) {
+    chunks.push(decoder.decode(chunk, { stream: true }));
+  }
+  chunks.push(decoder.decode());
+  const markup = chunks.join("");
 
   return `<!doctype html>${markup}`;
 }
