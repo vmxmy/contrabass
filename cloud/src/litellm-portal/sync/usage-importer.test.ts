@@ -18,7 +18,33 @@ function makeUsageStub() {
   };
 }
 
-function makeEnv(usageStub: unknown): LiteLLMPortalEnv {
+function makeIndexStub(userIds: string[] | { throw: true }) {
+  return {
+    listAllUsers: vi.fn(async () => {
+      if (typeof userIds === "object" && "throw" in userIds) throw new Error("idx down");
+      return { users: userIds.map((id) => ({ userId: id })), cursor: undefined };
+    }),
+  };
+}
+
+function makeScriptedIndexStub(pages: Array<{ users: Array<{ userId: string }>; cursor: string | undefined }>) {
+  let call = 0;
+  return {
+    listAllUsers: vi.fn(async () => {
+      const page = pages[Math.min(call, pages.length - 1)];
+      call += 1;
+      return page;
+    }),
+  };
+}
+
+function makeAlwaysCursorIndexStub(userId: string) {
+  return {
+    listAllUsers: vi.fn(async () => ({ users: [{ userId }], cursor: "more" })),
+  };
+}
+
+function makeEnv(usageStub: unknown, indexStub?: unknown): LiteLLMPortalEnv {
   return {
     LITELLM_BASE_URL: "https://litellm.test",
     LITELLM_MASTER_KEY: "k",
@@ -26,6 +52,9 @@ function makeEnv(usageStub: unknown): LiteLLMPortalEnv {
       idFromName: (n: string) => ({ name: n }),
       get: () => usageStub,
     } as unknown,
+    INDEX_DO: indexStub
+      ? ({ idFromName: (n: string) => ({ name: n }), get: () => indexStub } as unknown)
+      : undefined,
   } as unknown as LiteLLMPortalEnv;
 }
 
@@ -261,7 +290,7 @@ describe("toSpendEvent userId/teamId field resolution", () => {
 describe("ingestSpendLogs one-time mapping migration sentinel", () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it("calls resetSpendLogsCursorForMappingMigration with version 3 when sentinel is absent", async () => {
+  it("calls resetSpendLogsCursorForMappingMigration with version 4 when sentinel is absent", async () => {
     const usage = makeUsageStub();
     const env = makeEnv(usage);
     globalThis.fetch = vi.fn().mockResolvedValue(
@@ -269,7 +298,7 @@ describe("ingestSpendLogs one-time mapping migration sentinel", () => {
     );
     await ingestSpendLogs(env);
     expect(usage.resetSpendLogsCursorForMappingMigration).toHaveBeenCalledOnce();
-    expect(usage.resetSpendLogsCursorForMappingMigration).toHaveBeenCalledWith(3);
+    expect(usage.resetSpendLogsCursorForMappingMigration).toHaveBeenCalledWith(4);
   });
 
   it("re-fires the reset once when stored sentinel is the older version 2", async () => {
@@ -284,13 +313,13 @@ describe("ingestSpendLogs one-time mapping migration sentinel", () => {
     );
     await ingestSpendLogs(env);
     expect(usage.resetSpendLogsCursorForMappingMigration).toHaveBeenCalledOnce();
-    expect(usage.resetSpendLogsCursorForMappingMigration).toHaveBeenCalledWith(3);
+    expect(usage.resetSpendLogsCursorForMappingMigration).toHaveBeenCalledWith(4);
   });
 
-  it("does NOT call resetSpendLogsCursorForMappingMigration when sentinel already at version 3 (idempotent)", async () => {
+  it("does NOT call resetSpendLogsCursorForMappingMigration when sentinel already at version 4 (idempotent)", async () => {
     const usage = makeUsageStub();
-    // Pre-seed the sentinel at the current version 3.
-    await usage.resetSpendLogsCursorForMappingMigration(3);
+    // Pre-seed the sentinel at the current version 4.
+    await usage.resetSpendLogsCursorForMappingMigration(4);
     usage.resetSpendLogsCursorForMappingMigration.mockClear();
 
     const env = makeEnv(usage);
@@ -531,5 +560,83 @@ describe("pruneUsageRetention", () => {
     const env = makeEnv(stub);
     await pruneUsageRetention(env);
     expect(stub.pruneRetention).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ingestSpendLogs attribution tagging", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  function respond(rows: unknown[]) {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: rows, total_pages: 1 }), { status: 200 }),
+    );
+  }
+  const row = (rid: string, uid: string) => ({
+    request_id: rid, startTime: "2026-05-13T01:00:00", model: "gpt",
+    prompt_tokens: 1, completion_tokens: 1, total_tokens: 2, spend: 1,
+    metadata: { user_api_key_user_id: uid },
+  });
+
+  it("tags attributed by registry membership", async () => {
+    const usage = makeUsageStub();
+    const env = makeEnv(usage, makeIndexStub(["laoxu"]));
+    respond([row("r1", "laoxu"), row("r2", "scanner")]);
+    await ingestSpendLogs(env);
+    const written = (usage.writeSpendEvents.mock.calls as unknown as Array<[Array<{ requestId: string; attributed: boolean }>]>)[0][0];
+    expect(written.find((e) => e.requestId === "r1")!.attributed).toBe(true);
+    expect(written.find((e) => e.requestId === "r2")!.attributed).toBe(false);
+  });
+
+  it("fails open (all attributed) when registry is empty", async () => {
+    const usage = makeUsageStub();
+    const env = makeEnv(usage, makeIndexStub([]));
+    respond([row("r1", "laoxu"), row("r2", "scanner")]);
+    await ingestSpendLogs(env);
+    const written = (usage.writeSpendEvents.mock.calls as unknown as Array<[Array<{ attributed: boolean }>]>)[0][0];
+    expect(written.every((e) => e.attributed === true)).toBe(true);
+  });
+
+  it("fails open when IndexDO throws", async () => {
+    const usage = makeUsageStub();
+    const env = makeEnv(usage, makeIndexStub({ throw: true }));
+    respond([row("r1", "laoxu")]);
+    await ingestSpendLogs(env);
+    const written = (usage.writeSpendEvents.mock.calls as unknown as Array<[Array<{ attributed: boolean }>]>)[0][0];
+    expect(written[0].attributed).toBe(true);
+  });
+
+  it("fails open when INDEX_DO binding is absent", async () => {
+    const usage = makeUsageStub();
+    const env = makeEnv(usage); // no indexStub
+    respond([row("r1", "laoxu")]);
+    await ingestSpendLogs(env);
+    const written = (usage.writeSpendEvents.mock.calls as unknown as Array<[Array<{ attributed: boolean }>]>)[0][0];
+    expect(written[0].attributed).toBe(true);
+  });
+
+  it("accumulates roster across multiple paginated pages (cursor advance)", async () => {
+    const usage = makeUsageStub();
+    const idx = makeScriptedIndexStub([
+      { users: [{ userId: "laoxu" }], cursor: "c1" },
+      { users: [{ userId: "jiang" }], cursor: undefined },
+    ]);
+    const env = makeEnv(usage, idx);
+    respond([row("r1", "laoxu"), row("r2", "jiang")]);
+    await ingestSpendLogs(env);
+    const written = (usage.writeSpendEvents.mock.calls as unknown as Array<[Array<{ requestId: string; attributed: boolean }>]>)[0][0];
+    expect(written.find((e) => e.requestId === "r1")!.attributed).toBe(true);
+    expect(written.find((e) => e.requestId === "r2")!.attributed).toBe(true);
+    expect(idx.listAllUsers).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails open when roster pagination hits REGISTRY_MAX_PAGES cap", async () => {
+    const usage = makeUsageStub();
+    const idx = makeAlwaysCursorIndexStub("laoxu");
+    const env = makeEnv(usage, idx);
+    respond([row("r1", "laoxu"), row("r2", "scanner")]);
+    await ingestSpendLogs(env);
+    const written = (usage.writeSpendEvents.mock.calls as unknown as Array<[Array<{ attributed: boolean }>]>)[0][0];
+    expect(written.every((e) => e.attributed === true)).toBe(true);
+    expect(idx.listAllUsers).toHaveBeenCalledTimes(50);
   });
 });

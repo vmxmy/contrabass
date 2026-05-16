@@ -1,5 +1,6 @@
 import type { LiteLLMPortalEnv } from "../types";
 import type { UsageDO } from "../durable/usage-do";
+import type { IndexDO } from "../durable/index-do";
 import type { SpendEventInput, DailyRow } from "../durable/usage-schemas";
 import { litellmFetch, firstString, numberLikeField, litellmDateTime } from "../litellm";
 import { readJson, isRecord } from "../utils";
@@ -14,7 +15,9 @@ const BACKFILL_MS = 30 * 86400000;
 // Increment this to force a re-backfill of the 30d spend_logs window.
 // v3: metadata-as-JSON-string fix — re-pull 30d so `""`-userId rows that were
 // caused by `metadata` arriving as a serialized string get corrected in place.
-const SPEND_LOGS_MAPPING_VERSION = 3;
+// v4: tenant attribution filter — re-pull 30d so every row is re-tagged with
+// `attributed` against the current registered-user roster.
+const SPEND_LOGS_MAPPING_VERSION = 4;
 const SPEND_LOGS_MAPPING_SOURCE = "spend_logs_userid_mapping_v";
 
 export type IngestResult = { ingested: number; error: string | null };
@@ -22,6 +25,43 @@ export type IngestResult = { ingested: number; error: string | null };
 function usageStub(env: LiteLLMPortalEnv): UsageDO | null {
   if (!env.USAGE_DO) return null;
   return env.USAGE_DO.get(env.USAGE_DO.idFromName("usage")) as unknown as UsageDO;
+}
+
+// Registry below this size is treated as "unavailable" → fail open (tag all
+// events attributed=1) so a cold/erroring IndexDO never hides real traffic.
+const MIN_REGISTRY_SIZE = 1;
+const REGISTRY_PAGE = 200;
+const REGISTRY_MAX_PAGES = 50;
+
+function indexStub(env: LiteLLMPortalEnv): IndexDO | null {
+  if (!env.INDEX_DO) return null;
+  return env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDO;
+}
+
+/** Tenant's registered LiteLLM user_id set. Empty set ⇒ caller must fail open. */
+async function loadRegisteredUserIds(env: LiteLLMPortalEnv): Promise<Set<string>> {
+  const stub = indexStub(env);
+  if (stub === null) return new Set();
+  const ids = new Set<string>();
+  try {
+    let cursor: string | undefined;
+    for (let page = 0; page < REGISTRY_MAX_PAGES; page += 1) {
+      const res = await stub.listAllUsers({ limit: REGISTRY_PAGE, cursor });
+      for (const u of res.users) {
+        if (typeof u.userId === "string" && u.userId.length > 0) ids.add(u.userId);
+      }
+      if (res.cursor === undefined) return ids; // natural end: full roster
+      cursor = res.cursor;
+    }
+  } catch (err) {
+    console.warn("[usage-importer] failed to load registered-user roster; attribution failing open", err);
+    return new Set(); // fail open
+  }
+  // Loop exited via the page cap while a cursor was still pending: the roster is
+  // truncated. Returning a partial set would wrongly tag tail-page users
+  // attributed=false and hide their real traffic — fail open instead.
+  console.warn("[usage-importer] registered-user roster exceeded REGISTRY_MAX_PAGES; attribution failing open");
+  return new Set();
 }
 
 function parseEventDate(record: Record<string, unknown>): number | undefined {
@@ -149,6 +189,9 @@ export async function ingestSpendLogs(env: LiteLLMPortalEnv): Promise<IngestResu
     await stub.resetSpendLogsCursorForMappingMigration(SPEND_LOGS_MAPPING_VERSION);
   }
 
+  const registry = await loadRegisteredUserIds(env);
+  const filterActive = registry.size >= MIN_REGISTRY_SIZE;
+
   const now = Date.now();
   const cursor = await stub.getSyncCursor("spend_logs");
   const startMs = cursor === null ? now - BACKFILL_MS : cursor - LOOKBACK_MS;
@@ -174,7 +217,8 @@ export async function ingestSpendLogs(env: LiteLLMPortalEnv): Promise<IngestResu
       for (const row of rows) {
         const e = toSpendEvent(row);
         if (e !== null) {
-          events.push(e);
+          const attributed = !filterActive || registry.has(e.userId);
+          events.push({ ...e, attributed });
           if (e.tsMs > maxTs) maxTs = e.tsMs;
         }
       }
