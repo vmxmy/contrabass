@@ -18,6 +18,27 @@ describe("UsageDO schema", () => {
 });
 
 describe("UsageDO writeSpendEvents dedupe + cursor", () => {
+  it("DO UPDATE on conflict updates user_id and team_id but keeps stable columns unchanged", async () => {
+    const obj = makeUsageDO();
+    const ev = {
+      requestId: "r1",
+      tsMs: 1000,
+      userId: "",
+      teamId: "",
+      model: "gpt",
+      promptTokens: 1,
+      completionTokens: 2,
+      totalTokens: 3,
+      spend: 0.5,
+    };
+    await obj.writeSpendEvents([ev]);
+    // Second write with same request_id but now populated user_id/team_id.
+    await obj.writeSpendEvents([{ ...ev, userId: "xu@gz-zhiyun.com", teamId: "team-a", spend: 999 }]);
+    // user_id and team_id must be updated; spend/tokens must remain from first write.
+    const recent = await obj.queryRecentEvents({ userId: "xu@gz-zhiyun.com", limit: 10 });
+    expect(recent).toEqual([{ tsMs: 1000, model: "gpt", totalTokens: 3, spend: 0.5 }]);
+  });
+
   it("INSERT OR IGNORE dedupes by requestId across calls", async () => {
     const obj = makeUsageDO();
     const ev = {
@@ -42,6 +63,38 @@ describe("UsageDO writeSpendEvents dedupe + cursor", () => {
     expect(await obj.getSyncCursor("spend_logs")).toBeNull();
     await obj.setSyncCursor("spend_logs", { cursorMs: 5000, lastError: null });
     expect(await obj.getSyncCursor("spend_logs")).toBe(5000);
+  });
+});
+
+describe("UsageDO resetSpendLogsCursorForMappingMigration", () => {
+  it("nulls the spend_logs cursor and writes the sentinel version", async () => {
+    const obj = makeUsageDO();
+    // Establish a prior spend_logs cursor.
+    await obj.setSyncCursor("spend_logs", { cursorMs: 12345, lastError: null });
+    expect(await obj.getSyncCursor("spend_logs")).toBe(12345);
+
+    await obj.resetSpendLogsCursorForMappingMigration(2);
+
+    expect(await obj.getSyncCursor("spend_logs")).toBeNull();
+    expect(await obj.getSyncCursor("spend_logs_userid_mapping_v")).toBe(2);
+  });
+
+  it("is idempotent: second call still returns null cursor and version 2 sentinel", async () => {
+    const obj = makeUsageDO();
+    await obj.resetSpendLogsCursorForMappingMigration(2);
+    await obj.resetSpendLogsCursorForMappingMigration(2);
+
+    expect(await obj.getSyncCursor("spend_logs")).toBeNull();
+    expect(await obj.getSyncCursor("spend_logs_userid_mapping_v")).toBe(2);
+  });
+
+  it("does not touch the daily_activity cursor", async () => {
+    const obj = makeUsageDO();
+    await obj.setSyncCursor("daily_activity", { cursorMs: 99999, lastError: null });
+
+    await obj.resetSpendLogsCursorForMappingMigration(2);
+
+    expect(await obj.getSyncCursor("daily_activity")).toBe(99999);
   });
 });
 

@@ -4,13 +4,17 @@ import { refreshDailyActivity, pruneUsageRetention } from "./usage-importer";
 import type { LiteLLMPortalEnv } from "../types";
 
 function makeUsageStub() {
-  let cursor: number | null = null;
+  const cursors: Record<string, number | null> = {};
   return {
-    getSyncCursor: vi.fn(async () => cursor),
-    setSyncCursor: vi.fn(async (_s: string, o: { cursorMs: number; lastError: string | null }) => {
-      cursor = o.cursorMs;
+    getSyncCursor: vi.fn(async (source: string) => cursors[source] ?? null),
+    setSyncCursor: vi.fn(async (source: string, o: { cursorMs: number; lastError: string | null }) => {
+      cursors[source] = o.cursorMs;
     }),
     writeSpendEvents: vi.fn(async () => undefined),
+    resetSpendLogsCursorForMappingMigration: vi.fn(async (v: number) => {
+      cursors["spend_logs"] = null;
+      cursors["spend_logs_userid_mapping_v"] = v;
+    }),
   };
 }
 
@@ -144,6 +148,130 @@ describe("ingestSpendLogs", () => {
     const r2 = await ingestSpendLogs(env);
     expect(r2.error).toBeNull();
     expect(r2.ingested).toBe(1);
+  });
+});
+
+describe("toSpendEvent userId/teamId field resolution", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  function makeMinimalRecord(overrides: Record<string, unknown>): Record<string, unknown> {
+    return {
+      request_id: "req-test",
+      startTime: "2026-05-13T01:00:00",
+      model: "gpt",
+      prompt_tokens: 1,
+      completion_tokens: 2,
+      total_tokens: 3,
+      spend: 0.1,
+      ...overrides,
+    };
+  }
+
+  async function extractEvent(overrides: Record<string, unknown>) {
+    const usage = makeUsageStub();
+    const env = makeEnv(usage);
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: [makeMinimalRecord(overrides)], total_pages: 1 }), { status: 200 }),
+    );
+    await ingestSpendLogs(env);
+    const calls = usage.writeSpendEvents.mock.calls as unknown as Array<[Array<{ userId: string; teamId: string }>]>;
+    return calls[0]?.[0]?.[0];
+  }
+
+  it("(a) resolves userId and teamId from metadata.user_api_key_user_id / metadata.user_api_key_team_id (primary)", async () => {
+    const ev = await extractEvent({
+      metadata: { user_api_key_user_id: "xu@gz-zhiyun.com", user_api_key_team_id: "team-meta" },
+      user_id: "wrong-user",
+      team_id: "wrong-team",
+    });
+    expect(ev?.userId).toBe("xu@gz-zhiyun.com");
+    expect(ev?.teamId).toBe("team-meta");
+  });
+
+  it("(b) falls back to top-level user when metadata is absent", async () => {
+    const ev = await extractEvent({ user: "user-from-top-level" });
+    expect(ev?.userId).toBe("user-from-top-level");
+  });
+
+  it("(c) falls back to legacy top-level user_id when metadata and user are absent", async () => {
+    const ev = await extractEvent({ user_id: "legacy-user-id" });
+    expect(ev?.userId).toBe("legacy-user-id");
+  });
+
+  it("(d) resolves to empty string when no user fields are present", async () => {
+    const ev = await extractEvent({});
+    expect(ev?.userId).toBe("");
+    expect(ev?.teamId).toBe("");
+  });
+
+  it("metadata.user_api_key_team_id takes priority over top-level team_id", async () => {
+    const ev = await extractEvent({
+      metadata: { user_api_key_team_id: "meta-team" },
+      team_id: "top-level-team",
+    });
+    expect(ev?.teamId).toBe("meta-team");
+  });
+
+  it("dedup key uses the same resolved userId (stable across re-ingest)", async () => {
+    const usage = makeUsageStub();
+    const env = makeEnv(usage);
+    const record = makeMinimalRecord({
+      request_id: undefined,
+      metadata: { user_api_key_user_id: "stable-user" },
+    });
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: [record], total_pages: 1 }), { status: 200 }),
+    );
+    await ingestSpendLogs(env);
+    const calls = usage.writeSpendEvents.mock.calls as unknown as Array<[Array<{ requestId: string; userId: string }>]>;
+    const ev = calls[0]?.[0]?.[0];
+    expect(ev?.requestId).toContain("stable-user");
+    expect(ev?.userId).toBe("stable-user");
+  });
+});
+
+describe("ingestSpendLogs one-time mapping migration sentinel", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("calls resetSpendLogsCursorForMappingMigration when sentinel is absent", async () => {
+    const usage = makeUsageStub();
+    const env = makeEnv(usage);
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: [], total_pages: 1 }), { status: 200 }),
+    );
+    await ingestSpendLogs(env);
+    expect(usage.resetSpendLogsCursorForMappingMigration).toHaveBeenCalledOnce();
+    expect(usage.resetSpendLogsCursorForMappingMigration).toHaveBeenCalledWith(2);
+  });
+
+  it("does NOT call resetSpendLogsCursorForMappingMigration when sentinel already at version 2 (idempotent)", async () => {
+    const usage = makeUsageStub();
+    // Pre-seed the sentinel at version 2.
+    await usage.resetSpendLogsCursorForMappingMigration(2);
+    usage.resetSpendLogsCursorForMappingMigration.mockClear();
+
+    const env = makeEnv(usage);
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: [], total_pages: 1 }), { status: 200 }),
+    );
+    await ingestSpendLogs(env);
+    expect(usage.resetSpendLogsCursorForMappingMigration).not.toHaveBeenCalled();
+  });
+
+  it("does not touch daily_activity cursor during migration reset", async () => {
+    const usage = makeUsageStub();
+    // Simulate daily_activity cursor already set.
+    await usage.setSyncCursor("daily_activity", { cursorMs: 99999, lastError: null });
+    usage.setSyncCursor.mockClear();
+
+    const env = makeEnv(usage);
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: [], total_pages: 1 }), { status: 200 }),
+    );
+    await ingestSpendLogs(env);
+    // daily_activity cursor must not have been reset.
+    const dailyCursorAfter = await usage.getSyncCursor("daily_activity");
+    expect(dailyCursorAfter).toBe(99999);
   });
 });
 
