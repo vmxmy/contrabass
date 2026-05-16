@@ -38,7 +38,9 @@ describe("session cookie helpers", () => {
   it("verifySession returns null on tampered signature", async () => {
     const env = makeEnvWithSecret();
     const value = await issueSession(env, { email: "a@b.com", userId: "u" });
-    const tampered = value.slice(0, -1) + (value.slice(-1) === "A" ? "B" : "A");
+    // Tamper the second-to-last char (not the last — it encodes only 4 effective bits
+    // for a 32-byte HMAC, so certain substitutions produce identical decoded bytes).
+    const tampered = value.slice(0, -2) + (value.slice(-2, -1) === "A" ? "B" : "A") + value.slice(-1);
     expect(await verifySession(env, tampered)).toBeNull();
   });
 
