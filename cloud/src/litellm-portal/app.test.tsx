@@ -336,6 +336,108 @@ describe("ApiKeysCard", () => {
     expect(screen.queryByText("init-key")).not.toBeNull();
   });
 
+  it("shows no budget badge when maxBudget is null (F5 parity: budget-pill is a no-op)", () => {
+    // #given — key with no budget cap
+    const dashData = {
+      keys: {
+        totalCount: 1,
+        items: [
+          {
+            id: "key-no-budget",
+            alias: "no-budget-key",
+            displayKey: "sk-lit...nb",
+            models: [],
+            spend: 50,
+            maxBudget: null,
+            expiresAt: null,
+          },
+        ],
+      },
+    };
+    // #when
+    render(<ApiKeysCard />, { wrapper: createWrapper(dashData) });
+    // #then — BudgetBadge returns null when maxBudget is null; the ml-2 badge span must not exist
+    expect(document.querySelector("span.ml-2")).toBeNull();
+  });
+
+  it("shows 正常 badge when spend is below 80% of budget", () => {
+    // #given — spend 10, budget 100 → ratio 0.10
+    const dashData = {
+      keys: {
+        totalCount: 1,
+        items: [
+          {
+            id: "key-ok",
+            alias: "ok-key",
+            displayKey: "sk-lit...ok",
+            models: [],
+            spend: 10,
+            maxBudget: 100,
+            expiresAt: null,
+          },
+        ],
+      },
+    };
+    // #when
+    render(<ApiKeysCard />, { wrapper: createWrapper(dashData) });
+    // #then — the ml-2 badge span renders with success variant text
+    const badge = document.querySelector("span.ml-2");
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent).toBe("正常");
+  });
+
+  it("shows 即将超支 badge when spend is between 80% and 99% of budget", () => {
+    // #given — spend 85, budget 100 → ratio 0.85
+    const dashData = {
+      keys: {
+        totalCount: 1,
+        items: [
+          {
+            id: "key-warn",
+            alias: "warn-key",
+            displayKey: "sk-lit...wn",
+            models: [],
+            spend: 85,
+            maxBudget: 100,
+            expiresAt: null,
+          },
+        ],
+      },
+    };
+    // #when
+    render(<ApiKeysCard />, { wrapper: createWrapper(dashData) });
+    // #then — the ml-2 badge span renders with warning variant text
+    const badge = document.querySelector("span.ml-2");
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent).toBe("即将超支");
+  });
+
+  it("shows 超预算 badge when spend meets or exceeds budget", () => {
+    // #given — spend 100, budget 100 → ratio 1.0
+    const dashData = {
+      keys: {
+        totalCount: 1,
+        items: [
+          {
+            id: "key-over",
+            alias: "over-key",
+            displayKey: "sk-lit...ov",
+            models: [],
+            spend: 100,
+            maxBudget: 100,
+            expiresAt: null,
+          },
+        ],
+      },
+    };
+    // #when
+    render(<ApiKeysCard />, { wrapper: createWrapper(dashData) });
+    // #then — the ml-2 badge span renders with danger variant text
+    const badge = document.querySelector("span.ml-2");
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent).toBe("超预算");
+  });
+
   it("deletes an API key after confirmation", async () => {
     globalThis.fetch = vi.fn(async () => new Response(null, { status: 204 })) as typeof fetch;
 
