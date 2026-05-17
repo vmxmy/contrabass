@@ -534,6 +534,16 @@ export const SetTenantRoleResultSchema = z.object({
 export type SetTenantRoleResult = z.infer<typeof SetTenantRoleResultSchema>;
 
 // ---------------------------------------------------------------------------
+// /api/tenant/billing (and /api/admin/billing)
+// ---------------------------------------------------------------------------
+
+export const TenantBillingPeriodsSchema = z.object({
+  periods: z.array(z.string()),
+});
+
+export type TenantBillingPeriods = z.infer<typeof TenantBillingPeriodsSchema>;
+
+// ---------------------------------------------------------------------------
 // /api/_internal/role-changed
 // ---------------------------------------------------------------------------
 
