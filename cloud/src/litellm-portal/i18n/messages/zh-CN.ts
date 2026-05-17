@@ -232,6 +232,29 @@ const messages: Record<string, string> = {
   "无权访问": "无权访问",
   "该页面仅对团队管理员开放。": "该页面仅对团队管理员开放。",
 
+  // TenantAlertsScreen
+  "告警 Webhook": "告警 Webhook",
+  "配置预算告警通知的 Webhook 地址。": "配置预算告警通知的 Webhook 地址。",
+  "更新 Webhook": "更新 Webhook",
+  "设置或清除告警 Webhook URL。客户端不校验 URL，服务端负责安全验证。":
+    "设置或清除告警 Webhook URL。客户端不校验 URL，服务端负责安全验证。",
+  "Webhook URL": "Webhook URL",
+  "仅接受 HTTPS 地址，服务端校验 SSRF 安全。": "仅接受 HTTPS 地址，服务端校验 SSRF 安全。",
+  "变更原因": "变更原因",
+  "常规维护": "常规维护",
+  "安全事件": "安全事件",
+  "用户申请": "用户申请",
+  "预算调整": "预算调整",
+  "其他": "其他",
+  "清除": "清除",
+  "保存": "保存",
+  "操作失败": "操作失败",
+  "保存失败": "保存失败",
+  "清除失败": "清除失败",
+  "当前 Webhook URL": "当前 Webhook URL",
+  "未配置告警 Webhook": "未配置告警 Webhook",
+  "Webhook 配置加载失败": "Webhook 配置加载失败",
+
   // TenantMembersScreen
   "成员与邀请": "成员与邀请",
   "管理团队成员的邀请状态。": "管理团队成员的邀请状态。",

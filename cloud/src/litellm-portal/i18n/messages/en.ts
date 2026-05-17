@@ -233,6 +233,29 @@ const messages: Record<string, string> = {
   "无权访问": "No access",
   "该页面仅对团队管理员开放。": "This page is available to team admins only.",
 
+  // TenantAlertsScreen
+  "告警 Webhook": "Alert Webhook",
+  "配置预算告警通知的 Webhook 地址。": "Configure the Webhook URL for budget alert notifications.",
+  "更新 Webhook": "Update Webhook",
+  "设置或清除告警 Webhook URL。客户端不校验 URL，服务端负责安全验证。":
+    "Set or clear the alert Webhook URL. The client does not validate the URL — the server is the security boundary.",
+  "Webhook URL": "Webhook URL",
+  "仅接受 HTTPS 地址，服务端校验 SSRF 安全。": "HTTPS only. Server-side SSRF safety check applies.",
+  "变更原因": "Reason",
+  "常规维护": "Routine maintenance",
+  "安全事件": "Security incident",
+  "用户申请": "User request",
+  "预算调整": "Budget adjustment",
+  "其他": "Other",
+  "清除": "Clear",
+  "保存": "Save",
+  "操作失败": "Operation failed",
+  "保存失败": "Save failed",
+  "清除失败": "Clear failed",
+  "当前 Webhook URL": "Current Webhook URL",
+  "未配置告警 Webhook": "No alert Webhook configured",
+  "Webhook 配置加载失败": "Failed to load Webhook config",
+
   // TenantMembersScreen
   "成员与邀请": "Members & Invites",
   "管理团队成员的邀请状态。": "Manage team member invite statuses.",
