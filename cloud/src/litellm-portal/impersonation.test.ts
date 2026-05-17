@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   mintImpersonationToken,
+  reMintImpersonationToken,
   verifyImpersonationToken,
   type ImpersonationContext,
 } from "./impersonation";
@@ -53,5 +54,36 @@ describe("impersonation token", () => {
     });
     const afterAbsolute = now + 121 * 60 * 1000;
     expect(await verifyImpersonationToken(SECRET, token, afterAbsolute)).toBeNull();
+  });
+
+  it("a re-mint past the absolute cap still fails verification", async () => {
+    const now = 1_000_000;
+    const token = await mintImpersonationToken(SECRET, {
+      realActor: "owner@x.com",
+      effectiveTeamId: "team-1",
+      now,
+    });
+    const decode = (tok: string) =>
+      JSON.parse(
+        new TextDecoder().decode(
+          Uint8Array.from(
+            atob(tok.split(".")[0].replace(/-/g, "+").replace(/_/g, "/")),
+            (ch) => ch.charCodeAt(0),
+          ),
+        ),
+      ) as { issuedAt: number; absoluteDeadline: number };
+    const prior = decode(token);
+    const pastCap = now + 121 * 60 * 1000;
+    const reMinted = await reMintImpersonationToken(
+      SECRET,
+      {
+        realActor: "owner@x.com",
+        effectiveTeamId: "team-1",
+        issuedAt: prior.issuedAt,
+        absoluteDeadline: prior.absoluteDeadline,
+      },
+      pastCap,
+    );
+    expect(await verifyImpersonationToken(SECRET, reMinted, pastCap)).toBeNull();
   });
 });

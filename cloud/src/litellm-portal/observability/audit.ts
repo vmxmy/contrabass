@@ -1,4 +1,4 @@
-import type { AuditEvent } from "../durable/schemas";
+import type { AuditEvent, ImpersonationAuditEnvelope } from "../durable/schemas";
 import type { LiteLLMPortalEnv } from "../types";
 
 export type AuditPoint = {
@@ -13,6 +13,7 @@ export type AuditWritePoint = AuditPoint & {
   before: string;
   after: string;
   reason: string;
+  impersonation?: ImpersonationAuditEnvelope | null;
 };
 
 export function recordAudit(env: LiteLLMPortalEnv, point: AuditPoint): void {
@@ -42,6 +43,7 @@ export async function auditWrite(env: LiteLLMPortalEnv, point: AuditWritePoint):
         before: point.before,
         after: point.after,
         reason: point.reason || null,
+        impersonation: point.impersonation ?? null,
       };
       await idxStub.appendAudit(auditEvent);
     } catch (err) {
@@ -62,6 +64,7 @@ export async function auditWrite(env: LiteLLMPortalEnv, point: AuditWritePoint):
       point.before,
       point.after,
       point.reason,
+      point.impersonation ? JSON.stringify(point.impersonation) : "",
     ],
     doubles: [],
     indexes: [point.actor],

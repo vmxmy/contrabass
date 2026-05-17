@@ -84,6 +84,23 @@ export async function mintImpersonationToken(
   return `${body}.${sig}`;
 }
 
+export async function reMintImpersonationToken(
+  secret: string,
+  prior: { realActor: string; effectiveTeamId: string; issuedAt: number; absoluteDeadline: number },
+  now: number,
+): Promise<string> {
+  const payload: Payload = {
+    realActor: prior.realActor,
+    effectiveTeamId: prior.effectiveTeamId,
+    issuedAt: prior.issuedAt,
+    idleDeadline: now + IDLE_MS,
+    absoluteDeadline: prior.absoluteDeadline,
+  };
+  const body = b64urlEncode(new TextEncoder().encode(JSON.stringify(payload)));
+  const sig = b64urlEncode(await hmac(secret, body));
+  return `${body}.${sig}`;
+}
+
 export async function verifyImpersonationToken(
   secret: string,
   token: string,
@@ -107,6 +124,7 @@ export async function verifyImpersonationToken(
   } catch {
     return null;
   }
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return null;
   if (
     typeof payload.realActor !== "string" ||
     typeof payload.effectiveTeamId !== "string" ||

@@ -78,17 +78,31 @@ import {
   TeamAlertWebhookResultSchema,
   SetTenantRoleBodySchema,
   SetTenantRoleResultSchema,
+  WriteReasonSchema,
   OpsTenantsSchema,
   OpsTenantDetailSchema,
   OpsUserDetailSchema,
   AuditEventDetailSchema,
 } from "./schemas";
 import { ImpersonationAuditEnvelopeSchema } from "./durable/schemas";
+import type { ImpersonationAuditEnvelope } from "./durable/schemas";
+import {
+  mintImpersonationToken,
+  reMintImpersonationToken,
+  verifyImpersonationToken,
+  readImpersonationCookie,
+  buildImpersonationSetCookie,
+  buildImpersonationClearCookie,
+  type ImpersonationContext,
+} from "./impersonation";
 import { auditWrite } from "./observability/audit";
 import { enqueueSync } from "./sync/queue-producer";
 import type { LiteLLMKey, LiteLLMTeam, JsonValue } from "./types";
 
-type HonoEnv = { Bindings: LiteLLMPortalEnv; Variables: { identity: PortalIdentity } };
+type HonoEnv = {
+  Bindings: LiteLLMPortalEnv;
+  Variables: { identity: PortalIdentity; impersonation?: ImpersonationContext };
+};
 
 // ---------------------------------------------------------------------------
 // DO stub types (inline — avoids dragging DO modules into vitest transform)
@@ -627,7 +641,37 @@ async function applyAuthMiddleware(c: Context<HonoEnv>, next: () => Promise<void
     return c.json({ error: identityResult.error }, identityResult.status);
   }
   c.set("identity", identityResult.identity);
+
+  // Derive impersonation context from the signed cb_imp token (transport).
+  // H4: each verified request slides the 30-minute idle window within the
+  // hard 2-hour absolute cap by re-minting on activity.
+  const impSecret = impersonationSecret(c.env);
+  const impToken = impSecret ? readImpersonationCookie(c.req.raw) : null;
+  if (impSecret && impToken) {
+    const now = Date.now();
+    const verified = await verifyImpersonationToken(impSecret, impToken, now);
+    if (verified) {
+      c.set("impersonation", verified);
+      const reMinted = await reMintImpersonationToken(
+        impSecret,
+        {
+          realActor: verified.realActor,
+          effectiveTeamId: verified.effectiveTeamId,
+          issuedAt: verified.issuedAt,
+          absoluteDeadline: verified.absoluteDeadline,
+        },
+        now,
+      );
+      const remaining = Math.max(0, Math.floor((verified.absoluteDeadline - now) / 1000));
+      c.header("set-cookie", buildImpersonationSetCookie(reMinted, remaining), { append: true });
+    }
+  }
+
   await next();
+}
+
+function impersonationSecret(env: LiteLLMPortalEnv): string | null {
+  return env.PORTAL_SESSION_SECRET ?? null;
 }
 
 async function requireAdmin(c: Context<HonoEnv>, next: () => Promise<void>): Promise<Response | void> {
@@ -669,6 +713,34 @@ async function requireTenantAdmin(c: Context<HonoEnv>, next: () => Promise<void>
     return;
   }
   return c.json({ error: "tenant_admin_required" }, 403);
+}
+
+// C3: an Owner (platform admin) reaching a tenant write path is acting as a
+// tenant — that direct path bypasses the impersonation audit envelope. Require
+// an active impersonation session so every Owner-as-tenant write is attributed
+// real=Owner / effective=tenant. A genuine tenant_admin (role !== "admin") is
+// unaffected; GET reads do not pass through these write apps' gate.
+async function requireImpersonationForOwnerWrite(
+  c: Context<HonoEnv>,
+  next: () => Promise<void>,
+): Promise<Response | void> {
+  if (
+    c.req.method !== "GET" &&
+    c.get("identity").role === "admin" &&
+    c.get("impersonation") == null
+  ) {
+    return c.json({ error: "impersonation_required" }, 403);
+  }
+  await next();
+}
+
+// Typed audit envelope for a write performed while impersonating. Field name
+// `effectiveTeam` (envelope) is intentionally distinct from the context's
+// `effectiveTeamId` — keep exact.
+function impersonationEnvelope(c: Context<HonoEnv>): ImpersonationAuditEnvelope | null {
+  const imp = c.get("impersonation");
+  if (imp == null) return null;
+  return { realActor: imp.realActor, effectiveTeam: imp.effectiveTeamId, viaImpersonation: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -1567,6 +1639,7 @@ async function createInviteCore(
     ts: new Date().toISOString(),
     before: prior ? JSON.stringify(inviteToPublic(prior)) : "null",
     after: JSON.stringify(inviteToPublic(record)),
+    impersonation: impersonationEnvelope(c),
     reason,
   });
 
@@ -1631,6 +1704,7 @@ async function revokeInviteCore(
     ts: new Date().toISOString(),
     before: "pending",
     after: result.status,
+    impersonation: impersonationEnvelope(c),
     reason,
   });
 
@@ -1712,6 +1786,7 @@ async function alertWebhookSetCore(
     ts: updatedAt,
     before: prior ? JSON.stringify({ url: prior.url }) : "null",
     after: JSON.stringify({ url }),
+    impersonation: impersonationEnvelope(c),
     reason,
   });
 
@@ -1745,6 +1820,7 @@ async function alertWebhookClearCore(
     ts: new Date().toISOString(),
     before: prior ? JSON.stringify({ url: prior.url }) : "null",
     after: "null",
+    impersonation: impersonationEnvelope(c),
     reason: parsed.data.reason,
   });
 
@@ -1898,6 +1974,7 @@ async function billingDownloadCore(
     ts: new Date().toISOString(),
     before: "",
     after: "",
+    impersonation: impersonationEnvelope(c),
     reason: "",
   });
 
@@ -1941,6 +2018,7 @@ const tenantInvitesApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
   .use("/tenant/*", applyAdminRateLimit)
   .use("/tenant/*", requireTenantAdmin)
+  .use("/tenant/*", requireImpersonationForOwnerWrite)
   .get("/tenant/invites", (c) => {
     const scoped = tenantTeamOr403(c);
     if (!scoped.ok) return scoped.response;
@@ -1966,6 +2044,7 @@ const tenantAlertWebhookApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
   .use("/tenant/*", applyAdminRateLimit)
   .use("/tenant/*", requireTenantAdmin)
+  .use("/tenant/*", requireImpersonationForOwnerWrite)
   .get("/tenant/alert-webhook", (c) => {
     const scoped = tenantTeamOr403(c);
     if (!scoped.ok) return scoped.response;
@@ -1986,6 +2065,7 @@ const tenantBillingApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
   .use("/tenant/*", applyAdminRateLimit)
   .use("/tenant/*", requireTenantAdmin)
+  .use("/tenant/*", requireImpersonationForOwnerWrite)
   .get("/tenant/billing", (c) => billingListCore(c))
   .get("/tenant/billing/:yearMonth", (c) => {
     const scoped = tenantTeamOr403(c);
@@ -2217,6 +2297,109 @@ const opsAuditDetailApp = new Hono<HonoEnv>()
   });
 
 // ---------------------------------------------------------------------------
+// Operations Console impersonation — POST/DELETE /api/ops/impersonation
+// POST starts a session (mints cb_imp + ledger row + audit). DELETE force-exits
+// (clears cb_imp + closes ledger + audit). Owner-only.
+// ---------------------------------------------------------------------------
+
+const StartImpersonationBodySchema = z
+  .object({ teamId: z.string().min(1), reason: WriteReasonSchema })
+  .strict();
+
+type IndexDOImpersonationStub = {
+  putImpersonationSession(record: {
+    realActor: string;
+    effectiveTeamId: string;
+    startedAt: string;
+    endedAt: string | null;
+  }): Promise<void>;
+  getActiveImpersonationSession(realActor: string): Promise<{
+    realActor: string;
+    effectiveTeamId: string;
+    startedAt: string;
+    endedAt: string | null;
+  } | null>;
+  endImpersonationSession(realActor: string): Promise<void>;
+};
+
+const opsImpersonationApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/ops/*", applyAdminRateLimit)
+  .use("/ops/*", requireOwner)
+  .post("/ops/impersonation", async (c) => {
+    const secret = impersonationSecret(c.env);
+    if (!secret) return c.json({ error: "impersonation_secret_unavailable" }, 503);
+    if (!c.env.INDEX_DO) return c.json({ error: "index_do_unavailable" }, 503);
+
+    const parsed = await parseWriteBody(c, StartImpersonationBodySchema);
+    if (!parsed.ok) return parsed.response;
+    const { teamId, reason } = parsed.data;
+
+    const idx = c.env.INDEX_DO.get(
+      c.env.INDEX_DO.idFromName("index"),
+    ) as unknown as IndexDOImpersonationStub;
+    const realActor = c.get("identity").email;
+    const startedAt = new Date().toISOString();
+    await idx.putImpersonationSession({
+      realActor,
+      effectiveTeamId: teamId,
+      startedAt,
+      endedAt: null,
+    });
+
+    const now = Date.now();
+    const token = await mintImpersonationToken(secret, {
+      realActor,
+      effectiveTeamId: teamId,
+      now,
+    });
+
+    await auditWrite(c.env, {
+      actor: realActor,
+      action: "ops_impersonation_start",
+      target: teamId,
+      ip: c.req.header("cf-connecting-ip") ?? "unknown",
+      ts: startedAt,
+      before: "null",
+      after: JSON.stringify({ effectiveTeamId: teamId }),
+      impersonation: { realActor, effectiveTeam: teamId, viaImpersonation: true },
+      reason,
+    });
+
+    c.header("set-cookie", buildImpersonationSetCookie(token, 2 * 60 * 60), { append: true });
+    return c.json({ realActor, effectiveTeamId: teamId, startedAt });
+  })
+  .delete("/ops/impersonation", async (c) => {
+    const realActor = c.get("identity").email;
+    if (c.env.INDEX_DO) {
+      const idx = c.env.INDEX_DO.get(
+        c.env.INDEX_DO.idFromName("index"),
+      ) as unknown as IndexDOImpersonationStub;
+      const active = await idx.getActiveImpersonationSession(realActor);
+      await idx.endImpersonationSession(realActor);
+      if (active != null) {
+        await auditWrite(c.env, {
+          actor: realActor,
+          action: "ops_impersonation_stop",
+          target: active.effectiveTeamId,
+          ip: c.req.header("cf-connecting-ip") ?? "unknown",
+          ts: new Date().toISOString(),
+          before: JSON.stringify({ effectiveTeamId: active.effectiveTeamId }),
+          after: "null",
+          impersonation: {
+            realActor,
+            effectiveTeam: active.effectiveTeamId,
+            viaImpersonation: true,
+          },
+          reason: "",
+        });
+      }
+    }
+    c.header("set-cookie", buildImpersonationClearCookie(), { append: true });
+    return c.json({ stopped: true });
+  });
+
+// ---------------------------------------------------------------------------
 // Top-level app mounts /api/* with global error handler
 // ---------------------------------------------------------------------------
 
@@ -2262,6 +2445,7 @@ const app = new Hono<{ Bindings: LiteLLMPortalEnv }>()
   .route("/api", opsTenantDetailApp)
   .route("/api", opsUserDetailApp)
   .route("/api", opsAuditDetailApp)
+  .route("/api", opsImpersonationApp)
   .all("/*", (c) => c.json({ error: "not_found" }, 404));
 
 export { app };
