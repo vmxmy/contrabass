@@ -548,4 +548,84 @@ describe("IndexDO", () => {
     expect((await obj.getInvite("invitee@x.com"))?.teamId).toBe("t1");
   });
 
+  // -------------------------------------------------------------------------
+  // Tenant roles (portal-level, decoupled from LiteLLM user_role)
+  // -------------------------------------------------------------------------
+
+  function tr(over: Partial<{ userId: string; teamId: string; tenantRole: "tenant_admin" | "member" }> = {}) {
+    return {
+      userId: "u1", teamId: "t1", tenantRole: "member" as const,
+      updatedBy: "owner@x.com", updatedAt: new Date().toISOString(), ...over,
+    };
+  }
+
+  for (const [label, make] of [["KV", makeIndexDO], ["SQL", makeSqlIndexDO]] as const) {
+    it(`putTenantRole + getTenantRole roundtrip (${label})`, async () => {
+      const { obj } = make();
+      expect(await obj.getTenantRole("u1", "t1")).toBeNull();
+      const rec = tr({ tenantRole: "tenant_admin" });
+      await obj.putTenantRole(rec);
+      expect(await obj.getTenantRole("u1", "t1")).toEqual(rec);
+    });
+
+    it(`putTenantRole upserts on (userId,teamId) (${label})`, async () => {
+      const { obj } = make();
+      await obj.putTenantRole(tr({ tenantRole: "member" }));
+      await obj.putTenantRole(tr({ tenantRole: "tenant_admin" }));
+      expect((await obj.getTenantRole("u1", "t1"))?.tenantRole).toBe("tenant_admin");
+      expect((await obj.listTenantRoles({ teamId: "t1" })).length).toBe(1);
+    });
+
+    it(`listTenantRoles filters by teamId (${label})`, async () => {
+      const { obj } = make();
+      await obj.putTenantRole(tr({ userId: "u1", teamId: "t1" }));
+      await obj.putTenantRole(tr({ userId: "u2", teamId: "t1" }));
+      await obj.putTenantRole(tr({ userId: "u3", teamId: "t2" }));
+      expect((await obj.listTenantRoles({ teamId: "t1" })).map((r) => r.userId).sort())
+        .toEqual(["u1", "u2"]);
+      expect((await obj.listTenantRoles()).length).toBe(3);
+    });
+
+    it(`getTenantRole returns null for unknown pair (${label})`, async () => {
+      const { obj } = make();
+      await obj.putTenantRole(tr());
+      expect(await obj.getTenantRole("u1", "tX")).toBeNull();
+      expect(await obj.getTenantRole("uX", "t1")).toBeNull();
+    });
+  }
+
+  it("SQL path stores tenant roles without creating legacy KV keys", async () => {
+    const { obj, data } = makeSqlIndexDO();
+    await obj.putTenantRole(tr());
+    expect(data.size).toBe(0);
+    expect((await obj.getTenantRole("u1", "t1"))?.tenantRole).toBe("member");
+  });
+
+  it("listTenantRoles returns empty array on a fresh DO (KV)", async () => {
+    const { obj } = makeIndexDO();
+    expect(await obj.listTenantRoles()).toEqual([]);
+  });
+
+  it("listTenantRoles returns empty array on a fresh DO (SQL)", async () => {
+    const { obj } = makeSqlIndexDO();
+    expect(await obj.listTenantRoles()).toEqual([]);
+  });
+
+  it("SQL init backfills legacy trole: KV entries", async () => {
+    // #given a legacy trole: KV entry present before SQL init runs
+    const { obj, data } = makeSqlIndexDO();
+    data.set("trole:u1:t1", {
+      userId: "u1",
+      teamId: "t1",
+      tenantRole: "tenant_admin",
+      updatedBy: "owner@x.com",
+      updatedAt: new Date().toISOString(),
+    });
+    // #when reading via the SQL-backed path (triggers initializeSql + backfill)
+    const got = await obj.getTenantRole("u1", "t1");
+    // #then the legacy entry is resolvable from SQL
+    expect(got?.tenantRole).toBe("tenant_admin");
+    expect((await obj.listTenantRoles({ teamId: "t1" })).map((r) => r.userId)).toEqual(["u1"]);
+  });
+
 });

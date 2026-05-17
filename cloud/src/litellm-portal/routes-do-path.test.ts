@@ -102,6 +102,7 @@ function makeIndexDOStub() {
       return next;
     }),
     appendAudit: vi.fn().mockResolvedValue(undefined),
+    putTenantRole: vi.fn().mockResolvedValue(undefined),
     // test-only: pre-seed an invite at a chosen status
     __seedInvite: (r: StubInvite) => invites.set(r.emailLc.toLowerCase(), { ...r }),
     getStorageMigrationState: vi.fn().mockResolvedValue({
@@ -190,6 +191,84 @@ async function adminRequest(
   const cookie = await adminCookie(env);
   const headers = new Headers(init.headers);
   headers.set("Cookie", cookie);
+  if (init.body !== undefined && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
+  return new Request(url, { ...init, headers });
+}
+
+// ---------------------------------------------------------------------------
+// Tenant-scope helpers (exercise Task 4 requireTenantAdmin + /api/tenant/*)
+// ---------------------------------------------------------------------------
+
+const TENANT_ADMIN_EMAIL = "ta@gz-zhiyun.com";
+const TENANT_MEMBER_EMAIL = "member@gz-zhiyun.com";
+const TENANT_TEAM_ID = "t1";
+
+// Identity resolution chain (role-cache.ts):
+//   1. IndexDO.getUserByEmail(email) -> platform role (must be non-"admin")
+//   2. resolveLiteLLMUser(email) -> teamIds  (mocked global fetch /user/list)
+//   3. IndexDO.getTenantRole(userId, teamId) -> { tenantRole }
+function stubTenantFetch(): void {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("/user/list")) {
+      const u = new URL(url);
+      const email = (u.searchParams.get("user_email") ?? "").toLowerCase();
+      return new Response(
+        JSON.stringify([
+          { user_id: email, user_email: email, teams: [TENANT_TEAM_ID] },
+        ]),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  });
+}
+
+function makeTenantIndexDOStub(tenantRoleByEmail: Record<string, "tenant_admin" | "member">) {
+  const base = makeIndexDOStub();
+  return {
+    ...base,
+    // Non-admin platform role so requireTenantAdmin uses the tenant facet.
+    getUserByEmail: vi.fn(async (email: string) => {
+      const lc = email.toLowerCase();
+      if (lc in tenantRoleByEmail) {
+        return { userId: lc, email: lc, role: "user" as const, teamId: TENANT_TEAM_ID, createdAt: new Date().toISOString() };
+      }
+      return USERS_DATA.find((u) => u.email === email) ?? null;
+    }),
+    getTenantRole: vi.fn(async (userId: string, teamId: string) => {
+      const lc = userId.toLowerCase();
+      if (teamId === TENANT_TEAM_ID && lc in tenantRoleByEmail) {
+        return { tenantRole: tenantRoleByEmail[lc] };
+      }
+      return null;
+    }),
+  };
+}
+
+function makeTenantAdminEnv(
+  indexStub: ReturnType<typeof makeTenantIndexDOStub>,
+  teamStub: ReturnType<typeof makeTeamConfigDOStub>,
+  overrides: Partial<LiteLLMPortalEnv> = {},
+): LiteLLMPortalEnv {
+  return makeFlagOnEnv(
+    indexStub as unknown as ReturnType<typeof makeIndexDOStub>,
+    teamStub,
+    overrides,
+  );
+}
+
+async function tenantRequest(
+  email: string,
+  url: string,
+  env: LiteLLMPortalEnv,
+  init: RequestInit = {},
+): Promise<Request> {
+  const value = await issueSession(env, { email, userId: email });
+  const headers = new Headers(init.headers);
+  headers.set("Cookie", `${SESSION_COOKIE_NAME}=${value}`);
   if (init.body !== undefined && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
@@ -982,7 +1061,7 @@ describe("DO-path admin routes", () => {
       expect(del.status).toBe(200);
       expect((await del.json() as Record<string, unknown>).url).toBeNull();
       expect(teamStub.clearAlertWebhook).toHaveBeenCalled();
-    });
+    }, 15000);
 
     it("PUT returns 404 when write-ops disabled", async () => {
       const env = makeFlagOnEnv(makeIndexDOStub(), makeTeamConfigDOStub(), {
@@ -1048,6 +1127,27 @@ describe("DO-path admin routes", () => {
       expect(await res.text()).toBe("team_id,team_alias\nt1,alpha");
       expect(r2.get).toHaveBeenCalledWith("billing/2026/04.csv");
       expect(indexStub.appendAudit).toHaveBeenCalled();
+    });
+
+    it("GET /api/admin/billing/:yearMonth returns the FULL multi-team CSV unfiltered", async () => {
+      const fullCsv =
+        "team_id,team_alias,spend,requests\n" +
+        "t1,alpha,12.50,100\n" +
+        "t2,beta,99.99,5000\n" +
+        "t3,gamma,7.00,42";
+      const r2 = makeR2({ get: vi.fn().mockResolvedValue({ body: fullCsv }) });
+      const env = makeFlagOnEnv(makeIndexDOStub(), makeTeamConfigDOStub(), {
+        BILLING_ARCHIVE_R2: r2 as unknown as R2Bucket,
+      });
+
+      const res = await app.fetch(
+        await adminRequest("https://x/api/admin/billing/2026-04", env),
+        env,
+      );
+
+      expect(res.status).toBe(200);
+      // Admin sees every tenant's row, byte-identical to the archive.
+      expect(await res.text()).toBe(fullCsv);
     });
 
     it("GET /api/admin/billing/:yearMonth returns 404 when the object is absent", async () => {
@@ -1149,6 +1249,311 @@ describe("DO-path admin routes", () => {
 
       expect(res.status).toBe(403);
       expect((await res.json() as Record<string, unknown>).error).toBe("admin_required");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 5 — tenant-scoped /api/tenant/* (invites, alert-webhook, billing)
+// Also validates Task 4 requireTenantAdmin gating.
+// ---------------------------------------------------------------------------
+
+describe("DO-path tenant routes (/api/tenant/*)", () => {
+  describe("GET /api/tenant/invites", () => {
+    it("returns 200 for a tenant_admin of its own team", async () => {
+      stubTenantFetch();
+      const indexStub = makeTenantIndexDOStub({ [TENANT_ADMIN_EMAIL]: "tenant_admin" });
+      indexStub.__seedInvite({ emailLc: "p@gz-zhiyun.com", teamId: TENANT_TEAM_ID, teamRole: "user", status: "pending", invitedBy: TENANT_ADMIN_EMAIL, createdAt: new Date().toISOString(), consumedAt: null });
+      indexStub.__seedInvite({ emailLc: "other@gz-zhiyun.com", teamId: "t2", teamRole: "user", status: "pending", invitedBy: ADMIN_EMAIL, createdAt: new Date().toISOString(), consumedAt: null });
+      const env = makeTenantAdminEnv(indexStub, makeTeamConfigDOStub());
+
+      const res = await app.fetch(
+        await tenantRequest(TENANT_ADMIN_EMAIL, "https://x/api/tenant/invites", env),
+        env,
+      );
+
+      expect(res.status).toBe(200);
+      const data = await res.json() as { invites: Array<{ email: string; teamId: string }> };
+      // Filtered to own team only.
+      expect(data.invites.every((i) => i.teamId === TENANT_TEAM_ID)).toBe(true);
+      expect(data.invites.map((i) => i.email)).toEqual(["p@gz-zhiyun.com"]);
+    });
+
+    it("returns 403 for a member (not tenant_admin)", async () => {
+      stubTenantFetch();
+      const indexStub = makeTenantIndexDOStub({ [TENANT_MEMBER_EMAIL]: "member" });
+      const env = makeTenantAdminEnv(indexStub, makeTeamConfigDOStub());
+
+      const res = await app.fetch(
+        await tenantRequest(TENANT_MEMBER_EMAIL, "https://x/api/tenant/invites", env),
+        env,
+      );
+
+      expect(res.status).toBe(403);
+      expect((await res.json() as Record<string, unknown>).error).toBe("tenant_admin_required");
+    });
+
+    it("returns 403 no_tenant_scope for a platform admin with no tenantTeamId", async () => {
+      // #given a platform admin (role==="admin"): requireTenantAdmin passes the
+      // superset through, but the admin's IndexDO user record has no teamId, so
+      // the portal-authoritative tenantTeamId derivation resolves to null.
+      const indexStub = makeIndexDOStub();
+      indexStub.getUserByEmail = vi.fn().mockResolvedValue({
+        userId: ADMIN_EMAIL,
+        email: ADMIN_EMAIL,
+        role: "admin" as const,
+        teamId: null,
+        createdAt: new Date().toISOString(),
+      });
+      const env = makeFlagOnEnv(indexStub, makeTeamConfigDOStub());
+
+      // #when hitting a tenant route
+      const res = await app.fetch(
+        await adminRequest("https://x/api/tenant/invites", env),
+        env,
+      );
+
+      // #then tenantTeamOr403 rejects with no_tenant_scope
+      expect(res.status).toBe(403);
+      expect((await res.json() as Record<string, unknown>).error).toBe("no_tenant_scope");
+    });
+  });
+
+  describe("POST /api/tenant/invites", () => {
+    it("pins teamId to the caller's own team and ignores a body teamId", async () => {
+      stubTenantFetch();
+      const indexStub = makeTenantIndexDOStub({ [TENANT_ADMIN_EMAIL]: "tenant_admin" });
+      const env = makeTenantAdminEnv(indexStub, makeTeamConfigDOStub());
+
+      const res = await app.fetch(
+        await tenantRequest(TENANT_ADMIN_EMAIL, "https://x/api/tenant/invites", env, {
+          method: "POST",
+          body: JSON.stringify({ reason: "other", email: "new@gz-zhiyun.com", teamId: "t2" }),
+        }),
+        env,
+      );
+
+      expect(res.status).toBe(200);
+      expect(indexStub.putInvite).toHaveBeenCalledTimes(1);
+      const stored = indexStub.putInvite.mock.calls[0][0] as { teamId: string; emailLc: string };
+      expect(stored.teamId).toBe(TENANT_TEAM_ID);
+      expect(stored.emailLc).toBe("new@gz-zhiyun.com");
+    });
+
+    it("returns 403 for a member", async () => {
+      stubTenantFetch();
+      const indexStub = makeTenantIndexDOStub({ [TENANT_MEMBER_EMAIL]: "member" });
+      const env = makeTenantAdminEnv(indexStub, makeTeamConfigDOStub());
+
+      const res = await app.fetch(
+        await tenantRequest(TENANT_MEMBER_EMAIL, "https://x/api/tenant/invites", env, {
+          method: "POST",
+          body: JSON.stringify({ reason: "other", email: "x@gz-zhiyun.com" }),
+        }),
+        env,
+      );
+
+      expect(res.status).toBe(403);
+      expect(indexStub.putInvite).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("PUT /api/tenant/alert-webhook", () => {
+    const VALID = "https://hooks.example.com/budget";
+
+    it("sets the webhook for the caller's own team (200)", async () => {
+      stubTenantFetch();
+      const indexStub = makeTenantIndexDOStub({ [TENANT_ADMIN_EMAIL]: "tenant_admin" });
+      const teamStub = makeTeamConfigDOStub();
+      const env = makeTenantAdminEnv(indexStub, teamStub);
+
+      const res = await app.fetch(
+        await tenantRequest(TENANT_ADMIN_EMAIL, "https://x/api/tenant/alert-webhook", env, {
+          method: "PUT",
+          body: JSON.stringify({ reason: "routine_maintenance", url: VALID }),
+        }),
+        env,
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { teamId: string; url: string };
+      expect(body.teamId).toBe(TENANT_TEAM_ID);
+      expect(body.url).toBe(VALID);
+      expect(teamStub.setAlertWebhook).toHaveBeenCalled();
+    });
+
+    it("rejects an SSRF metadata target with 422", async () => {
+      stubTenantFetch();
+      const indexStub = makeTenantIndexDOStub({ [TENANT_ADMIN_EMAIL]: "tenant_admin" });
+      const env = makeTenantAdminEnv(indexStub, makeTeamConfigDOStub());
+
+      const res = await app.fetch(
+        await tenantRequest(TENANT_ADMIN_EMAIL, "https://x/api/tenant/alert-webhook", env, {
+          method: "PUT",
+          body: JSON.stringify({ reason: "other", url: "http://169.254.169.254/x" }),
+        }),
+        env,
+      );
+
+      expect(res.status).toBe(422);
+    });
+
+    it("returns 403 for a member", async () => {
+      stubTenantFetch();
+      const indexStub = makeTenantIndexDOStub({ [TENANT_MEMBER_EMAIL]: "member" });
+      const teamStub = makeTeamConfigDOStub();
+      const env = makeTenantAdminEnv(indexStub, teamStub);
+
+      const res = await app.fetch(
+        await tenantRequest(TENANT_MEMBER_EMAIL, "https://x/api/tenant/alert-webhook", env, {
+          method: "PUT",
+          body: JSON.stringify({ reason: "other", url: VALID }),
+        }),
+        env,
+      );
+
+      expect(res.status).toBe(403);
+      expect(teamStub.setAlertWebhook).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("GET /api/tenant/billing/:yearMonth", () => {
+    function makeR2(get: ReturnType<typeof vi.fn>) {
+      return {
+        head: vi.fn().mockResolvedValue(null),
+        put: vi.fn().mockResolvedValue(undefined),
+        get,
+        list: vi.fn().mockResolvedValue({ objects: [] }),
+      };
+    }
+
+    const MULTI_TEAM_CSV =
+      "team_id,team_alias,spend,requests\n" +
+      "t1,alpha,12.50,100\n" +
+      "t2,beta,99.99,5000\n" +
+      "t3,gamma,7.00,42";
+
+    it("returns ONLY the caller's own team rows (no cross-tenant leak)", async () => {
+      stubTenantFetch();
+      const indexStub = makeTenantIndexDOStub({ [TENANT_ADMIN_EMAIL]: "tenant_admin" });
+      const env = makeTenantAdminEnv(indexStub, makeTeamConfigDOStub(), {
+        BILLING_ARCHIVE_R2: makeR2(
+          vi.fn().mockResolvedValue({ body: MULTI_TEAM_CSV }),
+        ) as unknown as R2Bucket,
+      });
+
+      const res = await app.fetch(
+        await tenantRequest(TENANT_ADMIN_EMAIL, "https://x/api/tenant/billing/2026-04", env),
+        env,
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("text/csv");
+      const body = await res.text();
+      // Header preserved + only the caller's (t1) row.
+      expect(body).toBe("team_id,team_alias,spend,requests\nt1,alpha,12.50,100");
+      // No other tenant's data is present.
+      expect(body).not.toContain("t2,beta");
+      expect(body).not.toContain("t3,gamma");
+      expect(body).not.toContain("99.99");
+      expect(body).not.toContain("5000");
+    });
+
+    it("returns header-only CSV 200 when the team has no rows (valid empty bill)", async () => {
+      stubTenantFetch();
+      const indexStub = makeTenantIndexDOStub({ [TENANT_ADMIN_EMAIL]: "tenant_admin" });
+      const noT1Csv = "team_id,team_alias,spend,requests\nt2,beta,99.99,5000\nt3,gamma,7.00,42";
+      const env = makeTenantAdminEnv(indexStub, makeTeamConfigDOStub(), {
+        BILLING_ARCHIVE_R2: makeR2(
+          vi.fn().mockResolvedValue({ body: noT1Csv }),
+        ) as unknown as R2Bucket,
+      });
+
+      const res = await app.fetch(
+        await tenantRequest(TENANT_ADMIN_EMAIL, "https://x/api/tenant/billing/2026-04", env),
+        env,
+      );
+
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("team_id,team_alias,spend,requests");
+    });
+
+    it("returns 404 when the object is absent (still authorized)", async () => {
+      stubTenantFetch();
+      const indexStub = makeTenantIndexDOStub({ [TENANT_ADMIN_EMAIL]: "tenant_admin" });
+      const env = makeTenantAdminEnv(indexStub, makeTeamConfigDOStub(), {
+        BILLING_ARCHIVE_R2: makeR2(vi.fn().mockResolvedValue(null)) as unknown as R2Bucket,
+      });
+
+      const res = await app.fetch(
+        await tenantRequest(TENANT_ADMIN_EMAIL, "https://x/api/tenant/billing/2026-04", env),
+        env,
+      );
+
+      expect(res.status).toBe(404);
+      expect((await res.json() as Record<string, unknown>).error).toBe("billing_archive_not_found");
+    });
+
+    it("returns 403 for a member", async () => {
+      stubTenantFetch();
+      const indexStub = makeTenantIndexDOStub({ [TENANT_MEMBER_EMAIL]: "member" });
+      const env = makeTenantAdminEnv(indexStub, makeTeamConfigDOStub(), {
+        BILLING_ARCHIVE_R2: makeR2(vi.fn().mockResolvedValue(null)) as unknown as R2Bucket,
+      });
+
+      const res = await app.fetch(
+        await tenantRequest(TENANT_MEMBER_EMAIL, "https://x/api/tenant/billing/2026-04", env),
+        env,
+      );
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe("PUT /api/admin/teams/:teamId/members/:userId/tenant-role", () => {
+    it("admin sets a member's tenantRole → 200 + IndexDO.putTenantRole called + audit", async () => {
+      const indexStub = makeIndexDOStub();
+      const env = makeFlagOnEnv(indexStub, makeTeamConfigDOStub());
+      const res = await app.fetch(
+        await adminRequest(
+          "https://x/api/admin/teams/t1/members/u1/tenant-role",
+          env,
+          { method: "PUT", body: JSON.stringify({ reason: "user_request", tenantRole: "tenant_admin" }) },
+        ),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(indexStub.putTenantRole).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: "u1", teamId: "t1", tenantRole: "tenant_admin" }),
+      );
+      expect(indexStub.appendAudit).toHaveBeenCalled();
+    });
+
+    it("422 on bad tenantRole; 404 write-ops disabled", async () => {
+      const env = makeFlagOnEnv(makeIndexDOStub(), makeTeamConfigDOStub());
+      expect(
+        (await app.fetch(
+          await adminRequest(
+            "https://x/api/admin/teams/t1/members/u1/tenant-role",
+            env,
+            { method: "PUT", body: JSON.stringify({ reason: "other", tenantRole: "boss" }) },
+          ),
+          env,
+        )).status,
+      ).toBe(422);
+      const off = makeFlagOnEnv(makeIndexDOStub(), makeTeamConfigDOStub(), {
+        LITELLM_PORTAL_WRITE_OPS_ENABLED: "false",
+      });
+      expect(
+        (await app.fetch(
+          await adminRequest(
+            "https://x/api/admin/teams/t1/members/u1/tenant-role",
+            off,
+            { method: "PUT", body: JSON.stringify({ reason: "other", tenantRole: "member" }) },
+          ),
+          off,
+        )).status,
+      ).toBe(404);
     });
   });
 });

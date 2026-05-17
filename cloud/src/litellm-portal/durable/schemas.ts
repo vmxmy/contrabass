@@ -41,6 +41,16 @@ export const InviteRecordSchema = z.object({
 
 export type InviteRecord = z.infer<typeof InviteRecordSchema>;
 
+export const TenantRoleRecordSchema = z.object({
+  userId: z.string(),
+  teamId: z.string(),
+  tenantRole: z.enum(["tenant_admin", "member"]),
+  updatedBy: z.string(),
+  updatedAt: z.string().datetime(),
+}).strict();
+
+export type TenantRoleRecord = z.infer<typeof TenantRoleRecordSchema>;
+
 export const KeyRecordSchema = z.object({
   id: z.string(),
   alias: z.string(),

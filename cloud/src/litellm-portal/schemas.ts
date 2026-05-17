@@ -443,6 +443,17 @@ export const AdminCreateInviteBodySchema = z.object({
 
 export type AdminCreateInviteBody = z.infer<typeof AdminCreateInviteBodySchema>;
 
+// POST /api/tenant/invites — teamId is pinned to the caller's tenant team and
+// MUST NOT be supplied by the client; an optional teamId in the body is ignored.
+export const TenantCreateInviteBodySchema = z.object({
+  reason: WriteReasonSchema,
+  email: z.string().email(),
+  teamId: z.string().optional(),
+  teamRole: z.enum(["admin", "user"]).default("user"),
+});
+
+export type TenantCreateInviteBody = z.infer<typeof TenantCreateInviteBodySchema>;
+
 export const AdminInviteSchema = z.object({
   email: z.string(),
   teamId: z.string(),
@@ -502,6 +513,23 @@ export const TeamAlertWebhookResultSchema = z.object({
 });
 
 export type TeamAlertWebhookResult = z.infer<typeof TeamAlertWebhookResultSchema>;
+
+// PUT /api/admin/teams/:teamId/members/:userId/tenant-role
+export const SetTenantRoleBodySchema = z.object({
+  reason: WriteReasonSchema,
+  tenantRole: z.enum(["tenant_admin", "member"]),
+});
+
+export type SetTenantRoleBody = z.infer<typeof SetTenantRoleBodySchema>;
+
+export const SetTenantRoleResultSchema = z.object({
+  userId: z.string(),
+  teamId: z.string(),
+  tenantRole: z.enum(["tenant_admin", "member"]),
+  dryRun: z.boolean(),
+});
+
+export type SetTenantRoleResult = z.infer<typeof SetTenantRoleResultSchema>;
 
 // ---------------------------------------------------------------------------
 // /api/_internal/role-changed

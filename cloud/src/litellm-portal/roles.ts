@@ -6,10 +6,13 @@ export async function resolveIdentity(
   principal: PortalPrincipal,
 ): Promise<IdentityResult> {
   try {
-    const { role, litellmUserId } = await getRole(env, principal.email);
+    const { role, litellmUserId, tenantRole, tenantTeamId } = await getRole(
+      env,
+      principal.email,
+    );
     return {
       ok: true,
-      identity: { ...principal, litellmUserId, role },
+      identity: { ...principal, litellmUserId, role, tenantRole, tenantTeamId },
     };
   } catch (error) {
     if (error instanceof Error && error.message === "litellm_config_missing") {
@@ -17,7 +20,13 @@ export async function resolveIdentity(
     }
     return {
       ok: true,
-      identity: { ...principal, litellmUserId: principal.email, role: "none" },
+      identity: {
+        ...principal,
+        litellmUserId: principal.email,
+        role: "none",
+        tenantRole: null,
+        tenantTeamId: null,
+      },
     };
   }
 }
