@@ -55,6 +55,8 @@ function RevokeInviteDialog({ email }: { email: string }) {
       { email, confirmEmail: email, reason: "tenant_admin_revoke" },
       {
         onSuccess: () => {
+          setConfirmText("");
+          setError(null);
           setOpen(false);
         },
         onError: (err: unknown) => {
