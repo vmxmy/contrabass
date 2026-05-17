@@ -76,6 +76,33 @@ describe("§D.1 restyled UserView (unauth/auth-loading welcome)", () => {
     expect(cta.getAttribute("href")).toBe("/login");
   });
 
+  it("CTA is a PLAIN native <a> that escapes the router LinkProvider (FIX 1 — must hard-GET the server /login, NOT SPA-navigate)", () => {
+    // The whole app wraps the tree in <LinkProvider component={KumoRouterLink}>
+    // (__root.tsx:250). Kumo LinkButton → KumoRouterLink → TanStack <Link
+    // to="/login">; /login is NOT a registered TanStack route (router.tsx) — it
+    // is server-only (index.ts:67-68 handleLoginGet). A TanStack Link would
+    // preventDefault + router.navigate to an unregistered route (broken). The
+    // CTA MUST therefore be a plain <a> (native browser GET to the server
+    // handler) — mirroring the __root.tsx:93 <form action="/logout"> precedent.
+    // Assert the rendered CTA is a native <a> with NO TanStack/router
+    // click-intercept marker. (TanStack's Link adds a `data-status` attr and is
+    // produced via the LinkProvider; a plain <a> has neither. We assert the
+    // POSITIVE structural contract: it is an <a>, href="/login", and carries
+    // the sanctioned Kumo-primary class string — NOT a Kumo Button/LinkButton
+    // wrapper which would nest a <button>/router <a>.)
+    const cta = screen.getByRole("link", { name: /登录|sign in/i }) as HTMLElement;
+    expect(cta.tagName).toBe("A");                       // native anchor
+    expect(cta.getAttribute("href")).toBe("/login");
+    expect(cta).not.toHaveAttribute("data-status");      // not a TanStack <Link>
+    // Defense-in-depth: render INSIDE the production LinkProvider context and
+    // confirm clicking does NOT call preventDefault (a plain <a> lets the
+    // browser navigate; a TanStack Link intercepts). This fails loudly if
+    // someone reverts the CTA to LinkButton.
+    const ev = new MouseEvent("click", { bubbles: true, cancelable: true });
+    cta.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(false);             // browser navigation, not SPA intercept
+  });
+
   it("does NOT render the legacy data dashboard (no IdentityBar / UsageDashboard / $ amounts)", () => {
     const { container } = wrap(<UserView />);
     // The legacy UserView markers must be gone.
@@ -94,17 +121,24 @@ describe("§D.1 restyled UserView (unauth/auth-loading welcome)", () => {
 });
 ```
 
+> The FIX-1 navigation-proving test is the load-bearing assertion: the old test (`getAttribute("href")` only) gave FALSE confidence because a TanStack `<Link>` ALSO emits a correct `href` while its `handleClick` intercepts the click (SPA-navigating to an unregistered `/login` → broken for JS users). Asserting `tagName === "A"`, no `data-status` (TanStack Link's status attr), and `ev.defaultPrevented === false` after a dispatched click makes the test FAIL if the CTA is ever a Kumo `LinkButton`/`Link`. `expect(...).not.toHaveAttribute` requires `@testing-library/jest-dom` matchers — if not already set up in this repo's vitest, use `expect(cta.getAttribute("data-status")).toBeNull()` instead (read `src/test/setup.ts` / an existing `*.test.tsx` for the matcher convention and match it; the contract is "prove it is a non-intercepted native anchor", the exact matcher is the repo's).
+
 - [ ] **Step 2: Run → FAIL** — `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/routes/user-view.test.tsx` → FAIL (`UserView` not exported; `#portal-welcome-root`/sign-in link absent; legacy `#usage-panel-root` still present).
 
-- [ ] **Step 3: Restyle `UserView` in `cloud/src/litellm-portal/routes/index.tsx`.** Re-anchor by symbol. Add the Lingui macro imports (the established pattern — `routes/index.tsx` has none yet) and a Kumo `LinkButton`; remove the `IdentityBar`/`UsageDashboard` imports IF nothing else in the file uses them (grep the file — `PortalIndex` does not; both were only used by `UserView`). Replace `function UserView()` with the exported, restyled, fully-static welcome:
+- [ ] **Step 3: Restyle `UserView` in `cloud/src/litellm-portal/routes/index.tsx`.** Re-anchor by symbol. Add the Lingui macro imports (the established pattern — `routes/index.tsx` has none yet) + `Text` + `FOCUS_RING`; **do NOT import `LinkButton`** (FIX 1 — see Note (i)); remove the `IdentityBar`/`UsageDashboard` imports IF nothing else in the file uses them (grep the file — `PortalIndex` does not; both were only used by `UserView`).
 
 ```tsx
 // add to imports (top of routes/index.tsx) — established Phase-3 pattern:
-import { LinkButton } from "@cloudflare/kumo/components/button";
 import { Text } from "@cloudflare/kumo/components/text";
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
 import { FOCUS_RING } from "../a11y/focus";
+// DO NOT import Kumo LinkButton/Button for the CTA (FIX 1): the app wraps the
+// tree in <LinkProvider component={KumoRouterLink}> (__root.tsx:250) → any Kumo
+// link becomes a TanStack <Link to="/login">, but /login is NOT a registered
+// TanStack route (server-only, index.ts:67-68) → SPA-nav to not-found, broken
+// for JS users. The CTA is a PLAIN <a> (native GET to the server handler),
+// mirroring __root.tsx:93's <form action="/logout"> escape-the-router pattern.
 // REMOVE these two imports (only UserView used them; PortalIndex does not):
 //   import { IdentityBar } from "../identity-bar";
 //   import { UsageDashboard } from "../dashboard/views/usage-dashboard";
@@ -138,24 +172,60 @@ export function UserView() {
           <Trans>面向团队的 AI 能力自助台。请登录以查看你的用量、密钥与团队管理。</Trans>
         </Text>
       </div>
-      <LinkButton
+      {/*
+        PLAIN native <a> (FIX 1) — NOT Kumo LinkButton/Button. Escapes the
+        LinkProvider/TanStack interception so the browser performs a native
+        GET to the server-only /login handler. Styled with the sanctioned
+        Kumo-primary utility class string (brand bg + inverse text + pill +
+        FOCUS_RING; §B.0-safe: Kumo tokens only, NO shadow-*). This class
+        string mirrors DESIGN.md's button-primary contract; keep it as the
+        single inline constant below so the visual matches the §B primary CTA.
+      */}
+      <a
         href="/login"
-        variant="primary"
-        className={`rounded-full ${FOCUS_RING}`}
         aria-label={t`登录`}
+        className={`inline-flex items-center justify-center rounded-full bg-kumo-brand px-5 py-2.5 text-sm font-semibold text-kumo-inverse no-underline hover:bg-kumo-brand-hover ${FOCUS_RING}`}
       >
         <Trans>登录</Trans>
-      </LinkButton>
+      </a>
     </main>
   );
 }
 ```
 
-> Notes: (i) `LinkButton` renders a real `<a href>` (verified — `routes/__root.tsx` uses `LinkButton href=… variant=…`) so the test's `getByRole("link")` resolves and it is keyboard-reachable + no-JS. (ii) `variant="primary"` consumes the Kumo brand token (no token override). (iii) `motion-safe:transition-opacity duration-150` mirrors §B.4 (≤200ms, reduced-motion-safe) — optional polish, no dynamic state. (iv) The heading text reuses the platform name copy already used by `__root.tsx`'s generic chrome (`智云AI管理平台`) — if that exact string is already a catalog key, reuse it (Step 5 reconciles; do not duplicate a key). (v) NO `useDashboard`/`useMe`/data — a logged-out visitor sees zero protected content. (vi) `id="portal-welcome-root"` is the new stable marker the hydration test (Step 6) keys off, replacing the legacy `#usage-panel-root`.
+> Notes: **(i) [FIX 1 — CRITICAL] The CTA is a plain `<a href="/login">`, NOT Kumo `LinkButton`.** The earlier draft's claim that `__root.tsx`'s `LinkButton href=…` usages "verify `/login` works" is FALSE and is struck: those `LinkButton`s target REGISTERED TanStack routes (`/manage`, `/manage/preferences`); `/login` is categorically different — it is server-only (`index.ts:67-68` `handleLoginGet`/`handleLoginPost`; NO `/login` in `router.tsx`). The app wraps everything in `<LinkProvider component={KumoRouterLink}>` (`__root.tsx:250`); a Kumo `LinkButton` → `KumoRouterLink` (`__root.tsx:121-126`) → TanStack `<Link to="/login">`, whose `handleClick` does `e.preventDefault()` + `router.navigate({to:"/login"})` → SPA-navigates to an UNREGISTERED route → not-found; the browser NEVER hard-loads the server magic-link page → broken for the JS-on majority. A plain `<a>` is NOT consumed by `LinkProvider`/TanStack → native browser GET to the server handler. This is the codebase's own established discipline: `__root.tsx:93` uses a real `<form method="POST" action="/logout">` (NOT `LinkButton`) precisely to escape router interception for the server-only `/logout` path — `/login` mirrors it (GET via `<a>`, POST via `<form>`). The Step-1 navigation-proving test (tagName `A`, no `data-status`, `defaultPrevented===false`) fails if anyone reverts to `LinkButton`. (ii) The Kumo-primary class string (`bg-kumo-brand`/`text-kumo-inverse`/`bg-kumo-brand-hover`/`rounded-full`) consumes Kumo brand tokens only — no token override, no `shadow-*` (§B.0-safe); it mirrors DESIGN.md's `button-primary` visual contract. (iii) `motion-safe:transition-opacity duration-150` mirrors §B.4 (≤200ms, reduced-motion-safe) — optional polish, no dynamic state. (iv) [FIX 3] Heading uses the i18n key `智云 AI 管理平台` (spaced) — a NEW Lingui catalog key for the public welcome. The earlier "reuse if already a catalog key" note is REMOVED as misleading: `__root.tsx:185`'s `me?.company ?? "智云AI管理平台"` (unspaced) is a hardcoded non-`<Trans>` fallback, NOT a catalog key — sharing it would drag a hardcoded literal into the i18n guard. The spec (§D.1) explicitly sanctions the spaced public-welcome variant as its own key (different context: logged-out bilingual brand face vs the post-auth shell's non-i18n fallback). Step 5 adds it as a genuinely-new key (do NOT attempt to reuse `__root.tsx`'s literal). (v) NO `useDashboard`/`useMe`/data — a logged-out visitor sees zero protected content. (vi) `id="portal-welcome-root"` is the new stable marker the hydration test (Step 6) keys off, replacing the legacy `#usage-panel-root`.
 
-- [ ] **Step 4: Run the component test → PASS** — `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/routes/user-view.test.tsx` → PASS (3 tests). `bun run typecheck` → baseline-only (confirm the removed `IdentityBar`/`UsageDashboard` imports caused no other breakage in `routes/index.tsx` — `PortalIndex` does not reference them; if `typecheck` flags an unused/over-removed import, the grep in Step 3 was the gate — re-confirm and fix imports, do NOT re-add dead code).
+- [ ] **Step 3b (FIX 2 — correct the stale `PortalIndex` JSDoc; SAME file, SAME commit as Step 3).** `cloud/src/litellm-portal/routes/index.tsx`'s `PortalIndex` JSDoc (verified @~18-33) still asserts the OPPOSITE of the §D unauth contract: *"`renderPortalSSR` seeds `ME_QUERY_KEY` … So the server's first render and the client's hydration render resolve identical `me` data … `me` not yet resolved → the legacy `UserView` body (unchanged prior behavior); since SSR always seeds `me`, this is only the pre-data state"*. That is FALSE for unauth (verified `server-impl.tsx`@54-74: `ME_QUERY_KEY` is seeded ONLY when `dataWithIdentity !== null`, i.e. authenticated — unauth SSR does NOT seed `me`; `UserView` IS the deterministic SSR-emitted unauth state). Re-anchor by symbol and rewrite the misleading sentences to reality (keep the authenticated-branch sentence; replace the `me`-always-seeded clause). Replacement JSDoc body for the affected portion:
 
-- [ ] **Step 5: i18n — add the new keys to BOTH catalogs + the Phase-3 fixture.** New zh source strings introduced by Step 3: `智云 AI 管理平台`, `面向团队的 AI 能力自助台。请登录以查看你的用量、密钥与团队管理。`, `登录`. For EACH: (a) confirm whether it already exists in `i18n/messages/zh-CN.ts`/`en.ts` (e.g. a platform-name string may already be a key from `__root.tsx`) — `rg -n "智云" src/litellm-portal/i18n/messages/*.ts`; if present, REUSE it (do not re-add — the Phase-3 completeness test only asserts presence in both catalogs). (b) For each genuinely-new key add it to `i18n/messages/zh-CN.ts` (identity-mapped: `"…": "…"` same zh string) AND `i18n/messages/en.ts` (the English translation: e.g. `"登录": "Sign in"`, `"智云 AI 管理平台": "Zhiyun AI Management Platform"`, `"面向团队的 AI 能力自助台。请登录以查看你的用量、密钥与团队管理。": "Your team's AI self-service console. Sign in to view your usage, keys, and team management."`). (c) Append every genuinely-new key to `PHASE3_KEYS` in `cloud/src/litellm-portal/i18n/__fixtures__/phase3-keys.ts` under a new comment block `// §D public welcome (routes/index.tsx UserView)`. Run `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/i18n-completeness-phase3.test.ts` → PASS (every PHASE3_KEYS entry present in both catalogs; the test fails loudly if a key is missing from either — that is the guard). Also re-run `bun run test src/litellm-portal/i18n-completeness.test.ts` (Phase-1/2 namespace) → still PASS (no key removed).
+```tsx
+/**
+ * `/` shell selection.
+ *
+ * Driven solely by the hydrated `useMe()` query. When authenticated,
+ * `renderPortalSSR` seeds `ME_QUERY_KEY` into the server QueryClient and
+ * dehydrates it; the client rehydrates the same data via `HydrationBoundary`,
+ * so the authenticated server first render and client hydration render resolve
+ * identical `me` and pick the SAME tree (#418-safe). When UNAUTHENTICATED,
+ * `server-impl.tsx` does NOT seed `ME_QUERY_KEY` (no identity) → `useMe()` is
+ * `undefined` on BOTH server and client first render → `<UserView />` (the
+ * §D restyled public welcome) renders deterministically on both sides
+ * (#418-safe by construction; `UserView` is fully static — no
+ * Math.random/Date/window). No `window`/`document`/effect controls the first
+ * render in either branch.
+ *
+ * Authenticated identity → `TenantPortalShell` (renders the
+ * tenant_admin/member nav variants and the pure-Owner Phase-2 notice).
+ * `me === undefined` (logged-out OR the brief auth-resolving window — `useMe`
+ * exposes no signal to tell them apart, Phase-3 §D) → the restyled
+ * `UserView` branded welcome (NOT the legacy fake-$0.00 dashboard).
+ */
+```
+
+  Apply this as the `PortalIndex` JSDoc (replacing the stale block @~18-33). `PortalIndex`'s code body, `toPortalIdentity`/`toTenantBrand`, and `indexRoute` are byte-unchanged — comment-only edit. (Goes in the Step-9 commit with the rest of Task D1.)
+
+- [ ] **Step 4: Run the component test → PASS** — `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/routes/user-view.test.tsx` → PASS (4 tests, incl. the FIX-1 navigation-proving test). `bun run typecheck` → baseline-only (confirm the removed `IdentityBar`/`UsageDashboard` imports caused no other breakage in `routes/index.tsx` — `PortalIndex` does not reference them; if `typecheck` flags an unused/over-removed import, the grep in Step 3 was the gate — re-confirm and fix imports, do NOT re-add dead code).
+
+- [ ] **Step 5: i18n — add the new keys to BOTH catalogs + the Phase-3 fixture.** New zh source strings introduced by Step 3: `智云 AI 管理平台` (spaced — see FIX 3 below), `面向团队的 AI 能力自助台。请登录以查看你的用量、密钥与团队管理。`, `登录`. **(a) [FIX 3] These are ALL genuinely-new keys — do NOT attempt to "reuse" an existing one.** Verified: `__root.tsx:185`'s `me?.company ?? "智云AI管理平台"` is an UNSPACED hardcoded string literal, NOT a `<Trans>`/catalog key (it never enters `i18n/messages/*`). The spaced public-welcome variant `智云 AI 管理平台` is a NEW Lingui catalog key (spec §D.1 explicitly sanctions the spaced variant for the logged-out bilingual brand face — distinct context from the post-auth shell's non-i18n fallback; sharing the literal would import a hardcoded value into the i18n guard). A `rg -n "智云" src/litellm-portal/i18n/messages/*.ts` will confirm NO pre-existing key (sanity check, expected: zero hits) — do NOT skip adding the key on the basis of `__root.tsx`'s literal. (Other Phase-1/2 keys that happen to pre-exist are still listed in `PHASE3_KEYS` per its existing convention, but the 3 §D strings here are new.) **(b)** Add each of the 3 to `i18n/messages/zh-CN.ts` (identity-mapped: `"…": "…"` same zh string) AND `i18n/messages/en.ts` (English translation: `"登录": "Sign in"`, `"智云 AI 管理平台": "Zhiyun AI Management Platform"`, `"面向团队的 AI 能力自助台。请登录以查看你的用量、密钥与团队管理。": "Your team's AI self-service console. Sign in to view your usage, keys, and team management."`). **(c)** Append the 3 to `PHASE3_KEYS` in `cloud/src/litellm-portal/i18n/__fixtures__/phase3-keys.ts` under a new comment block `// §D public welcome (routes/index.tsx UserView)`. Run `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/i18n-completeness-phase3.test.ts` → PASS (every PHASE3_KEYS entry present in both catalogs; the test fails loudly if a key is missing — that is the guard). Also re-run `bun run test src/litellm-portal/i18n-completeness.test.ts` (Phase-1/2 namespace) → still PASS (no key removed).
 
 - [ ] **Step 6: Update the `hydration.test.tsx` UserView case (SERIALIZED after Task-0B + Task-3 — same file).** Re-anchor by symbol: in `TASK_1W_CASES` find the object `{ name: "unauthenticated → legacy UserView at /", identity: { …empty… }, initialData: null }` and its preceding comment block (it cites `#usage-panel-root`). Make EXACTLY these minimal edits, touching nothing else in the file (every Task-0B / Task-3 case stays verbatim):
   - Rename `name: "unauthenticated → legacy UserView at /"` → `name: "unauthenticated → restyled welcome at /"`.
@@ -284,6 +354,7 @@ Order: **typecheck → §D test sweep → manual staging check → (whole-branch
 - [ ] `cd /Users/xumingyang/github/contrabass/cloud && bun run typecheck` → only the pre-existing `server.ts → server-impl.tsx --jsx` baseline; ZERO new.
 - [ ] `bun run test src/litellm-portal/routes/user-view.test.tsx src/litellm-portal/hydration.test.tsx src/litellm-portal/i18n-completeness-phase3.test.ts src/litellm-portal/i18n-completeness.test.ts src/litellm-portal/auth/login-page.test.ts src/litellm-portal/auth/login-routes.test.ts src/litellm-portal/auth/magic-link.test.ts src/litellm-portal/auth/csrf.test.ts src/litellm-portal/auth/allowlist.test.ts src/litellm-portal/auth/session.test.ts src/litellm-portal/e2e-flow.test.ts` → ALL GREEN. **`hydration.test.tsx` is the #418 oracle and MUST be fully green (10/10 semantics: UserView case migrated to `#portal-welcome-root`, SSR==client, every Task-0B/Task-3 case untouched & green).** The auth suites are UNCHANGED and green = the §D.2 presentation-only proof. NO CI runs `cd cloud && bun run test` (verified Phase-3 fact: `ci.yml`=`make test-quick`) — this local sweep is the authoritative §D gate; "CI covers it" is FALSE. The only tolerated reds are the two Phase-3 by-name isolated-confirmed exclusions (kumo.css fetch flake; pre-existing-on-`main` `?window=90d`); everything §D-touched must be genuinely green.
 - [ ] Manual staging (in the whole-branch re-review): hit `/` logged-out → branded welcome (`#portal-welcome-root`) + working `登录`/Sign-in link to `/login`, NO `$0.00`/KPI/`加载中…`; light AND dark; zh AND en. Hit `/login` → restyled branded card, no shadow, dark-safe, the magic-link form still submits (POST flow works end-to-end with a real allowed email — security unchanged). With B2's session-cookie helper: authenticated `/` shows the §B shell after a brief branded-welcome flash (NOT the legacy dashboard) — confirms the §D.1 auth-loading-flash fix.
+- [ ] **[FIX 4 — accepted locked-decision deviation, MUST be recorded in the PR #141 whole-branch re-review log]:** locked decision **D3 mandates "双语" for `/login`**, but §D ships `/login` **English-only** (`Sign in` / `Email address` / `Send magic link` unchanged — verified `handleLoginGet`/`handleLoginPost` have no locale入参). This is a **conscious, documented partial de-scope of a locked decision**, NOT an oversight: `/login` is a security-adjacent no-React SSR string page; introducing an i18n runtime to it would touch auth/CSRF/rate-limit-adjacent code and enlarge the risk surface — correctly rejected (spec §D.2). UserView remains fully bilingual (D2/§D.1, via Lingui). The reviewer/lead MUST log this in the PR #141 description as "accepted deviation: §D.2 ships /login English-only, D3-bilingual deferred — rationale: security-adjacent no-React page; revisit separately if needed", so it is an explicit recorded decision, not a silent gap.
 - [ ] Both tasks are **RETAINED-REVIEW** → the whole-branch critic does the spec + #418/security pass on §D before the code-quality pass; PR #141 only after the single whole-branch re-review is green.
 
 ---

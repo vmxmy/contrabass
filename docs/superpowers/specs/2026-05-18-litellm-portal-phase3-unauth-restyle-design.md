@@ -69,7 +69,8 @@ function UserView() {
 **目标呈现（确定性、对登出访客安全、品牌化）：** 一个干净的「品牌欢迎屏」——
 
 - 复用 Phase-3 §B 的**品牌身份摘要条视觉语汇**（Kumo `bg-kumo-elevated` / `border-b border-kumo-line` / `text-kumo-strong` 标题、§F.5 收敛后的 type-scale），但**不**渲染 `IdentityBar`（它读 `useDashboard()`，对登出用户无意义）也**不**渲染 `UsageDashboard`（数据看板，对登出用户语义错误且引入 `useDashboard` query 噪声）。
-- 内容：平台名（来自 SSR 注入的 company/title——`PortalIndex` 当前不接 props；用 DESIGN.md 既有 page-title 排版的静态文案 + 平台名，平台名经既有 `portalDisplayName`/`me` 不可用时回落到中性 i18n 文案，**不**读任何受保护数据）、一句副标题（产品自助台简述，复用既有 `__root.tsx` 已有的中性平台副标题文案模式，i18n 化）、一个**主 CTA「登录」**作为 Kumo `Button`/`LinkButton`（`variant` primary，pill，`href="/login"`，`FOCUS_RING`）。
+- 内容：平台名（静态文案——`PortalIndex` 当前不接 props 且对登出访客**不**读任何受保护数据；用 DESIGN.md page-title 排版 + 一个 i18n 化的中性平台名文案）、一句副标题（产品自助台简述，i18n 化）、一个**主 CTA「登录」**。
+- **CTA 必须是原生 `<a href="/login">`，绝不用 Kumo `LinkButton`（CRITICAL）。** 根因：`__root.tsx:250` 把整树包在 `<LinkProvider component={KumoRouterLink}>` 中；Kumo `LinkButton`/任何 Kumo 链接经 `LinkProvider` → `KumoRouterLink`（`__root.tsx:121-126`）→ TanStack `<Link to="/login">`。而 `/login` **不是已注册的 TanStack route**（`router.tsx` 无 `/login`；它是服务端专属——`index.ts:67-68` `handleLoginGet`/`handleLoginPost`）。TanStack `Link.handleClick` 会 `e.preventDefault()` + `router.navigate({to:"/login"})` → 客户端 SPA 导航到未注册路由 → not-found，浏览器**永不**硬跳转到服务端 magic-link 页 → JS 开启的访客（大多数）点击 CTA 到不了登录。解法 = 用纯语义 `<a href="/login">`（不被 `LinkProvider`/TanStack 拦截 → 原生浏览器 GET 命中服务端 `/login` handler），并以 Kumo primary-button 的 utility class（`rounded-full` pill + brand 色 utility + `FOCUS_RING`，§B.0-safe、无 `shadow-*`）造型。**这正是代码库已有的纪律**：`__root.tsx:93` 用真实 `<form method="POST" action="/logout">`（而非 `LinkButton`）来逃逸 router 拦截、命中服务端 `/logout` handler——`/login` 镜像同一模式（GET 用 `<a>`，POST 用 `<form>`）。CTA 仍无-JS 可用（原生 `<a>` 的默认行为即导航）。
 - **不出数据**：无 `$0.00`、无 KPI、无模型数、无 `加载中…` 看板。这是欢迎/落地，不是 dashboard。
 - 容器密度沿用 §A.2 comfortable（对外、编辑式留白）；motion 沿用 §B.4（路由进入 `motion-safe:` ≤150ms，可选，单次）。
 - **任何动态/随机/浏览器位**（若需要——本设计本身不需要任何动态内容；若实现中出现，例如装饰性骨架）必须经 Task-0B `useHasHydrated` 门控或 Task-0B `SsrSafeSkeleton`，确保 SSR == client-first-render（§D.3）。本欢迎屏的设计目标就是**零动态内容**——纯静态确定性 markup（最简单的 #418-safe）。
@@ -77,7 +78,8 @@ function UserView() {
 **验收：**
 
 - `routes/index.tsx` `UserView` 不再 import/render `IdentityBar`/`UsageDashboard`（除非别处仍用——grep 确认；`UserView` 内不用）。
-- 渲染的是品牌欢迎 + 可达「登录」链接（`href="/login"`），无任何 `$`/KPI/模型数/`加载中…` 看板文案。
+- 渲染的是品牌欢迎 + 可达「登录」**原生 `<a href="/login">`**（非 `LinkButton`），无任何 `$`/KPI/模型数/`加载中…` 看板文案。
+- **品牌名字符串（FIX 3）**：欢迎屏标题用 i18n key `智云 AI 管理平台`（带空格变体）。`__root.tsx:185` 已有一个**硬编码字面量** `me?.company ?? "智云AI管理平台"`（不带空格、非 catalog key、非 `<Trans>`，是认证后壳的回落值）。本 spec **显式批准带空格变体**作为独立的、面向公众欢迎屏的 i18n catalog key（理由：欢迎屏是登出态品牌门面、走 Lingui i18n 双语；`__root.tsx` 那个是认证后壳的非-i18n 回落，二者语境不同、不应强行共用——共用一个非-catalog 字面量反而会把硬编码引入 i18n 守卫体系）。这是有意的、一行登记的区分，非疏漏。
 - 新文案全部 i18n（zh-CN/en），入 Phase-3 completeness 守卫。
 - 暗色 + 双语下视觉/对比不回归；§B.0 不变清单不破（无 Kumo fork、无 token 覆盖、无 `shadow-*`）。
 - #418：见 §D.3（这是本工作流的 LOCKED-INVARIANT-ADJACENT 核心）。
@@ -91,7 +93,7 @@ function UserView() {
 **目标：** 同一 Kumo 设计语言的品牌登录卡——
 
 - **保留 SSR/无-JS 可用**：仍是 `loginPage()` 返回的字符串 HTML（不引 React island，不引 client JS），只重写内联 `<style>` 与 markup class，使其视觉对齐 Phase-3：品牌卡（圆角沿用 DESIGN.md `lg/xl`、`border` hairline、无 `shadow-*`——用 surface 层次造深度，与 §B.0 一致；`shadow` 现状违反 §B.0「无装饰阴影」，重塑时移除改用 hairline + elevated surface）、品牌主色按钮、可读对比（WCAG-AA）、**暗色安全**（`prefers-color-scheme: dark` 媒体查询或与门户 `data-mode` 一致的中性深色——因为是独立 SSR 页无 Kumo 运行时，用与 Kumo canvas/elevated 近似的确定性十六进制 + `@media (prefers-color-scheme: dark)`；这些十六进制是**该独立无-Kumo 登录页的局部确定性样式**，类比 §F.6 `ops-theme` 的「受批准例外」——在 spec 中显式登记为可接受局部硬编码：登录页是 Kumo 运行时之外的独立 SSR 文档，无法用 Kumo utility class，其内联样式十六进制是该页自包含的、与 Kumo 视觉对齐的确定性常量，非门户 token 体系内的硬编码违规）。
-- **双语**：错误/成功/标签/按钮文案随请求语言（沿用 `auth/login-routes.ts` 现有语言来源——若现状是英文硬编码，重塑时不扩范围强加 i18n 框架到一个无-React 的字符串页；**最小**：保留现有文案语言行为不变，仅重排版/品牌化——除非现有代码已传入 locale，则文案随之。**不为登录页引入新的 i18n 运行时**，避免触碰安全流。spec 在此明确：登录页 i18n 范围 = 「不回归现有语言行为」，视觉重塑优先；若 plan 阶段确认 `login-routes.ts` 已有 locale 入参则文案随之双语，否则保持现状文案、只重塑外观）。
+- **双语 —— 经记录的、有意识的「锁定决策 D3 双语」部分降范围（FIX 4，已读源码确认）：** `loginPage()` 现状英文硬编码（`Sign in` / `Email address` / `Send magic link`），`handleLoginGet`/`handleLoginPost` 无 locale 入参（已 verify）。锁定决策 D3 要求「双语」，但 `/login` 是 **security-adjacent 的无-React SSR 字符串页**；为它引入新的 i18n 运行时会触碰认证/CSRF/限流相邻代码并扩大风险面——**正确地拒绝**。故 §D 明确把 `/login` 作为 **English-only 交付**，文案语言行为逐字不变，仅重排版/品牌化。这是对锁定决策 D3「双语」的一个**有意识、明文记录的接受性降范围**（非疏漏）：UserView 仍完整双语（D2/§D.1，走 Lingui）；`/login` 的双语作为后续可选项延期（若日后需要，单独评估给无-React 登录页加 locale 的安全代价）。plan 的 whole-branch re-review checklist 必须把这一条作为「自觉接受的锁定决策偏离」记录进 PR #141（FIX 4）。
 - **安全逻辑逐字不变**：`<form method="POST" action="/login">`、magic-link 签发/校验、CSRF、rate-limit、`BOOTSTRAP_ADMIN_EMAILS` allowlist、`maskEmail`、success/error 分支——**presentation-only**，仅改 `loginPage()` 返回的 HTML 字符串外观，不动任何路由 handler / token / cookie / 校验代码。
 
 **验收：**
