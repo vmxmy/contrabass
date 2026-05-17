@@ -38,14 +38,14 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 function makeIndexDO(
-  usersByEmail: Record<string, { role: "admin" | "user"; userId?: string } | null>,
+  usersByEmail: Record<string, { role: "admin" | "user"; userId?: string; teamId?: string | null } | null>,
   tenantRolesByKey: Record<string, { tenantRole: "tenant_admin" | "member" } | null> = {},
 ): DurableObjectNamespace {
   const stub = {
     getUserByEmail: vi.fn(async (email: string) => {
       const u = usersByEmail[email];
       if (u == null) return null;
-      return { role: u.role, userId: u.userId ?? email };
+      return { role: u.role, userId: u.userId ?? email, teamId: u.teamId ?? null };
     }),
     getTenantRole: vi.fn(async (userId: string, teamId: string) => {
       return tenantRolesByKey[`${userId}|${teamId}`] ?? null;
@@ -241,13 +241,15 @@ describe("role-cache", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveIdentity tenant facet", () => {
-  it("populates tenantRole + tenantTeamId from IndexDO", async () => {
+  it("populates tenantRole + tenantTeamId from the IndexDO user record (not LiteLLM teamIds)", async () => {
+    // resolveLiteLLMUser's teamIds is eventually-consistent and multi-team
+    // ambiguous — deliberately mismatched here to prove it is NOT the source.
     vi.spyOn(litellm, "resolveLiteLLMUser").mockResolvedValue(
-      litellmUser({ userId: "laoxu", email: "t1user@gz-zhiyun.com", teamIds: ["t1"] }),
+      litellmUser({ userId: "laoxu", email: "t1user@gz-zhiyun.com", teamIds: ["stale-team"] }),
     );
     const indexDO = makeIndexDO(
-      { "t1user@gz-zhiyun.com": { role: "user" } },
-      { "laoxu|t1": { tenantRole: "tenant_admin" } },
+      { "t1user@gz-zhiyun.com": { role: "user", userId: "u1", teamId: "t1" } },
+      { "u1|t1": { tenantRole: "tenant_admin" } },
     );
     const env = baseEnv({ INDEX_DO: indexDO });
 
@@ -263,11 +265,11 @@ describe("resolveIdentity tenant facet", () => {
     expect(result.identity.tenantTeamId).toBe("t1");
   });
 
-  it("defaults tenantRole=null when no mapping", async () => {
+  it("defaults tenantRole=null when no mapping (tenantTeamId still from IndexDO record)", async () => {
     vi.spyOn(litellm, "resolveLiteLLMUser").mockResolvedValue(
-      litellmUser({ userId: "laoxu", email: "nomap@gz-zhiyun.com", teamIds: ["t1"] }),
+      litellmUser({ userId: "laoxu", email: "nomap@gz-zhiyun.com", teamIds: ["stale-team"] }),
     );
-    const indexDO = makeIndexDO({ "nomap@gz-zhiyun.com": { role: "user" } });
+    const indexDO = makeIndexDO({ "nomap@gz-zhiyun.com": { role: "user", userId: "u1", teamId: "t1" } });
     const env = baseEnv({ INDEX_DO: indexDO });
 
     const result = await resolveIdentity(env, {
@@ -280,6 +282,44 @@ describe("resolveIdentity tenant facet", () => {
     if (!result.ok) throw new Error("expected ok");
     expect(result.identity.tenantRole).toBeNull();
     expect(result.identity.tenantTeamId).toBe("t1");
+  });
+
+  // End-to-end consistency: write key (invite auto-join) == read key (resolver).
+  // Simulates exactly what handleMagicCallback's fail-open invite auto-join does
+  // synchronously before login completes: putUser({...current, teamId:
+  // invite.teamId}) then putTenantRole({ userId, teamId: invite.teamId }).
+  // Then resolves identity for the SAME user. Proves the seeded role is found.
+  it("invite-consume seeded tenantRole is resolvable for the same user (write key == read key)", async () => {
+    const email = "e2euser@gz-zhiyun.com";
+    // resolveLiteLLMUser deliberately reports a DIFFERENT id + a stale team:
+    // if the read keyed off LiteLLM (old Task 3 behavior) the seeded role would
+    // silently no-op. The read must use the IndexDO record tuple instead.
+    vi.spyOn(litellm, "resolveLiteLLMUser").mockResolvedValue(
+      litellmUser({ userId: "litellm-async-id", email, teamIds: ["stale-team"] }),
+    );
+
+    // IndexDO state AFTER the invite auto-join ran (synchronous writes):
+    // - the user record's teamId was set to invite.teamId by putUser(...)
+    // - the tenantRole was seeded under (userId = outer-scope handleMagicCallback
+    //   userId = the IndexDO record's userId; teamId = invite.teamId)
+    const inviteTeamId = "team_acme";
+    const idxUserId = "u-existing";
+    const indexDO = makeIndexDO(
+      { [email]: { role: "user", userId: idxUserId, teamId: inviteTeamId } },
+      { [`${idxUserId}|${inviteTeamId}`]: { tenantRole: "tenant_admin" } },
+    );
+    const env = baseEnv({ INDEX_DO: indexDO });
+
+    const result = await resolveIdentity(env, {
+      email,
+      userId: email,
+      domain: "gz-zhiyun.com",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.identity.tenantRole).toBe("tenant_admin");
+    expect(result.identity.tenantTeamId).toBe(inviteTeamId);
   });
 });
 

@@ -1294,8 +1294,16 @@ describe("DO-path tenant routes (/api/tenant/*)", () => {
 
     it("returns 403 no_tenant_scope for a platform admin with no tenantTeamId", async () => {
       // #given a platform admin (role==="admin"): requireTenantAdmin passes the
-      // superset through, but the admin has no resolved tenantTeamId.
+      // superset through, but the admin's IndexDO user record has no teamId, so
+      // the portal-authoritative tenantTeamId derivation resolves to null.
       const indexStub = makeIndexDOStub();
+      indexStub.getUserByEmail = vi.fn().mockResolvedValue({
+        userId: ADMIN_EMAIL,
+        email: ADMIN_EMAIL,
+        role: "admin" as const,
+        teamId: null,
+        createdAt: new Date().toISOString(),
+      });
       const env = makeFlagOnEnv(indexStub, makeTeamConfigDOStub());
 
       // #when hitting a tenant route

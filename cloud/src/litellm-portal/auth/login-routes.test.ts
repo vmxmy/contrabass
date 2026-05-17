@@ -21,10 +21,19 @@ type InviteRow = {
   consumedAt: string | null;
 };
 
-function makeMock(opts: { seedUser?: UserRow; seedInvite?: InviteRow; getInviteThrows?: boolean } = {}) {
+type TenantRoleRow = {
+  userId: string;
+  teamId: string;
+  tenantRole: "tenant_admin" | "member";
+  updatedBy: string;
+  updatedAt: string;
+};
+
+function makeMock(opts: { seedUser?: UserRow; seedInvite?: InviteRow; getInviteThrows?: boolean; putTenantRoleThrows?: boolean } = {}) {
   const nonces = new Map<string, { token: string; email: string; expiresAt: string; consumedAt: string | null }>();
   const users = new Map<string, UserRow>();
   const invites = new Map<string, InviteRow>();
+  const tenantRoles = new Map<string, TenantRoleRow>();
   if (opts.seedUser) users.set(opts.seedUser.email.toLowerCase(), opts.seedUser);
   if (opts.seedInvite) invites.set(opts.seedInvite.emailLc.toLowerCase(), opts.seedInvite);
 
@@ -37,6 +46,10 @@ function makeMock(opts: { seedUser?: UserRow; seedInvite?: InviteRow; getInviteT
     const next: InviteRow = { ...cur, status: "consumed", consumedAt: new Date().toISOString() };
     invites.set(emailLc.toLowerCase(), next);
     return next;
+  });
+  const putTenantRole = vi.fn(async (r: TenantRoleRow) => {
+    if (opts.putTenantRoleThrows) throw new Error("tenantRole write boom");
+    tenantRoles.set(`${r.userId}:${r.teamId}`, r);
   });
 
   const stub = {
@@ -60,6 +73,7 @@ function makeMock(opts: { seedUser?: UserRow; seedInvite?: InviteRow; getInviteT
       return invites.get(emailLc.toLowerCase()) ?? null;
     },
     markInviteConsumed,
+    putTenantRole,
     appendAudit: async () => {},
   };
 
@@ -68,7 +82,7 @@ function makeMock(opts: { seedUser?: UserRow; seedInvite?: InviteRow; getInviteT
     get: (_id: unknown) => stub,
   };
 
-  return { stub, namespace, users, invites, putUser, markInviteConsumed };
+  return { stub, namespace, users, invites, tenantRoles, putUser, markInviteConsumed, putTenantRole };
 }
 
 function makeEnv(namespace: unknown): LiteLLMPortalEnv {
@@ -158,5 +172,31 @@ describe("handleMagicCallback — admin-invite auto-join", () => {
 
     expect(res.status).toBe(302);
     expect(res.headers.get("set-cookie")).toBeTruthy();
+  });
+
+  it("invite consume also writes tenantRole from invite.teamRole", async () => {
+    const mock = makeMock({
+      seedUser: { userId: "u1", email: EMAIL, role: "user", teamId: null, createdAt: new Date().toISOString() },
+      seedInvite: { emailLc: EMAIL, teamId: "team_acme", teamRole: "admin", status: "pending", invitedBy: "admin@x.com", createdAt: new Date().toISOString(), consumedAt: null },
+    });
+    const env = makeEnv(mock.namespace);
+
+    const res = await callbackFor(EMAIL, env);
+
+    expect(res.status).toBe(302);
+    expect(mock.tenantRoles.get("u1:team_acme")?.tenantRole).toBe("tenant_admin");
+  });
+
+  it("tenantRole write failure does not block login (fail-open)", async () => {
+    const mock = makeMock({
+      seedUser: { userId: "u1", email: EMAIL, role: "user", teamId: null, createdAt: new Date().toISOString() },
+      seedInvite: { emailLc: EMAIL, teamId: "team_acme", teamRole: "user", status: "pending", invitedBy: "admin@x.com", createdAt: new Date().toISOString(), consumedAt: null },
+      putTenantRoleThrows: true,
+    });
+    const env = makeEnv(mock.namespace);
+
+    const res = await callbackFor(EMAIL, env);
+
+    expect(res.status).toBe(302);
   });
 });

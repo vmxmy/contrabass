@@ -76,6 +76,13 @@ type IndexDOStub = {
     consumedAt: string | null;
   } | null>;
   markInviteConsumed(emailLc: string): Promise<unknown>;
+  putTenantRole(record: {
+    userId: string;
+    teamId: string;
+    tenantRole: "tenant_admin" | "member";
+    updatedBy: string;
+    updatedAt: string;
+  }): Promise<unknown>;
 };
 
 function parseBootstrapAdminEmails(env: LiteLLMPortalEnv): Set<string> {
@@ -405,6 +412,20 @@ export async function handleMagicCallback(request: Request, env: LiteLLMPortalEn
         }
         // Idempotent: only a pending invite is consumed.
         await inviteStub.markInviteConsumed(emailLc);
+        // Seed tenantRole from invite.teamRole. Best-effort: never blocks login.
+        // Keys on the IndexDO user-record `userId`; the read counterpart is
+        // role-cache.ts resolveTenantRole (must stay the same (userId,teamId) tuple).
+        try {
+          await inviteStub.putTenantRole({
+            userId,
+            teamId: invite.teamId,
+            tenantRole: invite.teamRole === "admin" ? "tenant_admin" : "member",
+            updatedBy: `invite:${invite.invitedBy}`,
+            updatedAt: new Date().toISOString(),
+          });
+        } catch (e) {
+          console.error("[auth] tenantRole seed failed (non-fatal):", e);
+        }
         // Drop the short role-cache so the new teamId is visible immediately.
         await invalidateRole(env, emailLc);
       }
