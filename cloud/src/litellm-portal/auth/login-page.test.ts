@@ -16,7 +16,7 @@ describe("§D.2 restyled /login (presentation-only; security flow byte-unchanged
     expect(html).toContain('method="POST"');
     expect(html).toContain('action="/login"');
     expect(html).toMatch(/<input[^>]+type="email"[^>]+name="email"/);
-    expect(html).toMatch(/<button[^>]*>[\s\S]*?<\/button>/); // submit present
+    expect(html).toMatch(/<button[^>]*type="submit"[^>]*>/); // no-JS submit invariant
   });
 
   it("is restyled to the Kumo visual language: NO box-shadow, branded button, dark-safe", async () => {

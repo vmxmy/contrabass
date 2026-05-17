@@ -25,6 +25,7 @@ const LOGIN_STYLE = {
   subtle: "#555555",
   brand: "#1f3a8a",
   brandHover: "#162a63",
+  onBrand: "#ffffff",      // #ffffff on brand #1f3a8a ≈ 9.7:1 — WCAG AA ✓
   error: "#b42318",
   success: "#177245",
   dBg: "#1a1a1a",
@@ -32,6 +33,8 @@ const LOGIN_STYLE = {
   dBorder: "#3a3a3a",
   dInk: "#f4f4f4",
   dSubtle: "#a0a0a0",
+  dError: "#f0a8a0",       // #f0a8a0 on dCard #242424 ≈ 7.99:1 — WCAG AA ✓
+  dSuccess: "#7fc8a0",     // #7fc8a0 on dCard #242424 ≈ 7.89:1 — WCAG AA ✓
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -189,7 +192,7 @@ function loginPage(errorMsg?: string, successEmail?: string): string {
       width: 100%;
       padding: .6875rem;
       background: ${LOGIN_STYLE.brand};
-      color: #ffffff;
+      color: ${LOGIN_STYLE.onBrand};
       border: 1px solid ${LOGIN_STYLE.brand};
       border-radius: 8px;
       font-size: 1rem;
@@ -217,6 +220,8 @@ function loginPage(errorMsg?: string, successEmail?: string): string {
         border-color: ${LOGIN_STYLE.dBorder};
         color: ${LOGIN_STYLE.dInk};
       }
+      .error { color: ${LOGIN_STYLE.dError}; }
+      .success { color: ${LOGIN_STYLE.dSuccess}; }
     }
   </style>
 </head>
