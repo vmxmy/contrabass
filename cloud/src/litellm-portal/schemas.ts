@@ -18,6 +18,8 @@ export const MeSchema = z.object({
   company: z.string(),
   domain: z.string(),
   role: z.enum(["admin", "user", "none"]),
+  tenantRole: z.enum(["tenant_admin", "member"]).nullable(),
+  tenantTeamId: z.string().nullable(),
 });
 
 export type Me = z.infer<typeof MeSchema>;
