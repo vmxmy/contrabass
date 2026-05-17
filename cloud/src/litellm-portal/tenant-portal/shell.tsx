@@ -53,15 +53,27 @@ function resolveNav(identity: PortalIdentity): NavItem[] {
   return MEMBER_NAV;
 }
 
+/** Only render the logo when the URL is a safe, absolute https:// origin. */
+function isSafeLogoUrl(url: string | null): url is string {
+  if (url === null) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function BrandBar({ brand }: { brand: TenantBrand }) {
   const name = brand.name.trim() === "" ? "Portal" : brand.name;
+  const logoUrl = isSafeLogoUrl(brand.logoUrl) ? brand.logoUrl : null;
   return (
     <div
       className="flex items-center gap-3 border-b border-kumo-default bg-kumo-elevated px-6 py-4"
       aria-label="租户品牌"
     >
-      {brand.logoUrl !== null ? (
-        <img src={brand.logoUrl} alt="" className="h-8 w-8 rounded object-contain" />
+      {logoUrl !== null ? (
+        <img src={logoUrl} alt="" className="h-8 w-8 rounded object-contain" />
       ) : null}
       <Text variant="heading3" as="span" className="truncate text-kumo-strong">
         {name}
