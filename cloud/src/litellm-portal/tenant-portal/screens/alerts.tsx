@@ -73,6 +73,10 @@ function WebhookConfigForm() {
     clearWebhook.mutate(
       { reason },
       {
+        onSuccess: () => {
+          setError(null);
+          setUrl("");
+        },
         onError: (err: unknown) => {
           setError(err instanceof Error ? err.message : t`清除失败`);
         },

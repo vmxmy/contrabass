@@ -191,6 +191,35 @@ describe("TenantAlertsScreen — tenant_admin", () => {
       expect.anything(),
     );
   });
+
+  it("clears stale error Banner when Clear succeeds after a failed Save", () => {
+    let savedSetCallbacks: { onError?: (err: unknown) => void } = {};
+    let savedClearCallbacks: { onSuccess?: () => void } = {};
+    mockSetMutateSpy.mockImplementation((_input: unknown, cbs?: { onError?: (err: unknown) => void }) => {
+      savedSetCallbacks = cbs ?? {};
+    });
+    mockClearMutateSpy.mockImplementation((_input: unknown, cbs?: { onSuccess?: () => void }) => {
+      savedClearCallbacks = cbs ?? {};
+    });
+
+    renderWithProviders(<TenantAlertsScreen />, { tenantRole: "tenant_admin" });
+
+    // Trigger a Save that the server rejects
+    const saveButton = screen.getByRole("button", { name: /保存|save/i });
+    fireEvent.click(saveButton);
+    act(() => {
+      savedSetCallbacks.onError?.(new Error("https_required"));
+    });
+    expect(screen.queryByText("https_required")).not.toBeNull();
+
+    // Now Clear succeeds — stale error Banner must disappear
+    const clearButton = screen.getByRole("button", { name: /清除|clear/i });
+    fireEvent.click(clearButton);
+    act(() => {
+      savedClearCallbacks.onSuccess?.();
+    });
+    expect(screen.queryByText("https_required")).toBeNull();
+  });
 });
 
 describe("TenantAlertsScreen — non-tenant_admin", () => {
