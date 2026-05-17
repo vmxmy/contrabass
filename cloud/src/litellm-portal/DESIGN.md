@@ -481,6 +481,17 @@ Density is a SHELL decision pushed via `DensityProvider` (`components/density.ts
 
 This is the "同源异质" differentiation on the density axis: §A.2 = the shell-level `p-6`/`p-4` baseline; §F.1 = the B-端 cockpit deepening (compact table cell/row tiers + a user-persisted comfortable↔compact toggle, Tenant stays comfortable). Phase 1/2 had no density difference at all.
 
+## Shell / SideNav (Phase 3 §B.1)
+
+Both shells render one shared `components/side-nav.tsx`; structure is identical, tone differs only by accent + the shell density wrapper.
+
+- **Active/current item:** 2px left accent bar (`bg-kumo-brand` — tenant brand on Tenant, steel on Ops since `OPS_STEEL_ACCENT` sets `--kumo-brand` to steel) + `bg-kumo-tint` + `text-kumo-strong` + `aria-current="page"`.
+- **Hover:** `bg-kumo-tint` (normalized — the old `hover:bg-kumo-canvas` was near-invisible on the elevated nav).
+- **Icon:** 16px per item, `text-kumo-subtle` at rest, accent color when active (via `currentColor`). Source: hand-authored zero-dependency inline `<svg>` (`components/nav-icons.tsx`) — Kumo@2.1.0 ships NO icon set and `@phosphor-icons/react` is forbidden (C3 / §E-2 resolved); NEVER an icon dependency.
+- **Group headings:** 12px uppercase `tracking-wider` `text-kumo-subtle` (Tenant: 我的 / 团队管理; Ops: 租户 / 平台).
+- **Focus:** the shared `FOCUS_RING`.
+- **Density:** Tenant chrome = comfortable; Ops chrome = compact (shell `DensityProvider`). Hairline is `border-kumo-line` everywhere (the old `border-kumo-default` mis-token is normalized).
+
 ## Do's and Don'ts
 
 ### Do
