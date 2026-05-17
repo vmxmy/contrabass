@@ -21,7 +21,7 @@ msgstr ""
 #. placeholder {1}: imp.effectiveTeamId
 #: src/litellm-portal/tenant-portal/shell.tsx:204
 msgid "{0} 正在代表团队 {1} 操作。所有操作均被审计。"
-msgstr ""
+msgstr "{0} is acting on behalf of team {1}. All actions are audited."
 
 #. placeholder {0}: this.props.blockLabel
 #: src/litellm-portal/errors/error-boundary.tsx:43
@@ -85,7 +85,7 @@ msgstr "Download"
 
 #: src/litellm-portal/tenant-portal/screens/billing.tsx:63
 msgid "下载 {period}"
-msgstr ""
+msgstr "Download {period}"
 
 #: src/litellm-portal/tenant-portal/screens/billing.tsx:46
 #: src/litellm-portal/tenant-portal/screens/billing.tsx:72
@@ -787,7 +787,7 @@ msgstr ""
 
 #: src/litellm-portal/tenant-portal/screens/members.tsx:90
 msgid "请输入「{email}」以确认撤销"
-msgstr ""
+msgstr "Enter \"{email}\" to confirm revocation"
 
 #: src/litellm-portal/ops-console/screens/provisioning.tsx:203
 msgid "请输入团队 ID 与用户 ID"

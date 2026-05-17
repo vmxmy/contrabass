@@ -10,6 +10,15 @@ import { readFileSync, existsSync } from "node:fs";
 const EN_PO = "src/litellm-portal/i18n/locales/en/messages.po";
 const ZH_PO = "src/litellm-portal/i18n/locales/zh-CN/messages.po";
 const enPo = () => readFileSync(EN_PO, "utf8");
+const enMsgstrFor = (msgid: string): string => {
+  const po = enPo();
+  const escaped = msgid.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = po.match(
+    new RegExp(`msgid "${escaped}"\\nmsgstr ("(?:[^"\\\\]|\\\\.)*"(?:\\n"(?:[^"\\\\]|\\\\.)*")*)`),
+  );
+  if (!m) throw new Error(`no en .po entry for msgid ${JSON.stringify(msgid)}`);
+  return JSON.parse(`[${m[1].replace(/"\n"/g, '","')}]`).join("");
+};
 
 describe("F1 catalog migration", () => {
   it("po catalogs exist for both locales", () => {
@@ -24,5 +33,14 @@ describe("F1 catalog migration", () => {
   it("carries the Phase-3 net-new English translation 'Sign in' and a placeholder message", () => {
     const po = enPo();
     expect(po).toContain("Operations Console arrives in Phase 2");
+  });
+  it("reconciles the 3 placeholder messages whose en translation the exact-match seed lost", () => {
+    expect(enMsgstrFor("下载 {period}")).toBe("Download {period}");
+    expect(enMsgstrFor("请输入「{email}」以确认撤销")).toBe(
+      'Enter "{email}" to confirm revocation',
+    );
+    expect(enMsgstrFor("{0} 正在代表团队 {1} 操作。所有操作均被审计。")).toBe(
+      "{0} is acting on behalf of team {1}. All actions are audited.",
+    );
   });
 });
