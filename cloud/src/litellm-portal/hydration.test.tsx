@@ -309,12 +309,13 @@ describe("litellm-portal SSR hydration (#418 guard)", () => {
       initialData: { role: "admin" } as unknown as Parameters<typeof renderPortalSSR>[2],
     },
     {
-      // Mirrors the index.ts unauthenticated request path exactly: empty
-      // identity + null initialData. server-impl.tsx skips seeding
-      // ME_QUERY_KEY (dataWithIdentity is null), so useMe() resolves
-      // undefined on BOTH server and client → PortalIndex renders legacy
-      // UserView (#usage-panel-root) on both sides.
-      name: "unauthenticated → legacy UserView at /",
+      // Mirrors the index.ts unauthenticated request path: empty identity +
+      // null initialData. server-impl.tsx skips seeding ME_QUERY_KEY
+      // (dataWithIdentity null), so useMe() resolves undefined on BOTH server
+      // and client → PortalIndex renders the restyled UserView welcome
+      // (#portal-welcome-root) deterministically on both sides (§D.1; fully
+      // static, no Math.random/Date — #418-safe by construction).
+      name: "unauthenticated → restyled welcome at /",
       identity: {
         email: "",
         userId: "",
@@ -339,6 +340,12 @@ describe("litellm-portal SSR hydration (#418 guard)", () => {
         "zh-CN",
       );
       expect(html).toContain("<!doctype html>");
+
+      if (tc.name === "unauthenticated → restyled welcome at /") {
+        // §D.3: the restyled welcome IS the SSR-emitted unauth `/` state.
+        expect(html).toContain('id="portal-welcome-root"');
+        expect(html).not.toContain('id="usage-panel-root"');
+      }
 
       await loadSsrDocument(html);
       await hydrateLikeClient();

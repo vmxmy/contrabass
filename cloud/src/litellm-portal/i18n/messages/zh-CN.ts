@@ -3,6 +3,12 @@
  * Source locale — strings are identity-mapped (id === translation).
  */
 const messages: Record<string, string> = {
+  // §D public welcome (routes/index.tsx UserView)
+  "智云 AI 管理平台": "智云 AI 管理平台",
+  "面向团队的 AI 能力自助台。请登录以查看你的用量、密钥与团队管理。":
+    "面向团队的 AI 能力自助台。请登录以查看你的用量、密钥与团队管理。",
+  "登录": "登录",
+
   // Header / platform
   "面向智云团队的 AI 能力自助台：仪表盘聚焦用量趋势、预算与模型分布，管理操作集中到独立管理区。":
     "面向智云团队的 AI 能力自助台：仪表盘聚焦用量趋势、预算与模型分布，管理操作集中到独立管理区。",

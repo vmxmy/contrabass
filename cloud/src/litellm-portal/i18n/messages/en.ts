@@ -3,6 +3,12 @@
  * TODO(i18n): all entries below need human review before production use.
  */
 const messages: Record<string, string> = {
+  // §D public welcome (routes/index.tsx UserView)
+  "智云 AI 管理平台": "Zhiyun AI Management Platform",
+  "面向团队的 AI 能力自助台。请登录以查看你的用量、密钥与团队管理。":
+    "Your team's AI self-service console. Sign in to view your usage, keys, and team management.",
+  "登录": "Sign in",
+
   // Header / platform
   "面向智云团队的 AI 能力自助台：仪表盘聚焦用量趋势、预算与模型分布，管理操作集中到独立管理区。":
     "AI capability self-service portal for the Zhiyun team: dashboards focus on usage trends, budgets, and model distribution; management actions live in the dedicated management area.",

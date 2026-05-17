@@ -14,6 +14,11 @@
  * before any catalog edit).
  */
 export const PHASE3_KEYS = [
+  // §D public welcome (routes/index.tsx UserView)
+  "智云 AI 管理平台",
+  "面向团队的 AI 能力自助台。请登录以查看你的用量、密钥与团队管理。",
+  "登录",
+
   // SideNav group headings (tenant-portal/shell.tsx resolveNavGroups;
   // ops-console/shell.tsx t`租户` / t`平台` group headings)
   "我的",
