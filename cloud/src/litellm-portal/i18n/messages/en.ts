@@ -478,6 +478,31 @@ const messages: Record<string, string> = {
     "The enter-tenant service is temporarily unavailable. Please try again later; if it persists, contact an administrator.",
   "团队创建未成功。请稍后重试，你填写的内容未丢失；若持续请联系管理员。":
     "Team creation didn't succeed. Please try again later — nothing you typed was lost; if it persists, contact an administrator.",
+
+  // ---------------------------------------------------------------------------
+  // Phase 3 — restyle net-new keys
+  // ---------------------------------------------------------------------------
+
+  // SideNav group headings
+  "我的": "Mine",
+  "团队管理": "Team management",
+  "平台": "Platform",
+
+  // Ops global-state summary chip
+  "告警租户": "Alerting tenants",
+
+  // Chart aria (locale-driven template, §A.1)
+  "Token 用量趋势图，时间范围为 {window}，共 {points} 个 {grain} 粒度数据点。":
+    "Token usage trend chart, range {window}, {points} {grain}-grain data points.",
+
+  // §F.1 density toggle
+  "切换显示密度": "Toggle display density",
+  "紧凑": "Compact",
+  "宽松": "Comfortable",
+
+  // §F.4 BlockErrorBoundary fallback
+  "该模块加载出错": "This section failed to load",
+  "重试": "Retry",
 };
 
 export default messages;

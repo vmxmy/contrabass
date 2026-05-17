@@ -66,7 +66,17 @@ export function PanelError({
 }) {
   const { i18n } = useLingui();
   const raw = error instanceof Error ? error.message : "";
-  const message = raw ? i18n._(raw) : t`网络请求失败`;
+  // §F.3 leak guard: only resolve `raw` through the catalog when it IS a
+  // catalog message id (humanized error-message contract / known i18n key).
+  // An Error thrown OUTSIDE the extractError boundary — fetch-layer
+  // `TypeError: Failed to fetch`, a TanStack Query network error, an aborted
+  // request, a pre-extractError JSON parse throw — carries a raw technical
+  // English string that is NOT a catalog id; Lingui would echo it verbatim
+  // into the Banner (the §F.3 un-mediated-Error leak class). Narrowing to
+  // catalog ids only ever REDUCES the leak surface: catalog id → localized,
+  // non-catalog/raw → the generic, never-leaking fallback.
+  const message =
+    raw && i18n.messages[raw] !== undefined ? i18n._(raw) : t`网络请求失败`;
   return (
     <div data-panel-error>
       <Banner variant="error" title={title} description={message} />
