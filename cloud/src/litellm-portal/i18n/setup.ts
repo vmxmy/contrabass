@@ -1,13 +1,13 @@
-import { i18n as globalI18n } from "@lingui/core";
-import zhCNMessages from "./messages/zh-CN";
-import enMessages from "./messages/en";
+import { i18n as globalI18n, type Messages } from "@lingui/core";
+import { messages as zhCNMessages } from "./locales/zh-CN/messages.mjs";
+import { messages as enMessages } from "./locales/en/messages.mjs";
 
 export type SupportedLocale = "zh-CN" | "en";
 
 const SUPPORTED_LOCALES: SupportedLocale[] = ["zh-CN", "en"];
 const DEFAULT_LOCALE: SupportedLocale = "zh-CN";
 
-const catalogs: Record<SupportedLocale, Record<string, string>> = {
+const catalogs: Record<SupportedLocale, Messages> = {
   "zh-CN": zhCNMessages,
   "en": enMessages,
 };
