@@ -1,15 +1,13 @@
 import React, { useCallback } from "react";
 import { Badge } from "@cloudflare/kumo/components/badge";
-import { Banner } from "@cloudflare/kumo/components/banner";
 import { Button } from "@cloudflare/kumo/components/button";
-import { Empty } from "@cloudflare/kumo/components/empty";
-import { SkeletonLine } from "@cloudflare/kumo/components/loader";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Text } from "@cloudflare/kumo/components/text";
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
 import { useParams } from "@tanstack/react-router";
 import { useOpsTenantDetail, useStartImpersonation } from "../hooks";
+import { PanelSkeleton, PanelEmpty, PanelError } from "../../components/panel-state";
 
 export function OpsTenantDetailBody({ teamId }: { teamId: string }) {
   const { data, isLoading, isError, error } = useOpsTenantDetail(teamId);
@@ -28,27 +26,22 @@ export function OpsTenantDetailBody({ teamId }: { teamId: string }) {
 
   if (isLoading) {
     return (
-      <div id="ops-tenant-detail-root" className="space-y-3 p-6">
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
+      <div id="ops-tenant-detail-root">
+        <PanelSkeleton lines={2} />
       </div>
     );
   }
   if (isError) {
     return (
       <div id="ops-tenant-detail-root">
-        <Banner
-          variant="error"
-          title={t`租户详情加载失败`}
-          description={error instanceof Error ? error.message : t`网络请求失败`}
-        />
+        <PanelError title={t`租户详情加载失败`} error={error} />
       </div>
     );
   }
   if (!data) {
     return (
       <div id="ops-tenant-detail-root">
-        <Empty size="sm" title={t`未找到租户`} />
+        <PanelEmpty title={t`未找到租户`} />
       </div>
     );
   }
@@ -102,7 +95,7 @@ export function OpsTenantDetailBody({ teamId }: { teamId: string }) {
           </Text>
         </div>
         {data.members.length === 0 ? (
-          <Empty size="sm" title={t`暂无成员`} />
+          <PanelEmpty title={t`暂无成员`} />
         ) : (
           <div className="overflow-x-auto">
             <Table className="w-full text-sm">

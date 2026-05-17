@@ -251,6 +251,22 @@ describe("TenantOverviewScreen — member variant (adminOnly:false)", () => {
   });
 });
 
+describe("TenantOverviewScreen — §A.2 unified state", () => {
+  beforeEach(() => {
+    mockedUseTenantWebhook.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useTenantWebhook>);
+  });
+
+  it("loading state uses the unified PanelSkeleton, not a hand-written SkeletonLine stack", () => {
+    const { container } = renderWithProviders(<TenantOverviewScreen />);
+    expect(container.querySelector("[data-panel-skeleton]")).not.toBeNull();
+  });
+});
+
 // Regression: TENANT_WEBHOOK_QUERY_KEY is importable
 describe("hooks contract", () => {
   it("TENANT_WEBHOOK_QUERY_KEY is exported from hooks", () => {

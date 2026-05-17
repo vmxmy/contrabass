@@ -8,13 +8,10 @@
  */
 import React, { useCallback, useState } from "react";
 import { Badge } from "@cloudflare/kumo/components/badge";
-import { Banner } from "@cloudflare/kumo/components/banner";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
-import { Empty } from "@cloudflare/kumo/components/empty";
 import { Field } from "@cloudflare/kumo/components/field";
 import { Input } from "@cloudflare/kumo/components/input";
-import { SkeletonLine } from "@cloudflare/kumo/components/loader";
 import { Select } from "@cloudflare/kumo/components/select";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Text } from "@cloudflare/kumo/components/text";
@@ -27,6 +24,7 @@ import {
   useRevokeTenantInvite,
 } from "../hooks";
 import { MemberForbidden } from "../routes";
+import { PanelSkeleton, PanelEmpty, PanelError } from "../../components/panel-state";
 
 // ---------------------------------------------------------------------------
 // RevokeInviteDialog — typed-confirm dialog mirroring DeleteKeyButton idiom
@@ -85,7 +83,7 @@ function RevokeInviteDialog({ email }: { email: string }) {
           </Text>
         </Dialog.Description>
         {error ? (
-          <Banner variant="error" title={t`撤销失败`} description={error} />
+          <PanelError title={t`撤销失败`} error={new Error(error)} />
         ) : null}
         <Field
           label={t`输入邮箱确认`}
@@ -242,32 +240,17 @@ function InvitesTable() {
   const { data, isLoading, isError, error } = useTenantInvites();
 
   if (isLoading) {
-    return (
-      <div className="space-y-3 p-6">
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-      </div>
-    );
+    return <PanelSkeleton lines={2} />;
   }
 
   if (isError) {
-    return (
-      <Banner
-        variant="error"
-        title={t`邀请列表加载失败`}
-        description={
-          error instanceof Error ? error.message : t`网络请求失败`
-        }
-      />
-    );
+    return <PanelError title={t`邀请列表加载失败`} error={error} />;
   }
 
   const invites = data?.invites ?? [];
 
   if (invites.length === 0) {
-    return (
-      <Empty size="sm" title={t`暂无邀请记录`} />
-    );
+    return <PanelEmpty title={t`暂无邀请记录`} />;
   }
 
   return (

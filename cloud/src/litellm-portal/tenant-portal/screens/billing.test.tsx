@@ -190,11 +190,13 @@ describe("TenantBillingScreen — tenant_admin", () => {
       error: null,
     } as ReturnType<typeof useTenantBillingPeriods>);
 
-    renderWithProviders(<TenantBillingScreen />, { tenantRole: "tenant_admin" });
+    const { container } = renderWithProviders(<TenantBillingScreen />, { tenantRole: "tenant_admin" });
 
     // No download buttons during loading
     expect(screen.queryAllByRole("button", { name: /下载|download/i })).toHaveLength(0);
     expect(document.querySelector("#tenant-billing-root")).not.toBeNull();
+    // §A.2: loading state uses the unified PanelSkeleton
+    expect(container.querySelector("[data-panel-skeleton]")).not.toBeNull();
   });
 
   it("renders a Banner error when the query errors", () => {

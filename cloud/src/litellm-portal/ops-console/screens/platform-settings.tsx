@@ -7,31 +7,19 @@
  */
 import React from "react";
 import { Badge } from "@cloudflare/kumo/components/badge";
-import { Banner } from "@cloudflare/kumo/components/banner";
-import { SkeletonLine } from "@cloudflare/kumo/components/loader";
 import { Text } from "@cloudflare/kumo/components/text";
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
 import { useOpsPlatformSettings } from "../hooks";
+import { PanelSkeleton, PanelError } from "../../components/panel-state";
 
 function PlatformSettingsBody() {
   const { data, isLoading, isError, error } = useOpsPlatformSettings();
   if (isLoading) {
-    return (
-      <div className="space-y-3 p-6">
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-      </div>
-    );
+    return <PanelSkeleton lines={2} />;
   }
   if (isError || !data) {
-    return (
-      <Banner
-        variant="error"
-        title={t`平台设置加载失败`}
-        description={error instanceof Error ? error.message : t`网络请求失败`}
-      />
-    );
+    return <PanelError title={t`平台设置加载失败`} error={error} />;
   }
   return (
     <div className="space-y-5 p-6">

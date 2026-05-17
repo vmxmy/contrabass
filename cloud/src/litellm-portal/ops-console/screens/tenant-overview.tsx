@@ -1,35 +1,22 @@
 import React from "react";
-import { Banner } from "@cloudflare/kumo/components/banner";
 import { Badge } from "@cloudflare/kumo/components/badge";
-import { Empty } from "@cloudflare/kumo/components/empty";
-import { SkeletonLine } from "@cloudflare/kumo/components/loader";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Text } from "@cloudflare/kumo/components/text";
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
 import { useOpsTenants } from "../hooks";
+import { PanelSkeleton, PanelEmpty, PanelError } from "../../components/panel-state";
 
 function TenantsTable() {
   const { data, isLoading, isError, error } = useOpsTenants();
   if (isLoading) {
-    return (
-      <div className="space-y-3 p-6">
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-      </div>
-    );
+    return <PanelSkeleton lines={4} />;
   }
   if (isError) {
-    return (
-      <Banner
-        variant="error"
-        title={t`租户列表加载失败`}
-        description={error instanceof Error ? error.message : t`网络请求失败`}
-      />
-    );
+    return <PanelError title={t`租户列表加载失败`} error={error} />;
   }
   const tenants = data?.tenants ?? [];
-  if (tenants.length === 0) return <Empty size="sm" title={t`暂无租户`} />;
+  if (tenants.length === 0) return <PanelEmpty title={t`暂无租户`} />;
   return (
     <div className="overflow-x-auto">
       <Table className="w-full text-sm">

@@ -124,6 +124,17 @@ describe("TenantAlertsScreen — tenant_admin", () => {
     expect(screen.queryByText("2024-06-01T12:00:00Z")).not.toBeNull();
   });
 
+  it("loading state uses the unified PanelSkeleton (§A.2)", () => {
+    mockedUseTenantWebhook.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useTenantWebhook>);
+    const { container } = renderWithProviders(<TenantAlertsScreen />, { tenantRole: "tenant_admin" });
+    expect(container.querySelector("[data-panel-skeleton]")).not.toBeNull();
+  });
+
   it("renders an empty state when GET returns null url", () => {
     mockedUseTenantWebhook.mockReturnValue({
       data: emptyWebhook,

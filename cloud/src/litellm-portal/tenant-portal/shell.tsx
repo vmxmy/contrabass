@@ -8,6 +8,8 @@ import { useRouterState } from "@tanstack/react-router";
 import { useStopImpersonation } from "../ops-console/hooks";
 import type { PortalIdentity } from "../types";
 import { FOCUS_RING } from "../a11y/focus";
+import { DensityProvider, resolveDensity } from "../components/density";
+import { usePreferences } from "../hooks/use-preferences";
 import { applyBrandVars } from "./branding";
 
 export type ImpersonationView = { realActor: string; effectiveTeamId: string };
@@ -146,6 +148,7 @@ export function TenantPortalShell({ identity, brand, impersonation, children }: 
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const owner = isPureOwner(identity);
   const nav = resolveNav(identity);
+  const densityPref = usePreferences().data?.density;
 
   return (
     <div
@@ -153,36 +156,38 @@ export function TenantPortalShell({ identity, brand, impersonation, children }: 
       className="flex min-h-screen flex-col bg-kumo-canvas text-kumo-default"
       style={applyBrandVars(brand)}
     >
-      {impersonation ? <ImpersonationBanner imp={impersonation} /> : null}
-      <BrandBar brand={brand} />
-      {owner ? (
-        <main className="mx-auto w-full max-w-5xl px-6 py-10">
-          <OwnerPhase2Notice />
-          {children}
-        </main>
-      ) : (
-        <div className="flex flex-1">
-          <nav
-            aria-label={t`租户导航`}
-            className="w-56 shrink-0 border-r border-kumo-default bg-kumo-elevated px-3 py-6"
-          >
-            <ul className="space-y-1">
-              {nav.map((item) => (
-                <li key={item.href}>
-                  <a
-                    href={item.href}
-                    aria-current={pathname === item.href ? "page" : undefined}
-                    className={`block rounded-md px-3 py-2 text-sm font-medium text-kumo-default hover:bg-kumo-tint hover:text-kumo-strong ${FOCUS_RING}`}
-                  >
-                    {item.label}
-                  </a>
-                </li>
-              ))}
-            </ul>
-          </nav>
-          <main className="min-w-0 flex-1 px-6 py-8">{children}</main>
-        </div>
-      )}
+      <DensityProvider density={resolveDensity(densityPref, "comfortable")}>
+        {impersonation ? <ImpersonationBanner imp={impersonation} /> : null}
+        <BrandBar brand={brand} />
+        {owner ? (
+          <main className="mx-auto w-full max-w-5xl px-6 py-10">
+            <OwnerPhase2Notice />
+            {children}
+          </main>
+        ) : (
+          <div className="flex flex-1">
+            <nav
+              aria-label={t`租户导航`}
+              className="w-56 shrink-0 border-r border-kumo-default bg-kumo-elevated px-3 py-6"
+            >
+              <ul className="space-y-1">
+                {nav.map((item) => (
+                  <li key={item.href}>
+                    <a
+                      href={item.href}
+                      aria-current={pathname === item.href ? "page" : undefined}
+                      className={`block rounded-md px-3 py-2 text-sm font-medium text-kumo-default hover:bg-kumo-tint hover:text-kumo-strong ${FOCUS_RING}`}
+                    >
+                      {item.label}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </nav>
+            <main className="min-w-0 flex-1 px-6 py-8">{children}</main>
+          </div>
+        )}
+      </DensityProvider>
     </div>
   );
 }

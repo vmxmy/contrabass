@@ -6,6 +6,8 @@ import { Trans } from "@lingui/react/macro";
 import { useRouterState } from "@tanstack/react-router";
 import type { PortalIdentity } from "../types";
 import { FOCUS_RING } from "../a11y/focus";
+import { DensityProvider, resolveDensity } from "../components/density";
+import { usePreferences } from "../hooks/use-preferences";
 import { OPS_STEEL_ACCENT } from "./ops-theme";
 
 export type OpsConsoleShellProps = {
@@ -54,6 +56,7 @@ function OpsForbiddenCard() {
 
 export function OpsConsoleShell({ identity, children }: OpsConsoleShellProps) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const densityPref = usePreferences().data?.density;
   if (!isOwner(identity)) {
     return (
       <div
@@ -72,38 +75,40 @@ export function OpsConsoleShell({ identity, children }: OpsConsoleShellProps) {
       className="flex min-h-screen flex-col bg-kumo-canvas text-kumo-default"
       style={OPS_STEEL_ACCENT}
     >
-      <div
-        className="flex items-center gap-3 border-b border-kumo-default bg-kumo-elevated px-6 py-4"
-        aria-label={t`运营控制台`}
-      >
-        <Text variant="heading3" as="span" className="truncate text-kumo-strong">
-          <Trans>运营控制台</Trans>
-        </Text>
-        <span className="rounded-full bg-kumo-canvas px-2 py-0.5 text-xs font-medium text-kumo-subtle">
-          <Trans>内部·特权</Trans>
-        </span>
-      </div>
-      <div className="flex flex-1">
-        <nav
-          aria-label={t`运营导航`}
-          className="w-56 shrink-0 border-r border-kumo-default bg-kumo-elevated px-3 py-6"
+      <DensityProvider density={resolveDensity(densityPref, "compact")}>
+        <div
+          className="flex items-center gap-3 border-b border-kumo-default bg-kumo-elevated px-6 py-4"
+          aria-label={t`运营控制台`}
         >
-          <ul className="space-y-1">
-            {OPS_NAV.map((item) => (
-              <li key={item.href}>
-                <a
-                  href={item.href}
-                  aria-current={pathname === item.href ? "page" : undefined}
-                  className={`block rounded-md px-3 py-2 text-sm font-medium text-kumo-default hover:bg-kumo-tint hover:text-kumo-strong ${FOCUS_RING}`}
-                >
-                  {item.label}
-                </a>
-              </li>
-            ))}
-          </ul>
-        </nav>
-        <main className="min-w-0 flex-1 px-6 py-8">{children}</main>
-      </div>
+          <Text variant="heading3" as="span" className="truncate text-kumo-strong">
+            <Trans>运营控制台</Trans>
+          </Text>
+          <span className="rounded-full bg-kumo-canvas px-2 py-0.5 text-xs font-medium text-kumo-subtle">
+            <Trans>内部·特权</Trans>
+          </span>
+        </div>
+        <div className="flex flex-1">
+          <nav
+            aria-label={t`运营导航`}
+            className="w-56 shrink-0 border-r border-kumo-default bg-kumo-elevated px-3 py-6"
+          >
+            <ul className="space-y-1">
+              {OPS_NAV.map((item) => (
+                <li key={item.href}>
+                  <a
+                    href={item.href}
+                    aria-current={pathname === item.href ? "page" : undefined}
+                    className={`block rounded-md px-3 py-2 text-sm font-medium text-kumo-default hover:bg-kumo-tint hover:text-kumo-strong ${FOCUS_RING}`}
+                  >
+                    {item.label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </nav>
+          <main className="min-w-0 flex-1 px-6 py-8">{children}</main>
+        </div>
+      </DensityProvider>
     </div>
   );
 }

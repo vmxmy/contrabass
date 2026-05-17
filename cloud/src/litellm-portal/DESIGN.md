@@ -450,6 +450,28 @@ These are human-judgment acceptances run during Task-10 staging review (cross-re
 - **5-second test**: screenshot Tenant `/` (overview) and Ops `/ops` (tenant-overview), light AND dark. Show each to a reviewer for exactly 5s, then hide. The reviewer must, from memory, name (a) the page's primary CTA/action and (b) the main heading. **Pass bar: reviewer correctly names BOTH for all 4 screenshots.** Fail → visual hierarchy not strong enough (revisit §B.1/§B.2 emphasis, NOT the type scale alone).
 - **Blur test**: apply heavy Gaussian blur (≈12px) to the same 4 screenshots. The visual centre-of-mass / energy must land on the primary content region (KPI band / hero panel / the tenant table), NOT on chrome/nav/decoration. **Pass bar: blurred focal weight is the content region in all 4.** Fail → de-emphasise chrome / strengthen content surface.
 
+## State Treatments (Phase 3 §A.2)
+
+Every data-panel / card query-state branch uses exactly ONE of four contracts (`components/panel-state.tsx`). Screens MUST NOT hand-write `SkeletonLine`/`Empty`/`Banner variant="error"` for state branches (guard test enforced).
+
+| Contract | Wraps | Use | Shape |
+|---|---|---|---|
+| `PanelSkeleton` | `SsrSafeSkeleton` (Task 0B; deterministic on SSR + client-first-render, swaps to Kumo `SkeletonLine` post-hydration) — NOT raw Kumo `SkeletonLine` (its unseeded `Math.random` shimmer is a #418 source) | First-paint placeholder | title row (12px) + `lines` content rows (16px), `p-6`, `space-y-3` |
+| `PanelEmpty` | Kumo `Empty` size=sm | No rows | required title, optional description/action, centered `py-10` |
+| `PanelError` | Kumo `Banner` variant=error | Request failed | title + `error instanceof Error ? error.message : 网络请求失败` |
+| `PanelLoading` | Kumo `Loader` | Inline/partial (buttons, local) | centered `py-6`, `aria-live=polite`, accessible label |
+
+## Density Scale (Phase 3 §A.2 + §F.1 V2.0 §1.2)
+
+Density is a SHELL decision pushed via `DensityProvider` (`components/density.tsx`); screens read `useDensity()`/`densityClasses()` and never hard-code padding. Names map only to existing spacing tokens — no new numbers. A user preference (`UserPreferences.density`, persisted via the existing preferences channel, SSR-seeded) overrides the shell default via the pure SSR-safe `resolveDensity(pref, shellDefault)` (#418-safe — same channel as the theme toggle).
+
+| Density | Shell default | card | stack | grid | cell (§F.1 table) | row (§F.1 table) |
+|---|---|---|---|---|---|---|
+| `comfortable` | Tenant Portal (outward, editorial) | `p-6` | `space-y-6` | `gap-4` | `px-4 py-3` | `h-auto` |
+| `compact` | Ops Console (inward, B-端 cockpit) | `p-4` | `space-y-4` | `gap-4` | `px-3 py-1.5` | `h-9` (≤36px) |
+
+This is the "同源异质" differentiation on the density axis: §A.2 = the shell-level `p-6`/`p-4` baseline; §F.1 = the B-端 cockpit deepening (compact table cell/row tiers + a user-persisted comfortable↔compact toggle, Tenant stays comfortable). Phase 1/2 had no density difference at all.
+
 ## Do's and Don'ts
 
 ### Do

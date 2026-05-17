@@ -1,7 +1,4 @@
 import React from "react";
-import { Banner } from "@cloudflare/kumo/components/banner";
-import { Empty } from "@cloudflare/kumo/components/empty";
-import { SkeletonLine } from "@cloudflare/kumo/components/loader";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Text } from "@cloudflare/kumo/components/text";
 import { useParams } from "@tanstack/react-router";
@@ -9,27 +6,17 @@ import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
 import { useAdminAudit } from "../../hooks/use-admin-audit";
 import { useOpsAuditEvent } from "../hooks";
+import { PanelSkeleton, PanelEmpty, PanelError } from "../../components/panel-state";
 
 export function AuditEventDetailCard({ eventId }: { eventId: string }) {
   const { data, isLoading, isError, error } = useOpsAuditEvent(eventId);
   if (isLoading) {
-    return (
-      <div className="space-y-3 p-6">
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-      </div>
-    );
+    return <PanelSkeleton lines={2} />;
   }
   if (isError) {
-    return (
-      <Banner
-        variant="error"
-        title={t`审计事件加载失败`}
-        description={error instanceof Error ? error.message : t`网络请求失败`}
-      />
-    );
+    return <PanelError title={t`审计事件加载失败`} error={error} />;
   }
-  if (!data) return <Empty size="sm" title={t`未找到审计事件`} />;
+  if (!data) return <PanelEmpty title={t`未找到审计事件`} />;
   return (
     <article id="ops-audit-detail-root" className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
       <div className="border-b border-kumo-line bg-kumo-elevated p-6">
@@ -72,24 +59,13 @@ export function AuditEventDetailCard({ eventId }: { eventId: string }) {
 function AuditFeedTable() {
   const { data, isLoading, isError, error } = useAdminAudit({ page: 1, size: 50 });
   if (isLoading) {
-    return (
-      <div className="space-y-3 p-6">
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-      </div>
-    );
+    return <PanelSkeleton lines={2} />;
   }
   if (isError) {
-    return (
-      <Banner
-        variant="error"
-        title={t`审计日志加载失败`}
-        description={error instanceof Error ? error.message : t`网络请求失败`}
-      />
-    );
+    return <PanelError title={t`审计日志加载失败`} error={error} />;
   }
   const events = data?.events ?? [];
-  if (events.length === 0) return <Empty size="sm" title={t`暂无审计记录`} />;
+  if (events.length === 0) return <PanelEmpty title={t`暂无审计记录`} />;
   return (
     <div className="overflow-x-auto">
       <Table className="w-full text-sm">

@@ -6,7 +6,6 @@
  * every `/api/admin/*` endpoint. This component does NOT self-gate.
  */
 import React, { useCallback, useState } from "react";
-import { Banner } from "@cloudflare/kumo/components/banner";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Field } from "@cloudflare/kumo/components/field";
 import { Input } from "@cloudflare/kumo/components/input";
@@ -19,6 +18,7 @@ import {
   useOpsCreateInvite,
   useOpsSetTenantRole,
 } from "../hooks";
+import { PanelError } from "../../components/panel-state";
 
 const REASON = "ops_provisioning";
 
@@ -62,7 +62,7 @@ function CreateTeamForm() {
       </div>
       <div className="space-y-5 p-6">
         {error ? (
-          <Banner variant="error" title={t`创建团队失败`} description={error} />
+          <PanelError title={t`创建团队失败`} error={new Error(error)} />
         ) : null}
         <Field label={t`团队名称`} required={true}>
           <Input
@@ -135,7 +135,7 @@ function InviteForm() {
       </div>
       <div className="space-y-5 p-6">
         {error ? (
-          <Banner variant="error" title={t`邀请发送失败`} description={error} />
+          <PanelError title={t`邀请发送失败`} error={new Error(error)} />
         ) : null}
         <Field label={t`邮箱`} required={true}>
           <Input
@@ -230,7 +230,7 @@ function TenantRoleForm() {
       </div>
       <div className="space-y-5 p-6">
         {error ? (
-          <Banner variant="error" title={t`指派角色失败`} description={error} />
+          <PanelError title={t`指派角色失败`} error={new Error(error)} />
         ) : null}
         <Field label={t`团队 ID`} required={true}>
           <Input

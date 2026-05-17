@@ -1,39 +1,32 @@
 import React from "react";
-import { Banner } from "@cloudflare/kumo/components/banner";
-import { Empty } from "@cloudflare/kumo/components/empty";
-import { SkeletonLine } from "@cloudflare/kumo/components/loader";
 import { Text } from "@cloudflare/kumo/components/text";
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
 import { useParams } from "@tanstack/react-router";
 import { useOpsUserDetail } from "../hooks";
+import { PanelSkeleton, PanelEmpty, PanelError } from "../../components/panel-state";
 
 export function OpsUserDetailBody({ userId }: { userId: string }) {
   const { data, isLoading, isError, error } = useOpsUserDetail(userId);
 
   if (isLoading) {
     return (
-      <div id="ops-user-detail-root" className="space-y-3 p-6">
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
+      <div id="ops-user-detail-root">
+        <PanelSkeleton lines={2} />
       </div>
     );
   }
   if (isError) {
     return (
       <div id="ops-user-detail-root">
-        <Banner
-          variant="error"
-          title={t`用户详情加载失败`}
-          description={error instanceof Error ? error.message : t`网络请求失败`}
-        />
+        <PanelError title={t`用户详情加载失败`} error={error} />
       </div>
     );
   }
   if (!data) {
     return (
       <div id="ops-user-detail-root">
-        <Empty size="sm" title={t`未找到用户`} />
+        <PanelEmpty title={t`未找到用户`} />
       </div>
     );
   }
