@@ -22,7 +22,7 @@ const ADMIN_GZIP_LIMIT = 80 * 1024;
 const linguiConfig = makeConfig({
   locales: ["zh-CN", "en"],
   sourceLocale: "zh-CN",
-  catalogs: [{ path: "src/litellm-portal/i18n/messages/{locale}", include: ["src/litellm-portal"] }],
+  catalogs: [{ path: "src/litellm-portal/i18n/locales/{locale}/messages", include: ["src/litellm-portal"] }],
 });
 
 const linguiMacroTransformPlugin = {
