@@ -266,6 +266,15 @@ const messages: Record<string, string> = {
   "暂无账单": "暂无账单",
   "下载失败": "下载失败",
 
+  // TenantOverviewScreen (net-new keys only; 团队/累计花费/高频模型 already defined above)
+  "当前租户团队": "当前租户团队",
+  "个人花费": "个人花费",
+  "团队预算": "团队预算",
+  "已配置": "已配置",
+  "加载失败": "加载失败",
+  "次请求": "次请求",
+  "个模型": "个模型",
+
   // TenantMembersScreen
   "成员与邀请": "成员与邀请",
   "管理团队成员的邀请状态。": "管理团队成员的邀请状态。",

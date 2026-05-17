@@ -267,6 +267,15 @@ const messages: Record<string, string> = {
   "暂无账单": "No billing periods",
   "下载失败": "Download failed",
 
+  // TenantOverviewScreen (net-new keys only; 团队/累计花费/高频模型 already defined above)
+  "当前租户团队": "Current tenant team",
+  "个人花费": "Personal spend",
+  "团队预算": "Team budget",
+  "已配置": "Configured",
+  "加载失败": "Load failed",
+  "次请求": "requests",
+  "个模型": "models",
+
   // TenantMembersScreen
   "成员与邀请": "Members & Invites",
   "管理团队成员的邀请状态。": "Manage team member invite statuses.",

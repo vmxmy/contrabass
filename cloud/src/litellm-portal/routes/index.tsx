@@ -5,6 +5,7 @@ import { IdentityBar } from "../identity-bar";
 import { UsageDashboard } from "../dashboard/views/usage-dashboard";
 import { useMe } from "../hooks/use-me";
 import { TenantPortalShell } from "../tenant-portal/shell";
+import { TenantOverviewScreen } from "../tenant-portal/screens/overview";
 import type { PortalIdentity } from "../types";
 import type { Me } from "../schemas";
 
@@ -39,8 +40,8 @@ function PortalIndex() {
 
   return (
     <TenantPortalShell identity={toPortalIdentity(me)} brand={toTenantBrand(me)}>
-      {/* Phase 1 Task 1w: shell only; screen content lands in Tasks 2-10 */}
-      {null}
+      {/* Phase 1 Task 8: Overview screen wired as the `/` home body. */}
+      <TenantOverviewScreen />
     </TenantPortalShell>
   );
 }
