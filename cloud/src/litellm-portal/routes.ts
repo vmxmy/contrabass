@@ -750,6 +750,7 @@ function impersonationEnvelope(c: Context<HonoEnv>): ImpersonationAuditEnvelope 
 
 const meApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get("/me", (c) => {
   const identity = c.get("identity");
+  const imp = c.get("impersonation");
   return c.json(
     MeSchema.parse({
       email: identity.email,
@@ -759,6 +760,10 @@ const meApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get("/me", (c) 
       role: identity.role,
       tenantRole: identity.tenantRole,
       tenantTeamId: identity.tenantTeamId,
+      impersonation:
+        imp == null
+          ? null
+          : { realActor: imp.realActor, effectiveTeamId: imp.effectiveTeamId },
     }),
   );
 });

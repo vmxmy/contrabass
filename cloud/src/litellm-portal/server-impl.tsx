@@ -23,6 +23,7 @@ export async function renderPortalSSR(
   nonce: string,
   requestUrl?: string,
   acceptLanguage?: string | null,
+  impersonation: { realActor: string; effectiveTeamId: string } | null = null,
 ): Promise<string> {
   const title = portalDisplayName(env);
 
@@ -68,6 +69,7 @@ export async function renderPortalSSR(
           role: identity.role,
           tenantRole: identity.tenantRole,
           tenantTeamId: identity.tenantTeamId,
+          impersonation,
         });
         if (meParsed.success) {
           serverQueryClient.setQueryData(ME_QUERY_KEY, meParsed.data);

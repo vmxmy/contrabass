@@ -20,6 +20,10 @@ export const MeSchema = z.object({
   role: z.enum(["admin", "user", "none"]),
   tenantRole: z.enum(["tenant_admin", "member"]).nullable(),
   tenantTeamId: z.string().nullable(),
+  impersonation: z
+    .object({ realActor: z.string(), effectiveTeamId: z.string() })
+    .nullable()
+    .optional(),
 });
 
 export type Me = z.infer<typeof MeSchema>;

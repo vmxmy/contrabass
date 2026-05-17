@@ -3,6 +3,7 @@ import { kumoStandaloneCss } from "./kumo-css.generated";
 import { authenticateRequest } from "./auth";
 import { cssResponse, htmlResponse, javascriptResponse, jsonResponse, securityHeaders } from "./utils";
 import { resolveIdentity } from "./roles";
+import { readImpersonationCookie, verifyImpersonationToken } from "./impersonation";
 import { app as honoApp, loadDashboard } from "./routes";
 import { detectLeakInResponse } from "./security/leak-detector";
 import { withSecurityHeaders } from "./security/headers";
@@ -108,6 +109,11 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
           }
           const initialData: JsonValue =
             dashboard !== null ? dashboard : { error: dashboardError ?? "dashboard_load_failed" };
+          const impTok = readImpersonationCookie(request);
+          const imp =
+            impTok && env.PORTAL_SESSION_SECRET
+              ? await verifyImpersonationToken(env.PORTAL_SESSION_SECRET, impTok, Date.now())
+              : null;
           const html = await renderPortalSSR(
             env,
             identityResult.identity,
@@ -115,6 +121,7 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
             nonce,
             request.url,
             request.headers.get("accept-language"),
+            imp == null ? null : { realActor: imp.realActor, effectiveTeamId: imp.effectiveTeamId },
           );
           return htmlResponse(html, nonce);
         }
@@ -129,6 +136,7 @@ export async function handleLiteLLMPortalRequest(request: Request, env: LiteLLMP
       nonce,
       request.url,
       request.headers.get("accept-language"),
+      null,
     );
     return htmlResponse(html, nonce);
   }

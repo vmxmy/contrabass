@@ -1,10 +1,14 @@
 import React from "react";
 import { Banner } from "@cloudflare/kumo/components/banner";
+import { Button } from "@cloudflare/kumo/components/button";
 import { Text } from "@cloudflare/kumo/components/text";
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
+import { useStopImpersonation } from "../ops-console/hooks";
 import type { PortalIdentity } from "../types";
 import { applyBrandVars } from "./branding";
+
+export type ImpersonationView = { realActor: string; effectiveTeamId: string };
 
 export type TenantBrand = {
   name: string;
@@ -15,6 +19,7 @@ export type TenantBrand = {
 export type TenantPortalShellProps = {
   identity: PortalIdentity;
   brand: TenantBrand;
+  impersonation?: ImpersonationView | null;
   children: React.ReactNode;
 };
 
@@ -102,7 +107,40 @@ function OwnerPhase2Notice() {
   );
 }
 
-export function TenantPortalShell({ identity, brand, children }: TenantPortalShellProps) {
+function ImpersonationBanner({ imp }: { imp: ImpersonationView }) {
+  const stop = useStopImpersonation();
+  return (
+    <div role="alert" aria-live="assertive" id="impersonation-banner-root">
+      <Banner
+        variant="warning"
+        title={t`正在以租户身份操作`}
+        description={
+          <Trans>
+            {imp.realActor} 正在代表团队 {imp.effectiveTeamId} 操作。所有操作均被审计。
+          </Trans>
+        }
+        action={
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={stop.isPending}
+            onClick={() =>
+              stop.mutate(undefined, {
+                onSettled: () => {
+                  if (typeof window !== "undefined") window.location.assign("/ops");
+                },
+              })
+            }
+          >
+            <Trans>退出代操作</Trans>
+          </Button>
+        }
+      />
+    </div>
+  );
+}
+
+export function TenantPortalShell({ identity, brand, impersonation, children }: TenantPortalShellProps) {
   const owner = isPureOwner(identity);
   const nav = resolveNav(identity);
 
@@ -112,6 +150,7 @@ export function TenantPortalShell({ identity, brand, children }: TenantPortalShe
       className="flex min-h-screen flex-col bg-kumo-canvas text-kumo-default"
       style={applyBrandVars(brand)}
     >
+      {impersonation ? <ImpersonationBanner imp={impersonation} /> : null}
       <BrandBar brand={brand} />
       {owner ? (
         <main className="mx-auto w-full max-w-5xl px-6 py-10">
