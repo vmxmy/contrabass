@@ -22,6 +22,7 @@ import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
 import { TenantUsageScreen } from "./screens/usage";
 import { TenantKeysScreen } from "./screens/keys";
+import { TenantMembersScreen } from "./screens/members";
 
 function Placeholder({ id, label }: { id: string; label: React.ReactNode }) {
   return (
@@ -54,7 +55,7 @@ const TENANT_ROUTE_SPECS: TenantRouteSpec[] = [
   { path: "/", id: "tenant-overview-root", label: <Trans>概览</Trans>, adminOnly: false },
   { path: "/usage", id: "tenant-usage-root", label: <Trans>用量</Trans>, adminOnly: false, component: TenantUsageScreen },
   { path: "/keys", id: "tenant-keys-root", label: <Trans>API Key</Trans>, adminOnly: false, component: TenantKeysScreen },
-  { path: "/members", id: "tenant-members-root", label: <Trans>成员</Trans>, adminOnly: true },
+  { path: "/members", id: "tenant-members-root", label: <Trans>成员</Trans>, adminOnly: true, component: TenantMembersScreen },
   { path: "/alerts", id: "tenant-alerts-root", label: <Trans>预算</Trans>, adminOnly: true },
   { path: "/billing", id: "tenant-billing-root", label: <Trans>账单</Trans>, adminOnly: true },
 ];
@@ -82,7 +83,7 @@ export function createTenantPortalRoutes(
       getParentRoute: () => parentRoute,
       path: spec.path,
       component: spec.adminOnly
-        ? MemberForbidden
+        ? (spec.component ?? MemberForbidden)
         : (spec.component ?? (() => <Placeholder id={spec.id} label={spec.label} />)),
     }),
   );

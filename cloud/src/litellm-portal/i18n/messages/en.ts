@@ -232,6 +232,26 @@ const messages: Record<string, string> = {
   "待实现": "Coming soon",
   "无权访问": "No access",
   "该页面仅对团队管理员开放。": "This page is available to team admins only.",
+
+  // TenantMembersScreen
+  "成员与邀请": "Members & Invites",
+  "管理团队成员的邀请状态。": "Manage team member invite statuses.",
+  "发送邀请": "Send Invite",
+  "邀请新成员加入当前团队。": "Invite a new member to the current team.",
+  "邀请列表加载失败": "Failed to load invites",
+  "暂无邀请记录": "No invites yet",
+  "状态": "Status",
+  "撤销": "Revoke",
+  "撤销邀请？": "Revoke invite?",
+  "将撤销「{email}」的邀请。此操作不可撤销。": "The invite for \"{email}\" will be revoked. This action cannot be undone.",
+  "撤销失败": "Revoke failed",
+  "输入邮箱确认": "Type email to confirm",
+  "请输入「${email}」以确认撤销": "Enter \"${email}\" to confirm revocation",
+  "确认撤销": "Confirm revoke",
+  "请输入邮箱": "Please enter an email",
+  "邀请发送失败": "Failed to send invite",
+  "邀请": "Invite",
+  "管理员": "Admin",
 };
 
 export default messages;
