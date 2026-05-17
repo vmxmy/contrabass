@@ -4,7 +4,7 @@ import { usePortalDarkMode, kumoAxisColors, categorical, TOOLTIP_STYLE } from ".
 
 export type TrendSeries = { name: string; points: Array<[number, number]>; dashed?: boolean };
 
-export function TrendChart({ series, height = 300 }: { series: TrendSeries[]; height?: number }) {
+export function TrendChart({ series, height = 300, ariaLabel }: { series: TrendSeries[]; height?: number; ariaLabel?: string }) {
   const dark = usePortalDarkMode();
   const ref = useRef<HTMLDivElement>(null);
 
@@ -35,5 +35,13 @@ export function TrendChart({ series, height = 300 }: { series: TrendSeries[]; he
   if (series.length === 0) {
     return <p className="py-12 text-center text-sm text-kumo-subtle">暂无数据</p>;
   }
-  return <div data-chart="trend" ref={ref} style={{ width: "100%", height }} />;
+  return (
+    <div
+      data-chart="trend"
+      ref={ref}
+      role={ariaLabel != null ? "img" : undefined}
+      aria-label={ariaLabel}
+      style={{ width: "100%", height }}
+    />
+  );
 }

@@ -302,20 +302,20 @@ The page rhythm rotates three modes:
 ### Hierarchy
 | Token | Size | Weight | Line Height | Use |
 |---|---|---|---|---|
-| Page title | 30px → 36px desktop | 600 | 1.2 | Platform name |
+| Page title | 28px → 32px desktop | 600 | 1.2 | Platform name |
 | Section title | 18px | 600 | 1.33 | Card headers, panel titles |
 | Metric value | 28px | 600 | 1.2 | KPI numbers, mono |
-| Metric label | 12px | 600 | 1.4 | uppercase, tracking-wider |
+| Label | 12px | 600 | 1.4 | uppercase, tracking-wider — metric labels & table headers |
 | Body | 14px → 16px | 400 | 1.5 | Descriptions, running text |
 | Caption | 13px | 400 | 1.5 | Meta, timestamps |
-| Table header | 12px | 600 | 1.4 | uppercase, tracking-wider |
 | Mono data | 14px → 18px | 500 | 1.4 | All numbers, prices, tokens |
 
 ### Principles
 - **Headings at weight 600**, never 700+. Signals calm authority, not urgency.
 - **Every number in monospace** — prices, token counts, budgets, RPM/TPM.
-- **Metric labels are 12px uppercase with tracking-wider** — visually subordinate without being tiny.
+- **Labels are 12px uppercase with tracking-wider** — the single subordinate tier for both metric labels and table headers; visually subordinate without being tiny.
 - **Page title uses negative letter-spacing** (`tracking-tight`); body stays at 0.
+- **Type scale: 7 tiers.** Largest heading (Page title 32px desktop) : body (16px) = 2.0× — at the V2.0 §1.1 ceiling, intentional for an institutional ops dashboard (mobile 28px : 14px = 2.0× likewise). Weight is unchanged (≤ 600); only the page-title px was lowered to hold the ≤ 2× ratio. Enforced by `a11y/type-scale.test.ts` (reads this table as the token source).
 
 ## Layout
 
@@ -435,6 +435,20 @@ Pill for interactive; xl for containers; sm for embedded tiles. Sharp corners ab
 - Rounded `rounded-md` (12px), height 40px.
 - Border `ring-1 ring-kumo-line`, focus `focus-visible:ring-2 focus-visible:ring-kumo-brand`.
 - Usage time controls intentionally avoid Select; reserve Select for create-key model/duration inputs.
+
+## Focus & Accessibility (Phase 3 §A.1)
+
+- The portal-wide focus ring is `focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:ring-offset-2 focus-visible:outline-none` (`a11y/focus.ts` `FOCUS_RING`) — the single source for nav links, panel actions and clickable cards. Browser-default outline is no longer relied upon.
+- `--kumo-brand` resolves to the tenant brand (Tenant Portal) or fixed steel (Ops). Its non-text contrast (≥ 3:1 WCAG SC 1.4.11) on both the light and dark canvas is enforced by `tenant-portal/branding.ts` for any legal brand.
+- Every nav-mapped active navigation link emits `aria-current="page"` (detail routes `$eventId`/`$teamId`/`$userId` have no nav entry → no `aria-current`, by design). The impersonation banner remains `role="alert" aria-live="assertive"` (regression-guarded).
+- The rendered usage chart (`dashboard/charts/trend-chart.tsx`) exposes `role="img"` + a locale-driven `aria-label` (built by `buildChartAriaDescription` + the dashboard's `t`-macro template; the chart island stays macro-free) — it had NO accessible name before Phase 3.
+
+### Type-scale manual acceptance (§F.5 / V2.0 §1.1 — Task-10 Step-2 sub-items)
+
+These are human-judgment acceptances run during Task-10 staging review (cross-referenced from the Task-10 Step-2 manual checklist; recorded here as the durable design contract — no automatable assertion):
+
+- **5-second test**: screenshot Tenant `/` (overview) and Ops `/ops` (tenant-overview), light AND dark. Show each to a reviewer for exactly 5s, then hide. The reviewer must, from memory, name (a) the page's primary CTA/action and (b) the main heading. **Pass bar: reviewer correctly names BOTH for all 4 screenshots.** Fail → visual hierarchy not strong enough (revisit §B.1/§B.2 emphasis, NOT the type scale alone).
+- **Blur test**: apply heavy Gaussian blur (≈12px) to the same 4 screenshots. The visual centre-of-mass / energy must land on the primary content region (KPI band / hero panel / the tenant table), NOT on chrome/nav/decoration. **Pass bar: blurred focal weight is the content region in all 4.** Fail → de-emphasise chrome / strengthen content surface.
 
 ## Do's and Don'ts
 

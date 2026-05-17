@@ -3,7 +3,9 @@ import { Text } from "@cloudflare/kumo/components/text";
 import { Empty } from "@cloudflare/kumo/components/empty";
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
+import { useRouterState } from "@tanstack/react-router";
 import type { PortalIdentity } from "../types";
+import { FOCUS_RING } from "../a11y/focus";
 import { OPS_STEEL_ACCENT } from "./ops-theme";
 
 export type OpsConsoleShellProps = {
@@ -51,6 +53,7 @@ function OpsForbiddenCard() {
 }
 
 export function OpsConsoleShell({ identity, children }: OpsConsoleShellProps) {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
   if (!isOwner(identity)) {
     return (
       <div
@@ -90,7 +93,8 @@ export function OpsConsoleShell({ identity, children }: OpsConsoleShellProps) {
               <li key={item.href}>
                 <a
                   href={item.href}
-                  className="block rounded-md px-3 py-2 text-sm font-medium text-kumo-default hover:bg-kumo-canvas hover:text-kumo-strong"
+                  aria-current={pathname === item.href ? "page" : undefined}
+                  className={`block rounded-md px-3 py-2 text-sm font-medium text-kumo-default hover:bg-kumo-tint hover:text-kumo-strong ${FOCUS_RING}`}
                 >
                   {item.label}
                 </a>

@@ -9,6 +9,8 @@ import { useAdminUsers } from "../../hooks/use-admin-users";
 import { KpiBand } from "../panels/kpi-band";
 import { AlertPanel, type AlertItem } from "../panels/alert-panel";
 import { TrendChart } from "../charts/trend-chart";
+import { buildChartAriaDescription } from "../charts/build-chart-aria";
+import { t } from "@lingui/core/macro";
 import { ModelDonut } from "../charts/model-donut";
 import { RankBar } from "../charts/rank-bar";
 import { UserTable, type UserRow } from "../panels/user-table";
@@ -126,6 +128,11 @@ export function UsageDashboard({ initialScope, initialWindow }: UsageDashboardPr
     value: user.points.reduce((sum, point) => sum + point.spend, 0),
   }));
 
+  const trendAriaLabel = buildChartAriaDescription(
+    { windowLabel: win, points: trendSeries[0]?.points.length ?? 0, grain: data?.grain ?? "" },
+    { template: t`Token 用量趋势图，时间范围为 '{'window'}'，共 '{'points'}' 个 '{'grain'}' 粒度数据点。` },
+  );
+
   return (
     <section className="space-y-4" aria-label="用量仪表盘">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -159,7 +166,7 @@ export function UsageDashboard({ initialScope, initialWindow }: UsageDashboardPr
             {data.empty ? (
               <DashboardStatus>该时间段暂无数据</DashboardStatus>
             ) : (
-              <TrendChart series={trendSeries} />
+              <TrendChart series={trendSeries} ariaLabel={trendAriaLabel} />
             )}
           </Panel>
           {resolvedScope === "global" ? (

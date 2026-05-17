@@ -4,8 +4,10 @@ import { Button } from "@cloudflare/kumo/components/button";
 import { Text } from "@cloudflare/kumo/components/text";
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
+import { useRouterState } from "@tanstack/react-router";
 import { useStopImpersonation } from "../ops-console/hooks";
 import type { PortalIdentity } from "../types";
+import { FOCUS_RING } from "../a11y/focus";
 import { applyBrandVars } from "./branding";
 
 export type ImpersonationView = { realActor: string; effectiveTeamId: string };
@@ -141,6 +143,7 @@ function ImpersonationBanner({ imp }: { imp: ImpersonationView }) {
 }
 
 export function TenantPortalShell({ identity, brand, impersonation, children }: TenantPortalShellProps) {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
   const owner = isPureOwner(identity);
   const nav = resolveNav(identity);
 
@@ -168,7 +171,8 @@ export function TenantPortalShell({ identity, brand, impersonation, children }: 
                 <li key={item.href}>
                   <a
                     href={item.href}
-                    className="block rounded-md px-3 py-2 text-sm font-medium text-kumo-default hover:bg-kumo-canvas hover:text-kumo-strong"
+                    aria-current={pathname === item.href ? "page" : undefined}
+                    className={`block rounded-md px-3 py-2 text-sm font-medium text-kumo-default hover:bg-kumo-tint hover:text-kumo-strong ${FOCUS_RING}`}
                   >
                     {item.label}
                   </a>

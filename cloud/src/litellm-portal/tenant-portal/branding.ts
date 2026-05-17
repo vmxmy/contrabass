@@ -150,3 +150,10 @@ export function applyBrandVars(b: {
     "--kumo-brand-hover": darkenHex(b.primaryColor),
   } as React.CSSProperties;
 }
+
+// ---------------------------------------------------------------------------
+// Re-exports for a11y (Task 1) and the §C extended-surface guard (Task 8).
+// Pure WCAG math; no behavior change — only widens visibility.
+// ---------------------------------------------------------------------------
+
+export { relativeLuminanceFromHex, contrastRatio, darkenHex };
