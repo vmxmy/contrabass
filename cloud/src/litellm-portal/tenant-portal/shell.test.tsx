@@ -3,7 +3,7 @@
  */
 import React from "react";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { I18nProvider } from "@lingui/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
@@ -40,7 +40,7 @@ const pureOwnerMe: Me = {
 // earlier draft of this harness omitted — without it the matched route's
 // component is not resolved before render and `useRouterState` reads an
 // unsettled location). MUST be awaited at the call site.
-async function renderTenantAt(path: string, me: Me) {
+async function renderTenantAt(path: string, me: Me = adminMe) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   qc.setQueryData(ME_QUERY_KEY, me);
   const router = createPortalRouter(
@@ -121,5 +121,38 @@ describe("TenantPortalShell a11y (§A.1)", () => {
         expect(d.startsWith("--kumo-brand")).toBe(true);
       }
     }
+  });
+});
+
+describe("TenantPortalShell §B.1 restyle (rendered via production router at a subroute)", () => {
+  it("renders the brand identity summary bar at /usage (subroute the shell now wraps — Task-0 guard)", async () => {
+    await renderTenantAt("/usage");
+    await waitFor(() => {
+      expect(document.querySelector("[data-brand-summary-bar]")).not.toBeNull();
+    });
+    expect(document.querySelector("[data-brand-alert-dot]")).not.toBeNull();
+  });
+
+  it("the summary bar uses border-kumo-line (not border-kumo-default)", async () => {
+    await renderTenantAt("/usage");
+    const bar = await waitFor(() => {
+      const el = document.querySelector("[data-brand-summary-bar]") as HTMLElement | null;
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(bar.className).toContain("border-kumo-line");
+    expect(bar.className).not.toContain("border-kumo-default");
+  });
+
+  it("renders the shared SideNav with grouped items for a tenant_admin at /usage", async () => {
+    await renderTenantAt("/usage");
+    const navEl = await screen.findByRole("navigation");
+    const nav = within(navEl);
+    expect(nav.getByText("我的")).toBeTruthy();
+    expect(nav.getByText("团队管理")).toBeTruthy();
+    // The SideNav (Task 4) is visible on a tenant SUBROUTE, not only `/` —
+    // this is the concrete regression guard that Task-0's pathless layout
+    // mounts the shell across the tenant subtree.
+    expect(nav.getByRole("link", { name: /用量|usage/i }).getAttribute("href")).toBe("/usage");
   });
 });
