@@ -16,7 +16,7 @@ function wrap(ui: React.ReactElement) {
   return render(<I18nProvider i18n={i18n}>{ui}</I18nProvider>);
 }
 
-// Mirrors __root.tsx:250's production wiring: the whole app tree is wrapped in
+// Mirrors __root.tsx's production wiring: the whole app tree is wrapped in
 // <LinkProvider component={KumoRouterLink}>, where KumoRouterLink intercepts
 // the click (preventDefault + SPA navigate). Rendering UserView inside the
 // REAL Kumo LinkProvider with an intercepting component proves the CTA is a
@@ -57,12 +57,12 @@ describe("§D.1 restyled UserView (unauth/auth-loading welcome)", () => {
 
   it("CTA is a PLAIN native <a> that escapes the router LinkProvider (FIX 1 — must hard-GET the server /login, NOT SPA-navigate)", () => {
     // The whole app wraps the tree in <LinkProvider component={KumoRouterLink}>
-    // (__root.tsx:250). Kumo LinkButton → KumoRouterLink → TanStack <Link
+    // (__root.tsx). Kumo LinkButton → KumoRouterLink → TanStack <Link
     // to="/login">; /login is NOT a registered TanStack route (router.tsx) — it
-    // is server-only (index.ts:67-68 handleLoginGet). A TanStack Link would
+    // is server-only (handleLoginGet in index.ts). A TanStack Link would
     // preventDefault + router.navigate to an unregistered route (broken). The
     // CTA MUST therefore be a plain <a> (native browser GET to the server
-    // handler) — mirroring the __root.tsx:93 <form action="/logout"> precedent.
+    // handler) — mirroring __root.tsx's <form action="/logout"> precedent.
     // Assert the rendered CTA is a native <a> with NO TanStack/router
     // click-intercept marker. (TanStack's Link adds a `data-status` attr and is
     // produced via the LinkProvider; a plain <a> has neither. We assert the

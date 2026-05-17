@@ -103,16 +103,21 @@ export function UserView() {
       {/*
         PLAIN native <a> (FIX 1) — NOT Kumo LinkButton/Button. Escapes the
         LinkProvider/TanStack interception so the browser performs a native
-        GET to the server-only /login handler. Styled with the sanctioned
-        Kumo-primary utility class string (brand bg + inverse text + pill +
-        FOCUS_RING; §B.0-safe: Kumo tokens only, NO shadow-*). This class
-        string mirrors DESIGN.md's button-primary contract; keep it as the
+        GET to the server-only /login handler (handleLoginGet in index.ts).
+        Styled with the sanctioned Kumo-primary utility class string (brand bg
+        + fixed white text + pill + FOCUS_RING; §B.0-safe: Kumo tokens only,
+        NO shadow-*). `text-white` is fixed (mode-invariant) matching
+        DESIGN.md's button-primary `textColor: "white"` contract — ensures
+        ≥4.5:1 contrast on `bg-kumo-brand` in BOTH light and dark mode.
+        `text-kumo-inverse` was wrong here: it flips to ~near-black in dark
+        mode, dropping contrast to ~2.7:1 (WCAG AA fail). This class string
+        mirrors DESIGN.md's button-primary visual contract; keep it as the
         single inline constant below so the visual matches the §B primary CTA.
       */}
       <a
         href="/login"
         aria-label={t`登录`}
-        className={`inline-flex items-center justify-center rounded-full bg-kumo-brand px-5 py-2.5 text-sm font-semibold text-kumo-inverse no-underline hover:bg-kumo-brand-hover ${FOCUS_RING}`}
+        className={`inline-flex items-center justify-center rounded-full bg-kumo-brand px-5 py-2.5 text-sm font-semibold text-white no-underline hover:bg-kumo-brand-hover ${FOCUS_RING}`}
       >
         <Trans>登录</Trans>
       </a>

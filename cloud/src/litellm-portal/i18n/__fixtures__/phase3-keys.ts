@@ -1,9 +1,10 @@
 /**
  * Phase-3 message-key allowlist. Every NEW zh source string introduced by
- * Phase 3: SideNav group headings, the Ops summary chip, four-state titles
- * surfaced by Panel*, the locale-driven chart aria template, the §F.1 density
- * toggle, the §F.4 ErrorBoundary fallback, and EVERY §F.3 error-message
- * contract string (errors/error-messages.ts MAP values + GENERIC_FALLBACK_ID).
+ * Phase 3: the §D public-welcome heading/subtitle/CTA strings (UserView),
+ * SideNav group headings, the Ops summary chip, four-state titles surfaced by
+ * Panel*, the locale-driven chart aria template, the §F.1 density toggle, the
+ * §F.4 ErrorBoundary fallback, and EVERY §F.3 error-message contract string
+ * (errors/error-messages.ts MAP values + GENERIC_FALLBACK_ID).
  *
  * Reconciled 1:1 against the live Phase-3 macro literals + the final
  * errors/error-messages.ts MAP (2026-05-17). Keys already present in the
