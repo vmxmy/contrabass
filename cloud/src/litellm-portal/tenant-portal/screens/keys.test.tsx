@@ -112,7 +112,9 @@ describe("TenantKeysScreen", () => {
         },
       },
     );
-    // BudgetBadge renders "正常" when spend < 80% of maxBudget (ratio 0.10 here)
+    // BudgetBadge renders "正常" when spend < 80% of maxBudget (ratio 0.10
+    // here). Scoped to the pill <span class="...ml-2"> because ApiKeysCard
+    // also renders "正常" in the budget-detail text — getByText is ambiguous.
     const badge = document.querySelector("span.ml-2");
     expect(badge).not.toBeNull();
     expect(badge?.textContent).toBe("正常");
