@@ -3,8 +3,9 @@ import { echarts } from "./echarts-core";
 import { usePortalDarkMode, kumoAxisColors, categorical, TOOLTIP_STYLE } from "./kumo-chart-theme";
 
 export type RankRow = { label: string; value: number };
+export type RankBarProps = { rows: RankRow[]; height?: number };
 
-export function RankBar({ rows, height = 280 }: { rows: RankRow[]; height?: number }) {
+export function RankBar({ rows, height = 280 }: RankBarProps) {
   const dark = usePortalDarkMode();
   const ref = useRef<HTMLDivElement>(null);
 

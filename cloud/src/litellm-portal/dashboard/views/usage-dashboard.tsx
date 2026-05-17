@@ -8,11 +8,9 @@ import { usePreferences } from "../../hooks/use-preferences";
 import { useAdminUsers } from "../../hooks/use-admin-users";
 import { KpiBand } from "../panels/kpi-band";
 import { AlertPanel, type AlertItem } from "../panels/alert-panel";
-import { TrendChart } from "../charts/trend-chart";
 import { buildChartAriaDescription } from "../charts/build-chart-aria";
 import { t } from "@lingui/core/macro";
-import { ModelDonut } from "../charts/model-donut";
-import { RankBar } from "../charts/rank-bar";
+import { TrendChartLazy, RankBarLazy, ModelDonutLazy } from "./usage-charts-lazy";
 import { UserTable, type UserRow } from "../panels/user-table";
 import { Panel, WindowSelector } from "../components/panel";
 import { MemberOverlay } from "./member-overlay";
@@ -166,21 +164,21 @@ export function UsageDashboard({ initialScope, initialWindow }: UsageDashboardPr
             {data.empty ? (
               <DashboardStatus>该时间段暂无数据</DashboardStatus>
             ) : (
-              <TrendChart series={trendSeries} ariaLabel={trendAriaLabel} />
+              <TrendChartLazy series={trendSeries} ariaLabel={trendAriaLabel} />
             )}
           </Panel>
           {resolvedScope === "global" ? (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <Panel title="用户消费排行">
-                <RankBar rows={rankRows} />
+                <RankBarLazy rows={rankRows} />
               </Panel>
               <Panel title="模型使用分布">
-                <ModelDonut slices={data.models.map((model) => ({ model: model.model, value: model.spend }))} />
+                <ModelDonutLazy slices={data.models.map((model) => ({ model: model.model, value: model.spend }))} />
               </Panel>
             </div>
           ) : (
             <Panel title="常用模型占比">
-              <ModelDonut slices={data.models.map((model) => ({ model: model.model, value: model.spend }))} />
+              <ModelDonutLazy slices={data.models.map((model) => ({ model: model.model, value: model.spend }))} />
             </Panel>
           )}
           {resolvedScope === "global" ? <GlobalUserDetails /> : null}

@@ -3,8 +3,9 @@ import { echarts } from "./echarts-core";
 import { usePortalDarkMode, kumoAxisColors, categorical, TOOLTIP_STYLE } from "./kumo-chart-theme";
 
 export type ModelSlice = { model: string; value: number };
+export type ModelDonutProps = { slices: ModelSlice[]; height?: number };
 
-export function ModelDonut({ slices, height = 280 }: { slices: ModelSlice[]; height?: number }) {
+export function ModelDonut({ slices, height = 280 }: ModelDonutProps) {
   const dark = usePortalDarkMode();
   const ref = useRef<HTMLDivElement>(null);
 
