@@ -7,6 +7,34 @@ import { enqueueSync } from "../sync/queue-producer";
 import { invalidateRole } from "../role-cache";
 
 // ---------------------------------------------------------------------------
+// SANCTIONED local style constants (spec §D.2). /login is a standalone SSR
+// HTML document rendered OUTSIDE the Kumo runtime (no React, no Kumo utility
+// class can apply here), so its inline <style> uses these self-contained,
+// Kumo-visually-aligned, DETERMINISTIC hex constants. This is the documented
+// per-page exception — directly analogous to the Phase-3 §F.6 ops-theme
+// sanctioned-exception (named consts in lieu of unreachable design tokens).
+// No other raw hex on this page; NO Math.random; presentation-only with zero
+// auth-logic coupling. Dark counterparts back the prefers-color-scheme block.
+// ---------------------------------------------------------------------------
+
+const LOGIN_STYLE = {
+  bg: "#fafafa",
+  card: "#ffffff",
+  border: "#e5e5e5",
+  ink: "#1a1a1a",
+  subtle: "#555555",
+  brand: "#1f3a8a",
+  brandHover: "#162a63",
+  error: "#b42318",
+  success: "#177245",
+  dBg: "#1a1a1a",
+  dCard: "#242424",
+  dBorder: "#3a3a3a",
+  dInk: "#f4f4f4",
+  dSubtle: "#a0a0a0",
+} as const;
+
+// ---------------------------------------------------------------------------
 // Inline IndexDO stub type (avoids pulling DO module into test transform chain)
 // ---------------------------------------------------------------------------
 
@@ -121,50 +149,75 @@ function loginPage(errorMsg?: string, successEmail?: string): string {
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Sign in</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
     body {
-      font-family: system-ui, sans-serif;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
       display: flex;
       align-items: center;
       justify-content: center;
       min-height: 100vh;
       margin: 0;
-      background: #f5f5f5;
+      padding: 1.5rem;
+      background: ${LOGIN_STYLE.bg};
+      color: ${LOGIN_STYLE.ink};
     }
     .card {
-      background: #fff;
-      border-radius: 8px;
-      box-shadow: 0 2px 8px rgba(0,0,0,.12);
-      padding: 2rem;
+      background: ${LOGIN_STYLE.card};
+      border: 1px solid ${LOGIN_STYLE.border};
+      border-radius: 14px;
+      padding: 2.5rem;
       width: 100%;
-      max-width: 360px;
+      max-width: 384px;
     }
-    h1 { font-size: 1.4rem; margin: 0 0 1.5rem; }
-    label { display: block; font-size: .875rem; margin-bottom: .4rem; }
+    h1 { font-size: 1.5rem; font-weight: 600; margin: 0 0 1.75rem; color: ${LOGIN_STYLE.ink}; }
+    label { display: block; font-size: .875rem; font-weight: 500; margin-bottom: .5rem; color: ${LOGIN_STYLE.subtle}; }
     input[type="email"] {
       display: block;
       width: 100%;
-      padding: .5rem .75rem;
-      border: 1px solid #ccc;
-      border-radius: 4px;
+      padding: .625rem .75rem;
+      border: 1px solid ${LOGIN_STYLE.border};
+      border-radius: 8px;
       font-size: 1rem;
-      margin-bottom: 1rem;
+      color: ${LOGIN_STYLE.ink};
+      background: ${LOGIN_STYLE.card};
+      margin-bottom: 1.25rem;
     }
     button {
       width: 100%;
-      padding: .6rem;
-      background: #0f62fe;
-      color: #fff;
-      border: none;
-      border-radius: 4px;
+      padding: .6875rem;
+      background: ${LOGIN_STYLE.brand};
+      color: #ffffff;
+      border: 1px solid ${LOGIN_STYLE.brand};
+      border-radius: 8px;
       font-size: 1rem;
+      font-weight: 600;
       cursor: pointer;
+      transition: background-color 150ms ease;
     }
-    button:hover { background: #0353e9; }
-    .error { color: #da1e28; font-size: .875rem; margin-bottom: .75rem; }
-    .success { color: #198038; font-size: .9375rem; }
+    button:hover { background: ${LOGIN_STYLE.brandHover}; border-color: ${LOGIN_STYLE.brandHover}; }
+    input:focus-visible, button:focus-visible {
+      outline: 2px solid ${LOGIN_STYLE.brand};
+      outline-offset: 2px;
+    }
+    .error { color: ${LOGIN_STYLE.error}; font-size: .875rem; margin-bottom: .75rem; }
+    .success { color: ${LOGIN_STYLE.success}; font-size: .9375rem; }
+    @media (prefers-reduced-motion: reduce) {
+      button { transition: none; }
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: ${LOGIN_STYLE.dBg}; color: ${LOGIN_STYLE.dInk}; }
+      .card { background: ${LOGIN_STYLE.dCard}; border-color: ${LOGIN_STYLE.dBorder}; }
+      h1 { color: ${LOGIN_STYLE.dInk}; }
+      label { color: ${LOGIN_STYLE.dSubtle}; }
+      input[type="email"] {
+        background: ${LOGIN_STYLE.dCard};
+        border-color: ${LOGIN_STYLE.dBorder};
+        color: ${LOGIN_STYLE.dInk};
+      }
+    }
   </style>
 </head>
 <body>
