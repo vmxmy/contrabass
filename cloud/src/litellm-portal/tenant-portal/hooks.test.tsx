@@ -13,6 +13,7 @@ import {
   useSetTenantWebhook,
   useClearTenantWebhook,
   useTenantBillingPeriods,
+  downloadTenantBilling,
 } from "./hooks";
 
 function makeWrapper() {
@@ -331,5 +332,112 @@ describe("useClearTenantWebhook", () => {
     expect(deleteCall?.url).toBe("/api/tenant/alert-webhook");
     expect(deleteCall?.body).toMatchObject({ reason: "routine_maintenance" });
     expect(result.current.data?.url).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// downloadTenantBilling
+// ---------------------------------------------------------------------------
+
+describe("downloadTenantBilling", () => {
+  it("GETs /api/tenant/billing/:yearMonth and treats the response as a CSV blob (no JSON parse)", async () => {
+    const csv = "team_id,spend\nteam-1,12.50\n";
+    const calls: { url: string; method: string }[] = [];
+    const jsonSpy = vi.fn();
+    globalThis.fetch = vi.fn(async (input, init) => {
+      calls.push({ url: String(input), method: (init as RequestInit)?.method ?? "GET" });
+      const res = new Response(csv, {
+        status: 200,
+        headers: { "content-type": "text/csv" },
+      });
+      // Detect any erroneous .json() call on the success path.
+      const originalJson = res.json.bind(res);
+      res.json = (async () => {
+        jsonSpy();
+        return originalJson();
+      }) as typeof res.json;
+      return res;
+    }) as typeof fetch;
+
+    const createObjectURL = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:mock-url");
+    const revokeObjectURL = vi
+      .spyOn(URL, "revokeObjectURL")
+      .mockImplementation(() => {});
+    const clickSpy = vi.fn();
+    const realCreateElement = document.createElement.bind(document);
+    const createElementSpy = vi
+      .spyOn(document, "createElement")
+      .mockImplementation((tag: string) => {
+        const el = realCreateElement(tag) as HTMLElement;
+        if (tag === "a") {
+          (el as HTMLAnchorElement).click = clickSpy;
+        }
+        return el;
+      });
+
+    await downloadTenantBilling("2026-01");
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("/api/tenant/billing/2026-01");
+    expect(calls[0].method).toBe("GET");
+    // CSV blob path — never parsed as JSON / Zod.
+    expect(jsonSpy).not.toHaveBeenCalled();
+    const blobArg = createObjectURL.mock.calls[0]?.[0];
+    expect(blobArg).toBeInstanceOf(Blob);
+    expect((blobArg as Blob).type).toBe("text/csv");
+    // Download is triggered: anchor created, clicked, object URL revoked.
+    expect(createElementSpy).toHaveBeenCalledWith("a");
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:mock-url");
+  });
+
+  it("encodes the yearMonth path segment", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = vi.fn(async (input) => {
+      calls.push(String(input));
+      return new Response("h\n", { status: 200, headers: { "content-type": "text/csv" } });
+    }) as typeof fetch;
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const realCreate = document.createElement.bind(document);
+    vi.spyOn(document, "createElement").mockImplementation((tag: string) => {
+      const el = realCreate(tag) as HTMLElement;
+      if (tag === "a") (el as HTMLAnchorElement).click = vi.fn();
+      return el;
+    });
+
+    await downloadTenantBilling("2026/01");
+
+    expect(calls[0]).toBe("/api/tenant/billing/2026%2F01");
+  });
+
+  it("throws on a non-ok response and does NOT attempt a download", async () => {
+    globalThis.fetch = vi.fn(async () =>
+      Response.json({ error: "billing_archive_not_found" }, { status: 404 }),
+    ) as typeof fetch;
+
+    const createObjectURL = vi.spyOn(URL, "createObjectURL");
+    const createElementSpy = vi.spyOn(document, "createElement");
+
+    await expect(downloadTenantBilling("2026-01")).rejects.toThrow(
+      "billing_archive_not_found",
+    );
+
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(createElementSpy).not.toHaveBeenCalled();
+  });
+
+  it("is SSR-safe: importing the module and not invoking the fn touches no DOM", async () => {
+    const createObjectURL = vi.spyOn(URL, "createObjectURL");
+    const createElementSpy = vi.spyOn(document, "createElement");
+
+    // Re-importing the module must not access document/URL at module scope.
+    const mod = await import("./hooks");
+    expect(typeof mod.downloadTenantBilling).toBe("function");
+
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(createElementSpy).not.toHaveBeenCalled();
   });
 });
