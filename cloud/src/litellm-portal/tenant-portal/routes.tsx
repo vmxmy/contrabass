@@ -24,6 +24,7 @@ import { TenantUsageScreen } from "./screens/usage";
 import { TenantKeysScreen } from "./screens/keys";
 import { TenantMembersScreen } from "./screens/members";
 import { TenantAlertsScreen } from "./screens/alerts";
+import { TenantBillingScreen } from "./screens/billing";
 
 function Placeholder({ id, label }: { id: string; label: React.ReactNode }) {
   return (
@@ -58,7 +59,7 @@ const TENANT_ROUTE_SPECS: TenantRouteSpec[] = [
   { path: "/keys", id: "tenant-keys-root", label: <Trans>API Key</Trans>, adminOnly: false, component: TenantKeysScreen },
   { path: "/members", id: "tenant-members-root", label: <Trans>成员</Trans>, adminOnly: true, component: TenantMembersScreen },
   { path: "/alerts", id: "tenant-alerts-root", label: <Trans>预算</Trans>, adminOnly: true, component: TenantAlertsScreen },
-  { path: "/billing", id: "tenant-billing-root", label: <Trans>账单</Trans>, adminOnly: true },
+  { path: "/billing", id: "tenant-billing-root", label: <Trans>账单</Trans>, adminOnly: true, component: TenantBillingScreen },
 ];
 
 /**

@@ -256,6 +256,17 @@ const messages: Record<string, string> = {
   "未配置告警 Webhook": "No alert Webhook configured",
   "Webhook 配置加载失败": "Failed to load Webhook config",
 
+  // TenantBillingScreen
+  "账单下载": "Billing Download",
+  "按账期下载团队 CSV 账单。服务端已按团队过滤，客户端不聚合数据。":
+    "Download team CSV billing by period. The server filters by team — the client does not aggregate data.",
+  "账期": "Billing period",
+  "下载": "Download",
+  "下载 ${period}": "Download ${period}",
+  "账单列表加载失败": "Failed to load billing periods",
+  "暂无账单": "No billing periods",
+  "下载失败": "Download failed",
+
   // TenantMembersScreen
   "成员与邀请": "Members & Invites",
   "管理团队成员的邀请状态。": "Manage team member invite statuses.",
