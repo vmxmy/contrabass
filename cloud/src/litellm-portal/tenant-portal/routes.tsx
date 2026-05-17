@@ -20,6 +20,7 @@ import { Empty } from "@cloudflare/kumo/components/empty";
 import { Text } from "@cloudflare/kumo/components/text";
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
+import { TenantUsageScreen } from "./screens/usage";
 
 function Placeholder({ id, label }: { id: string; label: React.ReactNode }) {
   return (
@@ -79,7 +80,9 @@ export function createTenantPortalRoutes(
       path: spec.path,
       component: spec.adminOnly
         ? MemberForbidden
-        : () => <Placeholder id={spec.id} label={spec.label} />,
+        : spec.path === "/usage"
+          ? TenantUsageScreen
+          : () => <Placeholder id={spec.id} label={spec.label} />,
     }),
   );
 }
