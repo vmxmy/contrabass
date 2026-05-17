@@ -514,6 +514,23 @@ export const TeamAlertWebhookResultSchema = z.object({
 
 export type TeamAlertWebhookResult = z.infer<typeof TeamAlertWebhookResultSchema>;
 
+// PUT /api/admin/teams/:teamId/members/:userId/tenant-role
+export const SetTenantRoleBodySchema = z.object({
+  reason: WriteReasonSchema,
+  tenantRole: z.enum(["tenant_admin", "member"]),
+});
+
+export type SetTenantRoleBody = z.infer<typeof SetTenantRoleBodySchema>;
+
+export const SetTenantRoleResultSchema = z.object({
+  userId: z.string(),
+  teamId: z.string(),
+  tenantRole: z.enum(["tenant_admin", "member"]),
+  dryRun: z.boolean(),
+});
+
+export type SetTenantRoleResult = z.infer<typeof SetTenantRoleResultSchema>;
+
 // ---------------------------------------------------------------------------
 // /api/_internal/role-changed
 // ---------------------------------------------------------------------------

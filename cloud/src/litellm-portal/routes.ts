@@ -76,6 +76,8 @@ import {
   AdminRevokeInviteResultSchema,
   SetTeamAlertWebhookBodySchema,
   TeamAlertWebhookResultSchema,
+  SetTenantRoleBodySchema,
+  SetTenantRoleResultSchema,
 } from "./schemas";
 import { auditWrite } from "./observability/audit";
 import { enqueueSync } from "./sync/queue-producer";
@@ -1749,6 +1751,74 @@ const adminTeamAlertWebhookApp = new Hono<HonoEnv>()
     alertWebhookClearCore(c, "admin", decodeURIComponent(c.req.param("teamId") ?? "").trim()),
   );
 
+// ---------------------------------------------------------------------------
+// Admin write endpoints — PUT /api/admin/teams/:teamId/members/:userId/tenant-role
+// ---------------------------------------------------------------------------
+
+type IndexDOTenantRoleStub = {
+  putTenantRole(record: {
+    userId: string;
+    teamId: string;
+    tenantRole: "tenant_admin" | "member";
+    updatedBy: string;
+    updatedAt: string;
+  }): Promise<void>;
+  appendAudit(entry: object): Promise<void>;
+};
+
+const adminTenantRoleApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
+  .use("/admin/*", requireAdmin)
+  .put("/admin/teams/:teamId/members/:userId/tenant-role", async (c) => {
+    if (!isWriteOpsEnabled(c.env)) return writeOpsDisabledResponse(c);
+
+    const teamId = decodeURIComponent(c.req.param("teamId") ?? "").trim();
+    const userId = decodeURIComponent(c.req.param("userId") ?? "").trim();
+    if (!teamId || !userId) return c.json({ error: "team_and_user_required" }, 400);
+
+    const parsed = await parseWriteBody(c, SetTenantRoleBodySchema);
+    if (!parsed.ok) return parsed.response;
+
+    if (!c.env.INDEX_DO) return c.json({ error: "index_do_unavailable" }, 503);
+
+    const identity = c.get("identity");
+    const isDryRun = new URL(c.req.url).searchParams.get("dryRun") === "true";
+
+    if (!isDryRun) {
+      const idx = c.env.INDEX_DO.get(
+        c.env.INDEX_DO.idFromName("index"),
+      ) as unknown as IndexDOTenantRoleStub;
+      const updatedAt = new Date().toISOString();
+      await idx.putTenantRole({
+        userId,
+        teamId,
+        tenantRole: parsed.data.tenantRole,
+        updatedBy: identity.email,
+        updatedAt,
+      });
+      await auditWrite(c.env, {
+        actor: identity.email,
+        action: "admin_tenant_role_set",
+        target: `${teamId}/${userId}`,
+        ip: c.req.header("cf-connecting-ip") ?? "unknown",
+        ts: updatedAt,
+        before: "null",
+        after: JSON.stringify({ tenantRole: parsed.data.tenantRole }),
+        reason: parsed.data.reason,
+      });
+    }
+
+    return c.json(
+      SetTenantRoleResultSchema.parse({
+        userId,
+        teamId,
+        tenantRole: parsed.data.tenantRole,
+        dryRun: isDryRun,
+      }),
+    );
+  });
+
 async function billingListCore(c: Context<HonoEnv>): Promise<Response> {
   if (!c.env.BILLING_ARCHIVE_R2) return c.json({ error: "billing_archive_unavailable" }, 503);
   const listed = await c.env.BILLING_ARCHIVE_R2.list({ prefix: "billing/" });
@@ -1946,6 +2016,7 @@ const app = new Hono<{ Bindings: LiteLLMPortalEnv }>()
   .route("/api", adminCreateTeamApp)
   .route("/api", adminInvitesApp)
   .route("/api", adminTeamAlertWebhookApp)
+  .route("/api", adminTenantRoleApp)
   .route("/api", adminBillingArchiveApp)
   .route("/api", tenantInvitesApp)
   .route("/api", tenantAlertWebhookApp)

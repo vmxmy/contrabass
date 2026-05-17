@@ -102,6 +102,7 @@ function makeIndexDOStub() {
       return next;
     }),
     appendAudit: vi.fn().mockResolvedValue(undefined),
+    putTenantRole: vi.fn().mockResolvedValue(undefined),
     // test-only: pre-seed an invite at a chosen status
     __seedInvite: (r: StubInvite) => invites.set(r.emailLc.toLowerCase(), { ...r }),
     getStorageMigrationState: vi.fn().mockResolvedValue({
@@ -1506,6 +1507,53 @@ describe("DO-path tenant routes (/api/tenant/*)", () => {
       );
 
       expect(res.status).toBe(403);
+    });
+  });
+
+  describe("PUT /api/admin/teams/:teamId/members/:userId/tenant-role", () => {
+    it("admin sets a member's tenantRole → 200 + IndexDO.putTenantRole called + audit", async () => {
+      const indexStub = makeIndexDOStub();
+      const env = makeFlagOnEnv(indexStub, makeTeamConfigDOStub());
+      const res = await app.fetch(
+        await adminRequest(
+          "https://x/api/admin/teams/t1/members/u1/tenant-role",
+          env,
+          { method: "PUT", body: JSON.stringify({ reason: "user_request", tenantRole: "tenant_admin" }) },
+        ),
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(indexStub.putTenantRole).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: "u1", teamId: "t1", tenantRole: "tenant_admin" }),
+      );
+      expect(indexStub.appendAudit).toHaveBeenCalled();
+    });
+
+    it("422 on bad tenantRole; 404 write-ops disabled", async () => {
+      const env = makeFlagOnEnv(makeIndexDOStub(), makeTeamConfigDOStub());
+      expect(
+        (await app.fetch(
+          await adminRequest(
+            "https://x/api/admin/teams/t1/members/u1/tenant-role",
+            env,
+            { method: "PUT", body: JSON.stringify({ reason: "other", tenantRole: "boss" }) },
+          ),
+          env,
+        )).status,
+      ).toBe(422);
+      const off = makeFlagOnEnv(makeIndexDOStub(), makeTeamConfigDOStub(), {
+        LITELLM_PORTAL_WRITE_OPS_ENABLED: "false",
+      });
+      expect(
+        (await app.fetch(
+          await adminRequest(
+            "https://x/api/admin/teams/t1/members/u1/tenant-role",
+            off,
+            { method: "PUT", body: JSON.stringify({ reason: "other", tenantRole: "member" }) },
+          ),
+          off,
+        )).status,
+      ).toBe(404);
     });
   });
 });
