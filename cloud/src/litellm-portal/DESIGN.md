@@ -640,15 +640,15 @@ Bundle 实测：`pnpm run analyze:litellm-portal-bundle` 显示 portal app bundl
 
 2026-05-17 §F.4: per-block React ErrorBoundary (errors/error-boundary.tsx) wraps the lazy chart island + dashboard/audit core blocks — RENDER/RUNTIME isolation, LAYERED ON TOP of the MAJOR-1 client.tsx try/catch (chunk-FETCH floor; unchanged). Orthogonal: fetch-fail → floor; render-throw → inline panel; siblings intact. Transparent on the loading/happy path so the §E-1 #418 loading-parity is unaffected.
 
-2026-05-17 §F.2（V2.0 §2.1）Web-Vitals 性能预算 — **CLS < 0.1 CI HARD GATE**（确定性、可断言；LCP/INP 仅观测，类比 §A.3 bundle delta 的"观测不设门槛"先例）。复用既有 `@playwright/test` 既有 harness，无 Lighthouse/新依赖：`cloud/tests/e2e/perf-budget.spec.ts`（页内 `PerformanceObserver` 采 `layout-shift`/`largest-contentful-paint`，load 后 2.5s 沉降窗口），脚本 `test:e2e:perf`。E2E 服务端 = 与 `deploy:litellm-portal` / `portal-e2e.yml` 同一构建产物（`build:litellm-portal` → `dist/litellm-portal-worker/index.js`，`wrangler dev --no-bundle --local` 提供；Lingui macro 仅由 `build:litellm-portal` 转译，裸 `wrangler dev` 跑 TS 源会 500，故构建产物是 SSR portal 唯一可服务体）— 非新增服务器；`playwright.config.ts` 新增 `reuseExistingServer` 的最小 `webServer`，本地手起 `dev:litellm-portal` 时让位、CI/staging 无人值守时自起。实测（两次确定性复跑，`x-litellm-portal-dev-email` dev-auth 头，LiteLLM stub 未 mock → 路由 SSR 渲染骨架/加载态，正是被测的 CLS 稳定态）：
+2026-05-17 §F.2（V2.0 §2.1）Web-Vitals 性能预算 — **CLS < 0.1 CI HARD GATE**（确定性、可断言；LCP/INP 仅观测，类比 §A.3 bundle delta 的"观测不设门槛"先例）。复用既有 `@playwright/test` 既有 harness，无 Lighthouse/新依赖：`cloud/tests/e2e/perf-budget.spec.ts`（页内 `PerformanceObserver` 采 `layout-shift`/`largest-contentful-paint`，load 后 2.5s 沉降窗口），脚本 `test:e2e:perf`。E2E 服务端 = 与 `deploy:litellm-portal` / `portal-e2e.yml` 同一构建产物（`build:litellm-portal` → `dist/litellm-portal-worker/index.js`，`wrangler dev --no-bundle --local` 提供；Lingui macro 仅由 `build:litellm-portal` 转译，裸 `wrangler dev` 跑 TS 源会 500，故构建产物是 SSR portal 唯一可服务体）— 非新增服务器；`playwright.config.ts` 新增 `reuseExistingServer` 的最小 `webServer`，本地手起 `dev:litellm-portal` 时让位、CI/staging 无人值守时自起。**鉴权（Blocker-2 修正，2026-05-18）**：`authenticateRequest` 仅认 signed `portal_session` cookie（`x-litellm-portal-dev-email` 头是 Phase-2 已回滚的安全事故残骸 / NO-OP）。先前用该 NO-OP 头测得的 `/`,`/usage`,`/ops` 实为**未鉴权 legacy 页**，并非 Phase-3 重塑后的鉴权 shell，门槛未真正验证重塑布局——**该测量作废、被本次取代**。现 perf-spec 用项目自身 `issueSession`（HMAC over JSON payload）铸真签名 `portal_session` cookie 注入 Playwright context；perf webServer 通过 `--var PORTAL_SESSION_SECRET:<PERF_DEV_SESSION_SECRET>` 在被服务 worker 上钉同一密钥，sign==verify 本地成立。CLS 测量**之前**先断言鉴权 shell 标记可见（`/`,`/usage` → `#tenant-portal-shell-root`/`[data-brand-summary-bar]`；`/ops` → `#ops-console-shell-root`），故未来回退到未鉴权页不能再静默通过本门槛。`/ops` 以 allowlisted 但 platform-role=`none` 身份命中（本地 wrangler dev 无 IndexDO 记录）→ 渲染鉴权后的 Ops shell（内含 forbidden card），仍是 Phase-3 重塑壳、非 legacy 未鉴权页，对 CLS/布局稳定性观测有效。实测（鉴权后 Phase-3 重塑 shell，确定性复跑）：
 
 | route | CLS（HARD GATE < 0.1） | LCP（观测，非门槛） |
 |---|---|---|
-| `/` | `0.0000` ✅ | `~164–168ms` |
-| `/usage` | `0.0000` ✅ | `~144–152ms` |
-| `/ops` | `0.0000` ✅ | `0ms`（2.5s 窗口内未发 LCP entry — forbidden/小表面无大内容元素；`Number.isFinite` 仍真，LCP 观测不门控故通过；如实记录） |
+| `/` | `0.0000` ✅ | `~5464ms`（鉴权 `TenantPortalShell`） |
+| `/usage` | `0.0000` ✅ | `~11468ms`（鉴权 `TenantPortalShell`） |
+| `/ops` | `0.0000` ✅ | `~4356ms`（鉴权 `OpsConsoleShell`） |
 
-CLS=0.0000 三路由全过 → §A.2 `PanelSkeleton` / Task-0B `SsrSafeSkeleton` 定高几何 + Task-3 lazy chart 边界换入**不塌陷布局**（含 loading→resolved 过渡路径）。**INP 不可在无脚本化代表性交互下可靠自动测量** → 转 Task-10 人工 staging 项（具体规程：开 devtools Performance/INP overlay，每路由执行一次代表性交互并记录）。`CLS < 0.1` 是锁定的 §F.2 决策，门槛不放宽；真实 CLS 突破属缺陷，须在源头（骨架几何）修复，不得 gate-relax。
+CLS=0.0000 三路由全过（鉴权后真实重塑 shell）→ §A.2 `PanelSkeleton` / Task-0B `SsrSafeSkeleton` 定高几何 + 定宽 SideNav + Task-3 lazy chart 边界换入**不塌陷布局**（含 loading→resolved 过渡路径）。LCP 较前作废测量明显升高，因现测的是鉴权后实际数据壳（含 dashboard 加载/数据屏），而非空的未鉴权骨架——属如实记录，LCP 观测不门控。**INP 不可在无脚本化代表性交互下可靠自动测量** → 转 Task-10 人工 staging 项（具体规程：开 devtools Performance/INP overlay，每路由执行一次代表性交互并记录）。`CLS < 0.1` 是锁定的 §F.2 决策，门槛不放宽；真实 CLS 突破属缺陷，须在源头（骨架几何）修复，不得 gate-relax。
 
 ---
 

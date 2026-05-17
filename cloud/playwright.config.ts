@@ -6,9 +6,12 @@
  *      (sets LITELLM_PORTAL_DEV_AUTH=true which enables the x-litellm-portal-dev-email header)
  *   2. The baseURL below must match the wrangler dev port (default 8787).
  *
- * Auth is injected via the `x-litellm-portal-dev-email` request header — see
- * `src/litellm-portal/auth.ts` for the dev-auth gate. Each spec sets the header
- * in `extraHTTPHeaders` to simulate a specific user or admin identity.
+ * Auth is a signed `portal_session` cookie (HMAC over the JSON payload using
+ * `PORTAL_SESSION_SECRET` — see `src/litellm-portal/auth/session.ts`). The
+ * legacy `x-litellm-portal-dev-email` header path is a reverted dead shim;
+ * `authenticateRequest` is session-cookie-only. The perf webServer below pins
+ * a deterministic dev `PORTAL_SESSION_SECRET` (via `--var`) so a spec can mint
+ * a cookie the served worker actually verifies (`PERF_DEV_SESSION_SECRET`).
  *
  * webServer (§F.2 / Task 3B): builds + serves the SAME worker artifact the
  * deploy path uses (`dist/litellm-portal-worker/index.js` via
@@ -23,6 +26,19 @@
  */
 
 import { defineConfig, devices } from "@playwright/test";
+
+/**
+ * Deterministic dev session secret. The perf webServer's wrangler dev process
+ * is started with `--var PORTAL_SESSION_SECRET:<this>` so the served worker
+ * verifies sessions with the SAME key the perf spec uses to mint a
+ * `portal_session` cookie (sign == verify locally). Local/dev-only — never a
+ * production secret.
+ *
+ * NOTE: this literal is intentionally duplicated (not imported) in
+ * `tests/e2e/perf-budget.spec.ts` — a spec must not import the Playwright
+ * config (Playwright forbids config-imported test files). Keep both in sync.
+ */
+const PERF_DEV_SESSION_SECRET = "perf-e2e-portal-session-secret-32b!!";
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -50,7 +66,7 @@ export default defineConfig({
   ],
   webServer: {
     command:
-      "node scripts/generate-litellm-portal-kumo-css.mjs && node scripts/build-litellm-portal-app.mjs && node scripts/build-litellm-portal-worker.mjs && wrangler dev dist/litellm-portal-worker/index.js --no-bundle --config wrangler.litellm-portal.toml --port 8787 --local --ip 127.0.0.1 --var LITELLM_PORTAL_DEV_AUTH:true",
+      `node scripts/generate-litellm-portal-kumo-css.mjs && node scripts/build-litellm-portal-app.mjs && node scripts/build-litellm-portal-worker.mjs && wrangler dev dist/litellm-portal-worker/index.js --no-bundle --config wrangler.litellm-portal.toml --port 8787 --local --ip 127.0.0.1 --var LITELLM_PORTAL_DEV_AUTH:true --var PORTAL_SESSION_SECRET:${PERF_DEV_SESSION_SECRET}`,
     url: process.env["PLAYWRIGHT_BASE_URL"] ?? "http://127.0.0.1:8787",
     reuseExistingServer: !process.env["CI"],
     timeout: 180_000,
