@@ -7,6 +7,7 @@ import { Trans } from "@lingui/react/macro";
 import { useAdminAudit } from "../../hooks/use-admin-audit";
 import { useOpsAuditEvent } from "../hooks";
 import { PanelSkeleton, PanelEmpty, PanelError } from "../../components/panel-state";
+import { BlockErrorBoundary } from "../../errors/error-boundary";
 
 export function AuditEventDetailCard({ eventId }: { eventId: string }) {
   const { data, isLoading, isError, error } = useOpsAuditEvent(eventId);
@@ -115,7 +116,14 @@ export function OpsAuditScreen() {
               <Trans>跨租户的运营动作审计日志。</Trans>
             </Text>
           </div>
-          <AuditFeedTable />
+          {/*
+            §F.4: per-block render/runtime isolation for the audit feed body.
+            LAYERED on top of the MAJOR-1 client.tsx chunk-fetch try/catch
+            (not replacing it). Transparent pass-through when nothing throws.
+          */}
+          <BlockErrorBoundary blockLabel="审计列表">
+            <AuditFeedTable />
+          </BlockErrorBoundary>
         </article>
       )}
     </div>

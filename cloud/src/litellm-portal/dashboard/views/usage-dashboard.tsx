@@ -14,6 +14,7 @@ import { TrendChartLazy, RankBarLazy, ModelDonutLazy } from "./usage-charts-lazy
 import { UserTable, type UserRow } from "../panels/user-table";
 import { Panel, WindowSelector } from "../components/panel";
 import { MemberOverlay } from "./member-overlay";
+import { BlockErrorBoundary } from "../../errors/error-boundary";
 
 type DashboardScopeValue = "self" | "global";
 
@@ -149,41 +150,51 @@ export function UsageDashboard({ initialScope, initialWindow }: UsageDashboardPr
         <WindowSelector value={win} onChange={setWin} />
       </div>
 
-      {isError ? (
-        <DashboardStatus tone="danger">加载失败，请稍后重试</DashboardStatus>
-      ) : !data ? (
-        <DashboardStatus>加载中…</DashboardStatus>
-      ) : !data.available ? (
-        <DashboardStatus>数据同步中</DashboardStatus>
-      ) : (
-        <>
-          {resolvedScope === "global" ? <AlertPanel alerts={alertsFromSummary(data.summary)} /> : null}
-          <KpiBand kpi={data.kpi} />
-          {data.grainFallback ? <p className="mb-3 text-xs text-kumo-subtle">已自动调整为推荐粒度</p> : null}
-          <Panel title={resolvedScope === "global" ? "团队消费趋势" : "消费趋势"}>
-            {data.empty ? (
-              <DashboardStatus>该时间段暂无数据</DashboardStatus>
+      {/*
+        §F.4: per-block render/runtime isolation on the resolved dashboard
+        core. Boundary is a transparent pass-through when nothing throws, so
+        the loading/error/sync status branches still render identically —
+        SSR & client first render keep producing the loading state and the
+        §E-1 #418 loading-parity is unaffected. LAYERED on top of the
+        MAJOR-1 client.tsx chunk-fetch try/catch (not replacing it).
+      */}
+      <BlockErrorBoundary blockLabel="用量看板">
+        {isError ? (
+          <DashboardStatus tone="danger">加载失败，请稍后重试</DashboardStatus>
+        ) : !data ? (
+          <DashboardStatus>加载中…</DashboardStatus>
+        ) : !data.available ? (
+          <DashboardStatus>数据同步中</DashboardStatus>
+        ) : (
+          <>
+            {resolvedScope === "global" ? <AlertPanel alerts={alertsFromSummary(data.summary)} /> : null}
+            <KpiBand kpi={data.kpi} />
+            {data.grainFallback ? <p className="mb-3 text-xs text-kumo-subtle">已自动调整为推荐粒度</p> : null}
+            <Panel title={resolvedScope === "global" ? "团队消费趋势" : "消费趋势"}>
+              {data.empty ? (
+                <DashboardStatus>该时间段暂无数据</DashboardStatus>
+              ) : (
+                <TrendChartLazy series={trendSeries} ariaLabel={trendAriaLabel} />
+              )}
+            </Panel>
+            {resolvedScope === "global" ? (
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <Panel title="用户消费排行">
+                  <RankBarLazy rows={rankRows} />
+                </Panel>
+                <Panel title="模型使用分布">
+                  <ModelDonutLazy slices={data.models.map((model) => ({ model: model.model, value: model.spend }))} />
+                </Panel>
+              </div>
             ) : (
-              <TrendChartLazy series={trendSeries} ariaLabel={trendAriaLabel} />
-            )}
-          </Panel>
-          {resolvedScope === "global" ? (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <Panel title="用户消费排行">
-                <RankBarLazy rows={rankRows} />
-              </Panel>
-              <Panel title="模型使用分布">
+              <Panel title="常用模型占比">
                 <ModelDonutLazy slices={data.models.map((model) => ({ model: model.model, value: model.spend }))} />
               </Panel>
-            </div>
-          ) : (
-            <Panel title="常用模型占比">
-              <ModelDonutLazy slices={data.models.map((model) => ({ model: model.model, value: model.spend }))} />
-            </Panel>
-          )}
-          {resolvedScope === "global" ? <GlobalUserDetails /> : null}
-        </>
-      )}
+            )}
+            {resolvedScope === "global" ? <GlobalUserDetails /> : null}
+          </>
+        )}
+      </BlockErrorBoundary>
     </section>
   );
 }
