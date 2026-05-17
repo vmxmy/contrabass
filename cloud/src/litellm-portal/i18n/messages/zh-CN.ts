@@ -267,6 +267,7 @@ const messages: Record<string, string> = {
   "下载失败": "下载失败",
 
   // TenantOverviewScreen (net-new keys only; 团队/累计花费/高频模型 already defined above)
+  "暂无模型数据": "暂无模型数据",
   "当前租户团队": "当前租户团队",
   "个人花费": "个人花费",
   "团队预算": "团队预算",

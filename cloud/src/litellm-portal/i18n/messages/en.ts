@@ -268,6 +268,7 @@ const messages: Record<string, string> = {
   "下载失败": "Download failed",
 
   // TenantOverviewScreen (net-new keys only; 团队/累计花费/高频模型 already defined above)
+  "暂无模型数据": "No model data",
   "当前租户团队": "Current tenant team",
   "个人花费": "Personal spend",
   "团队预算": "Team budget",

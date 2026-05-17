@@ -19,6 +19,7 @@ import { LayerCard } from "@cloudflare/kumo/components/layer-card";
 import { Meter } from "@cloudflare/kumo/components/meter";
 import { SkeletonLine } from "@cloudflare/kumo/components/loader";
 import { Text } from "@cloudflare/kumo/components/text";
+import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
 import { useMe } from "../../hooks/use-me";
 import { useDashboard } from "../../hooks/use-dashboard";
@@ -92,7 +93,7 @@ function PersonalSpendTile() {
           className="mt-3"
           value={Number(totalSpend)}
           max={maxBudget}
-          customValue={`${fmt(totalSpend)} / ${fmt(maxBudget)}`}
+          customValue={t`${fmt(totalSpend)} / ${fmt(maxBudget)}`}
         />
       ) : null}
       <Text variant="secondary" as="p" className="mt-2 text-xs">
@@ -144,7 +145,7 @@ function TeamBudgetTile() {
           className="mt-3"
           value={Number(teamSpend)}
           max={teamBudget}
-          customValue={`${fmt(teamSpend)} / ${fmt(teamBudget)}`}
+          customValue={t`${fmt(teamSpend)} / ${fmt(teamBudget)}`}
         />
       ) : null}
       {teamName != null ? (
@@ -268,7 +269,7 @@ function TopModelsTile() {
           </Text>
         </div>
         <div className="p-6">
-          <Empty size="sm" title="暂无模型数据" />
+          <Empty size="sm" title={t`暂无模型数据`} />
         </div>
       </article>
     );
