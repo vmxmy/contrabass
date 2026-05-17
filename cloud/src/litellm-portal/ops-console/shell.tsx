@@ -6,9 +6,10 @@ import { Trans } from "@lingui/react/macro";
 import { useRouterState } from "@tanstack/react-router";
 import type { PortalIdentity } from "../types";
 import { DensityProvider, resolveDensity } from "../components/density";
+import { DensityToggle } from "../components/density-toggle";
 import { SideNav, type SideNavGroup } from "../components/side-nav";
 import type { NavIconName } from "../components/nav-icons";
-import { usePreferences } from "../hooks/use-preferences";
+import { usePreferences, useUpdatePreferences } from "../hooks/use-preferences";
 import { useOpsTenants } from "./hooks";
 import { OPS_STEEL_ACCENT } from "./ops-theme";
 
@@ -101,6 +102,7 @@ function OpsSummaryChips() {
 export function OpsConsoleShell({ identity, children }: OpsConsoleShellProps) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const densityPref = usePreferences().data?.density;
+  const updatePrefs = useUpdatePreferences();
   if (!isOwner(identity)) {
     return (
       <div
@@ -134,6 +136,10 @@ export function OpsConsoleShell({ identity, children }: OpsConsoleShellProps) {
             <Trans>内部·特权</Trans>
           </span>
           <OpsSummaryChips />
+          <DensityToggle
+            current={resolveDensity(densityPref, "compact")}
+            onChange={(d) => updatePrefs.mutate({ density: d })}
+          />
         </div>
         <div className="flex flex-1">
           <SideNav

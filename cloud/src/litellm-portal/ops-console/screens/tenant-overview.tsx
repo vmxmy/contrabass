@@ -6,9 +6,11 @@ import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
 import { useOpsTenants } from "../hooks";
 import { PanelSkeleton, PanelEmpty, PanelError } from "../../components/panel-state";
+import { densityClasses, useDensity } from "../../components/density";
 
 function TenantsTable() {
   const { data, isLoading, isError, error } = useOpsTenants();
+  const dc = densityClasses(useDensity());
   if (isLoading) {
     return <PanelSkeleton lines={4} />;
   }
@@ -20,19 +22,19 @@ function TenantsTable() {
   return (
     <div className="overflow-x-auto">
       <Table className="w-full text-sm">
-        <Table.Header>
-          <Table.Row>
-            <Table.Head><Trans>租户</Trans></Table.Head>
-            <Table.Head><Trans>成员数</Trans></Table.Head>
-            <Table.Head><Trans>本周期花费/预算</Trans></Table.Head>
-            <Table.Head><Trans>告警 Webhook</Trans></Table.Head>
-            <Table.Head><Trans>账单</Trans></Table.Head>
+        <Table.Header className="sticky top-0 bg-kumo-elevated z-10">
+          <Table.Row className={dc.row}>
+            <Table.Head className={dc.cell}><Trans>租户</Trans></Table.Head>
+            <Table.Head className={dc.cell}><Trans>成员数</Trans></Table.Head>
+            <Table.Head className={dc.cell}><Trans>本周期花费/预算</Trans></Table.Head>
+            <Table.Head className={dc.cell}><Trans>告警 Webhook</Trans></Table.Head>
+            <Table.Head className={dc.cell}><Trans>账单</Trans></Table.Head>
           </Table.Row>
         </Table.Header>
         <Table.Body>
           {tenants.map((tn) => (
-            <Table.Row key={tn.teamId}>
-              <Table.Cell>
+            <Table.Row key={tn.teamId} className={dc.row}>
+              <Table.Cell className={dc.cell}>
                 <a
                   href={`/ops/tenants/${encodeURIComponent(tn.teamId)}`}
                   className="font-medium text-kumo-link underline underline-offset-2"
@@ -40,16 +42,16 @@ function TenantsTable() {
                   {tn.alias ?? tn.teamId}
                 </a>
               </Table.Cell>
-              <Table.Cell className="tabular-nums">{tn.memberCount}</Table.Cell>
-              <Table.Cell className="tabular-nums">
+              <Table.Cell className={`${dc.cell} tabular-nums`}>{tn.memberCount}</Table.Cell>
+              <Table.Cell className={`${dc.cell} tabular-nums`}>
                 {tn.cycleSpend ?? "—"} / {tn.maxBudget ?? "—"}
               </Table.Cell>
-              <Table.Cell>
+              <Table.Cell className={dc.cell}>
                 <Badge variant={tn.alertWebhookConfigured ? "success" : "neutral"}>
                   {tn.alertWebhookConfigured ? t`已配置` : t`未配置`}
                 </Badge>
               </Table.Cell>
-              <Table.Cell className="tabular-nums">{tn.billingPeriodsCount}</Table.Cell>
+              <Table.Cell className={`${dc.cell} tabular-nums`}>{tn.billingPeriodsCount}</Table.Cell>
             </Table.Row>
           ))}
         </Table.Body>

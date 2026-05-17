@@ -481,6 +481,8 @@ Density is a SHELL decision pushed via `DensityProvider` (`components/density.ts
 
 This is the "同源异质" differentiation on the density axis: §A.2 = the shell-level `p-6`/`p-4` baseline; §F.1 = the B-端 cockpit deepening (compact table cell/row tiers + a user-persisted comfortable↔compact toggle, Tenant stays comfortable). Phase 1/2 had no density difference at all.
 
+§F.1 Ops cockpit: the compact tier applies `densityClasses().cell` (`px-3 py-1.5`) + `.row` (`h-9`, ≤36px) to all Ops Table screens with a sticky header; a comfortable↔compact `DensityToggle` (Ops chrome only — Tenant stays comfortable) persists via UserPreferences.density. "一屏看全/拒绝滚动" is achieved where data volume allows via compact rows + sticky header (table self-scrolls when long; outer shell does not).
+
 ## Shell / SideNav (Phase 3 §B.1)
 
 Both shells render one shared `components/side-nav.tsx`; structure is identical, tone differs only by accent + the shell density wrapper.

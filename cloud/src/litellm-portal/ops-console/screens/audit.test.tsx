@@ -39,6 +39,7 @@ import { I18nProvider } from "@lingui/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { setupI18n } from "../../i18n/setup";
 import { ME_QUERY_KEY } from "../../hooks/use-me";
+import { DensityProvider } from "../../components/density";
 import type { Me } from "../../schemas";
 import { OpsAuditScreen } from "./audit";
 
@@ -62,5 +63,22 @@ describe("OpsAuditScreen", () => {
     expect(screen.getByText(/ops_impersonation_start/)).toBeTruthy();
     const link = screen.getByRole("link", { name: /详情/ });
     expect(link.getAttribute("href")).toContain("/ops/audit/ev-1");
+  });
+
+  it("applies the compact cell density to the table under DensityProvider compact (§F.1)", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData(ME_QUERY_KEY, owner);
+    const { container } = render(
+      <QueryClientProvider client={qc}>
+        <I18nProvider i18n={i18n}>
+          <DensityProvider density="compact">
+            <OpsAuditScreen />
+          </DensityProvider>
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+    const cell = container.querySelector("td");
+    expect(cell?.className).toContain("px-3");
+    expect(cell?.className).toContain("py-1.5");
   });
 });

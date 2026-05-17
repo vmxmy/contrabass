@@ -31,6 +31,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { setupI18n } from "../../i18n/setup";
 import { ME_QUERY_KEY } from "../../hooks/use-me";
 import { useOpsTenantDetail } from "../hooks";
+import { DensityProvider } from "../../components/density";
 import type { Me } from "../../schemas";
 import { OpsTenantDetailScreen } from "./tenant-detail";
 
@@ -75,5 +76,36 @@ describe("OpsTenantDetailScreen", () => {
       expect.objectContaining({ teamId: "t1", reason: expect.any(String) }),
       expect.anything(),
     );
+  });
+
+  it("applies the compact cell density to the members table under DensityProvider compact (§F.1)", () => {
+    (useOpsTenantDetail as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      data: {
+        teamId: "t1",
+        alias: "Acme",
+        maxBudget: 100,
+        cycleSpend: 12,
+        alertWebhookUrl: "https://hook.example",
+        members: [{ userId: "u9", email: "m@x.com", tenantRole: "member", spend: null }],
+        billingPeriods: ["2026-04"],
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData(ME_QUERY_KEY, owner);
+    const { container } = render(
+      <QueryClientProvider client={qc}>
+        <I18nProvider i18n={i18n}>
+          <DensityProvider density="compact">
+            <OpsTenantDetailScreen />
+          </DensityProvider>
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+    const cell = container.querySelector("td");
+    expect(cell?.className).toContain("px-3");
+    expect(cell?.className).toContain("py-1.5");
   });
 });

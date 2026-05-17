@@ -7,6 +7,7 @@ import { Trans } from "@lingui/react/macro";
 import { useAdminAudit } from "../../hooks/use-admin-audit";
 import { useOpsAuditEvent } from "../hooks";
 import { PanelSkeleton, PanelEmpty, PanelError } from "../../components/panel-state";
+import { densityClasses, useDensity } from "../../components/density";
 import { BlockErrorBoundary } from "../../errors/error-boundary";
 
 export function AuditEventDetailCard({ eventId }: { eventId: string }) {
@@ -59,6 +60,7 @@ export function AuditEventDetailCard({ eventId }: { eventId: string }) {
 
 function AuditFeedTable() {
   const { data, isLoading, isError, error } = useAdminAudit({ page: 1, size: 50 });
+  const dc = densityClasses(useDensity());
   if (isLoading) {
     return <PanelSkeleton lines={2} />;
   }
@@ -70,23 +72,23 @@ function AuditFeedTable() {
   return (
     <div className="overflow-x-auto">
       <Table className="w-full text-sm">
-        <Table.Header>
-          <Table.Row>
-            <Table.Head><Trans>动作</Trans></Table.Head>
-            <Table.Head><Trans>操作者</Trans></Table.Head>
-            <Table.Head><Trans>对象</Trans></Table.Head>
-            <Table.Head><Trans>时间</Trans></Table.Head>
-            <Table.Head><Trans>详情</Trans></Table.Head>
+        <Table.Header className="sticky top-0 bg-kumo-elevated z-10">
+          <Table.Row className={dc.row}>
+            <Table.Head className={dc.cell}><Trans>动作</Trans></Table.Head>
+            <Table.Head className={dc.cell}><Trans>操作者</Trans></Table.Head>
+            <Table.Head className={dc.cell}><Trans>对象</Trans></Table.Head>
+            <Table.Head className={dc.cell}><Trans>时间</Trans></Table.Head>
+            <Table.Head className={dc.cell}><Trans>详情</Trans></Table.Head>
           </Table.Row>
         </Table.Header>
         <Table.Body>
           {events.map((e) => (
-            <Table.Row key={e.id}>
-              <Table.Cell className="font-medium">{e.action}</Table.Cell>
-              <Table.Cell>{e.actorUserEmail ?? "—"}</Table.Cell>
-              <Table.Cell>{e.objectType ?? "—"} · {e.objectId ?? "—"}</Table.Cell>
-              <Table.Cell className="tabular-nums">{e.createdAt ?? "—"}</Table.Cell>
-              <Table.Cell>
+            <Table.Row key={e.id} className={dc.row}>
+              <Table.Cell className={`${dc.cell} font-medium`}>{e.action}</Table.Cell>
+              <Table.Cell className={dc.cell}>{e.actorUserEmail ?? "—"}</Table.Cell>
+              <Table.Cell className={dc.cell}>{e.objectType ?? "—"} · {e.objectId ?? "—"}</Table.Cell>
+              <Table.Cell className={`${dc.cell} tabular-nums`}>{e.createdAt ?? "—"}</Table.Cell>
+              <Table.Cell className={dc.cell}>
                 <a
                   href={`/ops/audit/${encodeURIComponent(e.id)}`}
                   className="text-kumo-link underline underline-offset-2"

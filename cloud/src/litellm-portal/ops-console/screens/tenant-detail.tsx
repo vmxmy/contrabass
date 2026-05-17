@@ -8,10 +8,12 @@ import { Trans } from "@lingui/react/macro";
 import { useParams } from "@tanstack/react-router";
 import { useOpsTenantDetail, useStartImpersonation } from "../hooks";
 import { PanelSkeleton, PanelEmpty, PanelError } from "../../components/panel-state";
+import { densityClasses, useDensity } from "../../components/density";
 
 export function OpsTenantDetailBody({ teamId }: { teamId: string }) {
   const { data, isLoading, isError, error } = useOpsTenantDetail(teamId);
   const startImpersonation = useStartImpersonation();
+  const dc = densityClasses(useDensity());
 
   const enterTenant = useCallback(() => {
     startImpersonation.mutate(
@@ -99,17 +101,17 @@ export function OpsTenantDetailBody({ teamId }: { teamId: string }) {
         ) : (
           <div className="overflow-x-auto">
             <Table className="w-full text-sm">
-              <Table.Header>
-                <Table.Row>
-                  <Table.Head><Trans>邮箱</Trans></Table.Head>
-                  <Table.Head><Trans>门户角色</Trans></Table.Head>
-                  <Table.Head><Trans>花费</Trans></Table.Head>
+              <Table.Header className="sticky top-0 bg-kumo-elevated z-10">
+                <Table.Row className={dc.row}>
+                  <Table.Head className={dc.cell}><Trans>邮箱</Trans></Table.Head>
+                  <Table.Head className={dc.cell}><Trans>门户角色</Trans></Table.Head>
+                  <Table.Head className={dc.cell}><Trans>花费</Trans></Table.Head>
                 </Table.Row>
               </Table.Header>
               <Table.Body>
                 {data.members.map((m) => (
-                  <Table.Row key={m.userId}>
-                    <Table.Cell>
+                  <Table.Row key={m.userId} className={dc.row}>
+                    <Table.Cell className={dc.cell}>
                       <a
                         href={`/ops/users/${encodeURIComponent(m.userId)}`}
                         className="font-medium text-kumo-link underline underline-offset-2"
@@ -117,10 +119,10 @@ export function OpsTenantDetailBody({ teamId }: { teamId: string }) {
                         {m.email}
                       </a>
                     </Table.Cell>
-                    <Table.Cell className="text-kumo-default">
+                    <Table.Cell className={`${dc.cell} text-kumo-default`}>
                       {m.tenantRole === "tenant_admin" ? t`租户管理员` : t`成员`}
                     </Table.Cell>
-                    <Table.Cell className="tabular-nums">{m.spend ?? "—"}</Table.Cell>
+                    <Table.Cell className={`${dc.cell} tabular-nums`}>{m.spend ?? "—"}</Table.Cell>
                   </Table.Row>
                 ))}
               </Table.Body>
