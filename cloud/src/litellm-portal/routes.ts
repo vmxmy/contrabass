@@ -83,6 +83,7 @@ import {
   OpsTenantDetailSchema,
   OpsUserDetailSchema,
   AuditEventDetailSchema,
+  OpsPlatformSettingsSchema,
 } from "./schemas";
 import { ImpersonationAuditEnvelopeSchema } from "./durable/schemas";
 import type { ImpersonationAuditEnvelope } from "./durable/schemas";
@@ -2399,6 +2400,19 @@ const opsImpersonationApp = new Hono<HonoEnv>()
     return c.json({ stopped: true });
   });
 
+const opsPlatformSettingsApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/ops/*", applyAdminRateLimit)
+  .use("/ops/*", requireOwner)
+  .get("/ops/platform-settings", (c) =>
+    c.json(
+      OpsPlatformSettingsSchema.parse({
+        writeOpsEnabled: isWriteOpsEnabled(c.env),
+        companyName: portalCompanyName(c.env),
+      }),
+    ),
+  );
+
 // ---------------------------------------------------------------------------
 // Top-level app mounts /api/* with global error handler
 // ---------------------------------------------------------------------------
@@ -2446,6 +2460,7 @@ const app = new Hono<{ Bindings: LiteLLMPortalEnv }>()
   .route("/api", opsUserDetailApp)
   .route("/api", opsAuditDetailApp)
   .route("/api", opsImpersonationApp)
+  .route("/api", opsPlatformSettingsApp)
   .all("/*", (c) => c.json({ error: "not_found" }, 404));
 
 export { app };

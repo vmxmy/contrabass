@@ -4,10 +4,12 @@ import {
   OpsTenantDetailSchema,
   OpsUserDetailSchema,
   AuditEventDetailSchema,
+  OpsPlatformSettingsSchema,
   type OpsTenants,
   type OpsTenantDetail,
   type OpsUserDetail,
   type AuditEventDetail,
+  type OpsPlatformSettings,
 } from "../schemas";
 import {
   AdminCreateTeamResultSchema,
@@ -24,6 +26,7 @@ export const OPS_TENANTS_QUERY_KEY = ["ops", "tenants"] as const;
 export const OPS_TENANT_DETAIL_QUERY_KEY = (teamId: string) => ["ops", "tenant", teamId] as const;
 export const OPS_USER_DETAIL_QUERY_KEY = (userId: string) => ["ops", "user", userId] as const;
 export const OPS_AUDIT_EVENT_QUERY_KEY = (eventId: string) => ["ops", "audit", eventId] as const;
+export const OPS_PLATFORM_SETTINGS_QUERY_KEY = ["ops", "platform-settings"] as const;
 
 function extractError(json: unknown, fallback: string): string {
   if (json !== null && typeof json === "object" && "error" in json) {
@@ -67,6 +70,16 @@ export function useOpsUserDetail(userId: string) {
       getJson(`/api/ops/users/${encodeURIComponent(userId)}`, (j) => OpsUserDetailSchema.parse(j), "ops_user_detail_request_failed"),
     enabled: userId.length > 0,
     staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useOpsPlatformSettings() {
+  return useQuery<OpsPlatformSettings>({
+    queryKey: OPS_PLATFORM_SETTINGS_QUERY_KEY,
+    queryFn: () =>
+      getJson("/api/ops/platform-settings", (j) => OpsPlatformSettingsSchema.parse(j), "ops_platform_settings_request_failed"),
+    staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
 }
