@@ -47,6 +47,8 @@ Phase 3 是总纲第 4 节里「设计语言演进 + 租户品牌层 + 密度/�
 
 §A 的产物是「一致、可访问、可拆」的基线。三条工作流互相独立、低风险、可单独验证、可单独交付。**§B 不得在 §A 三条全部达验收前开工**（决策 3）。
 
+**§A 先行结构/缺陷修复（执行期发现，用户决策规则授权折入 Phase-3）：** (1) Tenant 需一个对称于 Ops `OpsLayout` 的无路径 pathless layout 包裹 `/usage|/keys|/members|/alerts|/billing`（见 §B.1 结构前提；plan Task 0）。(2) **修复一个已上线生产 #418**：Tenant shell 的加载态经 `TenantOverviewScreen` 渲染 Kumo `SkeletonLine`，而 Kumo `SkeletonLine` 用**未 seed 的 `Math.random()`** 计算 `--skeleton-width`/shimmer，SSR 与客户端首帧不一致 → 真实 hydration mismatch（`hydration.test.tsx` "tenant_admin full-nav shell at /" 在已上线 main 即红）。Phase-3 必须修（plan Task 0B：确定性 SSR 占位 + hydration 后再挂真实 SkeletonLine，禁用 `suppressHydrationWarning`），因为 **没有任何 CI workflow 跑 `cd cloud && bun run test`**（`ci.yml`=`make test-quick`，仅 go+dashboard+landing），§A-GATE 本地 sweep 是这些测试的唯一门禁，而 #418 是本分支的命名不变量——不可借「CI 会兜底」放过。
+
 ### §A.1 — a11y 审计与达标（工作流 A，最先）
 
 **审计范围（逐项，针对已上线两壳 + 全部 13 屏 + 共享组件）：**
