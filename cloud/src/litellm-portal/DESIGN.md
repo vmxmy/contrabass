@@ -580,6 +580,16 @@ Bundle 实测：`pnpm run analyze:litellm-portal-bundle` 显示 portal app bundl
 
 2026-05-17 `litellm-portal-phase3` 将真实渲染的 ECharts 图表链（`usage-dashboard.tsx → trend-chart/rank-bar/model-donut → echarts-core.ts`）通过 `usage-charts-lazy.tsx` 的 `React.lazy` 边界拆分（route 拓扑不变；esbuild `splitting:true` 已在 `build-litellm-portal-app.mjs` 生效，无 Vite FS 插件）。CI HARD GATE 写在真实 code-split 构建 `build-litellm-portal-app.mjs`（`client.tsx` 入口）：断言 echarts 不在 `main` chunk 且存在于某个非-main split chunk，违反则 `throw`（构建/CI 失败），`ECHARTS_LAZY_GATE: PASS/FAIL` 标记，无 KB 阈值门槛。`analyze-litellm-portal-bundle.mjs` 仍为观测脚本（构建 `app.tsx` 单包，非门槛）。实测 before/after（观测，非门槛）：拆分后 `main` chunk = `10.4KB gzip`（`58.2KB` min，echarts 已移出）；echarts 落入独立 split chunk = `192.5KB gzip`（`566.4KB` min），不再进入首屏下载。**#418 SSR↔hydrate 一致性（关键，spec §E-1 锁定；经实证 Open-Question (b)）**：新 `UsageDashboard` 用的 `dashboard/use-dashboard` 查询键在 SSR 未被 seed（`server-impl.tsx` seed 的是旧 `hooks/use-dashboard` 的 `["dashboard"]` 键），故 `renderPortalSSR("/usage")` 服务端渲染**加载态**（`加载中…`），不渲染 `<TrendChart>`、不进入 lazy Suspense 边界；客户端首帧同样渲染该加载态（同一未 seed 键）⇒ 两端首帧一致，lazy 边界**天然无 #418**（双方首帧均不进入边界）。`client.tsx` 在 `hydrateRoot` 前 fail-soft `try { await warmUsageCharts() } catch {}` 为纵深防御（若未来某改动在 SSR 端 seed 新键则保持 client==server）+ 渲染后 UX（消除查询返回后的骨架闪烁），并非当前防 #418 的机制（构造即安全）。守卫 = `hydration.test.tsx`：2 个平价用例（断言 SSR 串含 `加载中…`、无 `data-chart="trend"`、无 `data-panel-skeleton`，且 hydrate 无 mismatch）+ 1 个负控（客户端 seed 新键使其首帧渲染图表 vs SSR 加载态，证明该 harness 能侦测真实 mismatch、非空过），**非** client-only `router.test.tsx` mount。
 
+2026-05-17 §F.2（V2.0 §2.1）Web-Vitals 性能预算 — **CLS < 0.1 CI HARD GATE**（确定性、可断言；LCP/INP 仅观测，类比 §A.3 bundle delta 的"观测不设门槛"先例）。复用既有 `@playwright/test` 既有 harness，无 Lighthouse/新依赖：`cloud/tests/e2e/perf-budget.spec.ts`（页内 `PerformanceObserver` 采 `layout-shift`/`largest-contentful-paint`，load 后 2.5s 沉降窗口），脚本 `test:e2e:perf`。E2E 服务端 = 与 `deploy:litellm-portal` / `portal-e2e.yml` 同一构建产物（`build:litellm-portal` → `dist/litellm-portal-worker/index.js`，`wrangler dev --no-bundle --local` 提供；Lingui macro 仅由 `build:litellm-portal` 转译，裸 `wrangler dev` 跑 TS 源会 500，故构建产物是 SSR portal 唯一可服务体）— 非新增服务器；`playwright.config.ts` 新增 `reuseExistingServer` 的最小 `webServer`，本地手起 `dev:litellm-portal` 时让位、CI/staging 无人值守时自起。实测（两次确定性复跑，`x-litellm-portal-dev-email` dev-auth 头，LiteLLM stub 未 mock → 路由 SSR 渲染骨架/加载态，正是被测的 CLS 稳定态）：
+
+| route | CLS（HARD GATE < 0.1） | LCP（观测，非门槛） |
+|---|---|---|
+| `/` | `0.0000` ✅ | `~164–168ms` |
+| `/usage` | `0.0000` ✅ | `~144–152ms` |
+| `/ops` | `0.0000` ✅ | `0ms`（2.5s 窗口内未发 LCP entry — forbidden/小表面无大内容元素；`Number.isFinite` 仍真，LCP 观测不门控故通过；如实记录） |
+
+CLS=0.0000 三路由全过 → §A.2 `PanelSkeleton` / Task-0B `SsrSafeSkeleton` 定高几何 + Task-3 lazy chart 边界换入**不塌陷布局**（含 loading→resolved 过渡路径）。**INP 不可在无脚本化代表性交互下可靠自动测量** → 转 Task-10 人工 staging 项（具体规程：开 devtools Performance/INP overlay，每路由执行一次代表性交互并记录）。`CLS < 0.1` 是锁定的 §F.2 决策，门槛不放宽；真实 CLS 突破属缺陷，须在源头（骨架几何）修复，不得 gate-relax。
+
 ---
 
 ## 管理员视图（只读）
