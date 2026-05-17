@@ -39,6 +39,7 @@ function PortalIndex() {
 
   return (
     <TenantPortalShell identity={toPortalIdentity(me)} brand={toTenantBrand(me)}>
+      {/* Phase 1 Task 1w: shell only; screen content lands in Tasks 2-10 */}
       {null}
     </TenantPortalShell>
   );

@@ -58,9 +58,22 @@ const TENANT_ROUTE_SPECS: TenantRouteSpec[] = [
 /**
  * Build the Tenant Portal route subtree under `parentRoute`. Returns the
  * created child routes so the caller can `parentRoute.addChildren([...])`.
+ *
+ * `includeIndex` controls whether the `/` overview spec is mapped. The portal
+ * router mounts this subtree under `rootRoute`, where `/` is already owned by
+ * `indexRoute` (which selects the shell from the hydrated identity), so it
+ * passes `includeIndex: false`. The spec→exclusion decision lives here, next to
+ * `TENANT_ROUTE_SPECS`, so a reorder/insert can never reintroduce a duplicate
+ * `/` route-id collision by drifting a parallel index filter at the call site.
  */
-export function createTenantPortalRoutes(parentRoute: AnyRoute) {
-  return TENANT_ROUTE_SPECS.map((spec) =>
+export function createTenantPortalRoutes(
+  parentRoute: AnyRoute,
+  { includeIndex = true }: { includeIndex?: boolean } = {},
+) {
+  const specs = includeIndex
+    ? TENANT_ROUTE_SPECS
+    : TENANT_ROUTE_SPECS.filter((spec) => spec.path !== "/");
+  return specs.map((spec) =>
     createRoute({
       getParentRoute: () => parentRoute,
       path: spec.path,

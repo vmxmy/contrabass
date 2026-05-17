@@ -46,20 +46,20 @@ import {
   legacyAdminUsersRoute,
   legacyPreferencesRoute,
 } from "./routes/legacy/redirects";
-import { createTenantPortalRoutes, TENANT_ROUTE_SPECS } from "./tenant-portal/routes";
+import { createTenantPortalRoutes } from "./tenant-portal/routes";
 
-// Tenant Portal route subtree mounted at the top level. The factory's `/`
-// overview spec is intentionally dropped here: `/` is already owned by
-// `indexRoute`, which selects `TenantPortalShell` from the hydrated identity —
-// mounting another `/` child under `rootRoute` would be a route-id collision.
-// The remaining paths (`/usage|/keys|/members|/alerts|/billing`) live under
-// `rootRoute`, so their full paths never overlap with the legacy `/manage/*`
-// subtree (which keeps its own `manageRoute` parent and 301 behavior).
-// `createTenantPortalRoutes` maps `TENANT_ROUTE_SPECS` in order, so we drop the
-// entries whose spec path is "/" by the same index.
-const tenantPortalRoutes = createTenantPortalRoutes(rootRoute).filter(
-  (_route, i) => TENANT_ROUTE_SPECS[i].path !== "/",
-);
+// Tenant Portal route subtree mounted at the top level. `includeIndex: false`
+// drops the factory's `/` overview spec inside the factory itself: `/` is
+// already owned by `indexRoute`, which selects `TenantPortalShell` from the
+// hydrated identity — mounting another `/` child under `rootRoute` would be a
+// route-id collision. The remaining paths (`/usage|/keys|/members|/alerts|
+// /billing`) live under `rootRoute`, so their full paths never overlap with the
+// legacy `/manage/*` subtree (which keeps its own `manageRoute` parent and 301
+// behavior). The exclusion travels with the spec list, not as a parallel
+// positional filter across this module boundary.
+const tenantPortalRoutes = createTenantPortalRoutes(rootRoute, {
+  includeIndex: false,
+});
 
 // Wire up parent/child relationships using `addChildren`.
 const routeTree = rootRoute.addChildren([

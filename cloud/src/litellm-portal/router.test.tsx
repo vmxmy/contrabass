@@ -8,6 +8,8 @@ import { I18nProvider } from "@lingui/react";
 import { RouterProvider } from "@tanstack/react-router";
 import { QueryClient } from "@tanstack/react-query";
 import { createPortalRouter, createMemoryHistory } from "./router";
+import { createTenantPortalRoutes } from "./tenant-portal/routes";
+import { rootRoute } from "./routes/__root";
 import { AppShell } from "./routes/__root";
 import { ME_QUERY_KEY } from "./hooks/use-me";
 import { setupI18n } from "./i18n/setup";
@@ -17,10 +19,11 @@ const i18n = setupI18n("zh-CN");
 
 /**
  * Render the real portal router at the given path through `AppShell` with a
- * QueryClient pre-seeded with the `me` query — mirroring exactly how
- * `renderPortalSSR` (server) and the client bootstrap hydrate `useMe()`. Since
- * both server and client resolve the SAME seeded `ME_QUERY_KEY` data, the
- * shell-selection branch renders identically on both sides (#418-safe).
+ * QueryClient pre-seeded with the `me` query. This exercises the
+ * shell-SELECTION logic only — which branch (`TenantPortalShell` vs legacy
+ * `UserView`, and which nav variant) the seeded `ME_QUERY_KEY` data picks. It
+ * is a single client-side render, NOT an SSR→hydrateRoot round-trip; the
+ * permanent #418 SSR/hydration parity guard lives in `hydration.test.tsx`.
  */
 async function renderPortalAt(path: string, me: Me) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -157,6 +160,19 @@ describe("createPortalRouter", () => {
       const childMatches = router.state.matches.filter((m) => m.routeId !== "__root__");
       expect(childMatches.length).toBeGreaterThan(0);
     }
+  });
+
+  it("factory exclusion drops the / overview spec inside the factory (not by call-site index)", () => {
+    const withIndex = createTenantPortalRoutes(rootRoute);
+    const withoutIndex = createTenantPortalRoutes(rootRoute, { includeIndex: false });
+
+    expect(withIndex).toHaveLength(6);
+    expect(withoutIndex).toHaveLength(5);
+    const excludedPaths = withoutIndex.map((r) => r.options.path);
+    expect(excludedPaths).not.toContain("/");
+    expect([...excludedPaths].sort()).toEqual(
+      ["/alerts", "/billing", "/keys", "/members", "/usage"].sort(),
+    );
   });
 
   it("keeps legacy /manage/* resolving and does not collide with the tenant subtree", async () => {
