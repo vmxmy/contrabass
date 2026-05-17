@@ -6,5 +6,8 @@ describe("§C only --kumo-brand* is ever emitted", () => {
     const src = readFileSync("src/litellm-portal/tenant-portal/branding.ts", "utf8");
     const emitted = [...src.matchAll(/"(--kumo-[a-z-]+)":/g)].map((m) => m[1]);
     expect(new Set(emitted)).toEqual(new Set(["--kumo-brand", "--kumo-brand-hover"]));
+    // Negative: no dynamic CSS-var key construction (computed/template literals)
+    // that would silently bypass the static-key regex above.
+    expect(src).not.toMatch(/\[\s*[`'"]--kumo/);
   });
 });

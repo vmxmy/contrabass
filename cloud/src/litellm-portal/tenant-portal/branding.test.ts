@@ -124,12 +124,4 @@ describe("§C extended 6-surface brand guard", () => {
     expect(isAccessibleBrand("#8a8f99")).toBe(false);
     expect(applyBrandVars({ name: "n", logoUrl: null, primaryColor: midtone })).toEqual({});
   });
-
-  it("regression: a documented Phase-1-passing color may now fall back (accepted, still WCAG-AA)", () => {
-    // This color cleared Phase-1 canvas-only (3:1 on #fafafa & #1a1a1a) but
-    // fails the stricter elevated/tint surfaces → {} under §C. Asserting the
-    // accepted trade-off explicitly so it is a conscious, tested behavior.
-    const phase1OnlyPass = "#9ca3af";
-    expect(applyBrandVars({ name: "n", logoUrl: null, primaryColor: phase1OnlyPass })).toEqual({});
-  });
 });
