@@ -106,6 +106,16 @@ export const AuditEventSchema = z.object({
 
 export type AuditEvent = z.infer<typeof AuditEventSchema>;
 
+export const ImpersonationAuditEnvelopeSchema = z
+  .object({
+    realActor: z.string(),
+    effectiveTeam: z.string(),
+    viaImpersonation: z.literal(true),
+  })
+  .strict();
+
+export type ImpersonationAuditEnvelope = z.infer<typeof ImpersonationAuditEnvelopeSchema>;
+
 export const SyncMessageSchema = z.object({
   kind: z.enum(["team.update", "user.update", "key.generate", "key.delete", "key.update"]),
   entityId: z.string(),

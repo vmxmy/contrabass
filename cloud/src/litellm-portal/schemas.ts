@@ -553,3 +553,71 @@ export const RoleChangedBodySchema = z.object({
 });
 
 export type RoleChangedBody = z.infer<typeof RoleChangedBodySchema>;
+
+// ---------------------------------------------------------------------------
+// /api/ops/* — Operations Console (Owner-only, all-tenant)
+// ---------------------------------------------------------------------------
+
+export const OpsTenantRowSchema = z.object({
+  teamId: z.string(),
+  alias: z.string().nullable(),
+  memberCount: z.number(),
+  cycleSpend: z.number().nullable(),
+  maxBudget: z.number().nullable(),
+  alertWebhookConfigured: z.boolean(),
+  billingPeriodsCount: z.number(),
+});
+export type OpsTenantRow = z.infer<typeof OpsTenantRowSchema>;
+export const OpsTenantsSchema = z.object({ tenants: z.array(OpsTenantRowSchema) });
+export type OpsTenants = z.infer<typeof OpsTenantsSchema>;
+export const OpsTenantMemberSchema = z.object({
+  userId: z.string(),
+  email: z.string(),
+  tenantRole: z.enum(["tenant_admin", "member"]).nullable(),
+  spend: z.number().nullable(),
+});
+export const OpsTenantDetailSchema = z.object({
+  teamId: z.string(),
+  alias: z.string().nullable(),
+  maxBudget: z.number().nullable(),
+  cycleSpend: z.number().nullable(),
+  alertWebhookUrl: z.string().nullable(),
+  members: z.array(OpsTenantMemberSchema),
+  billingPeriods: z.array(z.string()),
+});
+export type OpsTenantDetail = z.infer<typeof OpsTenantDetailSchema>;
+export const OpsUserDetailSchema = z.object({
+  userId: z.string(),
+  email: z.string(),
+  platformRole: z.enum(["admin", "user", "none"]),
+  teamId: z.string().nullable(),
+  tenantRole: z.enum(["tenant_admin", "member"]).nullable(),
+  spend: z.number().nullable(),
+  maxBudget: z.number().nullable(),
+  keyCount: z.number(),
+});
+export type OpsUserDetail = z.infer<typeof OpsUserDetailSchema>;
+export const AuditEventDetailSchema = z.object({
+  id: z.string(),
+  ts: z.string().nullable(),
+  actorEmail: z.string(),
+  action: z.string(),
+  entityKind: z.string(),
+  entityId: z.string(),
+  before: z.string().nullable(),
+  after: z.string().nullable(),
+  reason: z.string().nullable(),
+  impersonation: z
+    .object({
+      realActor: z.string(),
+      effectiveTeam: z.string(),
+      viaImpersonation: z.literal(true),
+    })
+    .nullable(),
+});
+export type AuditEventDetail = z.infer<typeof AuditEventDetailSchema>;
+export const OpsPlatformSettingsSchema = z.object({
+  writeOpsEnabled: z.boolean(),
+  companyName: z.string(),
+});
+export type OpsPlatformSettings = z.infer<typeof OpsPlatformSettingsSchema>;
