@@ -15,11 +15,16 @@
  * identity-aware rendering (real-screen-or-MemberForbidden) at that point.
  */
 import React from "react";
-import { createRoute, type AnyRoute } from "@tanstack/react-router";
+import { createRoute, Outlet, type AnyRoute } from "@tanstack/react-router";
 import { Empty } from "@cloudflare/kumo/components/empty";
 import { Text } from "@cloudflare/kumo/components/text";
+import { Loader } from "@cloudflare/kumo/components/loader";
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
+import { useMe } from "../hooks/use-me";
+import { TenantPortalShell } from "./shell";
+import type { PortalIdentity } from "../types";
+import type { Me } from "../schemas";
 import { TenantUsageScreen } from "./screens/usage";
 import { TenantKeysScreen } from "./screens/keys";
 import { TenantMembersScreen } from "./screens/members";
@@ -92,3 +97,85 @@ export function createTenantPortalRoutes(
 }
 
 export { TENANT_ROUTE_SPECS };
+
+/**
+ * Mirrors `routes/index.tsx` `PortalIndex`'s identity→props mapping (read it;
+ * do NOT invent — `TenantPortalShell`'s prop shape is whatever `PortalIndex`
+ * passes).
+ */
+function toTenantIdentity(me: Me): PortalIdentity {
+  return {
+    email: me.email,
+    userId: me.userId,
+    domain: me.domain,
+    litellmUserId: me.userId,
+    role: me.role,
+    tenantRole: me.tenantRole,
+    tenantTeamId: me.tenantTeamId,
+  };
+}
+
+/**
+ * `TenantPortalShellProps.brand` is NON-OPTIONAL — copy the EXACT shape from
+ * `routes/index.tsx` `toTenantBrand` (verified live).
+ */
+function toTenantBrand(me: Me) {
+  return { name: me.company, logoUrl: null, primaryColor: null };
+}
+
+/**
+ * Pathless layout for the Tenant Portal subroutes (mirror of OpsLayout).
+ * Identity is derived purely from the hydrated `useMe()` — #418-safe (same
+ * discipline as OpsLayout). While `me` is undefined render a loading root
+ * (NOT a redirect/forbidden) — the M-NEW-1 cold-load rule, identical to
+ * OpsLayout. `/` is NOT a child here (it stays owned by `indexRoute` →
+ * `PortalIndex`, which selects the shell from identity); this layout owns
+ * ONLY the non-`/` tenant subroutes so there is NO route-id collision
+ * (mirrors how `opsLayoutRoute` keeps `/ops` as a CHILD without colliding).
+ */
+function TenantLayout() {
+  const { data: me } = useMe();
+  if (me === undefined) {
+    return (
+      <div id="tenant-portal-loading-root" className="py-12">
+        <Loader aria-label="正在加载" />
+      </div>
+    );
+  }
+  return (
+    <TenantPortalShell
+      identity={toTenantIdentity(me)}
+      brand={toTenantBrand(me)}
+      impersonation={me.impersonation ?? null}
+    >
+      <Outlet />
+    </TenantPortalShell>
+  );
+}
+
+/**
+ * Build the Tenant Portal subtree as a single pathless layout route (mirror
+ * of `createOpsConsoleRoutes`). Returns the pathless layout route (with its
+ * non-`/` screen children attached). Caller does
+ * `parentRoute.addChildren([tenantLayoutRoute])`. `id`-only (no `path`) so it
+ * never matches a URL on its own — only its children's paths do. The `/`
+ * spec is EXCLUDED here (owned by `indexRoute`) — same `includeIndex:false`
+ * intent, now structural via this factory.
+ */
+export function createTenantPortalLayoutRoute(parentRoute: AnyRoute) {
+  const tenantLayoutRoute = createRoute({
+    getParentRoute: () => parentRoute,
+    id: "tenant-layout",
+    component: TenantLayout,
+  });
+  const children = TENANT_ROUTE_SPECS.filter((spec) => spec.path !== "/").map((spec) =>
+    createRoute({
+      getParentRoute: () => tenantLayoutRoute,
+      path: spec.path,
+      component: spec.adminOnly
+        ? (spec.component ?? MemberForbidden)
+        : (spec.component ?? (() => <Placeholder id={spec.id} label={spec.label} />)),
+    }),
+  );
+  return tenantLayoutRoute.addChildren(children);
+}
