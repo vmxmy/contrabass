@@ -40,6 +40,12 @@ import type {
   OpsPlatformSettings,
 } from "../schemas";
 import type { PortalIdentity } from "../types";
+import {
+  PanelSkeleton,
+  PanelEmpty,
+  PanelError,
+  PanelLoading,
+} from "../components/panel-state";
 import { OpsConsoleShell } from "./shell";
 import { OpsTenantOverviewScreen } from "./screens/tenant-overview";
 import { OpsProvisioningScreen } from "./screens/provisioning";
@@ -248,6 +254,54 @@ export const ShellNonOwner: StoryObj<typeof OpsConsoleShell> = {
     identity: identityNonOwner,
     children: <div className="p-6 text-kumo-default">Screen content here</div>,
   },
+};
+
+export const OpsShellActiveNav: StoryObj<typeof OpsConsoleShell> = {
+  name: "Shell — active nav + steel pill + summary chips",
+  args: {
+    identity: identityOwner,
+    children: (
+      <div className="p-6 text-kumo-default">
+        Active route highlights the steel SideNav accent bar; the chrome shows
+        the steel-ring privileged pill and the global-state summary chips
+        (tenant count + alerting-tenant count).
+      </div>
+    ),
+  },
+  decorators: [
+    makeDecorator([
+      [ME_QUERY_KEY, fixtureMeOwner],
+      [OPS_TENANTS_QUERY_KEY, fixtureTenantsLoaded],
+    ]),
+  ],
+};
+
+// ---------------------------------------------------------------------------
+// Panel state gallery — the four canonical §A.2 state treatments
+// ---------------------------------------------------------------------------
+
+export const PanelStateGallery: StoryObj<typeof OpsConsoleShell> = {
+  name: "Panel states — four-state gallery",
+  decorators: [makeDecorator()],
+  render: () => (
+    <div className="grid gap-4 p-6 md:grid-cols-2">
+      <div className="rounded-md border border-kumo-line bg-kumo-elevated">
+        <PanelSkeleton lines={3} />
+      </div>
+      <div className="rounded-md border border-kumo-line bg-kumo-elevated">
+        <PanelEmpty title="暂无租户" description="尚未创建任何租户团队。" />
+      </div>
+      <div className="rounded-md border border-kumo-line bg-kumo-elevated">
+        <PanelError
+          title="租户列表加载失败"
+          error={new Error("Failed to fetch")}
+        />
+      </div>
+      <div className="rounded-md border border-kumo-line bg-kumo-elevated">
+        <PanelLoading label="正在加载" />
+      </div>
+    </div>
+  ),
 };
 
 // ---------------------------------------------------------------------------

@@ -124,6 +124,17 @@ describe("TenantAlertsScreen — tenant_admin", () => {
     expect(screen.queryByText("2024-06-01T12:00:00Z")).not.toBeNull();
   });
 
+  it("loading state uses the unified PanelSkeleton (§A.2)", () => {
+    mockedUseTenantWebhook.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useTenantWebhook>);
+    const { container } = renderWithProviders(<TenantAlertsScreen />, { tenantRole: "tenant_admin" });
+    expect(container.querySelector("[data-panel-skeleton]")).not.toBeNull();
+  });
+
   it("renders an empty state when GET returns null url", () => {
     mockedUseTenantWebhook.mockReturnValue({
       data: emptyWebhook,
@@ -175,7 +186,14 @@ describe("TenantAlertsScreen — tenant_admin", () => {
       capturedCallbacks.onError?.(new Error("https_required"));
     });
 
-    expect(screen.queryByText("https_required")).not.toBeNull();
+    // §F.3: the mutation onError gets the raw `https_required` code (this mock
+    // path bypasses the extractError catalog boundary). It is not a Lingui
+    // message id, so PanelError renders the generic fallback inside
+    // [data-panel-error] and the raw code never leaks into the Banner.
+    const panelError = document.querySelector("[data-panel-error]");
+    expect(panelError).not.toBeNull();
+    expect(panelError?.textContent).toContain("网络请求失败");
+    expect(screen.queryByText("https_required")).toBeNull();
   });
 
   it("calls useClearTenantWebhook mutate on Clear button click", () => {
@@ -210,14 +228,18 @@ describe("TenantAlertsScreen — tenant_admin", () => {
     act(() => {
       savedSetCallbacks.onError?.(new Error("https_required"));
     });
-    expect(screen.queryByText("https_required")).not.toBeNull();
+    // §F.3: raw mutation code → generic fallback in [data-panel-error]; the
+    // wrapper presence proves the error Banner rendered, the raw code is gone.
+    expect(document.querySelector("[data-panel-error]")).not.toBeNull();
+    expect(screen.queryByText("https_required")).toBeNull();
 
-    // Now Clear succeeds — stale error Banner must disappear
+    // Now Clear succeeds — stale error Banner must disappear entirely
     const clearButton = screen.getByRole("button", { name: /清除|clear/i });
     fireEvent.click(clearButton);
     act(() => {
       savedClearCallbacks.onSuccess?.();
     });
+    expect(document.querySelector("[data-panel-error]")).toBeNull();
     expect(screen.queryByText("https_required")).toBeNull();
   });
 });

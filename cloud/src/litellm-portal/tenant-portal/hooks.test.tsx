@@ -79,7 +79,11 @@ describe("useTenantInvites", () => {
     const { result } = renderHook(() => useTenantInvites(), { wrapper });
 
     await waitFor(() => expect(result.current.isError).toBe(true));
-    expect((result.current.error as Error).message).toBe("forbidden");
+    // §F.3: an unmapped server code resolves to the generic safe fallback,
+    // NEVER the raw code in a Banner.
+    const msg = (result.current.error as Error).message;
+    expect(msg).not.toContain("forbidden");
+    expect(msg).toBe("操作未完成，请重试；若反复出现请联系管理员。");
   });
 });
 
@@ -154,7 +158,10 @@ describe("useTenantBillingPeriods", () => {
     const { result } = renderHook(() => useTenantBillingPeriods(), { wrapper });
 
     await waitFor(() => expect(result.current.isError).toBe(true));
-    expect((result.current.error as Error).message).toBe("billing_archive_unavailable");
+    // §F.3: humanized message id, never the raw snake_case code.
+    const msg = (result.current.error as Error).message;
+    expect(msg).not.toContain("billing_archive_unavailable");
+    expect(msg).toBe("账单归档服务暂不可用。请稍后重试；若持续请联系管理员。");
   });
 });
 
@@ -421,9 +428,14 @@ describe("downloadTenantBilling", () => {
     const createObjectURL = vi.spyOn(URL, "createObjectURL");
     const createElementSpy = vi.spyOn(document, "createElement");
 
+    // §F.3: extractError now humanizes the server code — the thrown message
+    // is the localized message id, NEVER the raw snake_case code.
     await expect(downloadTenantBilling("2026-01")).rejects.toThrow(
-      "billing_archive_not_found",
+      "该周期暂无可下载的账单归档。请确认周期后重试，或稍后再试。",
     );
+    await expect(
+      downloadTenantBilling("2026-01"),
+    ).rejects.not.toThrow("billing_archive_not_found");
 
     expect(createObjectURL).not.toHaveBeenCalled();
     expect(createElementSpy).not.toHaveBeenCalled();

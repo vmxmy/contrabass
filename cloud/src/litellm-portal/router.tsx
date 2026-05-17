@@ -46,21 +46,17 @@ import {
   legacyAdminUsersRoute,
   legacyPreferencesRoute,
 } from "./routes/legacy/redirects";
-import { createTenantPortalRoutes } from "./tenant-portal/routes";
+import { createTenantPortalLayoutRoute } from "./tenant-portal/routes";
 import { createOpsConsoleRoutes } from "./ops-console/routes";
 
-// Tenant Portal route subtree mounted at the top level. `includeIndex: false`
-// drops the factory's `/` overview spec inside the factory itself: `/` is
-// already owned by `indexRoute`, which selects `TenantPortalShell` from the
-// hydrated identity — mounting another `/` child under `rootRoute` would be a
-// route-id collision. The remaining paths (`/usage|/keys|/members|/alerts|
-// /billing`) live under `rootRoute`, so their full paths never overlap with the
-// legacy `/manage/*` subtree (which keeps its own `manageRoute` parent and 301
-// behavior). The exclusion travels with the spec list, not as a parallel
-// positional filter across this module boundary.
-const tenantPortalRoutes = createTenantPortalRoutes(rootRoute, {
-  includeIndex: false,
-});
+// Tenant Portal subtree: a single pathless layout route (id-only, never
+// matches a URL itself) whose `/usage|/keys|/members|/alerts|/billing`
+// children own the tenant chrome via `TenantPortalShell`. The `/` exclusion
+// is now structural inside the layout factory: `/` is already owned by
+// `indexRoute` (which selects `TenantPortalShell` from the hydrated
+// identity), so the layout owns ONLY the non-`/` subroutes and there is no
+// route-id collision. Symmetric to `opsLayoutRoute` below.
+const tenantLayoutRoute = createTenantPortalLayoutRoute(rootRoute);
 
 // Operations Console subtree: a single pathless layout route (id-only, never
 // matches a URL itself) whose `/ops*` children own the Owner-gated Ops chrome.
@@ -99,7 +95,7 @@ const routeTree = rootRoute.addChildren([
   legacyAdminAuditEventRoute,
   legacyAdminSettingsRoute,
   legacyPreferencesRoute,
-  ...tenantPortalRoutes,
+  tenantLayoutRoute,
   opsLayoutRoute,
 ]);
 

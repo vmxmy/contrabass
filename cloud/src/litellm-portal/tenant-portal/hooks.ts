@@ -12,6 +12,7 @@ import {
   type TenantBillingPeriods,
   type TenantCreateInviteBody,
 } from "../schemas";
+import { extractError } from "../errors/extract-error";
 
 // ---------------------------------------------------------------------------
 // Query keys
@@ -20,18 +21,6 @@ import {
 export const TENANT_INVITES_QUERY_KEY = ["tenant", "invites"] as const;
 export const TENANT_WEBHOOK_QUERY_KEY = ["tenant", "alert-webhook"] as const;
 export const TENANT_BILLING_QUERY_KEY = ["tenant", "billing"] as const;
-
-// ---------------------------------------------------------------------------
-// Shared fetch helper (mirrors use-preferences / use-admin-* idiom)
-// ---------------------------------------------------------------------------
-
-function extractError(json: unknown, fallback: string): string {
-  if (json !== null && typeof json === "object" && "error" in json) {
-    const value = (json as Record<string, unknown>).error;
-    if (typeof value === "string") return value;
-  }
-  return fallback;
-}
 
 // ---------------------------------------------------------------------------
 // useTenantInvites — GET /api/tenant/invites

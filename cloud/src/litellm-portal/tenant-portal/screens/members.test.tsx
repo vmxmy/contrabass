@@ -137,6 +137,17 @@ describe("TenantMembersScreen — tenant_admin", () => {
     expect(screen.queryByText("待处理") ?? screen.queryByText("已使用")).not.toBeNull();
   });
 
+  it("loading state uses the unified PanelSkeleton (§A.2)", () => {
+    mockedUseTenantInvites.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useTenantInvites>);
+    const { container } = renderWithProviders(<TenantMembersScreen />, { tenantRole: "tenant_admin" });
+    expect(container.querySelector("[data-panel-skeleton]")).not.toBeNull();
+  });
+
   it("calls useCreateTenantInvite mutate with correct payload on form submit", () => {
     renderWithProviders(<TenantMembersScreen />, { tenantRole: "tenant_admin" });
 

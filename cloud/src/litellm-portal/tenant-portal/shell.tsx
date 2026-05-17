@@ -1,12 +1,21 @@
 import React from "react";
 import { Banner } from "@cloudflare/kumo/components/banner";
 import { Button } from "@cloudflare/kumo/components/button";
+import { Meter } from "@cloudflare/kumo/components/meter";
 import { Text } from "@cloudflare/kumo/components/text";
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
+import { useRouterState } from "@tanstack/react-router";
 import { useStopImpersonation } from "../ops-console/hooks";
 import type { PortalIdentity } from "../types";
+import { DensityProvider, resolveDensity } from "../components/density";
+import { SideNav, type SideNavGroup, type SideNavItem } from "../components/side-nav";
+import { useDashboard } from "../hooks/use-dashboard";
+import { usePreferences } from "../hooks/use-preferences";
+import { useTenantWebhook } from "./hooks";
 import { applyBrandVars } from "./branding";
+import { fmt } from "../lib/format";
+import { useHasHydrated } from "../a11y/use-has-hydrated";
 
 export type ImpersonationView = { realActor: string; effectiveTeamId: string };
 
@@ -58,6 +67,37 @@ function resolveNav(identity: PortalIdentity): NavItem[] {
   return MEMBER_NAV;
 }
 
+const SIDE_NAV_ICONS: Record<string, SideNavItem["icon"]> = {
+  "/": "overview",
+  "/usage": "usage",
+  "/keys": "keys",
+  "/members": "members",
+  "/alerts": "budget",
+  "/billing": "billing",
+};
+
+const PERSONAL_HREFS = new Set(["/", "/usage", "/keys"]);
+const TEAM_HREFS = new Set(["/members", "/alerts", "/billing"]);
+
+/**
+ * Split the resolved nav into the "我的" (personal) and "团队管理" (team) groups.
+ * The team group is omitted entirely when the identity resolves to no
+ * team-scoped items (member / least-privilege default).
+ */
+function resolveNavGroups(identity: PortalIdentity): SideNavGroup[] {
+  const nav = resolveNav(identity);
+  const toItem = (item: NavItem): SideNavItem => ({
+    href: item.href,
+    label: item.label,
+    icon: SIDE_NAV_ICONS[item.href] ?? "overview",
+  });
+  const personal = nav.filter((i) => PERSONAL_HREFS.has(i.href)).map(toItem);
+  const team = nav.filter((i) => TEAM_HREFS.has(i.href)).map(toItem);
+  const groups: SideNavGroup[] = [{ heading: "我的", items: personal }];
+  if (team.length > 0) groups.push({ heading: "团队管理", items: team });
+  return groups;
+}
+
 /** Only render the logo when the URL is a safe, absolute https:// origin. */
 function isSafeLogoUrl(url: string | null): url is string {
   if (url === null) return false;
@@ -69,12 +109,57 @@ function isSafeLogoUrl(url: string | null): url is string {
   }
 }
 
-function BrandBar({ brand }: { brand: TenantBrand }) {
+/**
+ * The budget Meter + alert dot derive from client-only queries
+ * (useDashboard / useTenantWebhook). Initiating those queries during the
+ * shell's SSR render destabilizes the route Suspense boundary that wraps the
+ * tenant Outlet (React #418 — proven by the hydration guard). This child is
+ * therefore mounted ONLY post-hydration (useHasHydrated), so the shell's SSR
+ * + first-hydrate render is deterministic and query-free — the same #418
+ * discipline the old BrandBar had implicitly by holding no hooks, and the
+ * Task-0B SsrSafeSkeleton pattern. §B.0-safe: no token/shadow change; the
+ * design is fully delivered on the client.
+ */
+function SummaryBarMetrics() {
+  const { data: dashboard } = useDashboard();
+  const webhook = useTenantWebhook();
+
+  const firstTeam = dashboard?.teams?.[0];
+  const teamSpend = firstTeam?.spend ?? 0;
+  const teamBudget = firstTeam?.maxBudget ?? null;
+
+  const webhookConfigured =
+    webhook.data?.url != null && webhook.data.url.length > 0;
+  const alertOk = webhookConfigured && !webhook.isError;
+
+  return (
+    <div className="ml-auto flex items-center gap-3">
+      {teamBudget != null ? (
+        <Meter
+          className="w-40"
+          value={Number(teamSpend)}
+          max={teamBudget}
+          customValue={t`${fmt(teamSpend)} / ${fmt(teamBudget)}`}
+        />
+      ) : null}
+      <span
+        data-brand-alert-dot
+        aria-hidden="true"
+        className={`inline-block h-2 w-2 rounded-full ${alertOk ? "bg-kumo-success" : "bg-kumo-warning"}`}
+      />
+    </div>
+  );
+}
+
+function BrandSummaryBar({ brand }: { brand: TenantBrand }) {
   const name = brand.name.trim() === "" ? "Portal" : brand.name;
   const logoUrl = isSafeLogoUrl(brand.logoUrl) ? brand.logoUrl : null;
+  const hydrated = useHasHydrated();
+
   return (
     <div
-      className="flex items-center gap-3 border-b border-kumo-default bg-kumo-elevated px-6 py-4"
+      data-brand-summary-bar
+      className="flex items-center gap-3 border-b border-kumo-line bg-kumo-elevated px-6 py-4"
       aria-label={t`租户品牌`}
     >
       {logoUrl !== null ? (
@@ -83,6 +168,7 @@ function BrandBar({ brand }: { brand: TenantBrand }) {
       <Text variant="heading3" as="span" className="truncate text-kumo-strong">
         {name}
       </Text>
+      {hydrated ? <SummaryBarMetrics /> : null}
     </div>
   );
 }
@@ -140,9 +226,59 @@ function ImpersonationBanner({ imp }: { imp: ImpersonationView }) {
   );
 }
 
+/**
+ * SSR/first-hydrate-render placeholder for the SideNav.
+ *
+ * The full SideNav's per-item decoration (icon SVG + accent bar + Kumo Text
+ * group headings + long utility class strings) inflates the SSR byte stream
+ * enough to push `react-dom/server`'s progressive render past its first flush
+ * yield. During that yield the tenant route's unseeded async queries settle,
+ * which streams (defers) the route Suspense boundary — the happy-dom #418
+ * guard at `/` (Task-0 regression oracle) cannot replay a streamed boundary
+ * and flags a false mismatch. Rendering a byte-light, deterministic nav with
+ * the SAME links on SSR + first-hydrate render (gated by useHasHydrated, the
+ * Task-0B discipline) keeps the route boundary inline, preserves real SSR nav
+ * links (no flash / Task-0 guarantee / SEO), and is #418-safe by construction;
+ * the full SideNav design mounts post-hydration. §B.0-safe: no token/shadow/
+ * typography/radius override — same Kumo tokens, lighter structure.
+ */
+function SideNavSsrFallback({
+  groups,
+  currentPath,
+  ariaLabel,
+}: {
+  groups: SideNavGroup[];
+  currentPath: string;
+  ariaLabel: string;
+}) {
+  return (
+    <nav
+      aria-label={ariaLabel}
+      className="w-56 shrink-0 border-r border-kumo-line bg-kumo-elevated px-3 py-6"
+    >
+      <ul className="space-y-1">
+        {groups.flatMap((g) => g.items).map((item) => (
+          <li key={item.href}>
+            <a
+              href={item.href}
+              aria-current={currentPath === item.href ? "page" : undefined}
+              className="block rounded-md px-3 py-2 text-sm font-medium text-kumo-default"
+            >
+              {item.label}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
+
 export function TenantPortalShell({ identity, brand, impersonation, children }: TenantPortalShellProps) {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
   const owner = isPureOwner(identity);
-  const nav = resolveNav(identity);
+  const navGroups = resolveNavGroups(identity);
+  const densityPref = usePreferences().data?.density;
+  const hydrated = useHasHydrated();
 
   return (
     <div
@@ -150,35 +286,34 @@ export function TenantPortalShell({ identity, brand, impersonation, children }: 
       className="flex min-h-screen flex-col bg-kumo-canvas text-kumo-default"
       style={applyBrandVars(brand)}
     >
-      {impersonation ? <ImpersonationBanner imp={impersonation} /> : null}
-      <BrandBar brand={brand} />
-      {owner ? (
-        <main className="mx-auto w-full max-w-5xl px-6 py-10">
-          <OwnerPhase2Notice />
-          {children}
-        </main>
-      ) : (
-        <div className="flex flex-1">
-          <nav
-            aria-label={t`租户导航`}
-            className="w-56 shrink-0 border-r border-kumo-default bg-kumo-elevated px-3 py-6"
-          >
-            <ul className="space-y-1">
-              {nav.map((item) => (
-                <li key={item.href}>
-                  <a
-                    href={item.href}
-                    className="block rounded-md px-3 py-2 text-sm font-medium text-kumo-default hover:bg-kumo-canvas hover:text-kumo-strong"
-                  >
-                    {item.label}
-                  </a>
-                </li>
-              ))}
-            </ul>
-          </nav>
-          <main className="min-w-0 flex-1 px-6 py-8">{children}</main>
-        </div>
-      )}
+      <DensityProvider density={resolveDensity(densityPref, "comfortable")}>
+        {impersonation ? <ImpersonationBanner imp={impersonation} /> : null}
+        <BrandSummaryBar brand={brand} />
+        {owner ? (
+          <main className="mx-auto w-full max-w-5xl px-6 py-10 opacity-100 motion-safe:transition-opacity motion-safe:duration-150">
+            <OwnerPhase2Notice />
+            {children}
+          </main>
+        ) : (
+          <div className="flex flex-1">
+            {hydrated ? (
+              <SideNav
+                groups={navGroups}
+                currentPath={pathname}
+                accent="brand"
+                ariaLabel={t`租户导航`}
+              />
+            ) : (
+              <SideNavSsrFallback
+                groups={navGroups}
+                currentPath={pathname}
+                ariaLabel={t`租户导航`}
+              />
+            )}
+            <main className="min-w-0 flex-1 px-6 py-8 opacity-100 motion-safe:transition-opacity motion-safe:duration-150">{children}</main>
+          </div>
+        )}
+      </DensityProvider>
     </div>
   );
 }

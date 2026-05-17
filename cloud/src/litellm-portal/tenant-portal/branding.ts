@@ -11,17 +11,31 @@ import type React from "react";
  *     Kumo tokens confirmed in @cloudflare/kumo theme-kumo.css. No other CSS
  *     vars are ever set.
  *   - WCAG-AA Non-text Contrast (SC 1.4.11, ratio ≥ 3:1) is enforced against
- *     BOTH the light canvas surface and the dark canvas surface. A color that
- *     fails either mode falls back to `{}`.
+ *     the canvas, elevated AND tint surfaces, in BOTH light and dark modes —
+ *     6 checks total, ALL-OR-NOTHING (Phase 3 §C / §E-3): if any one of the
+ *     6 surface×mode pairs fails, the whole brand falls back to `{}`
+ *     (Kumo default). The Phase-1 brandable surface set (CTA, chart stroke)
+ *     was widened in Phase 3 to also cover the SideNav active accent bar,
+ *     the primary panel-header left bar, the clickable-card active ring and
+ *     the brand summary-bar budget meter — all referencing the SAME
+ *     `--kumo-brand`, so this 6-surface guard protects every brandable
+ *     surface. Accepted trade-off: some Phase-1-passing tenants now fall
+ *     back (per-surface partial degradation was explicitly rejected — §E-3).
  *   - Pure function: no DOM, no window, SSR-safe.
  *
- * Surface colors used for contrast checks (from theme-kumo.css):
- *   Light: --color-kumo-canvas light = oklch(98.75% 0 0) ≈ #fafafa
- *   Dark:  --color-kumo-canvas dark  = oklch(10% 0 0)    ≈ #1a1a1a
+ * Surface colors used for contrast checks (from @cloudflare/kumo@2.1.0
+ * theme-kumo.css `@theme` block, achromatic — chroma 0 — so the oklch
+ * lightness maps directly to a neutral sRGB gray):
+ *   canvas   light: --color-kumo-canvas   = oklch(98.75% 0 0) ≈ #fafafa
+ *   canvas   dark:  --color-kumo-canvas   = oklch(10% 0 0)    ≈ #1a1a1a
+ *   elevated light: --color-kumo-elevated = oklch(98% 0 0)    → #f8f8f8
+ *   elevated dark:  --color-kumo-elevated = oklch(12% 0 0)    → #060606
+ *   tint     light: --color-kumo-tint     = oklch(97% 0 0)    → #f5f5f5
+ *   tint     dark:  --color-kumo-tint     = oklch(26.9% 0 0)  → #262626
  *
  * WCAG threshold: 3:1 (Non-text Contrast, SC 1.4.11) — chosen because
  * --kumo-brand is used as a UI accent (CTA backgrounds, chart strokes, focus
- * rings), not as body text against its containing surface.
+ * rings, active accent bars), not as body text against its containing surface.
  */
 
 /** Strict 6-digit hex regex — rejects 3-digit, injection, whitespace etc. */
@@ -38,6 +52,20 @@ const LIGHT_CANVAS_LUMINANCE = relativeLuminanceFromHex("#fafafa");
  * oklch(10% 0 0) is achromatic near-black; sRGB ≈ #1a1a1a.
  */
 const DARK_CANVAS_LUMINANCE = relativeLuminanceFromHex("#1a1a1a");
+
+/**
+ * Light/dark elevated surface (theme-kumo.css @theme --color-kumo-elevated).
+ * oklch(98% 0 0) → achromatic sRGB #f8f8f8; oklch(12% 0 0) → #060606.
+ */
+const LIGHT_ELEVATED_LUMINANCE = relativeLuminanceFromHex("#f8f8f8");
+const DARK_ELEVATED_LUMINANCE = relativeLuminanceFromHex("#060606");
+
+/**
+ * Light/dark tint surface (theme-kumo.css @theme --color-kumo-tint).
+ * oklch(97% 0 0) → achromatic sRGB #f5f5f5; oklch(26.9% 0 0) → #262626.
+ */
+const LIGHT_TINT_LUMINANCE = relativeLuminanceFromHex("#f5f5f5");
+const DARK_TINT_LUMINANCE = relativeLuminanceFromHex("#262626");
 
 /** WCAG 2.1 SC 1.4.11 Non-text Contrast threshold. */
 const WCAG_AA_UI_RATIO = 3.0;
@@ -113,15 +141,24 @@ function darkenHex(hex: string): string {
 
 /**
  * Return `true` if `color` is a valid strict `#rrggbb` hex AND achieves
- * WCAG AA Non-text Contrast (≥ 3:1) against BOTH the Kumo light canvas and
- * the Kumo dark canvas surfaces.
+ * WCAG AA Non-text Contrast (≥ 3:1) against the Kumo canvas, elevated AND
+ * tint surfaces in BOTH light and dark modes — 6 checks, ALL-OR-NOTHING.
  */
 export function isAccessibleBrand(color: string): boolean {
   if (!HEX6_RE.test(color)) return false;
   const brandL = relativeLuminanceFromHex(color);
-  const lightContrast = contrastRatio(brandL, LIGHT_CANVAS_LUMINANCE);
-  const darkContrast = contrastRatio(brandL, DARK_CANVAS_LUMINANCE);
-  return lightContrast >= WCAG_AA_UI_RATIO && darkContrast >= WCAG_AA_UI_RATIO;
+  const surfaces = [
+    LIGHT_CANVAS_LUMINANCE,
+    DARK_CANVAS_LUMINANCE,
+    LIGHT_ELEVATED_LUMINANCE,
+    DARK_ELEVATED_LUMINANCE,
+    LIGHT_TINT_LUMINANCE,
+    DARK_TINT_LUMINANCE,
+  ];
+  // All-or-nothing (§E-3): every surface in BOTH modes must clear >=3:1, or
+  // the whole brand falls back to Kumo default. Per-surface partial
+  // degradation was explicitly rejected (contract complexity / untestable).
+  return surfaces.every((s) => contrastRatio(brandL, s) >= WCAG_AA_UI_RATIO);
 }
 
 /**
@@ -131,7 +168,9 @@ export function isAccessibleBrand(color: string): boolean {
  * Returns `{}` (Kumo defaults) when:
  *   - `primaryColor` is absent / null
  *   - `primaryColor` is not strict `#rrggbb` (injection safety)
- *   - The color fails WCAG AA Non-text Contrast on either light or dark canvas
+ *   - The color fails WCAG AA Non-text Contrast on ANY of the 6
+ *     surface×mode pairs (canvas/elevated/tint × light/dark) —
+ *     all-or-nothing per §E-3
  *
  * Only emits `--kumo-brand` and `--kumo-brand-hover` — real Kumo tokens
  * confirmed in @cloudflare/kumo@2.1.0 theme-kumo.css. Never emits semantic,
@@ -150,3 +189,10 @@ export function applyBrandVars(b: {
     "--kumo-brand-hover": darkenHex(b.primaryColor),
   } as React.CSSProperties;
 }
+
+// ---------------------------------------------------------------------------
+// Re-exports for a11y (Task 1) and the §C extended-surface guard (Task 8).
+// Pure WCAG math; no behavior change — only widens visibility.
+// ---------------------------------------------------------------------------
+
+export { relativeLuminanceFromHex, contrastRatio, darkenHex };

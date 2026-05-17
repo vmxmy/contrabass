@@ -14,16 +14,15 @@
  */
 import React from "react";
 import { Badge } from "@cloudflare/kumo/components/badge";
-import { Empty } from "@cloudflare/kumo/components/empty";
 import { LayerCard } from "@cloudflare/kumo/components/layer-card";
 import { Meter } from "@cloudflare/kumo/components/meter";
-import { SkeletonLine } from "@cloudflare/kumo/components/loader";
 import { Text } from "@cloudflare/kumo/components/text";
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
 import { useMe } from "../../hooks/use-me";
 import { useDashboard } from "../../hooks/use-dashboard";
 import { useTenantWebhook } from "../hooks";
+import { PanelSkeleton, PanelEmpty } from "../../components/panel-state";
 import { fmt, fmtInt } from "../../lib/format";
 
 // ---------------------------------------------------------------------------
@@ -63,9 +62,8 @@ function PersonalSpendTile() {
 
   if (isLoading) {
     return (
-      <LayerCard className="space-y-3 p-6">
-        <SkeletonLine minWidth={80} maxWidth={120} blockHeight={12} />
-        <SkeletonLine minWidth={120} maxWidth={200} blockHeight={32} />
+      <LayerCard className="p-6">
+        <PanelSkeleton lines={1} />
       </LayerCard>
     );
   }
@@ -112,9 +110,8 @@ function TeamBudgetTile() {
 
   if (isLoading) {
     return (
-      <LayerCard className="space-y-3 p-6" id="tenant-overview-team-budget-tile">
-        <SkeletonLine minWidth={80} maxWidth={120} blockHeight={12} />
-        <SkeletonLine minWidth={120} maxWidth={200} blockHeight={32} />
+      <LayerCard className="p-6" id="tenant-overview-team-budget-tile">
+        <PanelSkeleton lines={1} />
       </LayerCard>
     );
   }
@@ -166,12 +163,8 @@ function WebhookStatusTile() {
 
   if (isLoading) {
     return (
-      <LayerCard
-        className="space-y-3 p-6"
-        id="tenant-overview-webhook-tile"
-      >
-        <SkeletonLine minWidth={80} maxWidth={120} blockHeight={12} />
-        <SkeletonLine minWidth={120} maxWidth={200} blockHeight={20} />
+      <LayerCard className="p-6" id="tenant-overview-webhook-tile">
+        <PanelSkeleton lines={1} />
       </LayerCard>
     );
   }
@@ -250,10 +243,7 @@ function TopModelsTile() {
             <Trans>高频模型</Trans>
           </Text>
         </div>
-        <div className="space-y-3 p-6">
-          <SkeletonLine minWidth={120} maxWidth={300} blockHeight={16} />
-          <SkeletonLine minWidth={100} maxWidth={260} blockHeight={16} />
-        </div>
+        <PanelSkeleton lines={2} />
       </article>
     );
   }
@@ -268,9 +258,7 @@ function TopModelsTile() {
             <Trans>高频模型</Trans>
           </Text>
         </div>
-        <div className="p-6">
-          <Empty size="sm" title={t`暂无模型数据`} />
-        </div>
+        <PanelEmpty title={t`暂无模型数据`} />
       </article>
     );
   }
@@ -312,9 +300,8 @@ function RecentActivityTile() {
 
   if (isLoading) {
     return (
-      <LayerCard className="space-y-3 p-6">
-        <SkeletonLine minWidth={80} maxWidth={120} blockHeight={12} />
-        <SkeletonLine minWidth={100} maxWidth={180} blockHeight={28} />
+      <LayerCard className="p-6">
+        <PanelSkeleton lines={1} />
       </LayerCard>
     );
   }

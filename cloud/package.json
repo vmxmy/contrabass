@@ -22,6 +22,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:e2e:perf": "playwright test tests/e2e/perf-budget.spec.ts",
     "typecheck": "tsc --noEmit",
     "analyze:litellm-portal-bundle": "node scripts/analyze-litellm-portal-bundle.mjs",
     "plane:issue": "node scripts/plane-issue.mjs",

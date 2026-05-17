@@ -18,6 +18,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { setupI18n } from "../../i18n/setup";
 import { ME_QUERY_KEY } from "../../hooks/use-me";
 import { useOpsTenants } from "../hooks";
+import { DensityProvider } from "../../components/density";
 import type { Me } from "../../schemas";
 import { OpsTenantOverviewScreen } from "./tenant-overview";
 
@@ -52,5 +53,34 @@ describe("OpsTenantOverviewScreen", () => {
     });
     renderScreen();
     expect(screen.getByText(/暂无租户/)).toBeTruthy();
+  });
+
+  it("renders the unified PanelError on a failed request (§A.2)", () => {
+    (useOpsTenants as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      data: undefined, isLoading: false, isError: true, error: new Error("boom"),
+    });
+    const { container } = renderScreen();
+    expect(container.querySelector("[data-panel-error]")).not.toBeNull();
+  });
+
+  it("applies the compact cell density to the table under DensityProvider compact (§F.1)", () => {
+    (useOpsTenants as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      data: { tenants: [{ teamId: "t1", alias: "Acme", memberCount: 3, cycleSpend: 12, maxBudget: 100, alertWebhookConfigured: true, billingPeriodsCount: 2 }] },
+      isLoading: false, isError: false, error: null,
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData(ME_QUERY_KEY, owner);
+    const { container } = render(
+      <QueryClientProvider client={qc}>
+        <I18nProvider i18n={i18n}>
+          <DensityProvider density="compact">
+            <OpsTenantOverviewScreen />
+          </DensityProvider>
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+    const cell = container.querySelector("td");
+    expect(cell?.className).toContain("px-3");
+    expect(cell?.className).toContain("py-1.5");
   });
 });

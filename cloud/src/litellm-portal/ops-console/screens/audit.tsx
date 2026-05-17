@@ -1,7 +1,4 @@
 import React from "react";
-import { Banner } from "@cloudflare/kumo/components/banner";
-import { Empty } from "@cloudflare/kumo/components/empty";
-import { SkeletonLine } from "@cloudflare/kumo/components/loader";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Text } from "@cloudflare/kumo/components/text";
 import { useParams } from "@tanstack/react-router";
@@ -9,27 +6,19 @@ import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
 import { useAdminAudit } from "../../hooks/use-admin-audit";
 import { useOpsAuditEvent } from "../hooks";
+import { PanelSkeleton, PanelEmpty, PanelError } from "../../components/panel-state";
+import { densityClasses, useDensity } from "../../components/density";
+import { BlockErrorBoundary } from "../../errors/error-boundary";
 
 export function AuditEventDetailCard({ eventId }: { eventId: string }) {
   const { data, isLoading, isError, error } = useOpsAuditEvent(eventId);
   if (isLoading) {
-    return (
-      <div className="space-y-3 p-6">
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-      </div>
-    );
+    return <PanelSkeleton lines={2} />;
   }
   if (isError) {
-    return (
-      <Banner
-        variant="error"
-        title={t`审计事件加载失败`}
-        description={error instanceof Error ? error.message : t`网络请求失败`}
-      />
-    );
+    return <PanelError title={t`审计事件加载失败`} error={error} />;
   }
-  if (!data) return <Empty size="sm" title={t`未找到审计事件`} />;
+  if (!data) return <PanelEmpty title={t`未找到审计事件`} />;
   return (
     <article id="ops-audit-detail-root" className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
       <div className="border-b border-kumo-line bg-kumo-elevated p-6">
@@ -71,45 +60,35 @@ export function AuditEventDetailCard({ eventId }: { eventId: string }) {
 
 function AuditFeedTable() {
   const { data, isLoading, isError, error } = useAdminAudit({ page: 1, size: 50 });
+  const dc = densityClasses(useDensity());
   if (isLoading) {
-    return (
-      <div className="space-y-3 p-6">
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-      </div>
-    );
+    return <PanelSkeleton lines={2} />;
   }
   if (isError) {
-    return (
-      <Banner
-        variant="error"
-        title={t`审计日志加载失败`}
-        description={error instanceof Error ? error.message : t`网络请求失败`}
-      />
-    );
+    return <PanelError title={t`审计日志加载失败`} error={error} />;
   }
   const events = data?.events ?? [];
-  if (events.length === 0) return <Empty size="sm" title={t`暂无审计记录`} />;
+  if (events.length === 0) return <PanelEmpty title={t`暂无审计记录`} />;
   return (
     <div className="overflow-x-auto">
       <Table className="w-full text-sm">
-        <Table.Header>
-          <Table.Row>
-            <Table.Head><Trans>动作</Trans></Table.Head>
-            <Table.Head><Trans>操作者</Trans></Table.Head>
-            <Table.Head><Trans>对象</Trans></Table.Head>
-            <Table.Head><Trans>时间</Trans></Table.Head>
-            <Table.Head><Trans>详情</Trans></Table.Head>
+        <Table.Header className="sticky top-0 bg-kumo-elevated z-10">
+          <Table.Row className={dc.row}>
+            <Table.Head className={dc.cell}><Trans>动作</Trans></Table.Head>
+            <Table.Head className={dc.cell}><Trans>操作者</Trans></Table.Head>
+            <Table.Head className={dc.cell}><Trans>对象</Trans></Table.Head>
+            <Table.Head className={dc.cell}><Trans>时间</Trans></Table.Head>
+            <Table.Head className={dc.cell}><Trans>详情</Trans></Table.Head>
           </Table.Row>
         </Table.Header>
         <Table.Body>
           {events.map((e) => (
-            <Table.Row key={e.id}>
-              <Table.Cell className="font-medium">{e.action}</Table.Cell>
-              <Table.Cell>{e.actorUserEmail ?? "—"}</Table.Cell>
-              <Table.Cell>{e.objectType ?? "—"} · {e.objectId ?? "—"}</Table.Cell>
-              <Table.Cell className="tabular-nums">{e.createdAt ?? "—"}</Table.Cell>
-              <Table.Cell>
+            <Table.Row key={e.id} className={dc.row}>
+              <Table.Cell className={`${dc.cell} font-medium`}>{e.action}</Table.Cell>
+              <Table.Cell className={dc.cell}>{e.actorUserEmail ?? "—"}</Table.Cell>
+              <Table.Cell className={dc.cell}>{e.objectType ?? "—"} · {e.objectId ?? "—"}</Table.Cell>
+              <Table.Cell className={`${dc.cell} tabular-nums`}>{e.createdAt ?? "—"}</Table.Cell>
+              <Table.Cell className={dc.cell}>
                 <a
                   href={`/ops/audit/${encodeURIComponent(e.id)}`}
                   className="text-kumo-link underline underline-offset-2"
@@ -139,7 +118,14 @@ export function OpsAuditScreen() {
               <Trans>跨租户的运营动作审计日志。</Trans>
             </Text>
           </div>
-          <AuditFeedTable />
+          {/*
+            §F.4: per-block render/runtime isolation for the audit feed body.
+            LAYERED on top of the MAJOR-1 client.tsx chunk-fetch try/catch
+            (not replacing it). Transparent pass-through when nothing throws.
+          */}
+          <BlockErrorBoundary blockLabel="审计列表">
+            <AuditFeedTable />
+          </BlockErrorBoundary>
         </article>
       )}
     </div>

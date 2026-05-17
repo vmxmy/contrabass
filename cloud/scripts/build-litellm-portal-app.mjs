@@ -133,6 +133,31 @@ if (leakedAdminInputs.length > 0) {
   throw new Error(`main user bundle contains admin source inputs:\n${leakedAdminInputs.map((input) => `- ${input}`).join("\n")}`);
 }
 
+// ---------------------------------------------------------------------------
+// Phase-3 §A.3 CI HARD GATE: echarts MUST NOT be in the main chunk, and MUST
+// exist in some non-main split chunk (i.e. it is lazily code-split, not in the
+// initial download). No KB threshold — observational gzip delta is logged
+// below via the existing per-chunk report. Mirrors the admin-input throw idiom.
+// ---------------------------------------------------------------------------
+const ECHARTS_INPUT_RE = /node_modules\/echarts\//;
+const echartsInMain = mainChunk.inputs.filter((input) => ECHARTS_INPUT_RE.test(input));
+const echartsSplitChunk = chunks.find(
+  (chunk) => chunk.kind !== "main" && chunk.inputs.some((input) => ECHARTS_INPUT_RE.test(input)),
+);
+if (echartsInMain.length > 0) {
+  console.log("ECHARTS_LAZY_GATE: FAIL");
+  throw new Error(
+    `§A.3 gate: echarts is in the MAIN chunk (must be lazily code-split):\n${echartsInMain.map((i) => `- ${i}`).join("\n")}`,
+  );
+}
+if (!echartsSplitChunk) {
+  console.log("ECHARTS_LAZY_GATE: FAIL");
+  throw new Error("§A.3 gate: echarts not found in any non-main split chunk (chart may be unreachable or wrongly bundled)");
+}
+console.log(
+  `ECHARTS_LAZY_GATE: PASS (echarts isolated to split chunk ${basename(echartsSplitChunk.path)}, absent from main)`,
+);
+
 const budgetFailures = [
   mainChunk.gzipBytes > MAIN_GZIP_LIMIT
     ? `main user bundle gzip ${formatBytes(mainChunk.gzipBytes)} exceeds ${formatBytes(MAIN_GZIP_LIMIT)}`

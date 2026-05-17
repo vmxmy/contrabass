@@ -3,6 +3,12 @@
  * TODO(i18n): all entries below need human review before production use.
  */
 const messages: Record<string, string> = {
+  // §D public welcome (routes/index.tsx UserView)
+  "智云 AI 管理平台": "Zhiyun AI Management Platform",
+  "面向团队的 AI 能力自助台。请登录以查看你的用量、密钥与团队管理。":
+    "Your team's AI self-service console. Sign in to view your usage, keys, and team management.",
+  "登录": "Sign in",
+
   // Header / platform
   "面向智云团队的 AI 能力自助台：仪表盘聚焦用量趋势、预算与模型分布，管理操作集中到独立管理区。":
     "AI capability self-service portal for the Zhiyun team: dashboards focus on usage trends, budgets, and model distribution; management actions live in the dedicated management area.",
@@ -405,6 +411,104 @@ const messages: Record<string, string> = {
   "{realActor} 正在代表团队 {effectiveTeamId} 操作。所有操作均被审计。":
     "{realActor} is acting on behalf of team {effectiveTeamId}. All actions are audited.",
   "退出代操作": "Exit impersonation",
+
+  // Error UX contract (Phase 3 §F.3) — humanized server error codes
+  "操作未完成，请重试；若反复出现请联系管理员。":
+    "The operation didn't complete. Please try again; if it keeps happening, contact an administrator.",
+  "需要平台管理员权限才能执行此操作。请用管理员账号登录后重试。":
+    "This action requires platform administrator access. Please sign in with an admin account and try again.",
+  "此操作仅平台 Owner 可执行。请联系平台 Owner 处理。":
+    "Only a platform Owner can perform this action. Please ask a platform Owner to handle it.",
+  "需要团队管理员权限才能执行此操作。请联系团队管理员处理。":
+    "This action requires team administrator access. Please ask a team administrator to handle it.",
+  "对该团队的写操作需先以租户身份进入。请从运营台点击「进入租户」后重试，你填写的内容未丢失。":
+    "Writing to this team requires entering as the tenant first. Click “Enter tenant” in the operations console and try again — nothing you typed was lost.",
+  "登录状态已失效。请重新登录后重试。":
+    "Your session has expired. Please sign in again and try once more.",
+  "当前账号未归属任何团队，无法执行该操作。请联系管理员分配团队。":
+    "Your account isn't assigned to any team, so this action can't run. Please ask an administrator to assign you a team.",
+  "请填写邮箱后重试。": "Please enter an email address and try again.",
+  "缺少团队信息，请返回重新选择团队后重试。":
+    "Team information is missing. Please go back, reselect the team, and try again.",
+  "缺少用户信息，请返回重新选择用户后重试。":
+    "User information is missing. Please go back, reselect the user, and try again.",
+  "缺少 Key 信息，请刷新后重试。":
+    "Key information is missing. Please refresh and try again.",
+  "请同时选择团队与用户后重试。":
+    "Please select both a team and a user, then try again.",
+  "提交的内容格式有误。请检查输入后重试，你填写的内容未丢失。":
+    "The submitted content is malformed. Please check your input and try again — nothing you typed was lost.",
+  "提交的内容不完整或格式有误。请检查必填项后重试，输入未丢失。":
+    "The submitted content is incomplete or malformed. Please check the required fields and try again — your input was kept.",
+  "部分输入不符合要求。请按提示修正后重试，输入未丢失。":
+    "Some input doesn't meet the requirements. Please fix the highlighted fields and try again — your input was kept.",
+  "选择的账单周期无效。请重新选择有效周期后重试。":
+    "The selected billing period is invalid. Please pick a valid period and try again.",
+  "请填写 Key 名称后重试，你填写的内容未丢失。":
+    "Please enter a Key name and try again — nothing you typed was lost.",
+  "该 Key 名称已被占用。请改用其它名称后重试，你填写的内容未丢失。":
+    "That Key name is already taken. Please choose a different name and try again — nothing you typed was lost.",
+  "缺少审计事件信息，请返回重新选择事件后重试。":
+    "Audit event information is missing. Please go back, reselect the event, and try again.",
+  "请输入完整名称以确认此操作。":
+    "Please type the full name to confirm this action.",
+  "确认名称与目标不一致，操作已取消。请重新输入完全一致的名称。":
+    "The confirmation name doesn't match the target, so the action was cancelled. Please type the exact matching name.",
+  "请输入完整邮箱以确认此操作。":
+    "Please type the full email address to confirm this action.",
+  "确认邮箱与目标不一致，操作已取消。请重新输入完全一致的邮箱。":
+    "The confirmation email doesn't match the target, so the action was cancelled. Please type the exact matching email.",
+  "未找到对应的 API Key，可能已被删除。请刷新列表后重试。":
+    "The matching API Key wasn't found — it may have been deleted. Please refresh the list and try again.",
+  "未找到对应的团队，可能已变更。请刷新后重试。":
+    "The matching team wasn't found — it may have changed. Please refresh and try again.",
+  "未找到对应的用户，可能已变更。请刷新后重试。":
+    "The matching user wasn't found — it may have changed. Please refresh and try again.",
+  "未找到对应的邀请，可能已被撤销或失效。请刷新邀请列表。":
+    "The matching invite wasn't found — it may have been revoked or expired. Please refresh the invite list.",
+  "该邀请已被接受，无需重复操作。请刷新邀请列表查看最新状态。":
+    "This invite was already accepted, so there's nothing more to do. Please refresh the invite list to see the latest status.",
+  "未找到对应的审计事件，可能已变更。请刷新后重试。":
+    "The matching audit event wasn't found — it may have changed. Please refresh and try again.",
+  "未找到请求的资源，可能已变更或被移除。请刷新后重试。":
+    "The requested resource wasn't found — it may have changed or been removed. Please refresh and try again.",
+  "该周期暂无可下载的账单归档。请确认周期后重试，或稍后再试。":
+    "No downloadable billing archive exists for that period yet. Please confirm the period and try again, or come back later.",
+  "账单归档服务暂不可用。请稍后重试；若持续请联系管理员。":
+    "The billing archive service is temporarily unavailable. Please try again later; if it persists, contact an administrator.",
+  "数据服务暂时不可用。请稍后重试；若持续请联系管理员。":
+    "The data service is temporarily unavailable. Please try again later; if it persists, contact an administrator.",
+  "团队配置服务暂时不可用。请稍后重试；若持续请联系管理员。":
+    "The team configuration service is temporarily unavailable. Please try again later; if it persists, contact an administrator.",
+  "进入租户的服务暂时不可用。请稍后重试；若持续请联系管理员。":
+    "The enter-tenant service is temporarily unavailable. Please try again later; if it persists, contact an administrator.",
+  "团队创建未成功。请稍后重试，你填写的内容未丢失；若持续请联系管理员。":
+    "Team creation didn't succeed. Please try again later — nothing you typed was lost; if it persists, contact an administrator.",
+
+  // ---------------------------------------------------------------------------
+  // Phase 3 — restyle net-new keys
+  // ---------------------------------------------------------------------------
+
+  // SideNav group headings
+  "我的": "Mine",
+  "团队管理": "Team management",
+  "平台": "Platform",
+
+  // Ops global-state summary chip
+  "告警租户": "Alerting tenants",
+
+  // Chart aria (locale-driven template, §A.1)
+  "Token 用量趋势图，时间范围为 {window}，共 {points} 个 {grain} 粒度数据点。":
+    "Token usage trend chart, range {window}, {points} {grain}-grain data points.",
+
+  // §F.1 density toggle
+  "切换显示密度": "Toggle display density",
+  "紧凑": "Compact",
+  "宽松": "Comfortable",
+
+  // §F.4 BlockErrorBoundary fallback
+  "该模块加载出错": "This section failed to load",
+  "重试": "Retry",
 };
 
 export default messages;

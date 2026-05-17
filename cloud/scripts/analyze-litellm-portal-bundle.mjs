@@ -1,3 +1,4 @@
+// NOTE (Phase-3 §A.3): this builds app.tsx single-bundle (no splitting) and is OBSERVATIONAL ONLY. The ECharts-lazy CI HARD GATE lives in build-litellm-portal-app.mjs (the real client.tsx splitting build). Do not add the gate here — wrong artifact.
 import { build, analyzeMetafile } from "esbuild";
 import { fileURLToPath } from "node:url";
 

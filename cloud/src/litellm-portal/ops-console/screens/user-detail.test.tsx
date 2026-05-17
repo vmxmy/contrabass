@@ -63,4 +63,12 @@ describe("OpsUserDetailScreen", () => {
     expect(screen.getByText(/a@x.com/)).toBeTruthy();
     expect(screen.getByText(/u9/)).toBeTruthy();
   });
+
+  it("renders the unified PanelError on a failed request (§A.2)", () => {
+    (useOpsUserDetail as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      data: undefined, isLoading: false, isError: true, error: new Error("boom"),
+    });
+    const { container } = renderScreen();
+    expect(container.querySelector("[data-panel-error]")).not.toBeNull();
+  });
 });

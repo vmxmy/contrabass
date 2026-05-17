@@ -12,14 +12,12 @@
  * inline via a Banner — the client never reimplements the security check.
  */
 import React, { useCallback, useState } from "react";
-import { Banner } from "@cloudflare/kumo/components/banner";
 import { Button } from "@cloudflare/kumo/components/button";
-import { Empty } from "@cloudflare/kumo/components/empty";
 import { Field } from "@cloudflare/kumo/components/field";
 import { Input } from "@cloudflare/kumo/components/input";
-import { SkeletonLine } from "@cloudflare/kumo/components/loader";
 import { Select } from "@cloudflare/kumo/components/select";
 import { Text } from "@cloudflare/kumo/components/text";
+import { PanelSkeleton, PanelEmpty, PanelError } from "../../components/panel-state";
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
 import { useMe } from "../../hooks/use-me";
@@ -89,7 +87,7 @@ function WebhookConfigForm() {
   return (
     <div className="space-y-5 p-6">
       {error ? (
-        <Banner variant="error" title={t`操作失败`} description={error} />
+        <PanelError title={t`操作失败`} error={new Error(error)} />
       ) : null}
       <Field label={t`Webhook URL`} description={t`仅接受 HTTPS 地址，服务端校验 SSRF 安全。`}>
         <Input
@@ -149,32 +147,15 @@ function CurrentWebhookStatus() {
   const { data, isLoading, isError, error } = useTenantWebhook();
 
   if (isLoading) {
-    return (
-      <div className="space-y-3 p-6">
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-      </div>
-    );
+    return <PanelSkeleton lines={2} />;
   }
 
   if (isError) {
-    return (
-      <Banner
-        variant="error"
-        title={t`Webhook 配置加载失败`}
-        description={
-          error instanceof Error ? error.message : t`网络请求失败`
-        }
-      />
-    );
+    return <PanelError title={t`Webhook 配置加载失败`} error={error} />;
   }
 
   if (!data?.url) {
-    return (
-      <div className="p-6">
-        <Empty size="sm" title={t`未配置告警 Webhook`} />
-      </div>
-    );
+    return <PanelEmpty title={t`未配置告警 Webhook`} />;
   }
 
   return (

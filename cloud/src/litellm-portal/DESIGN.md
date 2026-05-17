@@ -297,25 +297,30 @@ The page rhythm rotates three modes:
 | Danger tint | `bg-kumo-danger-tint` | "超预算" status pill background |
 | Info tint | `bg-kumo-info-tint` | Info badge background |
 
+### Ops Fixed Steel — SANCTIONED raw-hex exception
+| Token | Value | Rationale |
+|---|---|---|
+| Ops fixed steel | `OPS_STEEL_BRAND #475569` / `OPS_STEEL_BRAND_HOVER #334155` | SANCTIONED raw-hex exception (§F.6 / V2.0 §1.3): Ops-only fixed brand voltage, Ops ignores tenant branding (Phase-2 invariant). The ONLY approved raw hex; all else via Kumo tokens (guarded). |
+
 ## Typography
 
 ### Hierarchy
 | Token | Size | Weight | Line Height | Use |
 |---|---|---|---|---|
-| Page title | 30px → 36px desktop | 600 | 1.2 | Platform name |
+| Page title | 28px → 32px desktop | 600 | 1.2 | Platform name |
 | Section title | 18px | 600 | 1.33 | Card headers, panel titles |
 | Metric value | 28px | 600 | 1.2 | KPI numbers, mono |
-| Metric label | 12px | 600 | 1.4 | uppercase, tracking-wider |
+| Label | 12px | 600 | 1.4 | uppercase, tracking-wider — metric labels & table headers |
 | Body | 14px → 16px | 400 | 1.5 | Descriptions, running text |
 | Caption | 13px | 400 | 1.5 | Meta, timestamps |
-| Table header | 12px | 600 | 1.4 | uppercase, tracking-wider |
 | Mono data | 14px → 18px | 500 | 1.4 | All numbers, prices, tokens |
 
 ### Principles
 - **Headings at weight 600**, never 700+. Signals calm authority, not urgency.
 - **Every number in monospace** — prices, token counts, budgets, RPM/TPM.
-- **Metric labels are 12px uppercase with tracking-wider** — visually subordinate without being tiny.
+- **Labels are 12px uppercase with tracking-wider** — the single subordinate tier for both metric labels and table headers; visually subordinate without being tiny.
 - **Page title uses negative letter-spacing** (`tracking-tight`); body stays at 0.
+- **Type scale: 7 tiers.** Largest heading (Page title 32px desktop) : body (16px) = 2.0× — at the V2.0 §1.1 ceiling, intentional for an institutional ops dashboard (mobile 28px : 14px = 2.0× likewise). Weight is unchanged (≤ 600); only the page-title px was lowered to hold the ≤ 2× ratio. Enforced by `a11y/type-scale.test.ts` (reads this table as the token source).
 
 ## Layout
 
@@ -436,6 +441,99 @@ Pill for interactive; xl for containers; sm for embedded tiles. Sharp corners ab
 - Border `ring-1 ring-kumo-line`, focus `focus-visible:ring-2 focus-visible:ring-kumo-brand`.
 - Usage time controls intentionally avoid Select; reserve Select for create-key model/duration inputs.
 
+## Focus & Accessibility (Phase 3 §A.1)
+
+- The portal-wide focus ring is `focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:ring-offset-2 focus-visible:outline-none` (`a11y/focus.ts` `FOCUS_RING`) — the single source for nav links, panel actions and clickable cards. Browser-default outline is no longer relied upon.
+- `--kumo-brand` resolves to the tenant brand (Tenant Portal) or fixed steel (Ops). Its non-text contrast (≥ 3:1 WCAG SC 1.4.11) on both the light and dark canvas is enforced by `tenant-portal/branding.ts` for any legal brand.
+- Every nav-mapped active navigation link emits `aria-current="page"` (detail routes `$eventId`/`$teamId`/`$userId` have no nav entry → no `aria-current`, by design). The impersonation banner remains `role="alert" aria-live="assertive"` (regression-guarded).
+- The rendered usage chart (`dashboard/charts/trend-chart.tsx`) exposes `role="img"` + a locale-driven `aria-label` (built by `buildChartAriaDescription` + the dashboard's `t`-macro template; the chart island stays macro-free) — it had NO accessible name before Phase 3.
+
+### Type-scale manual acceptance (§F.5 / V2.0 §1.1 — Task-10 Step-2 sub-items)
+
+These are human-judgment acceptances run during Task-10 staging review (cross-referenced from the Task-10 Step-2 manual checklist; recorded here as the durable design contract — no automatable assertion):
+
+- **5-second test**: screenshot Tenant `/` (overview) and Ops `/ops` (tenant-overview), light AND dark. Show each to a reviewer for exactly 5s, then hide. The reviewer must, from memory, name (a) the page's primary CTA/action and (b) the main heading. **Pass bar: reviewer correctly names BOTH for all 4 screenshots.** Fail → visual hierarchy not strong enough (revisit §B.1/§B.2 emphasis, NOT the type scale alone).
+- **Blur test**: apply heavy Gaussian blur (≈12px) to the same 4 screenshots. The visual centre-of-mass / energy must land on the primary content region (KPI band / hero panel / the tenant table), NOT on chrome/nav/decoration. **Pass bar: blurred focal weight is the content region in all 4.** Fail → de-emphasise chrome / strengthen content surface.
+
+## State Treatments (Phase 3 §A.2)
+
+Every data-panel / card query-state branch uses exactly ONE of four contracts (`components/panel-state.tsx`). Screens MUST NOT hand-write `SkeletonLine`/`Empty`/`Banner variant="error"` for state branches (guard test enforced).
+
+| Contract | Wraps | Use | Shape |
+|---|---|---|---|
+| `PanelSkeleton` | `SsrSafeSkeleton` (Task 0B; deterministic on SSR + client-first-render, swaps to Kumo `SkeletonLine` post-hydration) — NOT raw Kumo `SkeletonLine` (its unseeded `Math.random` shimmer is a #418 source) | First-paint placeholder | title row (12px) + `lines` content rows (16px), `p-6`, `space-y-3` |
+| `PanelEmpty` | Kumo `Empty` size=sm | No rows | required title, optional description/action, centered `py-10` |
+| `PanelError` | Kumo `Banner` variant=error | Request failed | title + the humanized message (§F.3): `error.message` is a localized message id resolved via the active i18n, never a raw server code |
+| `PanelLoading` | Kumo `Loader` | Inline/partial (buttons, local) | centered `py-6`, `aria-live=polite`, accessible label |
+
+## Error UX Contract (Phase 3 §F.3 / V2.0 §2.4 + §4#6)
+
+Server error CODES never reach the UI. `errors/error-messages.ts` is the single source: `errorMessage(code, …) → localized human message` folding the 3-element rule (what happened · your input is preserved · clear next step). Applied at the SHARED `errors/extract-error.ts` boundary consumed by `tenant-portal/hooks.ts` + `ops-console/hooks.ts`; `PanelError` resolves the id via the active i18n. Unknown codes → a generic safe fallback, NEVER the raw code. Messages MUST NOT leak internal impl (DO names, paths, auth mechanism, stack, snake_case codes, HTTP numbers) — guarded by `errors/error-messages.test.ts`. Adding a new server error code requires adding a mapping (the test's count floor fails CI otherwise).
+
+## Density Scale (Phase 3 §A.2 + §F.1 V2.0 §1.2)
+
+Density is a SHELL decision pushed via `DensityProvider` (`components/density.tsx`); screens read `useDensity()`/`densityClasses()` and never hard-code padding. Names map only to existing spacing tokens — no new numbers. A user preference (`UserPreferences.density`, persisted via the existing preferences channel, SSR-seeded) overrides the shell default via the pure SSR-safe `resolveDensity(pref, shellDefault)` (#418-safe — same channel as the theme toggle).
+
+| Density | Shell default | card | stack | grid | cell (§F.1 table) | row (§F.1 table) |
+|---|---|---|---|---|---|---|
+| `comfortable` | Tenant Portal (outward, editorial) | `p-6` | `space-y-6` | `gap-4` | `px-4 py-3` | `h-auto` |
+| `compact` | Ops Console (inward, B-端 cockpit) | `p-4` | `space-y-4` | `gap-4` | `px-3 py-1.5` | `h-9` (≤36px) |
+
+This is the "同源异质" differentiation on the density axis: §A.2 = the shell-level `p-6`/`p-4` baseline; §F.1 = the B-端 cockpit deepening (compact table cell/row tiers + a user-persisted comfortable↔compact toggle, Tenant stays comfortable). Phase 1/2 had no density difference at all.
+
+§F.1 Ops cockpit: the compact tier applies `densityClasses().cell` (`px-3 py-1.5`) + `.row` (`h-9`, ≤36px) to all Ops Table screens with a sticky header; a comfortable↔compact `DensityToggle` (Ops chrome only — Tenant stays comfortable) persists via UserPreferences.density. "一屏看全/拒绝滚动" is achieved where data volume allows via compact rows + sticky header (table self-scrolls when long; outer shell does not).
+
+## Shell / SideNav (Phase 3 §B.1)
+
+Both shells render one shared `components/side-nav.tsx`; structure is identical, tone differs only by accent + the shell density wrapper.
+
+- **Active/current item:** 2px left accent bar (`bg-kumo-brand` — tenant brand on Tenant, steel on Ops since `OPS_STEEL_ACCENT` sets `--kumo-brand` to steel) + `bg-kumo-tint` + `text-kumo-strong` + `aria-current="page"`.
+- **Hover:** `bg-kumo-tint` (normalized — the old `hover:bg-kumo-canvas` was near-invisible on the elevated nav).
+- **Icon:** 16px per item, `text-kumo-subtle` at rest, accent color when active (via `currentColor`). Source: hand-authored zero-dependency inline `<svg>` (`components/nav-icons.tsx`) — Kumo@2.1.0 ships NO icon set and `@phosphor-icons/react` is forbidden (C3 / §E-2 resolved); NEVER an icon dependency.
+- **Group headings:** 12px uppercase `tracking-wider` `text-kumo-subtle` (Tenant: 我的 / 团队管理; Ops: 租户 / 平台).
+- **Focus:** the shared `FOCUS_RING`.
+- **Density:** Tenant chrome = comfortable; Ops chrome = compact (shell `DensityProvider`). Hairline is `border-kumo-line` everywhere (the old `border-kumo-default` mis-token is normalized).
+
+## State Language (Phase 3 §B.3)
+
+| Element | rest | hover | active/current | focus-visible |
+|---|---|---|---|---|
+| Nav item | `text-kumo-default` | `bg-kumo-tint text-kumo-strong` | 2px accent bar + `bg-kumo-tint` + `text-kumo-strong` + `aria-current` | `FOCUS_RING` |
+| Clickable card/row | `bg-kumo-base` | `bg-kumo-tint` | `ring-2` shell accent | `FOCUS_RING` |
+| Primary panel header | neutral elevated | — | `border-l-2 border-kumo-brand` (shell accent) | — |
+| Primary CTA (Button primary) | Kumo default (`--kumo-brand`) | `--kumo-brand-hover` | — | Kumo default |
+
+Shell accent = `--kumo-brand`: Tenant = tenant brand (§C); Ops = fixed steel (`OPS_STEEL_ACCENT`, unchanged).
+
+## Motion (Phase 3 §B.4)
+
+Restrained, only at high-impact moments, all reduced-motion safe (every motion class is `motion-safe:`-gated; `prefers-reduced-motion: reduce` drops to the end state instantly).
+
+**Allowed (exhaustive — anything else is a violation):**
+- Route enter: main content `transition-opacity` ≤ 150ms (no custom keyframes).
+- Nav active accent bar: `transition-all` ≤ 150ms (bar slides between items).
+- Hover background: `transition-colors` ≤ 100ms.
+- Skeleton → content: cross-fade ≤ 120ms.
+
+**Forbidden:** parallax, autoplay, entrance stagger chains, decorative loops, elastic/overshoot easing, any transition > 200ms. Principle (mirrors the no-shadow rule): motion is a highlight, not an atmosphere.
+
+## Extended Tenant Branding (Phase 3 §C)
+
+Phase-1's single-voltage `--kumo-brand*` accent now reaches more chrome — all referencing the SAME `--kumo-brand` (no new CSS var; the Phase-1 injection guard is inherited automatically):
+
+| # | Brandable surface | Source |
+|---|---|---|
+| 1 | Primary CTA / Button primary | Phase 1 |
+| 2 | Chart primary stroke | Phase 1 |
+| 3 | SideNav active 2px accent bar | Phase 3 §B.1 |
+| 4 | Primary panel-header 2px left bar | Phase 3 §B.2 |
+| 5 | Clickable card/row active `ring-2` | Phase 3 §B.2 |
+| 6 | Brand summary-bar budget-meter fill | Phase 3 §B.1 |
+
+NOT brandable (Kumo-neutral, decision-1 boundary): body/heading/label text color, hierarchy backgrounds, semantic colors, hairline, focus-ring base logic.
+
+**Guard (extends Phase-1, math/contract unchanged):** strict `#rrggbb` only; only `--kumo-brand`/`--kumo-brand-hover` emitted; WCAG-AA non-text contrast (≥ 3:1) enforced on **canvas + elevated + tint, light AND dark = 6 checks, all-or-nothing** — any surface/mode failing → whole brand falls back to `{}` (Kumo default). Accepted trade-off (§E-3): some Phase-1-passing tenants now fall back (brand-presence weaker than Phase 1, but always WCAG-AA). Per-surface partial degradation explicitly rejected. **Ops `/ops` ignores all tenant branding — `OPS_STEEL_ACCENT` sets `--kumo-brand` to fixed steel; no code path lets a tenant color reach `/ops` (Phase-2 invariant, unchanged).**
+
 ## Do's and Don'ts
 
 ### Do
@@ -537,6 +635,20 @@ import { Popover } from "@cloudflare/kumo/primitives/popover";
 Kumo/ECharts brush 保持有界：用户在图表中横向拖拽后，前端会把选中区间映射到最接近的服务端预设窗口（例如 7d / 30d / 48h），再复用点击 preset 的 Auto/manual grain 规则请求 `/api/usage/timeseries`；无法匹配预设时只提示，不发起任意窗口查询。
 
 Bundle 实测：`pnpm run analyze:litellm-portal-bundle` 显示 portal app bundle 为 `1,092,618 bytes` minified；`pnpm run build:litellm-portal` dry-run 上传体积为 `1247.58 KiB / gzip 385.83 KiB`。相对上轮 Kumo UX 基线（约 `849.1KB` minified，dry-run `1009.64 KiB / gzip 289.37 KiB`），Kumo Chart/ECharts 原生交互增加约 `235KB` minified / `96KB` gzip。收益是移除 Recharts、统一 Kumo 视觉/ARIA/暗色行为，并获得 chart-native brush + 单次点击时间探索；代价是 bundle 明显增大，后续若继续扩展图表应优先考虑 island 懒加载或独立 chunk。
+
+2026-05-17 `litellm-portal-phase3` 将真实渲染的 ECharts 图表链（`usage-dashboard.tsx → trend-chart/rank-bar/model-donut → echarts-core.ts`）通过 `usage-charts-lazy.tsx` 的 `React.lazy` 边界拆分（route 拓扑不变；esbuild `splitting:true` 已在 `build-litellm-portal-app.mjs` 生效，无 Vite FS 插件）。CI HARD GATE 写在真实 code-split 构建 `build-litellm-portal-app.mjs`（`client.tsx` 入口）：断言 echarts 不在 `main` chunk 且存在于某个非-main split chunk，违反则 `throw`（构建/CI 失败），`ECHARTS_LAZY_GATE: PASS/FAIL` 标记，无 KB 阈值门槛。`analyze-litellm-portal-bundle.mjs` 仍为观测脚本（构建 `app.tsx` 单包，非门槛）。实测 before/after（观测，非门槛）：拆分后 `main` chunk = `10.4KB gzip`（`58.2KB` min，echarts 已移出）；echarts 落入独立 split chunk = `192.5KB gzip`（`566.4KB` min），不再进入首屏下载。**#418 SSR↔hydrate 一致性（关键，spec §E-1 锁定；经实证 Open-Question (b)）**：新 `UsageDashboard` 用的 `dashboard/use-dashboard` 查询键在 SSR 未被 seed（`server-impl.tsx` seed 的是旧 `hooks/use-dashboard` 的 `["dashboard"]` 键），故 `renderPortalSSR("/usage")` 服务端渲染**加载态**（`加载中…`），不渲染 `<TrendChart>`、不进入 lazy Suspense 边界；客户端首帧同样渲染该加载态（同一未 seed 键）⇒ 两端首帧一致，lazy 边界**天然无 #418**（双方首帧均不进入边界）。`client.tsx` 在 `hydrateRoot` 前 fail-soft `try { await warmUsageCharts() } catch {}` 为纵深防御（若未来某改动在 SSR 端 seed 新键则保持 client==server）+ 渲染后 UX（消除查询返回后的骨架闪烁），并非当前防 #418 的机制（构造即安全）。守卫 = `hydration.test.tsx`：2 个平价用例（断言 SSR 串含 `加载中…`、无 `data-chart="trend"`、无 `data-panel-skeleton`，且 hydrate 无 mismatch）+ 1 个负控（客户端 seed 新键使其首帧渲染图表 vs SSR 加载态，证明该 harness 能侦测真实 mismatch、非空过），**非** client-only `router.test.tsx` mount。
+
+2026-05-17 §F.4: per-block React ErrorBoundary (errors/error-boundary.tsx) wraps the lazy chart island + dashboard/audit core blocks — RENDER/RUNTIME isolation, LAYERED ON TOP of the MAJOR-1 client.tsx try/catch (chunk-FETCH floor; unchanged). Orthogonal: fetch-fail → floor; render-throw → inline panel; siblings intact. Transparent on the loading/happy path so the §E-1 #418 loading-parity is unaffected.
+
+2026-05-17 §F.2（V2.0 §2.1）Web-Vitals 性能预算 — **CLS < 0.1 CI HARD GATE**（确定性、可断言；LCP/INP 仅观测，类比 §A.3 bundle delta 的"观测不设门槛"先例）。复用既有 `@playwright/test` 既有 harness，无 Lighthouse/新依赖：`cloud/tests/e2e/perf-budget.spec.ts`（页内 `PerformanceObserver` 采 `layout-shift`/`largest-contentful-paint`，load 后 2.5s 沉降窗口），脚本 `test:e2e:perf`。E2E 服务端 = 与 `deploy:litellm-portal` / `portal-e2e.yml` 同一构建产物（`build:litellm-portal` → `dist/litellm-portal-worker/index.js`，`wrangler dev --no-bundle --local` 提供；Lingui macro 仅由 `build:litellm-portal` 转译，裸 `wrangler dev` 跑 TS 源会 500，故构建产物是 SSR portal 唯一可服务体）— 非新增服务器；`playwright.config.ts` 新增 `reuseExistingServer` 的最小 `webServer`，本地手起 `dev:litellm-portal` 时让位、CI/staging 无人值守时自起。**鉴权（Blocker-2 修正，2026-05-18）**：`authenticateRequest` 仅认 signed `portal_session` cookie（`x-litellm-portal-dev-email` 头是 Phase-2 已回滚的安全事故残骸 / NO-OP）。先前用该 NO-OP 头测得的 `/`,`/usage`,`/ops` 实为**未鉴权 legacy 页**，并非 Phase-3 重塑后的鉴权 shell，门槛未真正验证重塑布局——**该测量作废、被本次取代**。现 perf-spec 用项目自身 `issueSession`（HMAC over JSON payload）铸真签名 `portal_session` cookie 注入 Playwright context；perf webServer 通过 `--var PORTAL_SESSION_SECRET:<PERF_DEV_SESSION_SECRET>` 在被服务 worker 上钉同一密钥，sign==verify 本地成立。CLS 测量**之前**先断言鉴权 shell 标记可见（`/`,`/usage` → `#tenant-portal-shell-root`/`[data-brand-summary-bar]`；`/ops` → `#ops-console-shell-root`），故未来回退到未鉴权页不能再静默通过本门槛。`/ops` 以 allowlisted 但 platform-role=`none` 身份命中（本地 wrangler dev 无 IndexDO 记录）→ 渲染鉴权后的 Ops shell（内含 forbidden card），仍是 Phase-3 重塑壳、非 legacy 未鉴权页，对 CLS/布局稳定性观测有效。实测（鉴权后 Phase-3 重塑 shell，确定性复跑）：
+
+| route | CLS（HARD GATE < 0.1） | LCP（观测，非门槛） |
+|---|---|---|
+| `/` | `0.0000` ✅ | `~5464ms`（鉴权 `TenantPortalShell`） |
+| `/usage` | `0.0000` ✅ | `~11468ms`（鉴权 `TenantPortalShell`） |
+| `/ops` | `0.0000` ✅ | `~4356ms`（鉴权 `OpsConsoleShell`） |
+
+CLS=0.0000 三路由全过（鉴权后真实重塑 shell）→ §A.2 `PanelSkeleton` / Task-0B `SsrSafeSkeleton` 定高几何 + 定宽 SideNav + Task-3 lazy chart 边界换入**不塌陷布局**（含 loading→resolved 过渡路径）。LCP 较前作废测量明显升高，因现测的是鉴权后实际数据壳（含 dashboard 加载/数据屏），而非空的未鉴权骨架——属如实记录，LCP 观测不门控。**INP 不可在无脚本化代表性交互下可靠自动测量** → 转 Task-10 人工 staging 项（具体规程：开 devtools Performance/INP overlay，每路由执行一次代表性交互并记录）。`CLS < 0.1` 是锁定的 §F.2 决策，门槛不放宽；真实 CLS 突破属缺陷，须在源头（骨架几何）修复，不得 gate-relax。
 
 ---
 

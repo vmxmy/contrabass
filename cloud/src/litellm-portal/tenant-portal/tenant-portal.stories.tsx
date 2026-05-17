@@ -30,6 +30,12 @@ import type {
   TeamAlertWebhookResult,
   TenantBillingPeriods,
 } from "../schemas";
+import {
+  PanelSkeleton,
+  PanelEmpty,
+  PanelError,
+  PanelLoading,
+} from "../components/panel-state";
 import { TenantPortalShell } from "./shell";
 import { TenantOverviewScreen } from "./screens/overview";
 import { TenantUsageScreen } from "./screens/usage";
@@ -245,6 +251,56 @@ export const ShellPureOwner: StoryObj<typeof TenantPortalShell> = {
     brand: fixtureBrand,
     children: <div className="p-6 text-kumo-default">Screen content here</div>,
   },
+};
+
+export const ShellActiveNav: StoryObj<typeof TenantPortalShell> = {
+  name: "Shell — active nav + brand summary bar",
+  args: {
+    identity: identityTenantAdmin,
+    brand: fixtureBrand,
+    children: (
+      <div className="p-6 text-kumo-default">
+        Active route highlights the SideNav accent bar; the brand summary bar
+        shows logo + name + budget Meter + alert dot post-hydration.
+      </div>
+    ),
+  },
+  decorators: [
+    makeDecorator([
+      [ME_QUERY_KEY, fixtureMeTenantAdmin],
+      [DASHBOARD_QUERY_KEY, fixtureDashboard],
+      [TENANT_WEBHOOK_QUERY_KEY, fixtureWebhookConfigured],
+    ]),
+  ],
+};
+
+// ---------------------------------------------------------------------------
+// Panel state gallery — the four canonical §A.2 state treatments
+// ---------------------------------------------------------------------------
+
+export const PanelStateGallery: StoryObj<typeof TenantPortalShell> = {
+  name: "Panel states — four-state gallery",
+  decorators: [makeDecorator()],
+  render: () => (
+    <div className="grid gap-4 p-6 md:grid-cols-2">
+      <div className="rounded-md border border-kumo-line bg-kumo-elevated">
+        <PanelSkeleton lines={3} />
+      </div>
+      <div className="rounded-md border border-kumo-line bg-kumo-elevated">
+        <PanelEmpty
+          title="暂无模型数据"
+          description="该团队尚未配置可用模型。"
+          action={<a href="/keys">去配置</a>}
+        />
+      </div>
+      <div className="rounded-md border border-kumo-line bg-kumo-elevated">
+        <PanelError title="加载失败" error={new Error("Failed to fetch")} />
+      </div>
+      <div className="rounded-md border border-kumo-line bg-kumo-elevated">
+        <PanelLoading label="正在加载" />
+      </div>
+    </div>
+  ),
 };
 
 // ---------------------------------------------------------------------------

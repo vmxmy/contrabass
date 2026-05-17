@@ -5,10 +5,14 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { I18nProvider } from "@lingui/react";
+import { setupI18n } from "../../i18n/setup";
 import { UsageDashboard } from "./usage-dashboard";
 import { ME_QUERY_KEY } from "../../hooks/use-me";
 import { PREFERENCES_QUERY_KEY } from "../../hooks/use-preferences";
 import type { Me, UserPreferences } from "../../schemas";
+
+const i18n = setupI18n("zh-CN");
 
 const preferences: UserPreferences = {
   theme: "auto",
@@ -74,7 +78,11 @@ function wrap(ui: React.ReactElement, me: Me = meAdmin, prefs: UserPreferences =
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   qc.setQueryData(ME_QUERY_KEY, me);
   qc.setQueryData(PREFERENCES_QUERY_KEY, prefs);
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={qc}>
+      <I18nProvider i18n={i18n}>{ui}</I18nProvider>
+    </QueryClientProvider>,
+  );
 }
 
 afterEach(() => {
@@ -106,6 +114,21 @@ describe("UsageDashboard", () => {
     const user = wrap(<UsageDashboard />, meUser);
     await waitFor(() => expect(user.getByText("$45.20")).toBeTruthy());
     expect(user.queryByText("全局")).toBeNull();
+  });
+
+  it("passes a non-empty localized aria-label into the rendered TrendChart (§A.1)", async () => {
+    globalThis.fetch = vi.fn(async () => Response.json(SELF)) as typeof fetch;
+
+    const { container, getByText } = wrap(<UsageDashboard />, meUser);
+
+    await waitFor(() => expect(getByText("$45.20")).toBeTruthy());
+    const chart = container.querySelector('[data-chart="trend"]') as HTMLElement;
+    expect(chart).not.toBeNull();
+    expect(chart.getAttribute("role")).toBe("img");
+    const label = chart.getAttribute("aria-label") ?? "";
+    expect(label.length).toBeGreaterThan(0);
+    expect(label).toContain("30d");
+    expect(label).toContain("day");
   });
 
   it("switches admins to global panels", async () => {

@@ -18,12 +18,10 @@
  * `downloadTenantBilling`, which is already SSR-guarded.
  */
 import React, { useCallback, useState } from "react";
-import { Banner } from "@cloudflare/kumo/components/banner";
 import { Button } from "@cloudflare/kumo/components/button";
-import { Empty } from "@cloudflare/kumo/components/empty";
-import { SkeletonLine } from "@cloudflare/kumo/components/loader";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Text } from "@cloudflare/kumo/components/text";
+import { PanelSkeleton, PanelEmpty, PanelError } from "../../components/panel-state";
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
 import { useMe } from "../../hooks/use-me";
@@ -71,7 +69,7 @@ function BillingPeriodRow({ period }: { period: string }) {
       {error ? (
         <Table.Row>
           <Table.Cell colSpan={2}>
-            <Banner variant="error" title={t`下载失败`} description={error} />
+            <PanelError title={t`下载失败`} error={new Error(error)} />
           </Table.Cell>
         </Table.Row>
       ) : null}
@@ -87,34 +85,17 @@ function BillingPeriodsTable() {
   const { data, isLoading, isError, error } = useTenantBillingPeriods();
 
   if (isLoading) {
-    return (
-      <div className="space-y-3 p-6">
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-        <SkeletonLine minWidth={200} maxWidth={400} blockHeight={16} />
-      </div>
-    );
+    return <PanelSkeleton lines={2} />;
   }
 
   if (isError) {
-    return (
-      <Banner
-        variant="error"
-        title={t`账单列表加载失败`}
-        description={
-          error instanceof Error ? error.message : t`网络请求失败`
-        }
-      />
-    );
+    return <PanelError title={t`账单列表加载失败`} error={error} />;
   }
 
   const periods = data?.periods ?? [];
 
   if (periods.length === 0) {
-    return (
-      <div className="p-6">
-        <Empty size="sm" title={t`暂无账单`} />
-      </div>
-    );
+    return <PanelEmpty title={t`暂无账单`} />;
   }
 
   return (

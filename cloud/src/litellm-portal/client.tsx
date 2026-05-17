@@ -44,7 +44,8 @@ Promise.all([
   import("./router"),
   import("./routes/__root"),
   import("./shell"),
-]).then(async ([{ hydrateRoot }, { RouterProvider }, { createPortalRouter, createBrowserHistory }, { AppShell }, { Shell }]) => {
+  import("./dashboard/views/usage-charts-lazy"),
+]).then(async ([{ hydrateRoot }, { RouterProvider }, { createPortalRouter, createBrowserHistory }, { AppShell }, { Shell }, { warmUsageCharts }]) => {
   const history = createBrowserHistory();
   const router = createPortalRouter(history, { role });
 
@@ -55,6 +56,25 @@ Promise.all([
   // resolved <main> — a server/client first-render divergence (React #418,
   // full client re-render).
   await router.load();
+
+  // Phase-3 §A.3 (NEW-C-A): warm the usage-charts dynamic chunk before
+  // hydrateRoot. On the real SSR path the new UsageDashboard's useDashboard
+  // key is unseeded (verified Open-Question (b)) so SSR == client == loading
+  // state and there is NO #418 from the lazy boundary; this warm-up is
+  // defense-in-depth (keeps client==server if a future change SSR-seeds the
+  // new dashboard key → server would then render the resolved chart) plus a
+  // post-hydration UX win (no skeleton flash when the dashboard query
+  // resolves). MAJOR-1: MUST be fail-soft — a rejected chunk fetch (CDN blip,
+  // post-redeploy chunk 404, cache evict) must NEVER prevent hydrateRoot;
+  // worst case without it is a one-time chart-only client re-render, which is
+  // strictly better than a global white screen on EVERY route (incl.
+  // chart-less /ops/settings and login). Same pre-hydrate discipline as the
+  // `await router.load()` above.
+  try {
+    await warmUsageCharts();
+  } catch {
+    // Swallow — proceed to hydrate. (See MAJOR-1 rationale above.)
+  }
 
   // Hydrate the full document (not just #root) so the React tree root is
   // identical to the server's: <I18nProvider><Shell><AppShell>…
