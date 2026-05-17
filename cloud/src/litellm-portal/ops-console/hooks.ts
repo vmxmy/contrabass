@@ -9,6 +9,16 @@ import {
   type OpsUserDetail,
   type AuditEventDetail,
 } from "../schemas";
+import {
+  AdminCreateTeamResultSchema,
+  AdminCreateInviteResultSchema,
+  AdminRevokeInviteResultSchema,
+  SetTenantRoleResultSchema,
+  type AdminCreateTeamResult,
+  type AdminCreateInviteResult,
+  type AdminRevokeInviteResult,
+  type SetTenantRoleResult,
+} from "../schemas";
 
 export const OPS_TENANTS_QUERY_KEY = ["ops", "tenants"] as const;
 export const OPS_TENANT_DETAIL_QUERY_KEY = (teamId: string) => ["ops", "tenant", teamId] as const;
@@ -107,6 +117,83 @@ export function useStopImpersonation() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries();
+    },
+  });
+}
+
+export type OpsCreateTeamInput = { reason: string; alias: string; models?: string[]; maxBudget?: number | null };
+export function useOpsCreateTeam() {
+  const queryClient = useQueryClient();
+  return useMutation<AdminCreateTeamResult, Error, OpsCreateTeamInput>({
+    mutationFn: async (input) => {
+      const res = await fetch("/api/admin/teams", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          reason: input.reason, alias: input.alias,
+          models: input.models ?? [],
+          ...(input.maxBudget != null ? { maxBudget: input.maxBudget } : {}),
+        }),
+      });
+      const json = (await res.json().catch(() => ({}))) as unknown;
+      if (!res.ok) throw new Error(extractError(json, "ops_create_team_failed"));
+      return AdminCreateTeamResultSchema.parse(json);
+    },
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: OPS_TENANTS_QUERY_KEY }); },
+  });
+}
+
+export type OpsCreateInviteInput = { reason: string; email: string; teamId: string; teamRole?: "admin" | "user" };
+export function useOpsCreateInvite() {
+  return useMutation<AdminCreateInviteResult, Error, OpsCreateInviteInput>({
+    mutationFn: async (input) => {
+      const res = await fetch("/api/admin/invites", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason: input.reason, email: input.email, teamId: input.teamId, teamRole: input.teamRole ?? "user" }),
+      });
+      const json = (await res.json().catch(() => ({}))) as unknown;
+      if (!res.ok) throw new Error(extractError(json, "ops_create_invite_failed"));
+      return AdminCreateInviteResultSchema.parse(json);
+    },
+  });
+}
+
+export type OpsRevokeInviteInput = { email: string; reason: string; confirmEmail: string };
+export function useOpsRevokeInvite() {
+  return useMutation<AdminRevokeInviteResult, Error, OpsRevokeInviteInput>({
+    mutationFn: async (input) => {
+      const res = await fetch(`/api/admin/invites/${encodeURIComponent(input.email)}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason: input.reason, confirmEmail: input.confirmEmail }),
+      });
+      const json = (await res.json().catch(() => ({}))) as unknown;
+      if (!res.ok) throw new Error(extractError(json, "ops_revoke_invite_failed"));
+      return AdminRevokeInviteResultSchema.parse(json);
+    },
+  });
+}
+
+export type OpsSetTenantRoleInput = { teamId: string; userId: string; tenantRole: "tenant_admin" | "member"; reason: string };
+export function useOpsSetTenantRole() {
+  const queryClient = useQueryClient();
+  return useMutation<SetTenantRoleResult, Error, OpsSetTenantRoleInput>({
+    mutationFn: async (input) => {
+      const res = await fetch(
+        `/api/admin/teams/${encodeURIComponent(input.teamId)}/members/${encodeURIComponent(input.userId)}/tenant-role`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reason: input.reason, tenantRole: input.tenantRole }),
+        },
+      );
+      const json = (await res.json().catch(() => ({}))) as unknown;
+      if (!res.ok) throw new Error(extractError(json, "ops_set_tenant_role_failed"));
+      return SetTenantRoleResultSchema.parse(json);
+    },
+    onSuccess: (_d, vars) => {
+      void queryClient.invalidateQueries({ queryKey: OPS_TENANT_DETAIL_QUERY_KEY(vars.teamId) });
     },
   });
 }
