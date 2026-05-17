@@ -312,6 +312,99 @@ const messages: Record<string, string> = {
   // TenantMembersScreen — teamRole display labels
   "成员角色：成员": "Member",
   "成员角色：管理员": "Admin",
+
+  // ---------------------------------------------------------------------------
+  // Ops Console (Phase 2) — net-new keys
+  // ---------------------------------------------------------------------------
+
+  // OpsConsoleShell — chrome, chip, nav, forbidden card
+  "运营控制台": "Operations Console",
+  "内部·特权": "Internal · Privileged",
+  "运营导航": "Operations navigation",
+  "租户总览": "Tenant Overview",
+  "发放与邀请": "Provisioning & Invites",
+  "全局用量": "Global Usage",
+  "审计": "Audit",
+  "平台设置": "Platform Settings",
+  "仅平台 Owner 可访问": "Platform Owner access only",
+  "运营控制台仅对平台 Owner 开放。": "The Operations Console is restricted to the platform Owner.",
+  "返回首页": "Back to home",
+
+  // OpsTenantOverviewScreen
+  "所有租户的成员、花费、告警与账单状态。":
+    "Members, spend, alerts, and billing status across all tenants.",
+  "租户列表加载失败": "Failed to load tenants",
+  "暂无租户": "No tenants",
+  "租户": "Tenant",
+  "成员数": "Members",
+  "本周期花费/预算": "Cycle spend / budget",
+
+  // OpsProvisioningScreen
+  "请输入团队名称": "Please enter a team name",
+  "创建团队失败": "Failed to create team",
+  "创建团队": "Create team",
+  "为新租户创建一个团队。": "Create a team for a new tenant.",
+  "团队名称": "Team name",
+  "请输入邮箱与团队 ID": "Please enter an email and team ID",
+  "邀请用户加入指定团队。": "Invite a user to the specified team.",
+  "所属团队": "Team",
+  "所属团队标识": "Team identifier",
+  "请输入团队 ID 与用户 ID": "Please enter a team ID and user ID",
+  "指派角色失败": "Failed to assign role",
+  "指派租户角色": "Assign tenant role",
+  "为团队成员指派租户管理员或成员角色。":
+    "Assign the tenant-admin or member role to a team member.",
+  "团队 ID": "Team ID",
+  "用户 ID": "User ID",
+  "租户角色": "Tenant role",
+  "租户管理员": "Tenant admin",
+  "指派角色": "Assign role",
+
+  // OpsAuditScreen
+  "审计事件加载失败": "Failed to load audit event",
+  "未找到审计事件": "Audit event not found",
+  "审计事件详情": "Audit event detail",
+  "动作": "Action",
+  "对象": "Object",
+  "变更前": "Before",
+  "原因": "Reason",
+  "暂无审计记录": "No audit records",
+  "平台审计": "Platform Audit",
+  "跨租户的运营动作审计日志。": "Cross-tenant audit log of operational actions.",
+
+  // OpsPlatformSettingsScreen
+  "平台设置加载失败": "Failed to load platform settings",
+  "平台名称": "Platform name",
+  "写操作开关": "Write operations toggle",
+  "写操作已启用": "Write operations enabled",
+  "写操作已禁用": "Write operations disabled",
+  "偏好默认值": "Preference defaults",
+  "角色 / tenantRole 管理": "Role / tenantRole management",
+  "平台名称、写操作开关与相关管理入口。":
+    "Platform name, write-operations toggle, and related management entries.",
+
+  // OpsTenantDetailScreen
+  "租户详情加载失败": "Failed to load tenant detail",
+  "未找到租户": "Tenant not found",
+  "进入租户": "Enter tenant",
+  "本周期花费": "Cycle spend",
+  "账单期数": "Billing periods",
+  "该租户的所有成员及其门户角色与花费。":
+    "All members of this tenant with their portal roles and spend.",
+  "暂无成员": "No members",
+  "门户角色": "Portal role",
+
+  // OpsUserDetailScreen
+  "用户详情加载失败": "Failed to load user detail",
+  "未找到用户": "User not found",
+  "平台角色": "Platform role",
+  "Key 数量": "Key count",
+
+  // Impersonation banner (rendered by TenantPortalShell when impersonating)
+  "正在以租户身份操作": "Operating as a tenant",
+  "{realActor} 正在代表团队 {effectiveTeamId} 操作。所有操作均被审计。":
+    "{realActor} is acting on behalf of team {effectiveTeamId}. All actions are audited.",
+  "退出代操作": "Exit impersonation",
 };
 
 export default messages;
