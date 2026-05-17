@@ -14,42 +14,50 @@ afterEach(() => {
 });
 
 describe("litellm portal worker", () => {
-  it("serves the portal page rendered by React SSR with no inline JS event bridge", async () => {
+  it("serves the unauthenticated portal page as the §D static branded welcome with no inline JS event bridge", async () => {
     const response = await handleLiteLLMPortalRequest(new Request("https://portal.test/"), portalEnv());
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/html");
     const html = await response.text();
-    // SSR structural assertions
+    // Shell-level structural assertions (still true for the unauth page).
     expect(html).toContain("<!doctype html>");
     expect(html).toContain('<div id="root">');
     expect(html).toContain("<title>智云AI管理平台</title>");
-    expect(html).toContain(">智云AI管理平台</h1>");
-    expect(html).toContain('id="header-actions-root"');
     expect(html).toContain("面向智云团队的 AI 能力自助台");
+    expect(html).toContain('id="header-actions-root"');
+    expect(html).toContain('id="portal-error-root"');
+    // §D.3 contract (mirrors hydration.test.tsx): the restyled welcome IS the
+    // SSR-emitted unauth `/` state; the legacy usage dashboard panel is gone.
+    expect(html).toContain('id="portal-welcome-root"');
+    expect(html).not.toContain('id="usage-panel-root"');
+    // §D welcome copy: branded H1, sign-in prompt paragraph, native /login CTA.
+    expect(html).toContain("智云 AI 管理平台");
+    expect(html).toContain("面向团队的 AI 能力自助台");
+    expect(html).toContain('href="/login"');
+    expect(html).toContain('aria-label="登录"');
+    // Authenticated-only / legacy dashboard chrome must NOT render unauth.
+    expect(html).not.toContain('id="identity-bar-root"');
+    expect(html).not.toContain('id="tenant-portal-shell-root"');
+    expect(html).not.toContain('id="tenant-overview-root"');
+    expect(html).not.toContain('id="keys-root"');
+    expect(html).not.toContain('id="usage-panel"');
     expect(html).not.toContain("团队可用模型");
-    // UsageDashboard replaces old PersonalView — SSR renders loading placeholder
     expect(html).not.toContain("Token 用量趋势");
-    expect(html).toContain('id="usage-panel-root"');
-    // Usage window presets present
     expect(html).not.toContain("近 4 周");
     expect(html).not.toContain("近 12 周");
     expect(html).not.toContain("近 24 周");
     expect(html).not.toContain("近 26 周");
-    // SSR renders the sections with their IDs
-    expect(html).not.toContain('id="keys-root"');
-    expect(html).toContain('id="portal-error-root"');
-    expect(html).toContain('id="identity-bar-root"');
-    // Old usage-panel article ID is gone (replaced by UsageDashboard)
-    expect(html).not.toContain('id="usage-panel"');
-    // Inline JS event bridge MUST be removed (spec requirement)
+    // No SSR-embedded initial-data payload for the unauth page.
+    expect(html).not.toContain('id="initial-data"');
+    // Inline JS event bridge MUST be removed (spec requirement).
     expect(html).not.toContain("litellm-portal:keys");
     expect(html).not.toContain("litellm-portal:error");
     expect(html).not.toContain("dispatchKeys");
     expect(html).not.toContain("dispatchTeams");
     expect(html).not.toContain("dispatchStats");
     expect(html).not.toContain("window.__litellmPortal");
-    // No old inline JS artifacts
+    // No old inline JS artifacts.
     expect(html).not.toContain('id="usage-grain"');
     expect(html).not.toContain('id="usage-window-select"');
     expect(html).not.toContain("renderUsageLoading");
@@ -61,13 +69,45 @@ describe("litellm portal worker", () => {
     expect(html).not.toContain("/key/generate");
     expect(html).not.toContain("gz-zhiyun LiteLLM Portal");
     expect(html).not.toContain("登录身份来自 Cloudflare Access 邮箱验证码");
-    // Correct resource links
+    // Correct resource links.
     expect(html).toContain('href="/kumo.css"');
     expect(html).toContain('src="/portal.js"');
     expect(html).toContain("bg-kumo-canvas");
-    // No html.ts string template artifacts
+    // No html.ts string template artifacts.
     expect(html).not.toContain("renderPortalHtml");
     expect(html).not.toContain("<style");
+  });
+
+  it("serves the authenticated dashboard SSR (tenant portal shell, not the unauth welcome)", async () => {
+    const response = await handleLiteLLMPortalRequest(
+      devRequest("https://portal.test/", "test@gz-zhiyun.com"),
+      portalEnv(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    const html = await response.text();
+    // Shell-level structural assertions shared with the unauth page.
+    expect(html).toContain("<!doctype html>");
+    expect(html).toContain('<div id="root">');
+    expect(html).toContain("<title>智云AI管理平台</title>");
+    expect(html).toContain('href="/kumo.css"');
+    expect(html).toContain('src="/portal.js"');
+    expect(html).toContain("bg-kumo-canvas");
+    // Authenticated `/` SSR renders the §B tenant portal dashboard shell; the
+    // §D static unauth welcome must be ABSENT here. (The legacy
+    // `id="usage-panel-root"` panel was retired branch-wide and is absent on
+    // both paths, so the real authed discriminator is the tenant shell.)
+    expect(html).toContain('id="tenant-portal-shell-root"');
+    expect(html).toContain('id="tenant-overview-root"');
+    expect(html).not.toContain('id="portal-welcome-root"');
+    expect(html).not.toContain('id="usage-panel-root"');
+    // SSR dehydrates the authenticated session payload.
+    expect(html).toContain('id="initial-data"');
+    expect(html).toContain('"email":"test@gz-zhiyun.com"');
+    // Inline JS event bridge MUST remain removed on the authed path too.
+    expect(html).not.toContain("window.__litellmPortal");
+    expect(html).not.toContain("renderPortalHtml");
   });
 
   it("serves the Kumo standalone stylesheet from the installed package", async () => {
