@@ -10,7 +10,7 @@
  */
 
 import React, { useEffect } from "react";
-import { Link, createRootRouteWithContext, Outlet, useRouter } from "@tanstack/react-router";
+import { Link, createRootRouteWithContext, Outlet, useRouter, useRouterState } from "@tanstack/react-router";
 import { Switch } from "@cloudflare/kumo/components/switch";
 import { Button, LinkButton } from "@cloudflare/kumo/components/button";
 import { Toasty } from "@cloudflare/kumo/components/toast";
@@ -143,7 +143,33 @@ function CommandPaletteFallback() {
 // Root layout component
 // ---------------------------------------------------------------------------
 
+/**
+ * Outer root layout. Splits the chrome by URL surface:
+ *
+ * - `/ops*` → render a bare `<Outlet />`. The Operations Console owns its own
+ *   full-page chrome (`OpsConsoleShell`); wrapping it in the generic platform
+ *   header/command-palette would double-wrap it under a second header (C-NEW-1).
+ * - everything else → the generic `PortalRootLayout` (header, actions,
+ *   command palette, error banner).
+ *
+ * The branch is component-IDENTITY, pure-derived from the pathname only — the
+ * same single `useRouterState` hook runs on every render of THIS component, so
+ * there is no rules-of-hooks hazard (the per-surface hook sequences live in
+ * the two distinct child components, each unmounted/remounted cleanly across
+ * a surface switch). Because the pathname is identical on the server
+ * (`createMemoryHistory`) and the client for a given URL, SSR and hydration
+ * take the SAME branch for the SAME path (#418-safe).
+ */
 function RootLayout() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isOpsSurface = pathname === "/ops" || pathname.startsWith("/ops/");
+  if (isOpsSurface) {
+    return <Outlet />;
+  }
+  return <PortalRootLayout />;
+}
+
+function PortalRootLayout() {
   const router = useRouter();
   const { data: me } = useMe();
   const isAdmin = me?.role === "admin";
