@@ -517,6 +517,23 @@ Restrained, only at high-impact moments, all reduced-motion safe (every motion c
 
 **Forbidden:** parallax, autoplay, entrance stagger chains, decorative loops, elastic/overshoot easing, any transition > 200ms. Principle (mirrors the no-shadow rule): motion is a highlight, not an atmosphere.
 
+## Extended Tenant Branding (Phase 3 §C)
+
+Phase-1's single-voltage `--kumo-brand*` accent now reaches more chrome — all referencing the SAME `--kumo-brand` (no new CSS var; the Phase-1 injection guard is inherited automatically):
+
+| # | Brandable surface | Source |
+|---|---|---|
+| 1 | Primary CTA / Button primary | Phase 1 |
+| 2 | Chart primary stroke | Phase 1 |
+| 3 | SideNav active 2px accent bar | Phase 3 §B.1 |
+| 4 | Primary panel-header 2px left bar | Phase 3 §B.2 |
+| 5 | Clickable card/row active `ring-2` | Phase 3 §B.2 |
+| 6 | Brand summary-bar budget-meter fill | Phase 3 §B.1 |
+
+NOT brandable (Kumo-neutral, decision-1 boundary): body/heading/label text color, hierarchy backgrounds, semantic colors, hairline, focus-ring base logic.
+
+**Guard (extends Phase-1, math/contract unchanged):** strict `#rrggbb` only; only `--kumo-brand`/`--kumo-brand-hover` emitted; WCAG-AA non-text contrast (≥ 3:1) enforced on **canvas + elevated + tint, light AND dark = 6 checks, all-or-nothing** — any surface/mode failing → whole brand falls back to `{}` (Kumo default). Accepted trade-off (§E-3): some Phase-1-passing tenants now fall back (brand-presence weaker than Phase 1, but always WCAG-AA). Per-surface partial degradation explicitly rejected. **Ops `/ops` ignores all tenant branding — `OPS_STEEL_ACCENT` sets `--kumo-brand` to fixed steel; no code path lets a tenant color reach `/ops` (Phase-2 invariant, unchanged).**
+
 ## Do's and Don'ts
 
 ### Do
