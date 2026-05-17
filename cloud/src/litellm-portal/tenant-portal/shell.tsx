@@ -48,6 +48,8 @@ function resolveNav(identity: PortalIdentity): NavItem[] {
   if (identity.tenantRole === "tenant_admin") return FULL_NAV;
   if (identity.role === "admin" && identity.tenantTeamId !== null) return FULL_NAV;
   if (identity.tenantRole === "member") return MEMBER_NAV;
+  // Least-privilege default for a null/unrecognised tenantRole (valid case: a
+  // user not yet assigned to a team).
   return MEMBER_NAV;
 }
 

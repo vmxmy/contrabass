@@ -8,8 +8,11 @@
  * `indexRoute` / `manage*` tree in `router.tsx`.
  *
  * Member-hidden routes (`/members`, `/alerts`, `/billing`) still register so
- * deep links resolve, but render a Kumo `Empty` forbidden state when the
- * identity is a `member` (gating is enforced by the shell nav + this guard).
+ * deep links resolve, but default to a Kumo `Empty` forbidden state
+ * (`MemberForbidden`) rather than leaking a Placeholder. The real gate is the
+ * server-side `requireTenantAdmin`; this is only the client-side deep-link
+ * default. Tasks 3-8 replace the Placeholders with real screens and may add
+ * identity-aware rendering (real-screen-or-MemberForbidden) at that point.
  */
 import React from "react";
 import { createRoute, type AnyRoute } from "@tanstack/react-router";
@@ -61,7 +64,9 @@ export function createTenantPortalRoutes(parentRoute: AnyRoute) {
     createRoute({
       getParentRoute: () => parentRoute,
       path: spec.path,
-      component: () => <Placeholder id={spec.id} label={spec.label} />,
+      component: spec.adminOnly
+        ? MemberForbidden
+        : () => <Placeholder id={spec.id} label={spec.label} />,
     }),
   );
 }

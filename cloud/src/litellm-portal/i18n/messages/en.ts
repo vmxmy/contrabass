@@ -224,6 +224,7 @@ const messages: Record<string, string> = {
 
   // Tenant Portal Phase-2 owner notice
   "运营控制台将在 Phase 2 提供": "Operations Console arrives in Phase 2",
+  // English source string used in the <Trans> macro (zh-CN.ts maps it back) — not a dupe, keep both.
   "Operations Console arrives in Phase 2": "Operations Console arrives in Phase 2",
   "管理控制台": "Operations Console",
 
