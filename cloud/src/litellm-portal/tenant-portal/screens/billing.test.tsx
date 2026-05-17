@@ -142,7 +142,15 @@ describe("TenantBillingScreen — tenant_admin", () => {
       fireEvent.click(downloadBtn);
     });
 
-    expect(screen.queryByText("billing_archive_not_found")).not.toBeNull();
+    // §F.3: this mock rejects at the service-fn layer (downloadTenantBilling),
+    // BYPASSING the extractError catalog boundary, so PanelError receives the
+    // raw `billing_archive_not_found` code. That code is not a Lingui message
+    // id, so PanelError renders the generic, never-leaking fallback inside
+    // [data-panel-error] and the raw snake_case code never reaches the DOM.
+    const panelError = document.querySelector("[data-panel-error]");
+    expect(panelError).not.toBeNull();
+    expect(panelError?.textContent).toContain("网络请求失败");
+    expect(screen.queryByText("billing_archive_not_found")).toBeNull();
   });
 
   it("clears a stale download error when the next download succeeds", async () => {
@@ -156,13 +164,17 @@ describe("TenantBillingScreen — tenant_admin", () => {
     await act(async () => {
       fireEvent.click(downloadBtns[0]);
     });
-    expect(screen.queryByText("billing_archive_not_found")).not.toBeNull();
+    // §F.3: raw service-fn code is mapped to the generic fallback (the leak is
+    // closed); the [data-panel-error] wrapper proves the error UX rendered.
+    expect(document.querySelector("[data-panel-error]")).not.toBeNull();
+    expect(screen.queryByText("billing_archive_not_found")).toBeNull();
 
-    // Second download succeeds — stale error must clear
+    // Second download succeeds — stale error Banner must clear entirely
     mockedDownloadTenantBilling.mockResolvedValueOnce(undefined);
     await act(async () => {
       fireEvent.click(downloadBtns[0]);
     });
+    expect(document.querySelector("[data-panel-error]")).toBeNull();
     expect(screen.queryByText("billing_archive_not_found")).toBeNull();
   });
 
@@ -209,7 +221,13 @@ describe("TenantBillingScreen — tenant_admin", () => {
 
     renderWithProviders(<TenantBillingScreen />, { tenantRole: "tenant_admin" });
 
-    expect(screen.queryByText("billing_archive_unavailable")).not.toBeNull();
+    // §F.3: the mocked query error carries the raw `billing_archive_unavailable`
+    // code (mock bypasses extractError). Not a Lingui message id → PanelError
+    // shows the generic fallback in [data-panel-error], never the raw code.
+    const panelError = document.querySelector("[data-panel-error]");
+    expect(panelError).not.toBeNull();
+    expect(panelError?.textContent).toContain("网络请求失败");
+    expect(screen.queryByText("billing_archive_unavailable")).toBeNull();
   });
 });
 
