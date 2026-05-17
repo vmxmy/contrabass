@@ -297,6 +297,11 @@ The page rhythm rotates three modes:
 | Danger tint | `bg-kumo-danger-tint` | "超预算" status pill background |
 | Info tint | `bg-kumo-info-tint` | Info badge background |
 
+### Ops Fixed Steel — SANCTIONED raw-hex exception
+| Token | Value | Rationale |
+|---|---|---|
+| Ops fixed steel | `OPS_STEEL_BRAND #475569` / `OPS_STEEL_BRAND_HOVER #334155` | SANCTIONED raw-hex exception (§F.6 / V2.0 §1.3): Ops-only fixed brand voltage, Ops ignores tenant branding (Phase-2 invariant). The ONLY approved raw hex; all else via Kumo tokens (guarded). |
+
 ## Typography
 
 ### Hierarchy
