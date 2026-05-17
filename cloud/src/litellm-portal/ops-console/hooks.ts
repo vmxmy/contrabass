@@ -21,20 +21,13 @@ import {
   type AdminRevokeInviteResult,
   type SetTenantRoleResult,
 } from "../schemas";
+import { extractError } from "../errors/extract-error";
 
 export const OPS_TENANTS_QUERY_KEY = ["ops", "tenants"] as const;
 export const OPS_TENANT_DETAIL_QUERY_KEY = (teamId: string) => ["ops", "tenant", teamId] as const;
 export const OPS_USER_DETAIL_QUERY_KEY = (userId: string) => ["ops", "user", userId] as const;
 export const OPS_AUDIT_EVENT_QUERY_KEY = (eventId: string) => ["ops", "audit", eventId] as const;
 export const OPS_PLATFORM_SETTINGS_QUERY_KEY = ["ops", "platform-settings"] as const;
-
-function extractError(json: unknown, fallback: string): string {
-  if (json !== null && typeof json === "object" && "error" in json) {
-    const v = (json as Record<string, unknown>).error;
-    if (typeof v === "string") return v;
-  }
-  return fallback;
-}
 
 async function getJson<T>(url: string, parse: (j: unknown) => T, fallbackErr: string): Promise<T> {
   const res = await fetch(url, { headers: { "content-type": "application/json" } });

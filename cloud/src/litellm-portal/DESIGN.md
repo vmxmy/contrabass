@@ -458,8 +458,12 @@ Every data-panel / card query-state branch uses exactly ONE of four contracts (`
 |---|---|---|---|
 | `PanelSkeleton` | `SsrSafeSkeleton` (Task 0B; deterministic on SSR + client-first-render, swaps to Kumo `SkeletonLine` post-hydration) — NOT raw Kumo `SkeletonLine` (its unseeded `Math.random` shimmer is a #418 source) | First-paint placeholder | title row (12px) + `lines` content rows (16px), `p-6`, `space-y-3` |
 | `PanelEmpty` | Kumo `Empty` size=sm | No rows | required title, optional description/action, centered `py-10` |
-| `PanelError` | Kumo `Banner` variant=error | Request failed | title + `error instanceof Error ? error.message : 网络请求失败` |
+| `PanelError` | Kumo `Banner` variant=error | Request failed | title + the humanized message (§F.3): `error.message` is a localized message id resolved via the active i18n, never a raw server code |
 | `PanelLoading` | Kumo `Loader` | Inline/partial (buttons, local) | centered `py-6`, `aria-live=polite`, accessible label |
+
+## Error UX Contract (Phase 3 §F.3 / V2.0 §2.4 + §4#6)
+
+Server error CODES never reach the UI. `errors/error-messages.ts` is the single source: `errorMessage(code, …) → localized human message` folding the 3-element rule (what happened · your input is preserved · clear next step). Applied at the SHARED `errors/extract-error.ts` boundary consumed by `tenant-portal/hooks.ts` + `ops-console/hooks.ts`; `PanelError` resolves the id via the active i18n. Unknown codes → a generic safe fallback, NEVER the raw code. Messages MUST NOT leak internal impl (DO names, paths, auth mechanism, stack, snake_case codes, HTTP numbers) — guarded by `errors/error-messages.test.ts`. Adding a new server error code requires adding a mapping (the test's count floor fails CI otherwise).
 
 ## Density Scale (Phase 3 §A.2 + §F.1 V2.0 §1.2)
 

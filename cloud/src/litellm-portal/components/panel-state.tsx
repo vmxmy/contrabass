@@ -24,6 +24,7 @@ import { Empty } from "@cloudflare/kumo/components/empty";
 import { Loader } from "@cloudflare/kumo/components/loader";
 import { SsrSafeSkeleton } from "./ssr-safe-skeleton";
 import { t } from "@lingui/core/macro";
+import { useLingui } from "@lingui/react";
 
 export function PanelSkeleton({ lines = 2 }: { lines?: number }) {
   return (
@@ -63,7 +64,9 @@ export function PanelError({
   title: string;
   error: unknown;
 }) {
-  const message = error instanceof Error ? error.message : t`网络请求失败`;
+  const { i18n } = useLingui();
+  const raw = error instanceof Error ? error.message : "";
+  const message = raw ? i18n._(raw) : t`网络请求失败`;
   return (
     <div data-panel-error>
       <Banner variant="error" title={title} description={message} />
