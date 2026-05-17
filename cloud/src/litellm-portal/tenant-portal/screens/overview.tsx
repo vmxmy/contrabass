@@ -17,13 +17,13 @@ import { Badge } from "@cloudflare/kumo/components/badge";
 import { Empty } from "@cloudflare/kumo/components/empty";
 import { LayerCard } from "@cloudflare/kumo/components/layer-card";
 import { Meter } from "@cloudflare/kumo/components/meter";
-import { SkeletonLine } from "@cloudflare/kumo/components/loader";
 import { Text } from "@cloudflare/kumo/components/text";
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
 import { useMe } from "../../hooks/use-me";
 import { useDashboard } from "../../hooks/use-dashboard";
 import { useTenantWebhook } from "../hooks";
+import { SsrSafeSkeleton } from "../../components/ssr-safe-skeleton";
 import { fmt, fmtInt } from "../../lib/format";
 
 // ---------------------------------------------------------------------------
@@ -64,8 +64,8 @@ function PersonalSpendTile() {
   if (isLoading) {
     return (
       <LayerCard className="space-y-3 p-6">
-        <SkeletonLine minWidth={80} maxWidth={120} blockHeight={12} />
-        <SkeletonLine minWidth={120} maxWidth={200} blockHeight={32} />
+        <SsrSafeSkeleton minWidth={80} maxWidth={120} blockHeight={12} />
+        <SsrSafeSkeleton minWidth={120} maxWidth={200} blockHeight={32} />
       </LayerCard>
     );
   }
@@ -113,8 +113,8 @@ function TeamBudgetTile() {
   if (isLoading) {
     return (
       <LayerCard className="space-y-3 p-6" id="tenant-overview-team-budget-tile">
-        <SkeletonLine minWidth={80} maxWidth={120} blockHeight={12} />
-        <SkeletonLine minWidth={120} maxWidth={200} blockHeight={32} />
+        <SsrSafeSkeleton minWidth={80} maxWidth={120} blockHeight={12} />
+        <SsrSafeSkeleton minWidth={120} maxWidth={200} blockHeight={32} />
       </LayerCard>
     );
   }
@@ -170,8 +170,8 @@ function WebhookStatusTile() {
         className="space-y-3 p-6"
         id="tenant-overview-webhook-tile"
       >
-        <SkeletonLine minWidth={80} maxWidth={120} blockHeight={12} />
-        <SkeletonLine minWidth={120} maxWidth={200} blockHeight={20} />
+        <SsrSafeSkeleton minWidth={80} maxWidth={120} blockHeight={12} />
+        <SsrSafeSkeleton minWidth={120} maxWidth={200} blockHeight={20} />
       </LayerCard>
     );
   }
@@ -251,8 +251,8 @@ function TopModelsTile() {
           </Text>
         </div>
         <div className="space-y-3 p-6">
-          <SkeletonLine minWidth={120} maxWidth={300} blockHeight={16} />
-          <SkeletonLine minWidth={100} maxWidth={260} blockHeight={16} />
+          <SsrSafeSkeleton minWidth={120} maxWidth={300} blockHeight={16} />
+          <SsrSafeSkeleton minWidth={100} maxWidth={260} blockHeight={16} />
         </div>
       </article>
     );
@@ -313,8 +313,8 @@ function RecentActivityTile() {
   if (isLoading) {
     return (
       <LayerCard className="space-y-3 p-6">
-        <SkeletonLine minWidth={80} maxWidth={120} blockHeight={12} />
-        <SkeletonLine minWidth={100} maxWidth={180} blockHeight={28} />
+        <SsrSafeSkeleton minWidth={80} maxWidth={120} blockHeight={12} />
+        <SsrSafeSkeleton minWidth={100} maxWidth={180} blockHeight={28} />
       </LayerCard>
     );
   }
