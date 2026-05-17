@@ -39,7 +39,11 @@ function PortalIndex() {
   }
 
   return (
-    <TenantPortalShell identity={toPortalIdentity(me)} brand={toTenantBrand(me)}>
+    <TenantPortalShell
+      identity={toPortalIdentity(me)}
+      brand={toTenantBrand(me)}
+      impersonation={me.impersonation ?? null}
+    >
       {/* Phase 1 Task 8: Overview screen wired as the `/` home body. */}
       <TenantOverviewScreen />
     </TenantPortalShell>

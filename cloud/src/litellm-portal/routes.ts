@@ -78,12 +78,32 @@ import {
   TeamAlertWebhookResultSchema,
   SetTenantRoleBodySchema,
   SetTenantRoleResultSchema,
+  WriteReasonSchema,
+  OpsTenantsSchema,
+  OpsTenantDetailSchema,
+  OpsUserDetailSchema,
+  AuditEventDetailSchema,
+  OpsPlatformSettingsSchema,
 } from "./schemas";
+import { ImpersonationAuditEnvelopeSchema } from "./durable/schemas";
+import type { ImpersonationAuditEnvelope } from "./durable/schemas";
+import {
+  mintImpersonationToken,
+  reMintImpersonationToken,
+  verifyImpersonationToken,
+  readImpersonationCookie,
+  buildImpersonationSetCookie,
+  buildImpersonationClearCookie,
+  type ImpersonationContext,
+} from "./impersonation";
 import { auditWrite } from "./observability/audit";
 import { enqueueSync } from "./sync/queue-producer";
 import type { LiteLLMKey, LiteLLMTeam, JsonValue } from "./types";
 
-type HonoEnv = { Bindings: LiteLLMPortalEnv; Variables: { identity: PortalIdentity } };
+type HonoEnv = {
+  Bindings: LiteLLMPortalEnv;
+  Variables: { identity: PortalIdentity; impersonation?: ImpersonationContext };
+};
 
 // ---------------------------------------------------------------------------
 // DO stub types (inline — avoids dragging DO modules into vitest transform)
@@ -622,12 +642,49 @@ async function applyAuthMiddleware(c: Context<HonoEnv>, next: () => Promise<void
     return c.json({ error: identityResult.error }, identityResult.status);
   }
   c.set("identity", identityResult.identity);
+
+  // Derive impersonation context from the signed cb_imp token (transport).
+  // H4: each verified request slides the 30-minute idle window within the
+  // hard 2-hour absolute cap by re-minting on activity.
+  const impSecret = impersonationSecret(c.env);
+  const impToken = impSecret ? readImpersonationCookie(c.req.raw) : null;
+  if (impSecret && impToken) {
+    const now = Date.now();
+    const verified = await verifyImpersonationToken(impSecret, impToken, now);
+    if (verified) {
+      c.set("impersonation", verified);
+      const reMinted = await reMintImpersonationToken(
+        impSecret,
+        {
+          realActor: verified.realActor,
+          effectiveTeamId: verified.effectiveTeamId,
+          issuedAt: verified.issuedAt,
+          absoluteDeadline: verified.absoluteDeadline,
+        },
+        now,
+      );
+      const remaining = Math.max(0, Math.floor((verified.absoluteDeadline - now) / 1000));
+      c.header("set-cookie", buildImpersonationSetCookie(reMinted, remaining), { append: true });
+    }
+  }
+
   await next();
+}
+
+function impersonationSecret(env: LiteLLMPortalEnv): string | null {
+  return env.PORTAL_SESSION_SECRET ?? null;
 }
 
 async function requireAdmin(c: Context<HonoEnv>, next: () => Promise<void>): Promise<Response | void> {
   if (c.get("identity").role !== "admin") {
     return c.json({ error: "admin_required" }, 403);
+  }
+  await next();
+}
+
+async function requireOwner(c: Context<HonoEnv>, next: () => Promise<void>): Promise<Response | void> {
+  if (c.get("identity").role !== "admin") {
+    return c.json({ error: "owner_required" }, 403);
   }
   await next();
 }
@@ -659,12 +716,41 @@ async function requireTenantAdmin(c: Context<HonoEnv>, next: () => Promise<void>
   return c.json({ error: "tenant_admin_required" }, 403);
 }
 
+// C3: an Owner (platform admin) reaching a tenant write path is acting as a
+// tenant — that direct path bypasses the impersonation audit envelope. Require
+// an active impersonation session so every Owner-as-tenant write is attributed
+// real=Owner / effective=tenant. A genuine tenant_admin (role !== "admin") is
+// unaffected; GET reads do not pass through these write apps' gate.
+async function requireImpersonationForOwnerWrite(
+  c: Context<HonoEnv>,
+  next: () => Promise<void>,
+): Promise<Response | void> {
+  if (
+    c.req.method !== "GET" &&
+    c.get("identity").role === "admin" &&
+    c.get("impersonation") == null
+  ) {
+    return c.json({ error: "impersonation_required" }, 403);
+  }
+  await next();
+}
+
+// Typed audit envelope for a write performed while impersonating. Field name
+// `effectiveTeam` (envelope) is intentionally distinct from the context's
+// `effectiveTeamId` — keep exact.
+function impersonationEnvelope(c: Context<HonoEnv>): ImpersonationAuditEnvelope | null {
+  const imp = c.get("impersonation");
+  if (imp == null) return null;
+  return { realActor: imp.realActor, effectiveTeam: imp.effectiveTeamId, viaImpersonation: true };
+}
+
 // ---------------------------------------------------------------------------
 // One-route-per-sub-app typed chains (avoids TS2589 from long accumulation)
 // ---------------------------------------------------------------------------
 
 const meApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get("/me", (c) => {
   const identity = c.get("identity");
+  const imp = c.get("impersonation");
   return c.json(
     MeSchema.parse({
       email: identity.email,
@@ -674,6 +760,10 @@ const meApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get("/me", (c) 
       role: identity.role,
       tenantRole: identity.tenantRole,
       tenantTeamId: identity.tenantTeamId,
+      impersonation:
+        imp == null
+          ? null
+          : { realActor: imp.realActor, effectiveTeamId: imp.effectiveTeamId },
     }),
   );
 });
@@ -1555,6 +1645,7 @@ async function createInviteCore(
     ts: new Date().toISOString(),
     before: prior ? JSON.stringify(inviteToPublic(prior)) : "null",
     after: JSON.stringify(inviteToPublic(record)),
+    impersonation: impersonationEnvelope(c),
     reason,
   });
 
@@ -1619,6 +1710,7 @@ async function revokeInviteCore(
     ts: new Date().toISOString(),
     before: "pending",
     after: result.status,
+    impersonation: impersonationEnvelope(c),
     reason,
   });
 
@@ -1700,6 +1792,7 @@ async function alertWebhookSetCore(
     ts: updatedAt,
     before: prior ? JSON.stringify({ url: prior.url }) : "null",
     after: JSON.stringify({ url }),
+    impersonation: impersonationEnvelope(c),
     reason,
   });
 
@@ -1733,6 +1826,7 @@ async function alertWebhookClearCore(
     ts: new Date().toISOString(),
     before: prior ? JSON.stringify({ url: prior.url }) : "null",
     after: "null",
+    impersonation: impersonationEnvelope(c),
     reason: parsed.data.reason,
   });
 
@@ -1886,6 +1980,7 @@ async function billingDownloadCore(
     ts: new Date().toISOString(),
     before: "",
     after: "",
+    impersonation: impersonationEnvelope(c),
     reason: "",
   });
 
@@ -1929,6 +2024,7 @@ const tenantInvitesApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
   .use("/tenant/*", applyAdminRateLimit)
   .use("/tenant/*", requireTenantAdmin)
+  .use("/tenant/*", requireImpersonationForOwnerWrite)
   .get("/tenant/invites", (c) => {
     const scoped = tenantTeamOr403(c);
     if (!scoped.ok) return scoped.response;
@@ -1954,6 +2050,7 @@ const tenantAlertWebhookApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
   .use("/tenant/*", applyAdminRateLimit)
   .use("/tenant/*", requireTenantAdmin)
+  .use("/tenant/*", requireImpersonationForOwnerWrite)
   .get("/tenant/alert-webhook", (c) => {
     const scoped = tenantTeamOr403(c);
     if (!scoped.ok) return scoped.response;
@@ -1974,12 +2071,352 @@ const tenantBillingApp = new Hono<HonoEnv>()
   .use("/*", applyAuthMiddleware)
   .use("/tenant/*", applyAdminRateLimit)
   .use("/tenant/*", requireTenantAdmin)
+  .use("/tenant/*", requireImpersonationForOwnerWrite)
   .get("/tenant/billing", (c) => billingListCore(c))
   .get("/tenant/billing/:yearMonth", (c) => {
     const scoped = tenantTeamOr403(c);
     if (!scoped.ok) return scoped.response;
     return billingDownloadCore(c, "tenant", scoped.teamId);
   });
+
+// ---------------------------------------------------------------------------
+// Ops Console — Owner-only, all-tenant read endpoints /api/ops/*
+// ---------------------------------------------------------------------------
+
+type IndexDOOpsStub = {
+  listTeams(): Promise<Array<{ id: string; alias: string }>>;
+  listTenantRoles(opts?: { teamId?: string }): Promise<
+    Array<{ userId: string; teamId: string; tenantRole: "tenant_admin" | "member" }>
+  >;
+  listInvites(opts?: { status?: "pending" | "consumed" | "revoked" }): Promise<
+    Array<{ emailLc: string; teamId: string }>
+  >;
+  getUserById(userId: string): Promise<{ userId: string; email: string; role: "admin" | "user"; teamId: string | null; maxBudget?: number } | null>;
+  getUserByEmail(email: string): Promise<{ userId: string; email: string; role: "admin" | "user"; teamId: string | null; maxBudget?: number } | null>;
+};
+
+type TeamConfigDOOpsStub = {
+  getTeam(): Promise<{ id: string; alias: string; maxBudget?: number } | null>;
+  getAlertWebhook(): Promise<{ url: string } | null>;
+  getSpend(): Promise<{ currentSpend: number; maxBudget: number | null } | null>;
+};
+
+function idxOps(env: LiteLLMPortalEnv): IndexDOOpsStub | null {
+  if (!env.INDEX_DO) return null;
+  return env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOOpsStub;
+}
+
+function teamOps(env: LiteLLMPortalEnv, teamId: string): TeamConfigDOOpsStub | null {
+  if (!env.TEAM_CONFIG_DO) return null;
+  return env.TEAM_CONFIG_DO.get(
+    env.TEAM_CONFIG_DO.idFromName(teamId),
+  ) as unknown as TeamConfigDOOpsStub;
+}
+
+async function readTeamFacets(
+  env: LiteLLMPortalEnv,
+  teamId: string,
+): Promise<{
+  alias: string | null;
+  cycleSpend: number | null;
+  maxBudget: number | null;
+  alertWebhookUrl: string | null;
+}> {
+  const tc = teamOps(env, teamId);
+  if (tc == null) {
+    return { alias: null, cycleSpend: null, maxBudget: null, alertWebhookUrl: null };
+  }
+  try {
+    const [teamRec, webhook, snap] = await Promise.all([
+      tc.getTeam().catch(() => null),
+      tc.getAlertWebhook().catch(() => null),
+      tc.getSpend().catch(() => null),
+    ]);
+    return {
+      alias: teamRec?.alias ?? null,
+      cycleSpend: snap?.currentSpend ?? null,
+      maxBudget: snap?.maxBudget ?? teamRec?.maxBudget ?? null,
+      alertWebhookUrl: webhook?.url ?? null,
+    };
+  } catch {
+    return { alias: null, cycleSpend: null, maxBudget: null, alertWebhookUrl: null };
+  }
+}
+
+async function billingPeriodsList(env: LiteLLMPortalEnv): Promise<string[]> {
+  if (!env.BILLING_ARCHIVE_R2) return [];
+  const listed = await env.BILLING_ARCHIVE_R2.list({ prefix: "billing/" });
+  const periods: string[] = [];
+  for (const obj of listed.objects) {
+    const m = /^billing\/(\d{4})\/(\d{2})\.csv$/u.exec(obj.key);
+    if (m) periods.push(`${m[1]}-${m[2]}`);
+  }
+  return periods;
+}
+
+const opsTenantsApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/ops/*", applyAdminRateLimit)
+  .use("/ops/*", requireOwner)
+  .get("/ops/tenants", async (c) => {
+    const idx = idxOps(c.env);
+    if (idx == null) return c.json({ error: "index_do_unavailable" }, 503);
+    const teams = await idx.listTeams();
+    const roles = await idx.listTenantRoles();
+    const periods = await billingPeriodsList(c.env);
+    const tenants = await Promise.all(
+      teams.map(async (team) => {
+        const memberCount = roles.filter((r) => r.teamId === team.id).length;
+        const f = await readTeamFacets(c.env, team.id);
+        return {
+          teamId: team.id,
+          alias: team.alias ?? f.alias,
+          memberCount,
+          cycleSpend: f.cycleSpend,
+          maxBudget: f.maxBudget,
+          alertWebhookConfigured: f.alertWebhookUrl != null,
+          billingPeriodsCount: periods.length,
+        };
+      }),
+    );
+    return c.json(OpsTenantsSchema.parse({ tenants }));
+  });
+
+const opsTenantDetailApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/ops/*", applyAdminRateLimit)
+  .use("/ops/*", requireOwner)
+  .get("/ops/tenants/:teamId", async (c) => {
+    const teamId = decodeURIComponent(c.req.param("teamId") ?? "").trim();
+    if (!teamId) return c.json({ error: "team_id_required" }, 400);
+    const idx = idxOps(c.env);
+    if (idx == null) return c.json({ error: "index_do_unavailable" }, 503);
+    const f = await readTeamFacets(c.env, teamId);
+    const roles = await idx.listTenantRoles({ teamId });
+    const members = await Promise.all(
+      roles.map(async (r) => {
+        const u = await idx.getUserById(r.userId).catch(() => null);
+        return {
+          userId: r.userId,
+          email: u?.email ?? r.userId,
+          tenantRole: r.tenantRole,
+          spend: null as number | null,
+        };
+      }),
+    );
+    return c.json(
+      OpsTenantDetailSchema.parse({
+        teamId,
+        alias: f.alias,
+        maxBudget: f.maxBudget,
+        cycleSpend: f.cycleSpend,
+        alertWebhookUrl: f.alertWebhookUrl,
+        members,
+        billingPeriods: await billingPeriodsList(c.env),
+      }),
+    );
+  });
+
+const opsUserDetailApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/ops/*", applyAdminRateLimit)
+  .use("/ops/*", requireOwner)
+  .get("/ops/users/:userId", async (c) => {
+    const userId = decodeURIComponent(c.req.param("userId") ?? "").trim();
+    if (!userId) return c.json({ error: "user_id_required" }, 400);
+    const idx = idxOps(c.env);
+    if (idx == null) return c.json({ error: "index_do_unavailable" }, 503);
+    const rec = (await idx.getUserById(userId)) ?? (await idx.getUserByEmail(userId));
+    if (rec == null) return c.json({ error: "user_not_found" }, 404);
+    const roles = await idx.listTenantRoles();
+    const role = roles.find((r) => r.userId === rec.userId) ?? null;
+    return c.json(
+      OpsUserDetailSchema.parse({
+        userId: rec.userId,
+        email: rec.email,
+        platformRole: rec.role === "admin" ? "admin" : "user",
+        teamId: rec.teamId,
+        tenantRole: role?.tenantRole ?? null,
+        spend: null,
+        maxBudget: rec.maxBudget ?? null,
+        keyCount: 0,
+      }),
+    );
+  });
+
+function readImpersonationEnvelope(
+  raw: unknown,
+): { realActor: string; effectiveTeam: string; viaImpersonation: true } | null {
+  const parsed = ImpersonationAuditEnvelopeSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
+const opsAuditDetailApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/ops/*", applyAdminRateLimit)
+  .use("/ops/*", requireOwner)
+  .get("/ops/audit/:eventId", async (c) => {
+    const eventId = decodeURIComponent(c.req.param("eventId") ?? "").trim();
+    if (!eventId) return c.json({ error: "event_id_required" }, 400);
+    if (!c.env.INDEX_DO) return c.json({ error: "index_do_unavailable" }, 503);
+    type AuditRow = {
+      id: string; ts: string; actorEmail: string; action: string;
+      entityKind: string; entityId: string;
+      before: unknown; after: unknown; reason: string | null;
+      impersonation?: unknown;
+    };
+    type IndexDOAuditListStub = {
+      listAudit(opts?: { limit?: number; before?: string }): Promise<AuditRow[]>;
+    };
+    const idx = c.env.INDEX_DO.get(
+      c.env.INDEX_DO.idFromName("index"),
+    ) as unknown as IndexDOAuditListStub;
+    const PAGE = 500;
+    const MAX_PAGES = 50;
+    let before: string | undefined;
+    let ev: AuditRow | undefined;
+    for (let i = 0; i < MAX_PAGES; i += 1) {
+      const page: AuditRow[] = await idx.listAudit(
+        before === undefined ? { limit: PAGE } : { limit: PAGE, before },
+      );
+      if (page.length === 0) break;
+      ev = page.find((e) => e.id === eventId);
+      if (ev != null) break;
+      before = page[page.length - 1].ts;
+      if (page.length < PAGE) break;
+    }
+    if (ev == null) return c.json({ error: "audit_event_not_found" }, 404);
+    return c.json(
+      AuditEventDetailSchema.parse({
+        id: ev.id,
+        ts: ev.ts,
+        actorEmail: ev.actorEmail,
+        action: ev.action,
+        entityKind: ev.entityKind,
+        entityId: ev.entityId,
+        before: typeof ev.before === "string" ? ev.before : ev.before == null ? null : JSON.stringify(ev.before),
+        after: typeof ev.after === "string" ? ev.after : ev.after == null ? null : JSON.stringify(ev.after),
+        reason: ev.reason,
+        impersonation: readImpersonationEnvelope(ev.impersonation),
+      }),
+    );
+  });
+
+// ---------------------------------------------------------------------------
+// Operations Console impersonation — POST/DELETE /api/ops/impersonation
+// POST starts a session (mints cb_imp + ledger row + audit). DELETE force-exits
+// (clears cb_imp + closes ledger + audit). Owner-only.
+// ---------------------------------------------------------------------------
+
+const StartImpersonationBodySchema = z
+  .object({ teamId: z.string().min(1), reason: WriteReasonSchema })
+  .strict();
+
+type IndexDOImpersonationStub = {
+  putImpersonationSession(record: {
+    realActor: string;
+    effectiveTeamId: string;
+    startedAt: string;
+    endedAt: string | null;
+  }): Promise<void>;
+  getActiveImpersonationSession(realActor: string): Promise<{
+    realActor: string;
+    effectiveTeamId: string;
+    startedAt: string;
+    endedAt: string | null;
+  } | null>;
+  endImpersonationSession(realActor: string): Promise<void>;
+};
+
+const opsImpersonationApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/ops/*", applyAdminRateLimit)
+  .use("/ops/*", requireOwner)
+  .post("/ops/impersonation", async (c) => {
+    const secret = impersonationSecret(c.env);
+    if (!secret) return c.json({ error: "impersonation_secret_unavailable" }, 503);
+    if (!c.env.INDEX_DO) return c.json({ error: "index_do_unavailable" }, 503);
+
+    const parsed = await parseWriteBody(c, StartImpersonationBodySchema);
+    if (!parsed.ok) return parsed.response;
+    const { teamId, reason } = parsed.data;
+
+    const idx = c.env.INDEX_DO.get(
+      c.env.INDEX_DO.idFromName("index"),
+    ) as unknown as IndexDOImpersonationStub;
+    const realActor = c.get("identity").email;
+    const startedAt = new Date().toISOString();
+    await idx.putImpersonationSession({
+      realActor,
+      effectiveTeamId: teamId,
+      startedAt,
+      endedAt: null,
+    });
+
+    const now = Date.now();
+    const token = await mintImpersonationToken(secret, {
+      realActor,
+      effectiveTeamId: teamId,
+      now,
+    });
+
+    await auditWrite(c.env, {
+      actor: realActor,
+      action: "ops_impersonation_start",
+      target: teamId,
+      ip: c.req.header("cf-connecting-ip") ?? "unknown",
+      ts: startedAt,
+      before: "null",
+      after: JSON.stringify({ effectiveTeamId: teamId }),
+      impersonation: { realActor, effectiveTeam: teamId, viaImpersonation: true },
+      reason,
+    });
+
+    c.header("set-cookie", buildImpersonationSetCookie(token, 2 * 60 * 60), { append: true });
+    return c.json({ realActor, effectiveTeamId: teamId, startedAt });
+  })
+  .delete("/ops/impersonation", async (c) => {
+    const realActor = c.get("identity").email;
+    if (c.env.INDEX_DO) {
+      const idx = c.env.INDEX_DO.get(
+        c.env.INDEX_DO.idFromName("index"),
+      ) as unknown as IndexDOImpersonationStub;
+      const active = await idx.getActiveImpersonationSession(realActor);
+      await idx.endImpersonationSession(realActor);
+      if (active != null) {
+        await auditWrite(c.env, {
+          actor: realActor,
+          action: "ops_impersonation_stop",
+          target: active.effectiveTeamId,
+          ip: c.req.header("cf-connecting-ip") ?? "unknown",
+          ts: new Date().toISOString(),
+          before: JSON.stringify({ effectiveTeamId: active.effectiveTeamId }),
+          after: "null",
+          impersonation: {
+            realActor,
+            effectiveTeam: active.effectiveTeamId,
+            viaImpersonation: true,
+          },
+          reason: "",
+        });
+      }
+    }
+    c.header("set-cookie", buildImpersonationClearCookie(), { append: true });
+    return c.json({ stopped: true });
+  });
+
+const opsPlatformSettingsApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/ops/*", applyAdminRateLimit)
+  .use("/ops/*", requireOwner)
+  .get("/ops/platform-settings", (c) =>
+    c.json(
+      OpsPlatformSettingsSchema.parse({
+        writeOpsEnabled: isWriteOpsEnabled(c.env),
+        companyName: portalCompanyName(c.env),
+      }),
+    ),
+  );
 
 // ---------------------------------------------------------------------------
 // Top-level app mounts /api/* with global error handler
@@ -2023,6 +2460,12 @@ const app = new Hono<{ Bindings: LiteLLMPortalEnv }>()
   .route("/api", tenantInvitesApp)
   .route("/api", tenantAlertWebhookApp)
   .route("/api", tenantBillingApp)
+  .route("/api", opsTenantsApp)
+  .route("/api", opsTenantDetailApp)
+  .route("/api", opsUserDetailApp)
+  .route("/api", opsAuditDetailApp)
+  .route("/api", opsImpersonationApp)
+  .route("/api", opsPlatformSettingsApp)
   .all("/*", (c) => c.json({ error: "not_found" }, 404));
 
 export { app };

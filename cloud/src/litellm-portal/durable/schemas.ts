@@ -83,6 +83,14 @@ export const TeamAlertWebhookSchema = z.object({
 
 export type TeamAlertWebhook = z.infer<typeof TeamAlertWebhookSchema>;
 
+export const ImpersonationSessionSchema = z.object({
+  realActor: z.string(),
+  effectiveTeamId: z.string(),
+  startedAt: z.string().datetime(),
+  endedAt: z.string().datetime().nullable(),
+}).strict();
+export type ImpersonationSession = z.infer<typeof ImpersonationSessionSchema>;
+
 export const MagicLinkNonceSchema = z.object({
   token: z.string(),
   email: z.string(),
@@ -91,6 +99,16 @@ export const MagicLinkNonceSchema = z.object({
 }).strict();
 
 export type MagicLinkNonce = z.infer<typeof MagicLinkNonceSchema>;
+
+export const ImpersonationAuditEnvelopeSchema = z
+  .object({
+    realActor: z.string(),
+    effectiveTeam: z.string(),
+    viaImpersonation: z.literal(true),
+  })
+  .strict();
+
+export type ImpersonationAuditEnvelope = z.infer<typeof ImpersonationAuditEnvelopeSchema>;
 
 export const AuditEventSchema = z.object({
   id: z.string(),
@@ -102,6 +120,7 @@ export const AuditEventSchema = z.object({
   before: z.unknown().nullable(),
   after: z.unknown().nullable(),
   reason: z.string().nullable(),
+  impersonation: ImpersonationAuditEnvelopeSchema.nullable().optional(),
 }).strict();
 
 export type AuditEvent = z.infer<typeof AuditEventSchema>;

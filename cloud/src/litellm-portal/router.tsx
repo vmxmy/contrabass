@@ -47,6 +47,7 @@ import {
   legacyPreferencesRoute,
 } from "./routes/legacy/redirects";
 import { createTenantPortalRoutes } from "./tenant-portal/routes";
+import { createOpsConsoleRoutes } from "./ops-console/routes";
 
 // Tenant Portal route subtree mounted at the top level. `includeIndex: false`
 // drops the factory's `/` overview spec inside the factory itself: `/` is
@@ -60,6 +61,12 @@ import { createTenantPortalRoutes } from "./tenant-portal/routes";
 const tenantPortalRoutes = createTenantPortalRoutes(rootRoute, {
   includeIndex: false,
 });
+
+// Operations Console subtree: a single pathless layout route (id-only, never
+// matches a URL itself) whose `/ops*` children own the Owner-gated Ops chrome.
+// `/ops*` paths never overlap `/`, `/manage/*`, or the tenant subtree, so the
+// subtree mounts cleanly under `rootRoute` alongside them.
+const opsLayoutRoute = createOpsConsoleRoutes(rootRoute);
 
 // Wire up parent/child relationships using `addChildren`.
 const routeTree = rootRoute.addChildren([
@@ -93,6 +100,7 @@ const routeTree = rootRoute.addChildren([
   legacyAdminSettingsRoute,
   legacyPreferencesRoute,
   ...tenantPortalRoutes,
+  opsLayoutRoute,
 ]);
 
 export type RouterContext = {

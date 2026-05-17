@@ -232,3 +232,60 @@ describe("/ shell selection from useMe()", () => {
     expect(screen.queryByLabelText("租户导航")).toBeNull();
   });
 });
+
+describe("C-NEW-1: RootLayout /ops chrome split (production router)", () => {
+  const ownerMe: Me = {
+    email: "owner@corp.com",
+    userId: "u-o",
+    company: "Acme",
+    domain: "corp.com",
+    role: "admin",
+    tenantRole: null,
+    tenantTeamId: null,
+  };
+
+  async function renderAt(path: string, me?: Me) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    if (me !== undefined) qc.setQueryData(ME_QUERY_KEY, me);
+    const history = createMemoryHistory({ initialEntries: [path] });
+    const router = createPortalRouter(history, { role: me?.role });
+    await router.load();
+    const utils = render(
+      <I18nProvider i18n={i18n}>
+        <AppShell queryClient={qc}>
+          <RouterProvider router={router} />
+        </AppShell>
+      </I18nProvider>,
+    );
+    return { router, ...utils };
+  }
+
+  it("at /ops the generic chrome is ABSENT and the Ops shell is the sole chrome", async () => {
+    await renderAt("/ops", ownerMe);
+
+    await waitFor(() => {
+      expect(document.getElementById("ops-console-shell-root")).not.toBeNull();
+    });
+    expect(document.querySelector("h1")).toBeNull();
+    expect(document.getElementById("header-actions-root")).toBeNull();
+  });
+
+  it("at / the generic chrome is PRESENT and the Ops shell is ABSENT", async () => {
+    await renderAt("/", ownerMe);
+
+    await waitFor(() => {
+      expect(document.querySelector("h1")).not.toBeNull();
+    });
+    expect(document.getElementById("header-actions-root")).not.toBeNull();
+    expect(document.getElementById("ops-console-shell-root")).toBeNull();
+  });
+
+  it("legacy /manage/keys still resolves after the /ops mount + RootLayout split", async () => {
+    const history = createMemoryHistory({ initialEntries: ["/manage/keys"] });
+    const router = createPortalRouter(history, { role: "user" });
+    await router.load();
+
+    expect(router.state.location.pathname).toBe("/manage/keys");
+    expect(router.state.matches.some((m) => m.routeId === "__root__/404")).toBe(false);
+  });
+});

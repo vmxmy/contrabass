@@ -11,6 +11,9 @@ import {
   type AuditEvent,
   TenantRoleRecordSchema,
   type TenantRoleRecord,
+  ImpersonationSessionSchema,
+  type ImpersonationSession,
+  ImpersonationAuditEnvelopeSchema,
 } from "./schemas";
 import type { LiteLLMPortalEnv } from "../types";
 import {
@@ -153,6 +156,10 @@ function auditFromRow(row: SqlRow): AuditEvent {
     before: parseJson(row.before_json === null ? null : String(row.before_json)),
     after: parseJson(row.after_json === null ? null : String(row.after_json)),
     reason: row.reason === null ? null : String(row.reason),
+    impersonation:
+      row.impersonation == null
+        ? null
+        : ImpersonationAuditEnvelopeSchema.parse(JSON.parse(String(row.impersonation))),
   });
 }
 
@@ -246,7 +253,28 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
       );
       CREATE INDEX IF NOT EXISTS cb_index_tenant_roles_team_idx
         ON cb_index_tenant_roles (team_id, user_id);
+      CREATE TABLE IF NOT EXISTS cb_index_impersonation (
+        real_actor TEXT NOT NULL,
+        effective_team_id TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        PRIMARY KEY (real_actor, started_at)
+      );
+      CREATE INDEX IF NOT EXISTS cb_index_impersonation_actor_idx
+        ON cb_index_impersonation (real_actor, started_at DESC);
     `);
+
+    const auditCols = sql
+      .exec<{ name: string }>("PRAGMA table_info(cb_index_audit_events)")
+      .toArray()
+      .map((r) => r.name);
+    if (!auditCols.includes("impersonation")) {
+      sql.exec("ALTER TABLE cb_index_audit_events ADD COLUMN impersonation TEXT");
+    }
+    sql.exec(
+      `CREATE INDEX IF NOT EXISTS cb_index_audit_events_imp_team_idx
+         ON cb_index_audit_events (json_extract(impersonation, '$.effectiveTeam'))`,
+    );
 
     const marker = firstRow(sql.exec<{ value_json: string }>(
       "SELECT value_json FROM cb_index_meta WHERE key = ?",
@@ -412,8 +440,8 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
     const parsed = AuditEventSchema.parse(event);
     sql.exec(
       `INSERT INTO cb_index_audit_events (
-         id, ts, actor_email, action, entity_kind, entity_id, before_json, after_json, reason, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         id, ts, actor_email, action, entity_kind, entity_id, before_json, after_json, reason, impersonation, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          ts = excluded.ts,
          actor_email = excluded.actor_email,
@@ -423,6 +451,7 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
          before_json = excluded.before_json,
          after_json = excluded.after_json,
          reason = excluded.reason,
+         impersonation = excluded.impersonation,
          created_at = excluded.created_at`,
       parsed.id,
       parsed.ts,
@@ -433,6 +462,7 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
       json(parsed.before),
       json(parsed.after),
       parsed.reason,
+      parsed.impersonation == null ? null : JSON.stringify(parsed.impersonation),
       parsed.ts,
     );
   }
@@ -696,6 +726,62 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
     }
     return out.sort((a, b) =>
       a.teamId === b.teamId ? a.userId.localeCompare(b.userId) : a.teamId.localeCompare(b.teamId));
+  }
+
+  // -------------------------------------------------------------------------
+  // Impersonation session ledger (Owner-as-tenant; Ops Console)
+  // -------------------------------------------------------------------------
+
+  async putImpersonationSession(record: ImpersonationSession): Promise<void> {
+    const parsed = ImpersonationSessionSchema.parse(record);
+    const sql = await this.sql();
+    if (sql !== null) {
+      sql.exec(
+        `INSERT OR REPLACE INTO cb_index_impersonation
+           (real_actor, effective_team_id, started_at, ended_at)
+         VALUES (?, ?, ?, ?)`,
+        parsed.realActor, parsed.effectiveTeamId, parsed.startedAt, parsed.endedAt,
+      );
+      return;
+    }
+    await this.ctx.storage.put(
+      `imp:${parsed.realActor}:${parsed.startedAt}`,
+      parsed,
+    );
+  }
+
+  async getActiveImpersonationSession(realActor: string): Promise<ImpersonationSession | null> {
+    if (typeof realActor !== "string" || realActor.length === 0) {
+      throw new Error("getActiveImpersonationSession: realActor must be a non-empty string");
+    }
+    const sql = await this.sql();
+    if (sql !== null) {
+      const row = firstRow(sql.exec<SqlRow>(
+        `SELECT * FROM cb_index_impersonation
+           WHERE real_actor = ? AND ended_at IS NULL
+           ORDER BY started_at DESC LIMIT 1`,
+        realActor,
+      ));
+      if (row == null) return null;
+      return ImpersonationSessionSchema.parse({
+        realActor: String(row.real_actor),
+        effectiveTeamId: String(row.effective_team_id),
+        startedAt: String(row.started_at),
+        endedAt: row.ended_at == null ? null : String(row.ended_at),
+      });
+    }
+    const entries = await this.ctx.storage.list<unknown>({ prefix: `imp:${realActor}:`, reverse: true });
+    for (const raw of entries.values()) {
+      const rec = ImpersonationSessionSchema.parse(raw);
+      if (rec.endedAt == null) return rec;
+    }
+    return null;
+  }
+
+  async endImpersonationSession(realActor: string): Promise<void> {
+    const active = await this.getActiveImpersonationSession(realActor);
+    if (active == null) return;
+    await this.putImpersonationSession({ ...active, endedAt: new Date().toISOString() });
   }
 
   // -------------------------------------------------------------------------
