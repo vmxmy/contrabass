@@ -144,6 +144,7 @@ Phase 3 是总纲第 4 节里「设计语言演进 + 租户品牌层 + 密度/�
       └─────────────────────────────────┘   └──────────────────────────────┘
       ```
     - **分组**：Tenant 在 `member` 主项与 `tenant_admin` 管理项之间插一条 `text-kumo-subtle` 12px uppercase 分组小标题（「我的」/「团队管理」）；Ops 同理（「租户」/「平台」）。
+- **结构前提（执行期发现，2026-05-17，lead 锁定 Option A）**：重塑后的 `SideNav`/页头摘要条要在 Tenant 的全部子路由（`/usage|/keys|/members|/alerts|/billing`）可见，前提是 Tenant 必须有一个**无路径 pathless layout**包裹这些子路由（对称于 Ops 已有的 `OpsLayout`/`opsLayoutRoute`）。现状缺陷：`createTenantPortalRoutes(rootRoute,{includeIndex:false})` 把这些子路由建成 `rootRoute` 的扁平兄弟、无 `TenantPortalShell` 包裹（shell 仅 `/` 经 `indexRoute`→`PortalIndex` 挂载）。故 Phase-3 计划新增一个先行结构任务（Task 0），照 `createOpsConsoleRoutes`/`opsLayoutRoute` 范式镜像出 `tenantLayoutRoute`（`id:"tenant-layout"`，`component` 渲染 `TenantPortalShell`+`<Outlet/>`），`/` 仍归 `indexRoute`、无 route-id 冲突。**这是本节重塑的实现前提，非新设计方向**（不分叉 Kumo、不动 Ops 钢色/忽略品牌、不重开任何 §E/锁定决策；`PortalIndex` 不变）。
 - **DESIGN.md 新增**：`## Shell / SideNav` 小节，规定 active 强调条规则（2px、取壳强调色）、hover=`tint`、图标尺寸/色、分组标题排版、Tenant=comfortable / Ops=compact 的 chrome 差异表。
 
 ### §B.2 卡片/面板系统

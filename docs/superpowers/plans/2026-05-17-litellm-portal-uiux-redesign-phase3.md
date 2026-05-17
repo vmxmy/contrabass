@@ -128,9 +128,11 @@ The first plan revision modeled §A.1/§A.3 from the spec's mental picture; thes
 | `cloud/src/litellm-portal/ops-console/ops-theme.ts` (+`.test.ts`) | §F.6: `OPS_STEEL_BRAND`/`_HOVER` named consts + sanctioned-exception doc + no-other-raw-hex guard | Modify/Create |
 | `*.test.tsx`/`*.test.ts` colocated per repo convention | TDD coverage | Create/Modify |
 
-**Decomposition / parallelization:** §A.1 (Task 1) touches `a11y/*`, `dashboard/charts/{trend-chart.tsx,build-chart-aria.ts}`, `dashboard/views/usage-dashboard.tsx`, both shells, `DESIGN.md`. §A.2 (Task 2) touches `components/panel-state.*`, `components/density.*`, all screens, both shells, `DESIGN.md`. §A.3 (Task 3) touches `dashboard/views/{usage-charts-lazy.tsx,usage-dashboard.tsx}`, `client.tsx`, `hydration.test.tsx`, `cloud/scripts/build-litellm-portal-app.mjs`, `cloud/scripts/analyze-litellm-portal-bundle.mjs`, `DESIGN.md`. **Shared serialization points (must be edited in task order, never in parallel): `usage-dashboard.tsx` (Task 1 adds the `ariaLabel` pass-through; Task 3 swaps the static chart imports for the lazy boundary — Task 3 MUST re-anchor by symbol after Task 1), both shells (Task 1 + Task 2 + Tasks 5/6/7), `DESIGN.md` (all), `branding.ts` (Task 1 re-export + Task 8), the i18n catalogs, `app.generated.ts`.** Within §A.2, per-screen migrations are file-disjoint and may run as a parallel wave AFTER `panel-state.tsx`/`density.tsx` land. §B (Tasks 4–7) and §C (Task 8) serialize after the §A GATE; §B.1 shell edits share `side-nav.tsx`/`nav-icons.tsx` (Task 4 creates them, Tasks 5/6 are file-disjoint per shell but their anchors are pre-drifted by Tasks 1–2 → re-locate by symbol, see the M3 note in each). Task 9 = finalization. Task 10 = E2E + whole-branch review (PR-merge per standing authorization).
+**Decomposition / parallelization:** **Task 0 (§A.0 STRUCTURAL PREREQUISITE) runs FIRST, strictly serialized before everything** — it touches `tenant-portal/routes.tsx` + `router.tsx` (+ a new `tenant-portal/routes.test.tsx`). `router.tsx` is otherwise only touched by Task 3 (lazy-split — but Task 3 does NOT edit the tenant/ops route-factory wiring Task 0 changes; still, Task 0 → Task 3 order is enforced since both edit `router.tsx`). `tenant-portal/routes.tsx` is touched by no other task. **Tasks 1, 4, 5, 7 DEPEND on Task 0** (the Tenant shell/SideNav/`<main>` only mount across the tenant subtree once `tenantLayoutRoute` exists; their tests assert at tenant SUBROUTES via the production-router harness). §A.1 (Task 1) touches `a11y/*`, `dashboard/charts/{trend-chart.tsx,build-chart-aria.ts}`, `dashboard/views/usage-dashboard.tsx`, both shells, both shell test files (incl. the Step-9c bare-test migration), `DESIGN.md`. §A.2 (Task 2) touches `components/panel-state.*`, `components/density.*`, all screens, both shells, `DESIGN.md`. §A.3 (Task 3) touches `dashboard/views/{usage-charts-lazy.tsx,usage-dashboard.tsx}`, `client.tsx`, `hydration.test.tsx`, `cloud/scripts/build-litellm-portal-app.mjs`, `cloud/scripts/analyze-litellm-portal-bundle.mjs`, `DESIGN.md`. **Shared serialization points (must be edited in task order, never in parallel): `usage-dashboard.tsx` (Task 1 adds the `ariaLabel` pass-through; Task 3 swaps the static chart imports for the lazy boundary — Task 3 MUST re-anchor by symbol after Task 1), both shells (Task 1 + Task 2 + Tasks 5/6/7), `DESIGN.md` (all), `branding.ts` (Task 1 re-export + Task 8), the i18n catalogs, `app.generated.ts`.** Within §A.2, per-screen migrations are file-disjoint and may run as a parallel wave AFTER `panel-state.tsx`/`density.tsx` land. §B (Tasks 4–7) and §C (Task 8) serialize after the §A GATE; §B.1 shell edits share `side-nav.tsx`/`nav-icons.tsx` (Task 4 creates them, Tasks 5/6 are file-disjoint per shell but their anchors are pre-drifted by Tasks 1–2 → re-locate by symbol, see the M3 note in each). Task 9 = finalization. Task 10 = E2E + whole-branch review (PR-merge per standing authorization).
 
-**V2.0 §F fold-in decomposition (15 tasks total: 10 original + 2C/3B/3C/6B/6C; item-5 folds into Task 1, item-1's density primitive into Task 2):**
+**Task list (16 tasks total): Task 0 (NEW structural prerequisite) + 10 original (1–10) + 5 §F lettered (2C/3B/3C/6B/6C); item-5 folds into Task 1, item-1's density primitive into Task 2. Task 0 runs FIRST; Tasks 1/4/5/7 depend on it.**
+
+**V2.0 §F fold-in decomposition:**
 - **§F.5 type-scale** → Task 1 Steps 18–20 (same §A.1 hygiene band; touches `a11y/type-scale.test.ts` (new, disjoint) + `DESIGN.md` (SERIALIZED — shared by all)).
 - **§F.1 density primitive** → Task 2 Steps 5/7/9/9b (extends `components/density.*` + `schemas.ts` + both shells — `schemas.ts` & `density.*` are NEW-disjoint within Task 2; both shells & `DESIGN.md` SERIALIZE per the existing shared-points rule).
 - **§F.3 error contract** → **Task 2C** (§A hygiene, after Task 2 — it consumes Task-2 `PanelError`). `errors/*` files are NEW-disjoint; `{tenant-portal,ops-console}/hooks.ts` are each touched once here (disjoint from each other → parallel-OK within 2C), `panel-state.tsx` SERIALIZES after Task 2, i18n catalogs SERIALIZE. **SECURITY/CONTRACT-SENSITIVE → retained review pass.**
@@ -143,6 +145,179 @@ The first plan revision modeled §A.1/§A.3 from the spec's mental picture; thes
 
 ---
 
+## Task 0 (§A.0 PREREQUISITE — STRUCTURAL): Tenant pathless layout (mirror the proven `OpsLayout` idiom)
+
+> **MUST run FIRST, before Task 1.** This closes a structural defect found at execution time: the Tenant shell does NOT wrap the tenant subroutes. Every later §A.1/§B.1 step that asserts `aria-current`/SideNav on `/usage` (Task 1 Step 6/9, Tasks 4/5) is unsatisfiable without this. The architectural decision is LOCKED by the lead (Option A — mirror Ops); this task only encodes it. **Verified facts (live tree, 2026-05-17):** `createTenantPortalRoutes(rootRoute,{includeIndex:false})` (`tenant-portal/routes.tsx:76-92`) maps `/usage|/keys|/members|/alerts|/billing` with `getParentRoute: () => parentRoute` = flat siblings of `rootRoute`, NO pathless layout, NO `TenantPortalShell` wrapper. `TenantPortalShell` mounts ONLY at `/` via `indexRoute`→`PortalIndex` (`routes/index.tsx:12-49`, renders `<TenantPortalShell>` directly). Ops is asymmetric and PROVES the target idiom: `createOpsConsoleRoutes(rootRoute)` (`ops-console/routes.tsx:102-118`) returns a single pathless `opsLayoutRoute` (`createRoute({ getParentRoute: () => parentRoute, id: "ops-layout", component: OpsLayout })`, `OpsLayout` renders `<OpsConsoleShell><Outlet/></OpsConsoleShell>`), with all `/ops*` specs `getParentRoute: () => opsLayoutRoute`; `router.tsx:69` `const opsLayoutRoute = createOpsConsoleRoutes(rootRoute);` then `router.tsx:103` `opsLayoutRoute` in `rootRoute.addChildren([...])`.
+
+**Files:**
+- Modify: `cloud/src/litellm-portal/tenant-portal/routes.tsx` (add a sibling factory `createTenantPortalLayoutRoute` mirroring `createOpsConsoleRoutes`, OR extend `createTenantPortalRoutes` to return a single pathless layout — see Step 3 for the exact shape), `cloud/src/litellm-portal/router.tsx` (`addChildren` wiring)
+- Create: `cloud/src/litellm-portal/tenant-portal/routes.test.tsx` (route-topology test: `TenantPortalShell` renders at `/usage`)
+- **NOT modified:** `cloud/src/litellm-portal/routes/index.tsx` / `PortalIndex` (the `/`-owner stays exactly as-is — `indexRoute` keeps `path:"/"` + renders `TenantPortalShell` directly; the H3 "PortalIndex untouched" Phase-1/2 invariant holds). `tenant-portal/shell.tsx` is NOT modified here (Task 1 owns the shell `useRouterState`/`FOCUS_RING` edits).
+
+- [ ] **Step 1: Write the failing route-topology test** — `cloud/src/litellm-portal/tenant-portal/routes.test.tsx`. Mirror the PROVEN Phase-2 production-router harness from `ops-console/routes.test.tsx:58-74` VERBATIM in shape (incl. `await router.load()` — the load step the bare-shell harness omits):
+
+```tsx
+/**
+ * @vitest-environment happy-dom
+ */
+import React from "react";
+import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, render, waitFor } from "@testing-library/react";
+import { I18nProvider } from "@lingui/react";
+import { QueryClient } from "@tanstack/react-query";
+import { RouterProvider } from "@tanstack/react-router";
+import { setupI18n } from "../i18n/setup";
+import { ME_QUERY_KEY } from "../hooks/use-me";
+import { createPortalRouter, createMemoryHistory } from "../router";
+import { AppShell } from "../routes/__root";
+import type { Me } from "../schemas";
+
+const i18n = setupI18n("zh-CN");
+afterEach(cleanup);
+
+const tenantAdminMe: Me = {
+  email: "a@acme.example.com", userId: "u1", company: "Acme",
+  domain: "acme.example.com", role: "user",
+  tenantRole: "tenant_admin", tenantTeamId: "t1",
+};
+
+// Production-router harness (mirrors ops-console/routes.test.tsx:58-74,
+// including `await router.load()`).
+async function renderTenantRouteAt(path: string, me: Me) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  qc.setQueryData(ME_QUERY_KEY, me);
+  const router = createPortalRouter(
+    createMemoryHistory({ initialEntries: [path] }),
+    { role: me.role },
+  );
+  await router.load();
+  return render(
+    <I18nProvider i18n={i18n}>
+      <AppShell queryClient={qc}>
+        <RouterProvider router={router} />
+      </AppShell>
+    </I18nProvider>,
+  );
+}
+
+describe("Tenant Portal route topology (§A.0 — pathless layout)", () => {
+  it("TenantPortalShell wraps a tenant SUBROUTE (/usage), not just /", async () => {
+    await renderTenantRouteAt("/usage", tenantAdminMe);
+    await waitFor(() => {
+      expect(document.getElementById("tenant-portal-shell-root")).not.toBeNull();
+    });
+    // The usage screen body mounts INSIDE the shell (the tenant nav is present).
+    expect(document.getElementById("tenant-usage-root")).not.toBeNull();
+  });
+
+  it("/ still renders the identity-selected shell via indexRoute (no route-id collision)", async () => {
+    await renderTenantRouteAt("/", tenantAdminMe);
+    await waitFor(() => {
+      expect(document.getElementById("tenant-portal-shell-root")).not.toBeNull();
+    });
+    // The `/` overview body (owned by indexRoute→PortalIndex, NOT the layout).
+    expect(document.getElementById("tenant-overview-root")).not.toBeNull();
+  });
+});
+```
+
+- [ ] **Step 2: Run → FAIL** — `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/tenant-portal/routes.test.tsx` → FAIL (at `/usage` no `#tenant-portal-shell-root` — the flat sibling route renders the bare screen with no shell).
+
+- [ ] **Step 3: Add the pathless `tenantLayoutRoute` to `tenant-portal/routes.tsx` (mirror `createOpsConsoleRoutes` EXACTLY).** Add a NEW sibling factory `createTenantPortalLayoutRoute(parentRoute)` (do NOT change the existing `createTenantPortalRoutes` signature/`TENANT_ROUTE_SPECS`/`includeIndex` contract — they stay; the layout factory reuses the same `TENANT_ROUTE_SPECS` minus `/`). Add imports `Outlet` (+ `useMe`, `TenantPortalShell`/identity mapping — mirror `ops-console/routes.tsx:18-43,56-75`):
+
+```tsx
+// add to imports in tenant-portal/routes.tsx:
+import { createRoute, Outlet, type AnyRoute } from "@tanstack/react-router";
+import { useMe } from "../hooks/use-me";
+import { TenantPortalShell } from "./shell";
+import { Loader } from "@cloudflare/kumo/components/loader";
+import type { PortalIdentity } from "../types";
+import type { Me } from "../schemas";
+
+// mirrors routes/index.tsx PortalIndex's identity→props mapping (read it; do
+// NOT invent — TenantPortalShell's prop shape is whatever PortalIndex passes).
+function toTenantIdentity(me: Me): PortalIdentity {
+  return {
+    email: me.email, userId: me.userId, domain: me.domain,
+    litellmUserId: me.userId, role: me.role,
+    tenantRole: me.tenantRole, tenantTeamId: me.tenantTeamId,
+  };
+}
+
+/**
+ * Pathless layout for the Tenant Portal subroutes (mirror of OpsLayout).
+ * Identity is derived purely from the hydrated useMe() — #418-safe (same
+ * discipline as OpsLayout). While me is undefined render a loading root
+ * (NOT a redirect/forbidden) — the M-NEW-1 cold-load rule, identical to
+ * OpsLayout. `/` is NOT a child here (it stays owned by indexRoute →
+ * PortalIndex, which selects the shell from identity); this layout owns ONLY
+ * the non-`/` tenant subroutes so there is NO route-id collision (mirrors how
+ * opsLayoutRoute keeps `/ops` as a CHILD without colliding).
+ */
+function TenantLayout() {
+  const { data: me } = useMe();
+  if (me === undefined) {
+    return (
+      <div id="tenant-portal-loading-root" className="py-12">
+        <Loader aria-label="正在加载" />
+      </div>
+    );
+  }
+  return (
+    <TenantPortalShell identity={toTenantIdentity(me)}>
+      <Outlet />
+    </TenantPortalShell>
+  );
+}
+
+/**
+ * Build the Tenant Portal subtree as a single pathless layout route (mirror
+ * of createOpsConsoleRoutes). Returns the pathless layout route (with its
+ * non-`/` screen children attached). Caller does
+ * `parentRoute.addChildren([tenantLayoutRoute])`. `id`-only (no `path`) so it
+ * never matches a URL on its own — only its children's paths do. The `/`
+ * spec is EXCLUDED here (owned by indexRoute) — same `includeIndex:false`
+ * intent, now structural via this factory.
+ */
+export function createTenantPortalLayoutRoute(parentRoute: AnyRoute) {
+  const tenantLayoutRoute = createRoute({
+    getParentRoute: () => parentRoute,
+    id: "tenant-layout",
+    component: TenantLayout,
+  });
+  const children = TENANT_ROUTE_SPECS.filter((spec) => spec.path !== "/").map((spec) =>
+    createRoute({
+      getParentRoute: () => tenantLayoutRoute,
+      path: spec.path,
+      component: spec.adminOnly
+        ? (spec.component ?? MemberForbidden)
+        : (spec.component ?? (() => <Placeholder id={spec.id} label={spec.label} />)),
+    }),
+  );
+  return tenantLayoutRoute.addChildren(children);
+}
+```
+
+> Keep `createTenantPortalRoutes` exported AND functionally intact (other code/tests may import it; do NOT delete it — it simply stops being the router's mount path). `TenantPortalShell`'s prop shape: READ `routes/index.tsx` `PortalIndex` (`:42-49`) for the EXACT props it passes (`identity`, plus whatever else — `brand`/`company`/etc.); `TenantLayout` MUST pass the SAME prop set (do not guess — mirror PortalIndex 1:1). If `PortalIndex` passes more than `identity`, `toTenantIdentity` + the `<TenantPortalShell …>` call must include those props derived from `me` identically. The `id:"tenant-layout"` is new and unique (no collision with `ops-layout` or any `tenant-*-root` spec id — those are element `id`s, not route ids; route ids here are auto-derived from `path` for children + the explicit `"tenant-layout"` for the layout, exactly like `"ops-layout"`).
+
+- [ ] **Step 4: Rewire `router.tsx` to mount the pathless layout (mirror the `opsLayoutRoute` line).** In `cloud/src/litellm-portal/router.tsx`:
+  - Change the import `import { createTenantPortalRoutes } from "./tenant-portal/routes";` → `import { createTenantPortalLayoutRoute } from "./tenant-portal/routes";` (or add it alongside if `createTenantPortalRoutes` is still referenced elsewhere in the file — grep first; the live file only uses it at the `tenantPortalRoutes` const).
+  - Replace the `const tenantPortalRoutes = createTenantPortalRoutes(rootRoute, { includeIndex: false });` block (`router.tsx:61-63`, keep/condense its explanatory comment but update it: the `/` exclusion is now structural in the layout factory) with: `const tenantLayoutRoute = createTenantPortalLayoutRoute(rootRoute);` — a single pathless layout route, EXACTLY symmetric to `const opsLayoutRoute = createOpsConsoleRoutes(rootRoute);` on the next line.
+  - In `rootRoute.addChildren([...])` (`router.tsx:72-104`), replace the spread `...tenantPortalRoutes,` (`:102`) with `tenantLayoutRoute,` (a single route, mirroring how `opsLayoutRoute` is a single entry at `:103`). `indexRoute` (`:73`) stays UNTOUCHED (still owns `/`). Net: the tenant subtree is now ONE pathless layout entry, structurally symmetric to Ops.
+
+- [ ] **Step 5: Run → PASS** — `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/tenant-portal/routes.test.tsx` → PASS (2 tests: shell wraps `/usage`; `/` still via `indexRoute`). Then run the FULL pre-existing router/index suite to prove no topology regression: `bun run test src/litellm-portal/router.test.tsx src/litellm-portal/index.test.ts src/litellm-portal/hydration.test.tsx` → PASS (the documented happy-dom `localhost:3000/kumo.css` flake is the only acceptable miss — isolate-rerun confirms; #418 hydration parity MUST stay green — the pathless layout is identity-derived/SSR-safe exactly like `OpsLayout`, no new #418 surface). `bun run typecheck` → baseline-only.
+
+- [ ] **Step 6: Commit**
+```bash
+cd /Users/xumingyang/github/contrabass
+git add cloud/src/litellm-portal/tenant-portal/routes.tsx cloud/src/litellm-portal/tenant-portal/routes.test.tsx cloud/src/litellm-portal/router.tsx
+git -c commit.gpgsign=false commit -m "feat(litellm-portal): tenant pathless layout (mirror OpsLayout) so shell wraps subroutes"
+```
+
+> **Task 1 (and Tasks 4/5) DEPEND on Task 0.** The Tenant shell now mounts at `/usage|/keys|/members|/alerts|/billing` (via `tenantLayoutRoute`) AND at `/` (via `indexRoute`) — both produce `#tenant-portal-shell-root` with the tenant nav, so `aria-current`/SideNav assertions at a tenant subroute are now satisfiable.
+
+---
+
 ## Task 1 (§A.1): a11y audit-to-pass — focus ring, `aria-current`, rendered-chart aria (ADD, OQ2 re-scope)
 
 **Files:**
@@ -151,6 +326,10 @@ The first plan revision modeled §A.1/§A.3 from the spec's mental picture; thes
 - Test: create `a11y/focus.test.ts`, `dashboard/charts/build-chart-aria.test.ts`; extend the two shell tests + `dashboard/views/usage-dashboard.test.tsx` (if present — else create a minimal colocated test asserting the aria pass-through)
 - **NOT modified:** `cloud/src/litellm-portal/chart.tsx` (DEAD in production per OQ1 — its `ariaDescription`@168 is never rendered; touching it is wasted churn AND would force a churny `app.test.tsx` update. Leave it. The rendered chart is `trend-chart.tsx`.)
 
+> **DEPENDS ON TASK 0 (structural prerequisite).** Task 0 adds the Tenant pathless layout so `TenantPortalShell` + nav mount at `/usage|/keys|/members|/alerts|/billing` (not only `/`). Without Task 0, Step 6's `renderTenantAt("/usage")` `aria-current` assertion is unsatisfiable (flat sibling route → bare screen, no shell/nav). Task 1 MUST run after Task 0.
+>
+> **Steps 1–5 are ALREADY DONE (lead's in-flight implementer, green): `a11y/focus.ts`+test (2/2), `branding.ts` re-exports, and the shells' `useRouterState`/`FOCUS_RING`/`aria-current` edits applied. The edits below (Step 6 harness fix + the NEW bare-test migration Step 9b) are COMPATIBLE with those committed-pending edits — they only add the missing `await router.load()` to the new harness and migrate the 5 pre-existing bare-shell tests; Steps 1–5 are NOT re-touched.**
+>
 > **a11y task — assertion-based acceptance.** Every criterion is a concrete automated assertion (focus-ring class present, `aria-current="page"` on the active *nav-mapped* link, locale-driven chart `aria-label`, contrast ≥ 3:1 via the real `branding.ts` math). No "looks accessible" prose.
 >
 > **`aria-current` scope (missing-item fix):** acceptance for `aria-current="page"` is scoped to **nav-mapped routes only** (the items in `TENANT_ROUTE_SPECS` / `OPS_NAV`). Detail routes `/ops/audit/$eventId`, `/ops/tenants/$teamId`, `/ops/users/$userId` legitimately have NO active nav entry — at those URLs NO nav link carries `aria-current` (the parent group is not auto-activated; this is correct, and the tests assert it for nav-mapped paths only).
@@ -229,13 +408,19 @@ const adminMe: Me = {
   tenantRole: "tenant_admin", tenantTeamId: "t1",
 };
 
-function renderTenantAt(path: string) {
+// Production-router harness — mirrors ops-console/routes.test.tsx:58-74
+// EXACTLY, including `await router.load()` (the Phase-2-proven step the
+// earlier draft of this harness omitted — without it the matched route's
+// component is not resolved before render and `useRouterState` reads an
+// unsettled location). MUST be awaited at the call site.
+async function renderTenantAt(path: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   qc.setQueryData(ME_QUERY_KEY, adminMe);
   const router = createPortalRouter(
     createMemoryHistory({ initialEntries: [path] }),
     { role: "user" },
   );
+  await router.load();
   return render(
     <QueryClientProvider client={qc}>
       <I18nProvider i18n={i18n}>
@@ -249,13 +434,13 @@ function renderTenantAt(path: string) {
 
 describe("TenantPortalShell a11y (§A.1)", () => {
   it("the active nav link carries aria-current=page", async () => {
-    renderTenantAt("/usage");
+    await renderTenantAt("/usage");
     const active = await screen.findByRole("link", { current: "page" });
     expect(active.getAttribute("href")).toBe("/usage");
   });
 
   it("every nav link carries the shared focus-ring utility class", async () => {
-    renderTenantAt("/");
+    await renderTenantAt("/");
     const links = await screen.findAllByRole("link");
     const navLinks = links.filter((l) => l.getAttribute("href")?.startsWith("/"));
     expect(navLinks.length).toBeGreaterThan(0);
@@ -265,7 +450,7 @@ describe("TenantPortalShell a11y (§A.1)", () => {
   });
 
   it("does NOT override any Kumo semantic/hierarchy/typography token (no inline --kumo-* except brand)", async () => {
-    const { container } = renderTenantAt("/");
+    const { container } = await renderTenantAt("/");
     const root = container.querySelector("#tenant-portal-shell-root") as HTMLElement;
     const style = root.getAttribute("style") ?? "";
     // Only --kumo-brand / --kumo-brand-hover are ever inline-set (branding.ts).
@@ -294,13 +479,16 @@ const ownerMe: Me = {
   role: "admin", tenantRole: null, tenantTeamId: null,
 };
 
-function renderOpsAt(path: string) {
+// Production-router harness — mirrors ops-console/routes.test.tsx:58-74,
+// including `await router.load()` (Phase-2-proven; must be awaited).
+async function renderOpsAt(path: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   qc.setQueryData(ME_QUERY_KEY, ownerMe);
   const router = createPortalRouter(
     createMemoryHistory({ initialEntries: [path] }),
     { role: "admin" },
   );
+  await router.load();
   return render(
     <QueryClientProvider client={qc}>
       <I18nProvider i18n={i18n}>
@@ -314,13 +502,13 @@ function renderOpsAt(path: string) {
 
 describe("OpsConsoleShell a11y (§A.1)", () => {
   it("the active Ops nav link carries aria-current=page", async () => {
-    renderOpsAt("/ops/audit");
+    await renderOpsAt("/ops/audit");
     const active = await screen.findByRole("link", { current: "page" });
     expect(active.getAttribute("href")).toBe("/ops/audit");
   });
 
   it("every Ops nav link carries the shared focus-ring utility class", async () => {
-    renderOpsAt("/ops");
+    await renderOpsAt("/ops");
     const links = await screen.findAllByRole("link");
     const navLinks = links.filter((l) => l.getAttribute("href")?.startsWith("/ops"));
     expect(navLinks.length).toBeGreaterThan(0);
@@ -361,7 +549,17 @@ Replace the nav `<a>` element (anchor@169-176) with:
 
 (Note: `hover:bg-kumo-canvas` → `hover:bg-kumo-tint` is the §B.1 hover-normalization, applied minimally here since this `<a>` is being touched anyway; the full restyle replaces this with `SideNav` in Task 4.) In `cloud/src/litellm-portal/ops-console/shell.tsx` apply the identical change to the Ops nav `<a>` (anchor@91-97): add `import { useRouterState } from "@tanstack/react-router";` + `import { FOCUS_RING } from "../a11y/focus";`, derive `const pathname = useRouterState({ select: (s) => s.location.pathname });` as the FIRST statement in `OpsConsoleShell`'s body — **unconditionally, BEFORE the `if (!isOwner(identity)) return …` guard@54** so the hook count is fixed across the Owner/non-Owner branches (rules-of-hooks) — and set `aria-current={pathname === item.href ? "page" : undefined}` + the `FOCUS_RING` + `hover:bg-kumo-tint` class on the Ops nav `<a>`.
 
-- [ ] **Step 10: Run → PASS** — `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/tenant-portal/shell.test.tsx src/litellm-portal/ops-console/shell.test.tsx` → PASS (existing + new). `bun run typecheck` → baseline-only.
+- [ ] **Step 9c (CRITICAL — MIGRATE the 5 pre-existing BARE-shell tests; without this Step 10 cannot be "existing + new" green).** Step 9's unconditional `useRouterState` (now the FIRST hook in BOTH shells, including before `OpsConsoleShell`'s Owner guard) makes ANY render WITHOUT a Router context throw `TypeError: Cannot read properties of undefined (reading 'isServer')` (TanStack reads router state from context). The 5 pre-existing bare-shell `it`s render the shell directly with NO router → they WILL throw once Step 9 lands. They MUST be migrated to the production-router harness (the same `await router.load()` harness used by `renderTenantAt`/`renderOpsAt` in Steps 6/7 — and by the Phase-2-proven `ops-console/routes.test.tsx:58-74`). The 5 (verified live):
+  - `cloud/src/litellm-portal/tenant-portal/shell.test.tsx` — the 3 `it`s under `describe("TenantPortalShell", …)` (`renderWithI18n`, no router): "shows all six nav items for a tenant_admin", "shows only Overview/Usage/API Key for a member", "shows a Phase-2 notice and a /manage link for a pure Owner".
+  - `cloud/src/litellm-portal/ops-console/shell.test.tsx` — the 2 `it`s under `describe("OpsConsoleShell", …)` (`renderShell`, no router): "Owner sees all seven nav items + ops chip", "non-Owner sees a 403 card + link to / (no nav)".
+  Migration rule: replace the bare `renderWithI18n(<TenantPortalShell …>)` / `renderShell(<OpsConsoleShell …>)` calls with the SAME-FILE async router harness (`renderTenantAt(path)` / `renderOpsAt(path)` added in Steps 6/7 — reuse them; do NOT add a second harness). Because the shells now render via the route tree (Task 0's `tenantLayoutRoute` / Phase-2's `opsLayoutRoute`), drive them by PATH + seeded `me`, not by passing the shell element directly:
+  - "six nav items for tenant_admin" → `await renderTenantAt("/usage")` with `adminMe` (tenantRole `tenant_admin`); assert the 6 nav links present (query within `#tenant-portal-shell-root`). The shell now comes from `tenantLayoutRoute`→`TenantLayout`→`TenantPortalShell` (Task 0); identity is from the seeded `ME_QUERY_KEY`, so seed a `tenant_admin` `me` and assert nav. (If a case needs a `member`/pure-Owner identity, seed that `me` and route to `/usage`; the layout's `TenantLayout` derives identity from `useMe()` exactly like `PortalIndex`.)
+  - "member sees only 3" / "pure-Owner Phase-2 notice + /manage link" → seed the respective `me` (member: `tenantRole:"member"`; pure Owner: `role:"admin",tenantRole:null,tenantTeamId:null`) and `await renderTenantAt("/")` (the pure-Owner Phase-2 notice path is owned by `indexRoute`→`PortalIndex`; route to `/` for that case so the existing PortalIndex branch renders — Task 0 left `/` with `indexRoute`). Assert the same expectations as before (3 nav links / Phase-2 notice / `/manage` link) against the rendered tree.
+  - "Owner sees seven nav items + ops chip" → `await renderOpsAt("/ops")` with `ownerMe`; assert nav + chip inside `#ops-console-shell-root`.
+  - "non-Owner sees 403 + link to /" → seed a non-Owner `me` (`role:"user"`/no tenant-admin), `await renderOpsAt("/ops")`; assert the 403 card. (`OpsLayout`/`OpsConsoleShell` already render the forbidden card for non-Owner — Phase-2 behavior, unchanged; the `useRouterState` hook is now unconditional-before-the-guard per Step 9 so the hook order is stable in both branches.)
+  Delete the now-unused bare `renderWithI18n`/`renderShell` helpers IF nothing else in the file uses them (grep within the file first; if other untouched `it`s use them, keep the helper but the migrated 5 use the router harness). Each migrated `it` becomes `async` and `await`s the harness + uses `findBy*`/`waitFor` for the post-`router.load()` async mount (mirror Steps 6/7). **Do NOT weaken any assertion** — same expected nav counts / 403 / Phase-2-notice; only the render mechanism changes (bare → production-router, the Phase-2-proven pattern). This also retro-fixes the latent defect that these bare tests never exercised the real mount path.
+
+- [ ] **Step 10: Run → PASS** — `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/tenant-portal/shell.test.tsx src/litellm-portal/ops-console/shell.test.tsx` → PASS = **the 5 MIGRATED pre-existing `it`s (Step 9c) GREEN + the new Step 6/7 a11y `it`s GREEN** (no `isServer` TypeError anywhere — every shell render now goes through a router via the Task-0 `tenantLayoutRoute` / Phase-2 `opsLayoutRoute`). If any bare `it` still throws `isServer`, Step 9c was incomplete — finish the migration, do NOT skip/relax. `bun run typecheck` → baseline-only.
 
 - [ ] **Step 11: Write the failing rendered-chart aria test (OQ2 re-scope: ADD aria to `trend-chart.tsx`, which has NONE).** Create `cloud/src/litellm-portal/dashboard/charts/build-chart-aria.test.ts`:
 
@@ -1474,7 +1672,7 @@ git add cloud/src/litellm-portal/dashboard/charts/rank-bar.tsx cloud/src/litellm
 git -c commit.gpgsign=false commit -m "feat(litellm-portal): lazy-split echarts (CI gate + #418-safe warm-up)"
 ```
 
-> **§A GATE — §B may NOT begin until this passes.** Before any §B task: `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/a11y src/litellm-portal/components src/litellm-portal/errors src/litellm-portal/bundle-gate.test.ts src/litellm-portal/hydration.test.tsx src/litellm-portal/dashboard/charts/build-chart-aria.test.ts src/litellm-portal/dashboard/charts/trend-chart.test.tsx src/litellm-portal/tenant-portal/shell.test.tsx src/litellm-portal/ops-console/shell.test.tsx` ALL green + the **§F.2 CLS hard gate** (`bun run test:e2e:perf` — Task 3B, CLS < 0.1 on `/`,`/usage`,`/ops`) green + `bun run typecheck` baseline-only. This is the §A acceptance gate (decision 3 / §D.2) — it now includes: the `hydration.test.tsx` #418 parity guard (NEW-C-A), the §F.3 error-contract tests (Task 2C), the §F.5 type-scale audit (Task 1), the §F.2 CLS perf gate (Task 3B), and the §F.4 ErrorBoundary tests (Task 3C). §F additions are hygiene-band — they gate §B exactly as §A.1–§A.3 do.
+> **§A GATE — §B may NOT begin until this passes.** Before any §B task: `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/tenant-portal/routes.test.tsx src/litellm-portal/a11y src/litellm-portal/components src/litellm-portal/errors src/litellm-portal/bundle-gate.test.ts src/litellm-portal/hydration.test.tsx src/litellm-portal/dashboard/charts/build-chart-aria.test.ts src/litellm-portal/dashboard/charts/trend-chart.test.tsx src/litellm-portal/tenant-portal/shell.test.tsx src/litellm-portal/ops-console/shell.test.tsx` ALL green + the **§F.2 CLS hard gate** (`bun run test:e2e:perf` — Task 3B, CLS < 0.1 on `/`,`/usage`,`/ops`) green + `bun run typecheck` baseline-only. This is the §A acceptance gate (decision 3 / §D.2) — it now includes: the **Task-0 tenant route-topology guard (`tenant-portal/routes.test.tsx` — shell wraps `/usage`)**, the `hydration.test.tsx` #418 parity guard (NEW-C-A), the §F.3 error-contract tests (Task 2C), the §F.5 type-scale audit (Task 1), the §F.2 CLS perf gate (Task 3B), and the §F.4 ErrorBoundary tests (Task 3C). The migrated bare-shell tests (Task 1 Step 9c) ride in `tenant-portal/shell.test.tsx`/`ops-console/shell.test.tsx` (same paths, already in the sweep). §F + Task-0 additions are hygiene-band — they gate §B exactly as §A.1–§A.3 do.
 
 ---
 
@@ -2044,56 +2242,48 @@ git -c commit.gpgsign=false commit -m "feat(litellm-portal): shared SideNav + na
 
 (File-disjoint from Task 6 — different shell file; both consume the Task-4 `SideNav`. Serialized after the §A GATE.)
 
-> **M3 — ANCHORS ARE PRE-DRIFTED. Re-locate BY SYMBOL, not line.** Task 1 Step 9 already edited `tenant-portal/shell.tsx` (added `import { useRouterState }`, `import { FOCUS_RING }`, the `const pathname = useRouterState(...)` line, and rewrote the nav `<a>` with `aria-current`/`FOCUS_RING`/`hover:bg-kumo-tint`). Task 2 Step 9 wrapped its body in `<DensityProvider density="comfortable">`. So the line numbers in the Prerequisites anchor list (`BrandBar`@72-88, the nav `<ul>`@166-178, `<main>`@156/179) NO LONGER hold. Before editing: re-find `function BrandBar`, the `<nav aria-label={t\`租户导航\`}>`/`<ul>` block, and the content `<main>` BY SYMBOL/grep in the CURRENT file; do not trust pre-Task-1/2 line numbers anywhere in this task.
+> **DEPENDS ON TASK 0 + Task 1 Step 9c.** The Tenant shell now mounts via the Task-0 `tenantLayoutRoute` (at `/usage|/keys|…`) AND `indexRoute` (at `/`); after Task 1 Step 9 the shell calls `useRouterState` unconditionally, so the shell can ONLY be rendered through the production-router harness (a bare `<TenantPortalShell>` render throws `isServer`). The §B.1 restyle MUST be asserted at a tenant SUBROUTE (e.g. `/usage`) — that is the exact path the structural defect made shell-less; proving SideNav/summary-bar render there is the regression guard for Task 0.
+>
+> **M3 — ANCHORS ARE PRE-DRIFTED. Re-locate BY SYMBOL, not line.** Task 1 Step 9 already edited `tenant-portal/shell.tsx` (added `import { useRouterState }`, `import { FOCUS_RING }`, the `const pathname = useRouterState(...)` line, and rewrote the nav `<a>` with `aria-current`/`FOCUS_RING`/`hover:bg-kumo-tint`). Task 2 Step 9 wrapped its body in `<DensityProvider density="comfortable">`. Task-0 added a `TenantLayout` wrapper in `tenant-portal/routes.tsx` (NOT `shell.tsx`) — `shell.tsx` itself is unchanged by Task 0. So the pre-Phase-3 line numbers (`BrandBar`@72-88, nav `<ul>`@166-178, `<main>`@156/179) NO LONGER hold. Before editing: re-find `function BrandBar`, the `<nav aria-label={t\`租户导航\`}>`/`<ul>` block, and the content `<main>` BY SYMBOL/grep in the CURRENT file; do not trust pre-Task-1/2 line numbers anywhere in this task.
 
-- [ ] **Step 1: Write the failing summary-bar + SideNav test.** Append to `cloud/src/litellm-portal/tenant-portal/shell.test.tsx`:
+- [ ] **Step 1: Write the failing summary-bar + SideNav test — via the production-router harness at a tenant SUBROUTE.** Append to `cloud/src/litellm-portal/tenant-portal/shell.test.tsx`, REUSING the same-file async `renderTenantAt(path)` helper (added in Task 1 Step 6, now with `await router.load()`; Task 1 Step 9c migrated the old bare tests onto it — there is ONE harness in this file). Render at `/usage` (a tenant subroute the shell now wraps via Task-0's `tenantLayoutRoute`); identity comes from the seeded `me` (the harness seeds `adminMe` = `tenant_admin` — a `tenant_admin` me yields the full grouped nav). The shell's `brand` is whatever `TenantLayout`/`PortalIndex` derives from `me` (do NOT pass `brand`/`identity` props directly — the shell is mounted by the route tree, not constructed in the test):
 
 ```tsx
-describe("TenantPortalShell §B.1 restyle", () => {
-  it("renders the brand identity summary bar (logo slot + name + budget meter region + alert dot)", () => {
-    renderWithI18n(
-      <TenantPortalShell
-        identity={{ ...baseIdentity, tenantRole: "tenant_admin", tenantTeamId: "t1" }}
-        brand={{ name: "Acme", logoUrl: null, primaryColor: null }}
-      >
-        <div>child</div>
-      </TenantPortalShell>,
-    );
-    expect(document.querySelector("[data-brand-summary-bar]")).not.toBeNull();
+describe("TenantPortalShell §B.1 restyle (rendered via production router at a subroute)", () => {
+  it("renders the brand identity summary bar at /usage (subroute the shell now wraps — Task-0 guard)", async () => {
+    await renderTenantAt("/usage");
+    await waitFor(() => {
+      expect(document.querySelector("[data-brand-summary-bar]")).not.toBeNull();
+    });
     expect(document.querySelector("[data-brand-alert-dot]")).not.toBeNull();
   });
 
-  it("uses border-kumo-line (not border-kumo-default) on the summary bar", () => {
-    renderWithI18n(
-      <TenantPortalShell
-        identity={{ ...baseIdentity, tenantRole: "tenant_admin", tenantTeamId: "t1" }}
-        brand={{ name: "Acme", logoUrl: null, primaryColor: null }}
-      >
-        <div>child</div>
-      </TenantPortalShell>,
-    );
-    const bar = document.querySelector("[data-brand-summary-bar]") as HTMLElement;
+  it("the summary bar uses border-kumo-line (not border-kumo-default)", async () => {
+    await renderTenantAt("/usage");
+    const bar = await waitFor(() => {
+      const el = document.querySelector("[data-brand-summary-bar]") as HTMLElement | null;
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
     expect(bar.className).toContain("border-kumo-line");
     expect(bar.className).not.toContain("border-kumo-default");
   });
 
-  it("renders the shared SideNav with grouped items for a tenant_admin", () => {
-    renderWithI18n(
-      <TenantPortalShell
-        identity={{ ...baseIdentity, tenantRole: "tenant_admin", tenantTeamId: "t1" }}
-        brand={{ name: "Acme", logoUrl: null, primaryColor: null }}
-      >
-        <div>child</div>
-      </TenantPortalShell>,
-    );
-    const nav = within(screen.getByRole("navigation"));
+  it("renders the shared SideNav with grouped items for a tenant_admin at /usage", async () => {
+    await renderTenantAt("/usage");
+    const navEl = await screen.findByRole("navigation");
+    const nav = within(navEl);
     expect(nav.getByText("我的")).toBeTruthy();
     expect(nav.getByText("团队管理")).toBeTruthy();
+    // The SideNav (Task 4) is visible on a tenant SUBROUTE, not only `/` —
+    // this is the concrete regression guard that Task-0's pathless layout
+    // mounts the shell across the tenant subtree.
+    expect(nav.getByRole("link", { name: /用量|usage/i }).getAttribute("href")).toBe("/usage");
   });
 });
 ```
 
-(The first two tests render `TenantPortalShell` standalone; `useRouterState` is called inside the shell from Task 1 — wrap the standalone render in a minimal memory router OR keep the Task-1 production-router `renderTenantAt` helper. Reuse the Task-1 `renderTenantAt(path)` helper added to this file for any test needing routing; for the standalone `renderWithI18n` cases, the shell's `useRouterState` resolves against the nearest router — add a minimal `createPortalRouter`+`RouterProvider` wrapper if happy-dom throws "no router", mirroring the Task-1 helper. Prefer `renderTenantAt("/")` to keep one harness.)
+> `waitFor` is needed because `renderTenantAt` mounts via the real router (post-`router.load()` async). `screen`/`within`/`waitFor` are from `@testing-library/react` (already imported at the top of this file from Task 1). If `renderTenantAt`'s seeded `adminMe` is not `tenant_admin`, add a variant or seed a `tenant_admin` `me` in this `describe` (mirror Task 1's `adminMe`, which is already `tenantRole:"tenant_admin"`). Do NOT reintroduce a bare `renderWithI18n(<TenantPortalShell …>)` — that path is dead (throws `isServer`) and was the structural defect; everything goes through `renderTenantAt`.
 
 - [ ] **Step 2: Run → FAIL** — `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/tenant-portal/shell.test.tsx` → FAIL (no summary bar, still bare `<a>` nav, still `border-kumo-default`).
 
@@ -2118,12 +2308,12 @@ git -c commit.gpgsign=false commit -m "feat(litellm-portal): tenant shell restyl
 
 > **M3 — ANCHORS ARE PRE-DRIFTED. Re-locate BY SYMBOL, not line.** Task 1 Step 9 already edited `ops-console/shell.tsx` (added `useRouterState`/`FOCUS_RING` imports, the unconditional `const pathname = useRouterState(...)` as the first body statement before the `isOwner` guard, and rewrote the Ops nav `<a>`). Task 2 Step 9 wrapped the Owner branch in `<DensityProvider density="compact">`. The Prerequisites anchors (`OPS_NAV`@16-22, the nav `<ul>`@88-100, the `内部·特权` chip@79-81, `style={OPS_STEEL_ACCENT}`@71, `<main>`@101) NO LONGER hold. Re-find `OPS_NAV`, the `<nav aria-label={t\`运营导航\`}>`/`<ul>` block, the privileged chip `<span>`, and the content `<main>` BY SYMBOL/grep in the CURRENT file; do not trust pre-Task-1/2 line numbers.
 
-- [ ] **Step 1: Write the failing steel-pill + summary-chips + SideNav test.** Append to `cloud/src/litellm-portal/ops-console/shell.test.tsx` (reuse the Task-1 `renderOpsAt` helper added to this file):
+- [ ] **Step 1: Write the failing steel-pill + summary-chips + SideNav test.** Append to `cloud/src/litellm-portal/ops-console/shell.test.tsx`, reusing the same-file async `renderOpsAt(path)` helper (Task 1 Step 7 — now `async` with `await router.load()`; Task 1 Step 9c migrated the old bare Ops tests onto it). **Ops is UNAFFECTED by the Task-0 structural defect** — Ops already mounts via the pre-existing pathless `opsLayoutRoute` (`ops-console/routes.tsx`), so `renderOpsAt("/ops")` already wraps `OpsConsoleShell`; the only fix here vs the original draft is `await`-ing the now-async helper:
 
 ```tsx
 describe("OpsConsoleShell §B.1 restyle", () => {
   it("renders the privileged steel-ring pill (not a brand pill)", async () => {
-    renderOpsAt("/ops");
+    await renderOpsAt("/ops");
     const pill = await screen.findByText(/内部 · 特权|内部·特权/);
     const el = pill.closest("[data-ops-privileged-pill]") as HTMLElement;
     expect(el).not.toBeNull();
@@ -2131,12 +2321,12 @@ describe("OpsConsoleShell §B.1 restyle", () => {
   });
 
   it("renders the global-state summary chips region", async () => {
-    renderOpsAt("/ops");
+    await renderOpsAt("/ops");
     expect(await screen.findByTestId("ops-summary-chips")).toBeTruthy();
   });
 
   it("renders the shared SideNav with Ops group headings (compact)", async () => {
-    renderOpsAt("/ops");
+    await renderOpsAt("/ops");
     const nav = within(await screen.findByRole("navigation"));
     expect(nav.getByText("租户")).toBeTruthy();
     expect(nav.getByText("平台")).toBeTruthy();
@@ -2394,34 +2584,49 @@ const me: Me = {
   role: "user", tenantRole: "tenant_admin", tenantTeamId: "t1",
 };
 
+// Production-router harness WITH `await router.load()` (mirrors
+// ops-console/routes.test.tsx:58-74; the load step is required so the matched
+// route's <main> is mounted before assertions). The Tenant content <main>
+// lives in TenantLayout (Task-0 pathless layout, reached at tenant subroutes)
+// AND is reached at `/` via indexRoute→PortalIndex — assert BOTH.
+async function renderAt(path: string) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  qc.setQueryData(ME_QUERY_KEY, me);
+  const router = createPortalRouter(createMemoryHistory({ initialEntries: [path] }), { role: "user" });
+  await router.load();
+  return render(
+    <QueryClientProvider client={qc}>
+      <I18nProvider i18n={i18n}>
+        <AppShell queryClient={qc}>
+          <RouterProvider router={router} />
+        </AppShell>
+      </I18nProvider>
+    </QueryClientProvider>,
+  );
+}
+
 describe("§B.4 motion language", () => {
-  it("route-enter motion on main content is motion-safe gated and <=200ms", () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    qc.setQueryData(ME_QUERY_KEY, me);
-    const router = createPortalRouter(createMemoryHistory({ initialEntries: ["/"] }), { role: "user" });
-    const { container } = render(
-      <QueryClientProvider client={qc}>
-        <I18nProvider i18n={i18n}>
-          <AppShell queryClient={qc}>
-            <RouterProvider router={router} />
-          </AppShell>
-        </I18nProvider>
-      </QueryClientProvider>,
-    );
-    const main = container.querySelector("main") as HTMLElement;
-    expect(main.className).toContain("motion-safe:");
-    // No transition/animation declared without the motion-safe variant gate,
-    // and no duration token above 200ms anywhere on the shell tree.
-    const all = container.querySelectorAll("*");
-    for (const el of all) {
-      const cls = (el as HTMLElement).className;
-      if (typeof cls !== "string") continue;
-      expect(cls).not.toMatch(/duration-(250|300|500|700|1000)/);
-      expect(cls).not.toMatch(/\banimate-(spin|ping|bounce|pulse)\b/);
-    }
-  });
+  for (const path of ["/", "/usage"] as const) {
+    it(`route-enter motion on main content is motion-safe gated and <=200ms (${path})`, async () => {
+      const { container } = await renderAt(path);
+      const main = container.querySelector("main") as HTMLElement;
+      expect(main, `<main> must be mounted at ${path} (Task-0 layout wraps subroutes)`).not.toBeNull();
+      expect(main.className).toContain("motion-safe:");
+      // No transition/animation declared without the motion-safe variant gate,
+      // and no duration token above 200ms anywhere on the shell tree.
+      const all = container.querySelectorAll("*");
+      for (const el of all) {
+        const cls = (el as HTMLElement).className;
+        if (typeof cls !== "string") continue;
+        expect(cls).not.toMatch(/duration-(250|300|500|700|1000)/);
+        expect(cls).not.toMatch(/\banimate-(spin|ping|bounce|pulse)\b/);
+      }
+    });
+  }
 });
 ```
+
+> The `/usage` case is the regression guard that Task-0's `tenantLayoutRoute` wraps the tenant subtree with the `<main>` (without Task 0, `/usage` is a bare flat route with no shell/`<main>` → this case fails, correctly surfacing the structural defect). `await router.load()` is mandatory (the Phase-2-proven step) — without it `container.querySelector("main")` reads before the matched route mounts and is `null`. Task 7 thus also DEPENDS on Task 0.
 
 - [ ] **Step 2: Run → FAIL** — `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/components/motion.test.tsx` → FAIL (no `motion-safe:` route-enter class on `<main>`).
 
@@ -2732,7 +2937,8 @@ bun run test src/litellm-portal    # green; isolate the documented flakes:
                                    #    index/security/usage-overview SSR files Phase-3 did NOT modify)
                                    #  - pre-existing-on-main usage-overview ?window=90d failure
                                    # confirm each via an ISOLATED re-run; CI is the gate.
-bun run test src/litellm-portal/a11y \
+bun run test src/litellm-portal/tenant-portal/routes.test.tsx \
+             src/litellm-portal/a11y \
              src/litellm-portal/components \
              src/litellm-portal/errors \
              src/litellm-portal/dashboard/charts/build-chart-aria.test.ts \
@@ -2846,3 +3052,11 @@ No §A–§E (or §F) gap. No new screens / no backend / no IA change / no Kumo 
   - **§F.6 (ops-theme):** value byte-unchanged (named-const promotion, not a color change — the Ops fixed-steel/ignores-branding Phase-2 invariant is preserved); the no-other-raw-hex guard's allowlist (ops-theme + branding.ts WCAG constants) is explicit and rationale'd.
   - **Parallel-wave vs serialized** is annotated per task in the Decomposition block (e.g. §F.6 fully file-disjoint; §F.1 Ops table screens parallel-wave; `DESIGN.md`/both-shells/i18n-catalogs/`panel-state.tsx`/`usage-dashboard.tsx` serialized). Hygiene-first + §A GATE preserved (§F.5/§F.3/§F.2 are §A-band and gate §B; §F.4/§F.1-cockpit/§F.6 are §B-band).
   - **Not claimed:** I did NOT assert any §F test passes (plan-only, no execution); each §F task is independently testable with a concrete failing-test→impl→passing-test→commit shape and exact `bun run test <path>`. The §F.3 task is the one flagged for the retained security/design review pass; nothing else newly security-sensitive. The ✅ #418 §A.3 workstream is confirmed untouched except §F.4's additive ErrorBoundary (which by construction cannot alter the loading-state SSR/hydrate render the §E-1 parity test asserts).
+
+**10. Structural defect fix — Tenant pathless layout (2026-05-17, execution-time discovery; decision LOCKED by lead):**
+  - **Defect (verified live, not snapshot):** `createTenantPortalRoutes(rootRoute,{includeIndex:false})` makes `/usage|/keys|/members|/alerts|/billing` FLAT siblings of `rootRoute` with NO `TenantPortalShell` wrapper (shell mounts only at `/` via `indexRoute`→`PortalIndex`). Ops is asymmetric and self-proves the fix (`createOpsConsoleRoutes`→pathless `opsLayoutRoute`→`OpsLayout`→`OpsConsoleShell`). Blast radius: Task 1 Step 6/9 `aria-current@/usage` unsatisfiable; Task 1 Step 9's unconditional `useRouterState` makes the 5 pre-existing BARE-shell `it`s throw `isServer`; Tasks 4/5/7 (restyled SideNav/`<main>` consumed by the Tenant shell) invisible on every tenant subroute.
+  - **Fix (Option A, lead-locked — encode, not deliberate):** NEW **Task 0 (§A.0 prerequisite, runs FIRST)** adds a pathless `tenantLayoutRoute` (`id:"tenant-layout"`, `TenantLayout`→`<TenantPortalShell><Outlet/></TenantPortalShell>`) MIRRORING `createOpsConsoleRoutes`/`opsLayoutRoute` EXACTLY (incl. `Outlet`, identity-from-`useMe`, M-NEW-1 cold-load loader). `/` stays owned by `indexRoute` (the `includeIndex:false` exclusion becomes structural: the layout factory filters `path!=="/"`); NO route-id collision (`"tenant-layout"` unique, exactly like `"ops-layout"`; the `tenant-*-root` strings are element ids not route ids). `router.tsx` wiring made symmetric (`const tenantLayoutRoute = createTenantPortalLayoutRoute(rootRoute);` + a single `tenantLayoutRoute` entry in `addChildren`, mirroring the `opsLayoutRoute` line). TDD: `tenant-portal/routes.test.tsx` asserts shell wraps `/usage` AND `/` still via `indexRoute`. `routes/index.tsx`/`PortalIndex` UNTOUCHED (H3 invariant held).
+  - **Task 1 deltas:** (i) Task-0 dependency stated; (ii) Steps 1–5 left EXACTLY as-is (lead's in-flight implementer completed them green — compatible, not re-touched); (iii) the new `renderTenantAt`/`renderOpsAt` harnesses got the MISSING `await router.load()` (the Phase-2-proven step from `ops-console/routes.test.tsx:58-74` the original draft omitted) — helpers made `async`, all call sites `await`ed; (iv) NEW **Step 9c** migrates the 5 pre-existing bare-shell `it`s to the production-router harness (drive by path+seeded `me`, assertions UNCHANGED — same nav counts/403/Phase-2-notice; only the render mechanism bare→router); Step 10 rewritten to require those 5 migrated + the new a11y `it`s all green (no `isServer`); (v) §F.5 Steps 18–21 untouched.
+  - **Tasks 4/5/7 deltas:** Task 4 (`SideNav` component + its own unit `side-nav.test.tsx`) is component-level — no shell-mount, no defect, no change needed (noted). Task 5 (Tenant shell restyle) rewritten: Task-0 dependency stated; the §B.1 test now uses the same-file `renderTenantAt("/usage")` production-router harness (NOT bare `renderWithI18n(<TenantPortalShell>)` which now throws `isServer`) and asserts summary-bar + SideNav at the tenant SUBROUTE `/usage` (the exact path the defect made shell-less — concrete Task-0 regression guard). Task 6 (Ops) only needed the `await renderOpsAt` fix (Ops unaffected by the structural defect — already has `opsLayoutRoute`); noted. Task 7 (`motion.test.tsx`) converted to an `await router.load()` harness + parameterized over `/` AND `/usage` (the `/usage` case is the Task-0 `<main>`-wrap regression guard); Task-0 dependency stated.
+  - **Cross-cutting:** Decomposition note updated (Task 0 first/serialized; `tenant-portal/routes.tsx`+`router.tsx` touch set; Tasks 1/4/5/7 depend on Task 0); §A GATE sweep + Task-10 sweep add `tenant-portal/routes.test.tsx`; task list now **16** (Task 0 + 1–10 + 2C/3B/3C/6B/6C). Spec gets a tight §B.1 note (Tenant gains a pathless layout symmetric to `OpsLayout` — the restyle premise depends on it).
+  - **Untouched (verified):** the ✅ #418/§A.3 workstream (warm-up, `not.toContain` §A-gate pins, OQ-(b) reasoning, `hydration.test.tsx` parity/negative-control, the build gate) and the just-folded §F items are NOT modified by this fix. Task 0's pathless layout is identity-derived/SSR-safe IDENTICALLY to `OpsLayout` (no new #418 surface — `hydration.test.tsx` re-run in Task 0 Step 5 is the guard). `PortalIndex` (the `/`-owner) is byte-unchanged. Self-reviewed against the live route files (`tenant-portal/routes.tsx`, `ops-console/routes.tsx`, `router.tsx`, `routes/index.tsx`, `ops-console/routes.test.tsx`) read this round — anchors are real, the OpsLayout idiom is mirrored 1:1, no decision re-opened.
