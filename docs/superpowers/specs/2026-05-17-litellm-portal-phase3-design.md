@@ -1,7 +1,7 @@
 # LiteLLM Portal — Phase 3 设计语言演进 · 设计文档
 
 - 日期：2026-05-17
-- 状态：**APPROVED by user 2026-05-17（§E 全部 resolved）；next = writing-plans**
+- 状态：**APPROVED by user 2026-05-17（§E 全部 resolved）；V2.0 6 项全折入 2026-05-17（见 §F，用户「全部折入」决策）；plan 已编写并加固至 #418 round-5 ✅**
 - 范围层级：本文档为 **Phase 3 spec**，扩展总纲 spec 第 4 节，建立在已上线的 Phase 1/2 之上
 - 父文档：`docs/superpowers/specs/2026-05-17-litellm-portal-uiux-redesign-design.md`（已通过的总纲）
 - 载体规范：`cloud/src/litellm-portal/DESIGN.md`（**扩展不替换**）
@@ -216,7 +216,7 @@ Tenant Portal 中以下 chrome 面取租户主色（全部经 §C.2 守卫，不
 
 ### §C.3 Ops 不变量（重述，决策 2 末句）
 
-Operations Console（`/ops`）**继续忽略所有租户品牌**：`ops-console/shell.tsx` 仍套 `OPS_STEEL_ACCENT`（`#475569`/`#334155`），§C 的 6 个可品牌面在 Ops 壳内**全部解析为钢色**（因为 Ops 壳注入的 `--kumo-brand` 即钢色）。无任何代码路径让租户色进入 `/ops`。这是 Phase-2 不变量，本期不动。
+Operations Console（`/ops`）**继续忽略所有租户品牌**：`ops-console/shell.tsx` 仍套 `OPS_STEEL_ACCENT`（`#475569`/`#334155`），§C 的 6 个可品牌面在 Ops 壳内**全部解析为钢色**（因为 Ops 壳注入的 `--kumo-brand` 即钢色）。无任何代码路径让租户色进入 `/ops`。这是 Phase-2 不变量，本期不动。**（§F.6：这两个钢色 hex 是经批准的唯一 raw-hex 豁免；Phase-3 将其提为具名 const + 豁免注释，值零变更，并加 no-other-raw-hex 守卫——见 §F.6。）**
 
 ---
 
@@ -266,6 +266,68 @@ WS-1/2/3 属 §A（先做、低风险、可独立交付）；WS-4/5/6 属 §B/§
 
 ---
 
+## §F V2.0 双维评审标准折入（用户 2026-05-17「全部折入」，6 项全锁）
+
+依据 `.omc/wiki/ui-ux-v2-0.md`（V2.0 标准）与 `.omc/wiki/litellm-portal-phase-3-v2-0.md`（审计与全折入决策）。litellm-portal 是 **B 端 ops 工具**，却整套套用 Kumo「平静大留白」C 端心智——该缺口 + 5 项其余债务是本次折入对象。**这 6 项不是新设计方向，而是把既有 §A/§B/§C 的验收提到 V2.0 工业落地标准**；卫生优先排序与 §A GATE 不变。
+
+### §F.1 → 扩展 §B.5 / §A.2：B 端运营驾驶舱密度纵深（V2.0 §1.2，最高价值发现）
+
+Ops Console（`/ops`：tenant-overview 全租户表、audit 审计表、billing）必须达**真 B 端专家密度**，非「略收紧的间距刻度」：
+
+- **紧凑表格变体**：Ops 的 `Table`（tenant-overview/audit/tenant-detail/user-detail 行）采用 compact 行高与 padding——具体数：行高 ≤ 36px、单元格 `px-3 py-1.5`（对比 Tenant comfortable 的 `px-4 py-3`）；表头 sticky；`tabular-nums` 数字列右对齐。沿用 §A.2 既有 spacing token（不新增数值），compact 在表格语境下落到 `py-1.5`/`px-3` 这一档。
+- **密度切换**：壳级 `comfortable↔compact` 可切，**复用 Task 2/§A.2 的 density context**，用户选择持久化（走既有 `usePreferences`/preferences 持久化通道，新增 `density?: "comfortable" | "compact"` 偏好；缺省 = 壳默认：Tenant comfortable / Ops compact）。切换即时（无整页刷新），SSR/#418 安全（偏好走 hydrated 通道，服务端客户端首帧一致）。
+- **键盘流**：Ops 表格行可 `Tab`/方向键不可用时至少行内主链接 `Tab` 顺序符合视觉顺序（§A.1 已覆盖键盘可达）；额外要求 Ops 列表屏 `/` 或既有 command-palette 可达（已存，纳入回归不丢）。**不**新建复杂 roving-tabindex 框架（承认前端脆弱性，组合优于过度抽象——V2.0 §4#4）。
+- **一屏看全/拒绝滚动**：Ops 全租户总览在 1280px 视口下，首屏（无纵向滚动）应可见租户列表前 N 行 + 摘要 chip 组；以 compact 密度 + sticky 表头实现，非强制（「where feasible」——数据多时表格自身滚动，外层壳不滚动）。
+- **Tenant Portal 不变**：保持 calm/comfortable（对外品牌化）。这是「同源异质」在密度维度的**第二层**深化（第一层 = §A.2 的 p-6/p-4 壳级差异；本项 = 表格语境 compact + 可切换 + 持久化）。
+- **验收**：Ops 表格行高/padding 数值达上述；密度切换持久化且切回刷新保持；切换 SSR/#418 不回归（`hydration.test.tsx` 覆盖含密度偏好的两壳首帧一致）；Tenant 屏密度不被 Ops 切换影响。**编码位置**：§B.5 表格密度列 + §A.2 density context 扩展（持久化 + compact 表格档）。
+
+### §F.2 → 扩展 §A.3 / §D：性能预算硬门禁（V2.0 §2.1）
+
+ECharts-lazy 是体积代理，不是 Web-Vitals 预算。新增：
+
+- **CLS < 0.1 = HARD GATE**（CI 可验证，与 §A.3 ECharts gate 同band）。机制：Playwright（仓库已有 `@playwright/test` + `playwright.config.ts` + `test:e2e`）E2E 用例在 `/`、`/usage`、`/ops` 加载后用 `PerformanceObserver({type:"layout-shift"})` 累计 CLS，断言 `< 0.1`；失败 `process.exit≠0`（CI 红）。**无 KB 阈值类比**——CLS 是确定可断言的数，作硬门禁。
+- **INP < 100ms / LCP < 1.2s = 观测断言**（非硬门禁，与 §A.3 「观测指标」同性质）：同一 Playwright run 采集 LCP（`PerformanceObserver type:"largest-contentful-paint"`）与一次代表性交互的 INP 近似（`event`/`first-input`），数值记入 DESIGN.md 观测记录；偏离记 follow-up，不阻断（B 端工具优先功能正确性，性能持续观测）。
+- **不引 Lighthouse 新依赖**（与「不引新依赖」一致）：复用既有 Playwright。若 Playwright 无法稳定取某指标 → 该指标降为人工 staging 检查项（记录于 E2E checklist），CLS 硬门禁不可降级。
+- **验收**：三路径 CLS < 0.1 的 Playwright 断言进 CI；LCP/INP 观测值入 DESIGN.md；骨架屏几何高度匹配（§A.2 `PanelSkeleton` 固定高度，减少 reflow——本项强化其 CLS 价值）。**编码位置**：§A.3 验收新增 Web-Vitals 段 + §D E2E 项。
+
+### §F.3 → 新增「错误 UX 契约」（V2.0 §2.4 + §4#6 抽象泄漏，**安全/契约敏感**）
+
+服务端错误码（`impersonation_required` / `index_do_unavailable` / `billing_archive_not_found` / `confirm_email_mismatch` ... ~40 个，`routes.ts`）当前**裸泄露**进 Banner，违反 V2.0「错误提示禁暴露技术栈、人类可读三要素」。同时这是 §4#6 抽象泄漏（用户被迫理解后端实现模型）的根。
+
+- **错误 UX 契约（单一真相源）**：建立本地化 `errorMessage(code, locale)` 映射，每条 = **三要素**：(1) 发生了什么（人话，非 code）、(2) 你的输入已保留（适用时明示未丢失）、(3) 清晰的下一步恢复动作。zh/en 双语。
+- **唯一边界**：映射应用在 `tenant-portal/hooks.ts` + `ops-console/hooks.ts` **共享的 `extractError` 边界**（两文件各有一份 `extractError`，本项将其统一/共用一个实现，所有 `throw new Error(...)` 与 `PanelError`/`Banner` 渲染经此层把 code 翻成三要素文案；未知 code → 通用安全兜底「操作未完成，请重试或联系管理员」，**绝不**回落显示原始 code）。
+- **安全契约**：错误文案**不得**泄露内部实现细节（DO 名、内部路径、栈）；`impersonation_required` 类权限码翻成「需以租户身份操作才能执行此写操作 → 请从运营台『进入租户』后重试」式恢复指引，不泄露鉴权内部。注入安全不变（错误文案是静态本地化字符串，不回显用户输入原文到 HTML 之外的 Banner 文本里——遵循既有 Kumo Banner 文本渲染，不 `dangerouslySetInnerHTML`）。
+- **验收**：每个已知服务端 code（枚举自 `routes.ts`）→ 断言映射出非-code 的人类三要素文案 + 有恢复指引；未知 code → 通用兜底（断言不含原始 code 字面量）；zh/en 各一份，`i18n-completeness` 覆盖；no-tech-leak 断言（文案不含 `_`-snake-case code、不含 `DO`/`undefined`/HTTP 数字码）。**本项标记为保留安全/设计评审 pass**（与 §C 同级敏感）。**编码位置**：新增「§F.3 错误 UX 契约」为 spec 子节（本段即是）；plan 新增独立 task。
+
+### §F.4 → 扩展 §A.3 / §2.4：分块 ErrorBoundary（与 round-3 critic MAJOR-1 合流，**叠加非重复**）
+
+MAJOR-1 的 `client.tsx` `try { await warmUsageCharts() } catch {}` 是**白屏地板**（chunk-fetch 失败不阻断 hydrate）——**保留不动**。本项在其**之上叠加**真正的 React ErrorBoundary：
+
+- **分层契约**：(1) `try/catch warmUsageCharts` = chunk **加载**失败地板（保留，§A.3/MAJOR-1）；(2) ErrorBoundary = chart/审计/dashboard 核心块的**渲染/运行时**异常隔离——块内 throw 时降级为内联错误面板（复用 §F.3 错误文案 + §A.2 `PanelError` 风格），页面其余部分完好，非区块崩或白屏。二者正交：前者管「拿不到代码」，后者管「代码跑炸」。
+- **范围**：包住 lazy chart island（`usage-charts-lazy` 边界外再套 ErrorBoundary）、audit 核心块、dashboard 核心块（V2.0 §2.4「关键业务区块独立 Error Boundary」）。不全站包一个上帝 boundary（V2.0 §4#8）。
+- **验收**：chart 块内人为 throw → ErrorBoundary fallback 渲染、页面其余区块仍可交互；fallback 文案走 §F.3 契约（人类三要素 + 重试/恢复）；不与 MAJOR-1 try/catch 重复或互相吞掉（明确分层注释）；不回归 §E-1 #418 loading-parity（ErrorBoundary 在正常 loading 路径透明，不改变 SSR/hydrate 首帧）。**编码位置**：§A.3 / §F.4（本段）；plan 新增 additive task。
+
+### §F.5 → 扩展 §A.1 / §B + §D：type-scale 审计 + 5s/模糊验收（V2.0 §1.1）
+
+- **type-scale 审计**：V2.0 要求 token 化字号 **≤7 层**、标题为正文 **1.5~2 倍**。**审计真实源**（`DESIGN.md` Typography Hierarchy + Kumo `Text` variant 实际值）：当前 DESIGN.md 列 **8 个 tier**（Page title 30→36 / Section title 18 / Metric value 28 / Metric label 12 / Body 14→16 / Caption 13 / Table header 12 / Mono data 14→18）——**超 7 层**；标题/正文比 desktop 36/16 = 2.25×、mobile 30/14 = 2.14×——**略超 2× 上限**。本项要求 plan 阶段：(a) 以真实 token 源核实层数与比例并文档化真实数；(b) 收敛到 ≤7 tier（合并语义等价档，如 Metric label 与 Table header 同为 12px/600/uppercase——并为一档；Caption 13px 与 Body 14px 评估合并）且标题:正文 ≤ 2×（Page title 收到 ≤ 2× body，如 desktop 32px/16px = 2.0× 或文档化为可接受例外并说明理由）——**严格在 Kumo 内、不覆盖版式 token 的前提下**通过「使用更少的 Text variant 档位 + DESIGN.md 收敛表」达成，不改 Kumo 本身。若某档无法合并，**文档化真实比例 + 明确豁免理由**（不静默放过）。
+- **5 秒测试 + 模糊测试**（V2.0 §1.1 验证法，人判项）：纳入 §A / E2E 人工验收 checklist——程序：截屏（亮/暗各一，Tenant `/` + Ops `/ops`）→ 移除 5s → reviewer 须能复述核心 CTA + 主标题（pass bar：两者皆能，否则视觉层次不达标）；高斯模糊截屏 → 视觉质心/能量应落在主信息区（KPI/主面板），非装饰/导航（pass bar：质心在内容区）。
+- **验收**：type-scale 层数 ≤7 且断言（测试读真实 DESIGN.md/token 源断言 tier 数与标题:正文比，或文档化豁免）；5s/模糊为 staging 人工项含明确 pass bar。**编码位置**：§A.1 子步（type-scale 审计）+ §D/E2E checklist（5s/模糊）。
+
+### §F.6 → 扩展 §C.3 / §1.3：ops-theme 硬编码 hex → 具名豁免 token（V2.0 §1.3）
+
+`ops-console/ops-theme.ts` 硬编码 `{"--kumo-brand":"#475569","--kumo-brand-hover":"#334155"}`。V2.0 §1.3 禁硬编码颜色（全量走 token）。但 Ops 固定钢色是 **Phase-2 不变量**（Ops 忽略租户品牌、固定中性钢——§C.3）——这是**唯一被批准的 hardcode 例外**（固定钢色品牌电压覆盖）。
+
+- **要求**：把两个 hex 提为**具名 const**（如 `OPS_STEEL_BRAND` / `OPS_STEEL_BRAND_HOVER`）并加 doc 注释明确标注「这是经批准的唯一 raw-hex 豁免：Ops 固定钢色品牌电压，Ops 忽略租户品牌的 Phase-2 不变量；不得新增任何其它 raw hex」。`OPS_STEEL_ACCENT` 继续由这两个具名 const 组装（行为零变更）。同时在 DESIGN.md token 表记一行「Ops fixed steel（sanctioned exception）」。
+- **守卫**：新增/扩展一个测试或 grep 守卫断言 restyle 后**除 `ops-theme.ts` 这两个具名 const 外，源码无其它 raw `#rrggbb` 字面量**（branding.ts 的 canvas/elevated/tint surface 常量是 WCAG 数学输入、已有注释——纳入 allowlist；测试夹具/快照排除）。
+- **验收**：`ops-theme.ts` 为具名 const + 豁免注释；DESIGN.md 记该例外；no-other-raw-hex 守卫通过。**编码位置**：§C.3 末补一句「钢色具名豁免」+ §F.6（本段）；plan 新增小 task。
+
+### §F 排序与不变量
+
+- **卫生优先不变**：§F.5 type-scale → 并入 §A.1；§F.2 perf-budget → §A.3 gate band；§F.1 密度纵深 → §A.2 扩展 + §B 重塑带；§F.3 错误契约 + §F.4 ErrorBoundary + §F.6 ops-theme token → 归各自 §A/§B task。**§A GATE 不变**（§B 不得在 §A 验收前开工；perf-budget CLS 门禁入 §A band）。
+- **不重开锁定决策**：不分叉 Kumo、不覆盖语义/版式 token、Ops 固定钢色/忽略品牌（§F.6 是把既有 hardcode 具名化而非改值）、ECharts-lazy-no-KB、内联-SVG-only、双模式 all-or-nothing 对比——全不动。§F.4 仅在 MAJOR-1 try/catch **之上叠加**，不弱化/不重复已闭合的 #418 §A.3 工作流（§E-1 loading-parity 测试、`not.toContain` §A-gate pin、warm-up、OQ-(b) 推理一律不动）。
+
+---
+
 ## 非目标（Out of scope）
 
 - 不新增屏、不改 IA、不动后端、不改路由鉴权模型（沿用 Phase 0–2）。
@@ -283,3 +345,5 @@ WS-1/2/3 属 §A（先做、低风险、可独立交付）；WS-4/5/6 属 §B/§
 - **内部一致性**：决策 1/2/3 → §B/§C/§(A→D) 一一编码。§A.3 验收更新为 HARD GATE 语言，与 §E-1 resolution 一致。§B.1 图标指令更新为「Kumo 内置优先 / 内联 SVG 备选 / 禁止新依赖」，与 §E-2 resolution 及非目标一致（非目标已同步修正，旧「倾向内联 SVG」措辞已清除）。§C.2 守卫扩展为 canvas + elevated + tint 三表面 × 双模式，与 §E-3 resolution 一致；接受的权衡与被否决的替代方案均已明文记录。不变清单（§B.0）与决策 1 边界一致。§C「只 emit `--kumo-brand`」与 Phase-1 `branding.ts` 注入契约一致。Ops 钢色/忽略品牌在 §B.5/§C.3 重述且与 Phase-2 一致。排序 §D.2 严格编码决策 3 的 A→B→C→D。
 - **范围 = 一个可计划周期**：7 条 WS，无新屏/无后端/无 IA 变更，全部建立在已上线 Phase 1/2 文件（`tenant-portal/{shell,branding,routes}.tsx`、`ops-console/{shell,ops-theme}.ts`、各 `screens/*`、`DESIGN.md`、`router.tsx`、i18n、stories、既有测试）之上，扩展不替换 —— 一个 Phase-3 spec→plan→impl 周期可容纳。
 - **越界检查**：未写代码、未跑构建/测试、未提交、未改源码；仅修订本一个 spec md；未触发 writing-plans 或任何实现技能。
+- **§F V2.0 折入诚实自检（2026-05-17 amendment）**：6 项均以「提既有 §A/§B/§C 验收到 V2.0 工业标准」方式编码，非新设计方向，卫生优先 + §A GATE 不变。逐项落点已显式标注（§F.1→§B.5/§A.2、§F.2→§A.3/§D、§F.3→新增错误 UX 契约子节、§F.4→§A.3 叠加 MAJOR-1、§F.5→§A.1/§D、§F.6→§C.3/§1.3）。**未声称未编码的覆盖**：§F.5 明确承认当前 type-scale = 8 tier 超 7、标题:正文 2.14~2.25× 超 2×（真实 DESIGN.md 数已核），收敛方案给出但具体合并由 plan 阶段读真实 token 源定案（不静默放过、不假装已收敛）；§F.2 CLS 为硬门禁、INP/LCP 诚实降为观测（非假装全门禁）；§F.4 明确与 MAJOR-1 分层正交（不假装替代）；§F.6 是具名化既有 hardcode（不假装消除——它是被批准的唯一例外）。§F.3 标记保留安全/设计评审 pass。#418 §A.3 已闭合工作流未被 §F 触碰（仅 §F.4 在 try/catch 之上叠加 ErrorBoundary）。
+- **不重开锁定**：§E-1/§E-2/§E-3 及决策 1/2/3、Ops 固定钢色/忽略品牌、Kumo-no-fork、版式 token 不覆盖——§F 全部尊重；§F.6 改的是「hardcode 如何命名」非「钢色是否存在」。
