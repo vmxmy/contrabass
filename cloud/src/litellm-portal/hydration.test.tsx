@@ -430,12 +430,15 @@ describe("litellm-portal SSR hydration (#418 guard)", () => {
         makeEnv(), tc.identity, tc.initialData, "test-nonce", tc.url, "zh-CN",
       );
       expect(html).toContain("<!doctype html>");
-      // Verified real SSR behavior: a loading state is rendered server-side
-      // (the route-level Suspense fallback — the lazy screen never resolves
-      // SSR, so UsageDashboard never mounts and the lazy chart boundary is
-      // never entered). Pin BOTH directions so a future regression that
-      // SSR-resolves the chart flips these and is caught (here + by the
-      // negative control).
+      // Verified real SSR behavior: a loading state is rendered server-side.
+      // TenantUsageScreen / OpsGlobalUsageScreen are STATIC imports (no lazy
+      // screen at the route level); the screen DOES mount SSR. UsageDashboard
+      // renders `加载中…` because the new dashboard/use-dashboard key
+      // ["dashboard","self","","30d"] is UNSEEDED at SSR (server-impl.tsx
+      // seeds only the old flat ["dashboard"] key) → loading branch taken,
+      // lazy chart boundary never entered. Pin BOTH directions so a future
+      // regression that SSR-resolves the chart flips these and is caught (here
+      // + by the negative control).
       expect(html).toContain(tc.loadingMarker);
       expect(html).not.toContain('data-chart="trend"');
       expect(html).not.toContain("data-panel-skeleton");
@@ -461,21 +464,23 @@ describe("litellm-portal SSR hydration (#418 guard)", () => {
   }
 
   /**
-   * NEGATIVE CONTROL (CRITICAL-1 (ii)) — distinguishes "warm-up actually
-   * prevents a real #418" from "test vacuously passes because there's no SSR
-   * data". Construct the desync the warm-up exists to defend against: SSR
-   * renders loading (unseeded, as proven above), but the CLIENT is made to
-   * first-render the RESOLVED chart by seeding the NEW dashboard/use-dashboard
-   * key with a DashboardResponseSchema-valid available:true fixture in the
-   * client QueryClient BEFORE hydrate. With the warm-up present (lazy chunk
-   * pre-resolved) the client renders the chart synchronously on first paint →
-   * it mismatches the server's loading HTML → a #418 IS expected here. This
-   * proves the harness CAN observe a real mismatch (it is not blind); the
-   * positive parity cases above passing then means parity is real, not vacuous.
-   * NOTE: this asserts the mismatch IS detected (a sanity check on the
-   * harness's detection power), NOT that production has this bug — production's
-   * SSR key is unseeded so this exact desync never occurs in prod (Open-Q (b));
-   * this is a controlled fault-injection that must be observable.
+   * NEGATIVE CONTROL (CRITICAL-1 (ii)) — proves the harness is non-blind
+   * (detection power). The injected mismatch is produced by the CLIENT-SEEDED
+   * dashboard query (`queryClient.setQueryData(DASHBOARD_QUERY_KEY, fixture)`)
+   * vs the UNSEEDED SSR loading state — i.e. the construction itself. SSR
+   * renders `加载中…` (new dashboard key unseeded, as proven by the parity
+   * cases above); the client QueryClient is pre-seeded with a
+   * DashboardResponseSchema-valid available:true fixture BEFORE hydrateRoot →
+   * client first-renders the resolved chart → React #418 mismatch detected.
+   * `warmUsageCharts` is NOT what drives this mismatch: it only affects whether
+   * the seeded chart renders synchronously vs via a transient Suspense
+   * re-render; BOTH paths diverge from SSR `加载中…`. Empirically verified by
+   * fault-injection: neutralising warm-up → control still passes; neutralising
+   * the client seed → control fails. This proves the harness's detection power
+   * / non-blindness (consistent with OQ-(b)): the real `/usage` path is
+   * #418-safe by construction; `warmUsageCharts` is defense-in-depth + UX,
+   * NOT what prevents #418 today. NOT that production has this bug — this is a
+   * controlled fault-injection that must be observable.
    */
   it("negative control: a client-only resolved chart vs SSR loading IS detected as a #418", async () => {
     const identity: PortalIdentity = {
@@ -507,15 +512,6 @@ describe("litellm-portal SSR hydration (#418 guard)", () => {
     expect(html).not.toContain('data-chart="trend"');
 
     await loadSsrDocument(html);
-    // Seed the NEW dashboard/use-dashboard key so the client first render
-    // resolves the chart (the desync the warm-up defends against). The
-    // fixture is built and DashboardResponseSchema.parse-d so it cannot drift
-    // from the real consumer contract (dashboard-schemas.ts). Injected via a
-    // hydrateLikeClient variant that pre-seeds the per-case QueryClient with
-    // that key BEFORE the warm-up + hydrateRoot (the try/catch warm-up mirror
-    // is preserved — production parity).
-    const sawMismatch = await hydrateAndCaptureMismatch_withSeededDashboard();
-    expect(sawMismatch).toBe(true); // the harness CAN observe a real #418
 
     /**
      * hydrateLikeClient PLUS a pre-hydrate
@@ -609,5 +605,17 @@ describe("litellm-portal SSR hydration (#418 guard)", () => {
           /Text content does not match/i.test(m),
       );
     }
+
+    // Seed the NEW dashboard/use-dashboard key so the client first render
+    // resolves the chart. This client seed is what drives the mismatch (the
+    // construction): SSR is unseeded → `加载中…`; client is seeded → resolved
+    // chart → divergence → #418. The fixture is DashboardResponseSchema.parse-d
+    // so it cannot drift from the real consumer contract (dashboard-schemas.ts).
+    // Injected via a hydrateLikeClient variant that pre-seeds the per-case
+    // QueryClient with that key BEFORE the warm-up + hydrateRoot (the
+    // try/catch warm-up mirror is preserved — production parity). Note:
+    // warm-up only affects sync vs async chart render; both diverge from SSR.
+    const sawMismatch = await hydrateAndCaptureMismatch_withSeededDashboard();
+    expect(sawMismatch).toBe(true); // the harness CAN observe a real #418
   });
 });
