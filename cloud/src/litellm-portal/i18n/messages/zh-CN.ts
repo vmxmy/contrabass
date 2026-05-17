@@ -295,6 +295,22 @@ const messages: Record<string, string> = {
   "邀请发送失败": "邀请发送失败",
   "邀请": "邀请",
   "管理员": "管理员",
+
+  // Tenant Portal shell aria labels
+  "租户品牌": "租户品牌",
+  "租户导航": "租户导航",
+
+  // TenantOverviewScreen — webhook unconfigured badge
+  "未配置": "未配置",
+
+  // TenantMembersScreen — invite status display labels
+  "待处理": "待处理",
+  "已使用": "已使用",
+  "已撤销": "已撤销",
+
+  // TenantMembersScreen — teamRole display labels
+  "成员角色：成员": "成员",
+  "成员角色：管理员": "管理员",
 };
 
 export default messages;

@@ -140,7 +140,13 @@ function InviteStatusBadge({ status }: { status: "pending" | "consumed" | "revok
       : status === "revoked"
         ? "error"
         : "warning";
-  return <Badge variant={variant}>{status}</Badge>;
+  const label =
+    status === "consumed"
+      ? t`已使用`
+      : status === "revoked"
+        ? t`已撤销`
+        : t`待处理`;
+  return <Badge variant={variant}>{label}</Badge>;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +200,7 @@ function CreateInviteForm() {
             id="invite-email"
             size="lg"
             type="email"
-            placeholder="email"
+            placeholder={t`请输入邮箱`}
             value={email}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
               setEmail(e.target.value)
@@ -290,7 +296,7 @@ function InvitesTable() {
                 {invite.email}
               </Table.Cell>
               <Table.Cell className="text-kumo-default">
-                {invite.teamRole}
+                {invite.teamRole === "admin" ? t`成员角色：管理员` : t`成员角色：成员`}
               </Table.Cell>
               <Table.Cell>
                 <InviteStatusBadge status={invite.status} />

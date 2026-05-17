@@ -296,6 +296,22 @@ const messages: Record<string, string> = {
   "邀请发送失败": "Failed to send invite",
   "邀请": "Invite",
   "管理员": "Admin",
+
+  // Tenant Portal shell aria labels
+  "租户品牌": "Tenant brand",
+  "租户导航": "Tenant navigation",
+
+  // TenantOverviewScreen — webhook unconfigured badge
+  "未配置": "Not configured",
+
+  // TenantMembersScreen — invite status display labels
+  "待处理": "Pending",
+  "已使用": "Accepted",
+  "已撤销": "Revoked",
+
+  // TenantMembersScreen — teamRole display labels
+  "成员角色：成员": "Member",
+  "成员角色：管理员": "Admin",
 };
 
 export default messages;

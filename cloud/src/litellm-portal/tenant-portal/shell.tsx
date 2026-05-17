@@ -70,7 +70,7 @@ function BrandBar({ brand }: { brand: TenantBrand }) {
   return (
     <div
       className="flex items-center gap-3 border-b border-kumo-default bg-kumo-elevated px-6 py-4"
-      aria-label="租户品牌"
+      aria-label={t`租户品牌`}
     >
       {logoUrl !== null ? (
         <img src={logoUrl} alt="" className="h-8 w-8 rounded object-contain" />
@@ -121,7 +121,7 @@ export function TenantPortalShell({ identity, brand, children }: TenantPortalShe
       ) : (
         <div className="flex flex-1">
           <nav
-            aria-label="租户导航"
+            aria-label={t`租户导航`}
             className="w-56 shrink-0 border-r border-kumo-default bg-kumo-elevated px-3 py-6"
           >
             <ul className="space-y-1">

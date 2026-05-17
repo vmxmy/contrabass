@@ -133,14 +133,14 @@ describe("TenantMembersScreen — tenant_admin", () => {
 
     expect(screen.queryByText("alice@example.com")).not.toBeNull();
     expect(screen.queryByText("bob@example.com")).not.toBeNull();
-    // At least one status pill is visible
-    expect(screen.queryByText("pending") ?? screen.queryByText("consumed")).not.toBeNull();
+    // At least one translated status pill is visible
+    expect(screen.queryByText("待处理") ?? screen.queryByText("已使用")).not.toBeNull();
   });
 
   it("calls useCreateTenantInvite mutate with correct payload on form submit", () => {
     renderWithProviders(<TenantMembersScreen />, { tenantRole: "tenant_admin" });
 
-    const emailInput = screen.getByPlaceholderText(/email/i);
+    const emailInput = screen.getByPlaceholderText(/请输入邮箱/i);
     fireEvent.change(emailInput, { target: { value: "newuser@example.com" } });
 
     const submitButton = screen.getByRole("button", { name: /邀请|发送邀请|invite/i });
