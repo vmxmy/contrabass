@@ -214,6 +214,23 @@ const messages: Record<string, string> = {
 
   // Audit detail labels
   "原始数据": "原始数据",
+
+  // Tenant Portal shell nav
+  "概览": "概览",
+  "用量": "用量",
+  "API Key": "API Key",
+  "成员": "成员",
+  "账单": "账单",
+
+  // Tenant Portal Phase-2 owner notice
+  "运营控制台将在 Phase 2 提供": "运营控制台将在 Phase 2 提供",
+  "Operations Console arrives in Phase 2": "运营控制台将在 Phase 2 提供",
+  "管理控制台": "管理控制台",
+
+  // Tenant Portal route placeholders / member guard
+  "待实现": "待实现",
+  "无权访问": "无权访问",
+  "该页面仅对团队管理员开放。": "该页面仅对团队管理员开放。",
 };
 
 export default messages;

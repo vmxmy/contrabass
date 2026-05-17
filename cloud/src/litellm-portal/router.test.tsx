@@ -46,6 +46,23 @@ describe("createPortalRouter", () => {
     expect(router.state.location.pathname).toBe("/manage/audit/abc123");
   });
 
+  it("keeps /manage/keys resolving unchanged after the Tenant Portal shell lands", async () => {
+    const history = createMemoryHistory({ initialEntries: ["/manage/keys"] });
+    const router = createPortalRouter(history, { role: "user" });
+    await router.load();
+
+    expect(router.state.location.pathname).toBe("/manage/keys");
+    expect(router.state.matches.some((m) => m.routeId === "__root__/404")).toBe(false);
+  });
+
+  it("redirects /manage to /manage/keys after Task 1 (legacy not regressed)", async () => {
+    const history = createMemoryHistory({ initialEntries: ["/manage"] });
+    const router = createPortalRouter(history, { role: "admin" });
+    await router.load();
+
+    expect(router.state.location.pathname).toBe("/manage/keys");
+  });
+
   it("redirects legacy /admin links to the new destinations", async () => {
     const history = createMemoryHistory({ initialEntries: ["/admin/users/alice%40example.com"] });
     const router = createPortalRouter(history, { role: "admin" });
