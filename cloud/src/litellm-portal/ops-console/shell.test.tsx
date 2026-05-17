@@ -82,3 +82,25 @@ describe("OpsConsoleShell a11y (§A.1)", () => {
     }
   });
 });
+
+describe("OpsConsoleShell §B.1 restyle", () => {
+  it("renders the privileged steel-ring pill (not a brand pill)", async () => {
+    await renderOpsAt("/ops", ownerMe);
+    const pill = await screen.findByText(/内部 · 特权|内部·特权/);
+    const el = pill.closest("[data-ops-privileged-pill]") as HTMLElement;
+    expect(el).not.toBeNull();
+    expect(el.className).toContain("ring-1");
+  });
+
+  it("renders the global-state summary chips region", async () => {
+    await renderOpsAt("/ops", ownerMe);
+    expect(await screen.findByTestId("ops-summary-chips")).toBeTruthy();
+  });
+
+  it("renders the shared SideNav with Ops group headings (compact)", async () => {
+    await renderOpsAt("/ops", ownerMe);
+    const nav = within(await screen.findByRole("navigation"));
+    expect(nav.getByText("租户")).toBeTruthy();
+    expect(nav.getByText("平台")).toBeTruthy();
+  });
+});
