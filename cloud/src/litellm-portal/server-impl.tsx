@@ -66,6 +66,8 @@ export async function renderPortalSSR(
           company: portalCompanyName(env),
           domain: identity.domain,
           role: identity.role,
+          tenantRole: identity.tenantRole,
+          tenantTeamId: identity.tenantTeamId,
         });
         if (meParsed.success) {
           serverQueryClient.setQueryData(ME_QUERY_KEY, meParsed.data);

@@ -132,6 +132,27 @@ git -c commit.gpgsign=false commit -m "feat(litellm-portal): Tenant Portal shell
 
 ---
 
+## Task 1.0 (PREREQUISITE — added during execution): expose `tenantRole`/`tenantTeamId` to the client
+
+**Why:** Discovered during Task 1 execution — post-#135 the client identity channel (`MeSchema` / `/api/me` / TanStack `RouterContext`) carries only `role` (`admin|user|none`). `PortalIdentity.tenantRole/tenantTeamId` (Phase 0) exist **server-side only**, so the shell cannot gate on them client-side. This is an additive, backward-compatible extension reusing the SAME initial-data serialization #135 already hydrates (so it is React-#418-safe — no new hydration channel, no shell-system rewrite).
+
+**Files:** Modify `cloud/src/litellm-portal/schemas.ts` (`MeSchema`), the `/api/me` handler in `routes.ts` (`meApp`), the SSR initial-data/`RouterContext` wiring in `server-impl.tsx`/`routes/__root.tsx`/`router.tsx` (whichever already injects `me`/`role` — extend that exact path, do not add a new one). Test: extend the existing `/api/me` + router-context tests.
+
+- [ ] **Step 1: Failing test** — assert `GET /api/me` response includes `tenantRole` (`"tenant_admin"|"member"|null`) and `tenantTeamId` (`string|null`) from the resolved `PortalIdentity`; and that the value the client RouterContext receives matches (extend the existing me/identity test in the harness that already asserts `role`).
+- [ ] **Step 2: Run → FAIL** (`bun run test` the me/identity test file).
+- [ ] **Step 3: Implement** — add `tenantRole: z.enum(["tenant_admin","member"]).nullable()` and `tenantTeamId: z.string().nullable()` to `MeSchema` (additive, optional-safe for old cached clients). In `meApp` populate them from the already-resolved `identity` (it's `PortalIdentity` — fields exist post-#138; no new resolution call). Thread the two fields wherever `role` is already threaded into `RouterContext`/initial-data (same serialization site #135 uses — additive only). Do NOT change the hydration mechanism or add a second identity fetch.
+- [ ] **Step 4: Run → PASS** + `bun run typecheck` (baseline only) + `bun run test src/litellm-portal/index.test.ts src/litellm-portal/router.test.tsx` (existing identity/SSR tests still green; if the happy-dom flake fires, isolated re-run).
+- [ ] **Step 5: Commit** `feat(litellm-portal): expose tenantRole/tenantTeamId on client identity`
+
+## Task 1 (REVISED Step 5): wire shell selection additively
+
+> Supersedes Task 1 Step 5. The standalone shell/routes/branding/i18n artifacts from the original Task 1 (commit 5d69f64) are sound and kept. This re-does ONLY the live wiring, additively, after Task 1.0.
+
+- [ ] At the existing `/` route (`indexRoute`/`UserView` in `router.tsx`), conditionally render `TenantPortalShell` (+ the tenant route subtree from `tenant-portal/routes.tsx`) vs the current `UserView`, based on the now-client-available `tenantRole`/`tenantTeamId` from RouterContext (Task 1.0): authenticated with tenant scope → Tenant Portal; pure Owner (admin, no tenantTeamId) → the Phase-2 notice variant (already built); preserve `UserView` only as the pure-Owner fallback body if desired, else the notice card. This is an **additive conditional at one route component** — do NOT remove `RootLayout`/the router chrome or rewrite `renderPortalSSR`. SSR renders the same component tree the client hydrates (the conditional is driven by the hydrated RouterContext identity → server and client agree → #418-safe).
+- [ ] Mount `createTenantPortalRoutes` under the appropriate parent so `/usage|/keys|/members|/alerts|/billing` resolve WITHOUT colliding with legacy `/manage/*` (which stays 301/functional). Verify no route-id collision (the original Task 1 left the factory unmounted precisely to avoid this — mount it now under the tenant branch only).
+- [ ] Tests: extend `router.test.tsx`/`index.test.ts` — `/` renders Tenant Portal shell for a tenant_admin identity, the Phase-2 notice for pure Owner, legacy `/manage/keys` still works. `bun run test` those + `shell.test.tsx`; `bun run typecheck`; `bun run build:litellm-portal` (commit regenerated app.generated.ts).
+- [ ] **Commit** `feat(litellm-portal): select Tenant Portal shell at / from client identity`
+
 ## Task 2: `/api/tenant/*` React-Query hooks
 
 **Files:** Create `cloud/src/litellm-portal/tenant-portal/hooks.ts`; Test `cloud/src/litellm-portal/tenant-portal/hooks.test.tsx`

@@ -214,6 +214,103 @@ const messages: Record<string, string> = {
 
   // Audit detail labels
   "原始数据": "原始数据",
+
+  // Tenant Portal shell nav
+  "概览": "概览",
+  "用量": "用量",
+  "API Key": "API Key",
+  "成员": "成员",
+  "账单": "账单",
+
+  // Tenant Portal Phase-2 owner notice
+  "运营控制台将在 Phase 2 提供": "运营控制台将在 Phase 2 提供",
+  "Operations Console arrives in Phase 2": "运营控制台将在 Phase 2 提供",
+  "管理控制台": "管理控制台",
+
+  // Tenant Portal route placeholders / member guard
+  "待实现": "待实现",
+  "无权访问": "无权访问",
+  "该页面仅对团队管理员开放。": "该页面仅对团队管理员开放。",
+
+  // TenantAlertsScreen
+  "告警 Webhook": "告警 Webhook",
+  "配置预算告警通知的 Webhook 地址。": "配置预算告警通知的 Webhook 地址。",
+  "更新 Webhook": "更新 Webhook",
+  "设置或清除告警 Webhook URL。客户端不校验 URL，服务端负责安全验证。":
+    "设置或清除告警 Webhook URL。客户端不校验 URL，服务端负责安全验证。",
+  "Webhook URL": "Webhook URL",
+  "仅接受 HTTPS 地址，服务端校验 SSRF 安全。": "仅接受 HTTPS 地址，服务端校验 SSRF 安全。",
+  "变更原因": "变更原因",
+  "常规维护": "常规维护",
+  "安全事件": "安全事件",
+  "用户申请": "用户申请",
+  "预算调整": "预算调整",
+  "其他": "其他",
+  "清除": "清除",
+  "保存": "保存",
+  "操作失败": "操作失败",
+  "保存失败": "保存失败",
+  "清除失败": "清除失败",
+  "当前 Webhook URL": "当前 Webhook URL",
+  "未配置告警 Webhook": "未配置告警 Webhook",
+  "Webhook 配置加载失败": "Webhook 配置加载失败",
+
+  // TenantBillingScreen
+  "账单下载": "账单下载",
+  "按账期下载团队 CSV 账单。服务端已按团队过滤，客户端不聚合数据。":
+    "按账期下载团队 CSV 账单。服务端已按团队过滤，客户端不聚合数据。",
+  "账期": "账期",
+  "下载": "下载",
+  "下载 ${period}": "下载 ${period}",
+  "账单列表加载失败": "账单列表加载失败",
+  "暂无账单": "暂无账单",
+  "下载失败": "下载失败",
+
+  // TenantOverviewScreen (net-new keys only; 团队/累计花费/高频模型 already defined above)
+  "暂无模型数据": "暂无模型数据",
+  "当前租户团队": "当前租户团队",
+  "个人花费": "个人花费",
+  "团队预算": "团队预算",
+  "已配置": "已配置",
+  "加载失败": "加载失败",
+  "次请求": "次请求",
+  "个模型": "个模型",
+
+  // TenantMembersScreen
+  "成员与邀请": "成员与邀请",
+  "管理团队成员的邀请状态。": "管理团队成员的邀请状态。",
+  "发送邀请": "发送邀请",
+  "邀请新成员加入当前团队。": "邀请新成员加入当前团队。",
+  "邀请列表加载失败": "邀请列表加载失败",
+  "暂无邀请记录": "暂无邀请记录",
+  "状态": "状态",
+  "撤销": "撤销",
+  "撤销邀请？": "撤销邀请？",
+  "将撤销「{email}」的邀请。此操作不可撤销。": "将撤销「{email}」的邀请。此操作不可撤销。",
+  "撤销失败": "撤销失败",
+  "输入邮箱确认": "输入邮箱确认",
+  "请输入「${email}」以确认撤销": "请输入「${email}」以确认撤销",
+  "确认撤销": "确认撤销",
+  "请输入邮箱": "请输入邮箱",
+  "邀请发送失败": "邀请发送失败",
+  "邀请": "邀请",
+  "管理员": "管理员",
+
+  // Tenant Portal shell aria labels
+  "租户品牌": "租户品牌",
+  "租户导航": "租户导航",
+
+  // TenantOverviewScreen — webhook unconfigured badge
+  "未配置": "未配置",
+
+  // TenantMembersScreen — invite status display labels
+  "待处理": "待处理",
+  "已使用": "已使用",
+  "已撤销": "已撤销",
+
+  // TenantMembersScreen — teamRole display labels
+  "成员角色：成员": "成员",
+  "成员角色：管理员": "管理员",
 };
 
 export default messages;

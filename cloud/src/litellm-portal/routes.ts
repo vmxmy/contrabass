@@ -672,6 +672,8 @@ const meApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get("/me", (c) 
       company: portalCompanyName(c.env),
       domain: identity.domain,
       role: identity.role,
+      tenantRole: identity.tenantRole,
+      tenantTeamId: identity.tenantTeamId,
     }),
   );
 });

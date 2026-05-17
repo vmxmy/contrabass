@@ -18,6 +18,8 @@ export const MeSchema = z.object({
   company: z.string(),
   domain: z.string(),
   role: z.enum(["admin", "user", "none"]),
+  tenantRole: z.enum(["tenant_admin", "member"]).nullable(),
+  tenantTeamId: z.string().nullable(),
 });
 
 export type Me = z.infer<typeof MeSchema>;
@@ -530,6 +532,16 @@ export const SetTenantRoleResultSchema = z.object({
 });
 
 export type SetTenantRoleResult = z.infer<typeof SetTenantRoleResultSchema>;
+
+// ---------------------------------------------------------------------------
+// /api/tenant/billing (and /api/admin/billing)
+// ---------------------------------------------------------------------------
+
+export const TenantBillingPeriodsSchema = z.object({
+  periods: z.array(z.string()),
+});
+
+export type TenantBillingPeriods = z.infer<typeof TenantBillingPeriodsSchema>;
 
 // ---------------------------------------------------------------------------
 // /api/_internal/role-changed

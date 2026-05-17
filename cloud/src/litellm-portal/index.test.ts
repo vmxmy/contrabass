@@ -1048,7 +1048,9 @@ describe("litellm portal worker", () => {
       const stub = {
         getUserByEmail: vi.fn(async (email: string) => {
           indexDOCalls++;
-          return email === "cached@gz-zhiyun.com" ? { role: "admin" as const } : null;
+          return email === "cached@gz-zhiyun.com"
+            ? { role: "admin" as const, userId: email, teamId: null }
+            : null;
         }),
       };
       const indexDO = {
@@ -1084,7 +1086,9 @@ describe("litellm portal worker", () => {
       const stub = {
         getUserByEmail: vi.fn(async (email: string) => {
           indexDOCalls++;
-          return email === "ttl@gz-zhiyun.com" ? { role: "admin" as const } : null;
+          return email === "ttl@gz-zhiyun.com"
+            ? { role: "admin" as const, userId: email, teamId: null }
+            : null;
         }),
       };
       const indexDO = {
@@ -1109,6 +1113,56 @@ describe("litellm portal worker", () => {
       expect(first.status).toBe(200);
       expect(second.status).toBe(200);
       expect(indexDOCalls).toBe(2);
+    });
+
+    it("returns tenantRole/tenantTeamId from the resolved identity", async () => {
+      // #given — IndexDO user record carries the tenant tuple + a tenant role
+      const stub = {
+        getUserByEmail: vi.fn(async (email: string) =>
+          email === "test@gz-zhiyun.com"
+            ? { role: "user" as const, userId: "lu-1", teamId: "t1" }
+            : null,
+        ),
+        getTenantRole: vi.fn(async (userId: string, teamId: string) =>
+          userId === "lu-1" && teamId === "t1"
+            ? { tenantRole: "tenant_admin" as const }
+            : null,
+        ),
+      };
+      const indexDO = {
+        idFromName: vi.fn(() => "idx-id" as unknown as DurableObjectId),
+        get: vi.fn(() => stub as unknown as DurableObjectStub),
+      } as unknown as DurableObjectNamespace;
+
+      // #when
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/me", "test@gz-zhiyun.com"),
+        portalEnv({ INDEX_DO: indexDO }),
+      );
+
+      // #then
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        email: "test@gz-zhiyun.com",
+        tenantRole: "tenant_admin",
+        tenantTeamId: "t1",
+      });
+    });
+
+    it("returns null tenantRole/tenantTeamId when identity has no tenant facet", async () => {
+      // #when — default IndexDO mock returns only { role }, no tenant tuple
+      const response = await handleLiteLLMPortalRequest(
+        devRequest("https://portal.test/api/me", "member@gz-zhiyun.com"),
+        portalEnv(),
+      );
+
+      // #then
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        email: "member@gz-zhiyun.com",
+        tenantRole: null,
+        tenantTeamId: null,
+      });
     });
   });
 
@@ -1240,7 +1294,9 @@ describe("litellm portal worker", () => {
       const stub = {
         getUserByEmail: vi.fn(async (email: string) => {
           indexDOCalls++;
-          return email === "admin@gz-zhiyun.com" ? { role: "admin" as const } : null;
+          return email === "admin@gz-zhiyun.com"
+            ? { role: "admin" as const, userId: email, teamId: null }
+            : null;
         }),
       };
       const indexDO = {
@@ -1952,7 +2008,12 @@ const DEFAULT_INDEX_DO_ROLES: Record<string, { role: "admin" | "user" }> = {
 
 function makeIndexDO(usersByEmail: Record<string, { role: "admin" | "user" } | null>): DurableObjectNamespace {
   const stub = {
-    getUserByEmail: vi.fn(async (email: string) => usersByEmail[email] ?? null),
+    // Honor the IndexDOStub contract: getUserByEmail yields the full
+    // { role, userId, teamId: string | null } record, never a partial.
+    getUserByEmail: vi.fn(async (email: string) => {
+      const rec = usersByEmail[email];
+      return rec == null ? null : { role: rec.role, userId: email, teamId: null };
+    }),
   };
   return {
     idFromName: vi.fn(() => "idx-id" as unknown as DurableObjectId),

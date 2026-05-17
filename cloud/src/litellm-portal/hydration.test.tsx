@@ -18,6 +18,7 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "@lingui/react";
 import { RouterProvider } from "@tanstack/react-router";
+import { QueryClient } from "@tanstack/react-query";
 import { renderPortalSSR } from "./server-impl";
 import { AppShell } from "./routes/__root";
 import { Shell } from "./shell";
@@ -56,6 +57,9 @@ function makeIdentity(role: PortalRole): PortalIdentity {
  * document WITHOUT a seeded query client — the client only has the
  * dehydrated state, exactly the production client condition.
  */
+type ReactRoot = { unmount: () => void };
+let activeRoot: ReactRoot | null = null;
+
 async function hydrateLikeClient(): Promise<void> {
   const { hydrateRoot } = await import("react-dom/client");
   const { title, nonce, shellInitialData, dehydratedState, role, initialTheme } = readClientHydrationState(document);
@@ -67,6 +71,21 @@ async function hydrateLikeClient(): Promise<void> {
   const history = createBrowserHistory();
   const router = createPortalRouter(history, { role });
 
+  // Fresh QueryClient per case. Production's client bootstrap (client.tsx)
+  // uses a module-level QueryClient singleton — correct for a browser, where
+  // one page load == one client that starts EMPTY and is then populated by
+  // <HydrationBoundary state={dehydratedState}>. This single test process
+  // runs many "page loads" against that one singleton, so without a fresh
+  // client per case the previous case's seeded ME_QUERY_KEY (its company
+  // name) leaks into the next case's first render — e.g. the unauthenticated
+  // case, whose SSR DOM has NO me, would hydrate against a stale me.company
+  // and report a spurious #418. A fresh empty client + the same
+  // HydrationBoundary is exactly the production first-load condition, per
+  // case, so the parity assertion stays faithful while cases stay isolated.
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { staleTime: 60_000, refetchOnWindowFocus: false } },
+  });
+
   // Mirror the fixed client bootstrap: resolve matches before hydrateRoot so
   // the client's first render matches the server's resolved subtree (React #418
   // root cause 1: without this the router renders Suspense null vs server <main>).
@@ -77,7 +96,7 @@ async function hydrateLikeClient(): Promise<void> {
   // in Base UI components is shifted by one level vs the server → id attribute
   // mismatches (React #418 root cause 2).
   await React.act(async () => {
-    hydrateRoot(
+    activeRoot = hydrateRoot(
       document,
       <I18nProvider i18n={i18n}>
         <Shell
@@ -87,12 +106,12 @@ async function hydrateLikeClient(): Promise<void> {
           initialTheme={initialTheme}
           locale={locale}
         >
-          <AppShell dehydratedState={dehydratedState}>
+          <AppShell dehydratedState={dehydratedState} queryClient={queryClient}>
             <RouterProvider router={router} />
           </AppShell>
         </Shell>
       </I18nProvider>,
-    );
+    ) as ReactRoot;
   });
   // Flush post-hydration effects.
   await new Promise((r) => setTimeout(r, 50));
@@ -104,7 +123,20 @@ async function hydrateLikeClient(): Promise<void> {
  * useId-bearing markup). Parsing the doctype+html string and adopting it
  * preserves the exact server DOM that hydrateRoot must match.
  */
-function loadSsrDocument(html: string): void {
+async function loadSsrDocument(html: string): Promise<void> {
+  // Detach the previous case's hydrated root before adopting the next SSR
+  // document so its post-hydration effects/router microtasks cannot fire
+  // against the new DOM. (QueryClient isolation between cases is handled by
+  // the per-case client in hydrateLikeClient — the production singleton is
+  // shared process-wide here, which is correct for one browser but not for a
+  // multi-"page-load" test process.)
+  if (activeRoot) {
+    await React.act(async () => {
+      activeRoot?.unmount();
+    });
+    activeRoot = null;
+  }
+
   const body = html.slice(html.indexOf("<html"));
   document.open();
   document.write(body);
@@ -141,7 +173,7 @@ describe("litellm-portal SSR hydration (#418 guard)", () => {
       "http://localhost/",
       "zh-CN",
     );
-    loadSsrDocument(html);
+    await loadSsrDocument(html);
 
     // The FOUC script may have resolved auto -> dark/light before hydration, but
     // the client Shell must still render the original server theme ("auto") so
@@ -173,7 +205,7 @@ describe("litellm-portal SSR hydration (#418 guard)", () => {
       );
       expect(html).toContain("<!doctype html>");
 
-      loadSsrDocument(html);
+      await loadSsrDocument(html);
       await hydrateLikeClient();
 
       const hydrationErrors = captured.filter(
@@ -191,6 +223,117 @@ describe("litellm-portal SSR hydration (#418 guard)", () => {
         );
         throw new Error(
           `React hydration mismatch (#418) for role=${role}:\n\n` +
+            hydrationErrors.join("\n--- next ---\n"),
+        );
+      }
+      expect(hydrationErrors).toEqual([]);
+    });
+  }
+
+  /**
+   * Phase 1 Task 1w shipped a new `/` host branch: `PortalIndex` selects
+   * `TenantPortalShell` (tenant_admin 6-item nav / member 3-item nav /
+   * pure-Owner Phase-2 notice) vs the legacy `UserView` from the hydrated
+   * `useMe()`. The pre-Task-1w role loop above only exercised the
+   * makeIdentity (null tenant fields) Owner/member-by-default branches; the
+   * shell variants and the unauthenticated→UserView path were NOT hydrate-
+   * tested. These cases extend the SAME SSR→hydrateRoot harness so a markup
+   * divergence in ANY of the four Task-1w `/` branches fails the #418 guard.
+   */
+  const TASK_1W_CASES: ReadonlyArray<{
+    name: string;
+    identity: PortalIdentity;
+    initialData: Parameters<typeof renderPortalSSR>[2];
+  }> = [
+    {
+      name: "tenant_admin full-nav shell at /",
+      identity: {
+        email: "a@x.com",
+        userId: "u1",
+        domain: "x.com",
+        litellmUserId: "u1",
+        role: "user",
+        tenantRole: "tenant_admin",
+        tenantTeamId: "t1",
+      },
+      initialData: { role: "user" } as unknown as Parameters<typeof renderPortalSSR>[2],
+    },
+    {
+      name: "member 3-item-nav shell at /",
+      identity: {
+        email: "m@x.com",
+        userId: "u2",
+        domain: "x.com",
+        litellmUserId: "u2",
+        role: "user",
+        tenantRole: "member",
+        tenantTeamId: "t1",
+      },
+      initialData: { role: "user" } as unknown as Parameters<typeof renderPortalSSR>[2],
+    },
+    {
+      name: "pure-Owner Phase-2 notice at /",
+      identity: {
+        email: "owner@x.com",
+        userId: "u3",
+        domain: "x.com",
+        litellmUserId: "u3",
+        role: "admin",
+        tenantRole: null,
+        tenantTeamId: null,
+      },
+      initialData: { role: "admin" } as unknown as Parameters<typeof renderPortalSSR>[2],
+    },
+    {
+      // Mirrors the index.ts unauthenticated request path exactly: empty
+      // identity + null initialData. server-impl.tsx skips seeding
+      // ME_QUERY_KEY (dataWithIdentity is null), so useMe() resolves
+      // undefined on BOTH server and client → PortalIndex renders legacy
+      // UserView (#usage-panel-root) on both sides.
+      name: "unauthenticated → legacy UserView at /",
+      identity: {
+        email: "",
+        userId: "",
+        domain: "",
+        litellmUserId: "",
+        role: "none",
+        tenantRole: null,
+        tenantTeamId: null,
+      },
+      initialData: null,
+    },
+  ];
+
+  for (const tc of TASK_1W_CASES) {
+    it(`server and client first render are identical: ${tc.name}`, async () => {
+      const html = await renderPortalSSR(
+        makeEnv(),
+        tc.identity,
+        tc.initialData,
+        "test-nonce",
+        "http://localhost/",
+        "zh-CN",
+      );
+      expect(html).toContain("<!doctype html>");
+
+      await loadSsrDocument(html);
+      await hydrateLikeClient();
+
+      const hydrationErrors = captured.filter(
+        (m) =>
+          /hydrat/i.test(m) ||
+          /did not match/i.test(m) ||
+          /server rendered|client/i.test(m) && /server/i.test(m) ||
+          /Text content does not match/i.test(m),
+      );
+
+      if (hydrationErrors.length > 0) {
+        require("node:fs").writeFileSync(
+          `/tmp/h2-task1w-${tc.name.replace(/\W+/g, "-")}.txt`,
+          hydrationErrors.join("\n--- next ---\n"),
+        );
+        throw new Error(
+          `React hydration mismatch (#418) for "${tc.name}":\n\n` +
             hydrationErrors.join("\n--- next ---\n"),
         );
       }

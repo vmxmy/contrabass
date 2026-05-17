@@ -214,6 +214,104 @@ const messages: Record<string, string> = {
 
   // Audit detail labels
   "原始数据": "Raw data",
+
+  // Tenant Portal shell nav
+  "概览": "Overview",
+  "用量": "Usage",
+  "API Key": "API Key",
+  "成员": "Members",
+  "账单": "Billing",
+
+  // Tenant Portal Phase-2 owner notice
+  "运营控制台将在 Phase 2 提供": "Operations Console arrives in Phase 2",
+  // English source string used in the <Trans> macro (zh-CN.ts maps it back) — not a dupe, keep both.
+  "Operations Console arrives in Phase 2": "Operations Console arrives in Phase 2",
+  "管理控制台": "Operations Console",
+
+  // Tenant Portal route placeholders / member guard
+  "待实现": "Coming soon",
+  "无权访问": "No access",
+  "该页面仅对团队管理员开放。": "This page is available to team admins only.",
+
+  // TenantAlertsScreen
+  "告警 Webhook": "Alert Webhook",
+  "配置预算告警通知的 Webhook 地址。": "Configure the Webhook URL for budget alert notifications.",
+  "更新 Webhook": "Update Webhook",
+  "设置或清除告警 Webhook URL。客户端不校验 URL，服务端负责安全验证。":
+    "Set or clear the alert Webhook URL. The client does not validate the URL — the server is the security boundary.",
+  "Webhook URL": "Webhook URL",
+  "仅接受 HTTPS 地址，服务端校验 SSRF 安全。": "HTTPS only. Server-side SSRF safety check applies.",
+  "变更原因": "Reason",
+  "常规维护": "Routine maintenance",
+  "安全事件": "Security incident",
+  "用户申请": "User request",
+  "预算调整": "Budget adjustment",
+  "其他": "Other",
+  "清除": "Clear",
+  "保存": "Save",
+  "操作失败": "Operation failed",
+  "保存失败": "Save failed",
+  "清除失败": "Clear failed",
+  "当前 Webhook URL": "Current Webhook URL",
+  "未配置告警 Webhook": "No alert Webhook configured",
+  "Webhook 配置加载失败": "Failed to load Webhook config",
+
+  // TenantBillingScreen
+  "账单下载": "Billing Download",
+  "按账期下载团队 CSV 账单。服务端已按团队过滤，客户端不聚合数据。":
+    "Download team CSV billing by period. The server filters by team — the client does not aggregate data.",
+  "账期": "Billing period",
+  "下载": "Download",
+  "下载 ${period}": "Download ${period}",
+  "账单列表加载失败": "Failed to load billing periods",
+  "暂无账单": "No billing periods",
+  "下载失败": "Download failed",
+
+  // TenantOverviewScreen (net-new keys only; 团队/累计花费/高频模型 already defined above)
+  "暂无模型数据": "No model data",
+  "当前租户团队": "Current tenant team",
+  "个人花费": "Personal spend",
+  "团队预算": "Team budget",
+  "已配置": "Configured",
+  "加载失败": "Load failed",
+  "次请求": "requests",
+  "个模型": "models",
+
+  // TenantMembersScreen
+  "成员与邀请": "Members & Invites",
+  "管理团队成员的邀请状态。": "Manage team member invite statuses.",
+  "发送邀请": "Send Invite",
+  "邀请新成员加入当前团队。": "Invite a new member to the current team.",
+  "邀请列表加载失败": "Failed to load invites",
+  "暂无邀请记录": "No invites yet",
+  "状态": "Status",
+  "撤销": "Revoke",
+  "撤销邀请？": "Revoke invite?",
+  "将撤销「{email}」的邀请。此操作不可撤销。": "The invite for \"{email}\" will be revoked. This action cannot be undone.",
+  "撤销失败": "Revoke failed",
+  "输入邮箱确认": "Type email to confirm",
+  "请输入「${email}」以确认撤销": "Enter \"${email}\" to confirm revocation",
+  "确认撤销": "Confirm revoke",
+  "请输入邮箱": "Please enter an email",
+  "邀请发送失败": "Failed to send invite",
+  "邀请": "Invite",
+  "管理员": "Admin",
+
+  // Tenant Portal shell aria labels
+  "租户品牌": "Tenant brand",
+  "租户导航": "Tenant navigation",
+
+  // TenantOverviewScreen — webhook unconfigured badge
+  "未配置": "Not configured",
+
+  // TenantMembersScreen — invite status display labels
+  "待处理": "Pending",
+  "已使用": "Accepted",
+  "已撤销": "Revoked",
+
+  // TenantMembersScreen — teamRole display labels
+  "成员角色：成员": "Member",
+  "成员角色：管理员": "Admin",
 };
 
 export default messages;
