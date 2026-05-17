@@ -494,6 +494,29 @@ Both shells render one shared `components/side-nav.tsx`; structure is identical,
 - **Focus:** the shared `FOCUS_RING`.
 - **Density:** Tenant chrome = comfortable; Ops chrome = compact (shell `DensityProvider`). Hairline is `border-kumo-line` everywhere (the old `border-kumo-default` mis-token is normalized).
 
+## State Language (Phase 3 §B.3)
+
+| Element | rest | hover | active/current | focus-visible |
+|---|---|---|---|---|
+| Nav item | `text-kumo-default` | `bg-kumo-tint text-kumo-strong` | 2px accent bar + `bg-kumo-tint` + `text-kumo-strong` + `aria-current` | `FOCUS_RING` |
+| Clickable card/row | `bg-kumo-base` | `bg-kumo-tint` | `ring-2` shell accent | `FOCUS_RING` |
+| Primary panel header | neutral elevated | — | `border-l-2 border-kumo-brand` (shell accent) | — |
+| Primary CTA (Button primary) | Kumo default (`--kumo-brand`) | `--kumo-brand-hover` | — | Kumo default |
+
+Shell accent = `--kumo-brand`: Tenant = tenant brand (§C); Ops = fixed steel (`OPS_STEEL_ACCENT`, unchanged).
+
+## Motion (Phase 3 §B.4)
+
+Restrained, only at high-impact moments, all reduced-motion safe (every motion class is `motion-safe:`-gated; `prefers-reduced-motion: reduce` drops to the end state instantly).
+
+**Allowed (exhaustive — anything else is a violation):**
+- Route enter: main content `transition-opacity` ≤ 150ms (no custom keyframes).
+- Nav active accent bar: `transition-all` ≤ 150ms (bar slides between items).
+- Hover background: `transition-colors` ≤ 100ms.
+- Skeleton → content: cross-fade ≤ 120ms.
+
+**Forbidden:** parallax, autoplay, entrance stagger chains, decorative loops, elastic/overshoot easing, any transition > 200ms. Principle (mirrors the no-shadow rule): motion is a highlight, not an atmosphere.
+
 ## Do's and Don'ts
 
 ### Do

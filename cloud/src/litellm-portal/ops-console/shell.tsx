@@ -165,7 +165,7 @@ export function OpsConsoleShell({ identity, children }: OpsConsoleShellProps) {
             accent="steel"
             ariaLabel={t`运营导航`}
           />
-          <main className="min-w-0 flex-1 px-6 py-8">{children}</main>
+          <main className="min-w-0 flex-1 px-6 py-8 opacity-100 motion-safe:transition-opacity motion-safe:duration-150">{children}</main>
         </div>
       </DensityProvider>
     </div>

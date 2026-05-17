@@ -290,7 +290,7 @@ export function TenantPortalShell({ identity, brand, impersonation, children }: 
         {impersonation ? <ImpersonationBanner imp={impersonation} /> : null}
         <BrandSummaryBar brand={brand} />
         {owner ? (
-          <main className="mx-auto w-full max-w-5xl px-6 py-10">
+          <main className="mx-auto w-full max-w-5xl px-6 py-10 opacity-100 motion-safe:transition-opacity motion-safe:duration-150">
             <OwnerPhase2Notice />
             {children}
           </main>
@@ -310,7 +310,7 @@ export function TenantPortalShell({ identity, brand, impersonation, children }: 
                 ariaLabel={t`租户导航`}
               />
             )}
-            <main className="min-w-0 flex-1 px-6 py-8">{children}</main>
+            <main className="min-w-0 flex-1 px-6 py-8 opacity-100 motion-safe:transition-opacity motion-safe:duration-150">{children}</main>
           </div>
         )}
       </DensityProvider>
