@@ -125,11 +125,6 @@ async function resolveRoleAndUserId(
       tenantUserId = user.userId;
       tenantTeamId = user.teamId;
     }
-  } else if (env.BOOTSTRAP_ADMIN_EMAILS) {
-    const admins = new Set(
-      env.BOOTSTRAP_ADMIN_EMAILS.split(",").map((e) => e.trim().toLowerCase()).filter((e) => e.length > 0),
-    );
-    if (admins.has(key)) role = "admin";
   }
   const litellmUserId = await resolveLitellmUserId(env, key);
   const tenantRole = await resolveTenantRole(env, tenantUserId, tenantTeamId);
