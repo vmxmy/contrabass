@@ -24,6 +24,7 @@ describe("litellm portal worker", () => {
     expect(html).toContain("<!doctype html>");
     expect(html).toContain('<div id="root">');
     expect(html).toContain("<title>智云AI管理平台</title>");
+    expect(html).toContain(">智云AI管理平台</h1>");
     expect(html).toContain("面向智云团队的 AI 能力自助台");
     expect(html).toContain('id="header-actions-root"');
     expect(html).toContain('id="portal-error-root"');
