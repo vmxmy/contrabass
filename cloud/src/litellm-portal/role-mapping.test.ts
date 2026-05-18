@@ -1,47 +1,54 @@
 import { describe, expect, it } from "vitest";
-import { mapLiteLLMRole } from "./role-mapping";
+import { mapLiteLLMRole, litellmRoleToTier } from "./role-mapping";
+
+describe("litellmRoleToTier — LiteLLM single source of truth, pure fail-closed", () => {
+  it("proxy_admin → admin", () => {
+    expect(litellmRoleToTier("proxy_admin")).toBe("admin");
+  });
+  it("proxy_admin_viewer → admin_viewer (read-only owner, no escalation)", () => {
+    expect(litellmRoleToTier("proxy_admin_viewer")).toBe("admin_viewer");
+  });
+  it("internal_user → user", () => {
+    expect(litellmRoleToTier("internal_user")).toBe("user");
+  });
+  it("any other non-empty LiteLLM role → user", () => {
+    expect(litellmRoleToTier("internal_user_viewer")).toBe("user");
+    expect(litellmRoleToTier("something_new")).toBe("user");
+  });
+  it("null → none (fail-closed: LiteLLM unreachable/unmapped grants nothing)", () => {
+    expect(litellmRoleToTier(null)).toBe("none");
+  });
+  it("empty/whitespace → none", () => {
+    expect(litellmRoleToTier("")).toBe("none");
+    expect(litellmRoleToTier("   ")).toBe("none");
+  });
+});
 
 describe("mapLiteLLMRole", () => {
-  it("proxy_admin → admin", () => {
-    expect(mapLiteLLMRole({ indexRole: "none", litellmRole: "proxy_admin", litellmTeamIds: [] }).role).toBe("admin");
+  it("role is purely litellmRoleToTier(litellmRole) — no IndexDO input", () => {
+    expect(mapLiteLLMRole({ litellmRole: "proxy_admin", litellmTeamIds: [] }).role).toBe("admin");
+    expect(mapLiteLLMRole({ litellmRole: "proxy_admin_viewer", litellmTeamIds: [] }).role).toBe("admin_viewer");
+    expect(mapLiteLLMRole({ litellmRole: "internal_user", litellmTeamIds: [] }).role).toBe("user");
+    expect(mapLiteLLMRole({ litellmRole: null, litellmTeamIds: [] }).role).toBe("none");
   });
-  it("proxy_admin_viewer is NOT owner — falls through to IndexDO role (escalation guard)", () => {
-    expect(mapLiteLLMRole({ indexRole: "none", litellmRole: "proxy_admin_viewer", litellmTeamIds: [] }).role).toBe("none");
-  });
-  it("proxy_admin_viewer NEVER yields admin even when IndexDO says user (escalation guard)", () => {
-    expect(mapLiteLLMRole({ indexRole: "user", litellmRole: "proxy_admin_viewer", litellmTeamIds: [] }).role).toBe("user");
-  });
-  it("poisoned IndexDO admin + proxy_admin_viewer litellm role → user (stale-state escalation guard)", () => {
-    expect(mapLiteLLMRole({ indexRole: "admin", litellmRole: "proxy_admin_viewer", litellmTeamIds: [] }).role).toBe("user");
-  });
-  it("poisoned IndexDO admin + internal_user litellm role → user (any known non-owner role capped)", () => {
-    expect(mapLiteLLMRole({ indexRole: "admin", litellmRole: "internal_user", litellmTeamIds: [] }).role).toBe("user");
-  });
-  it("bootstrap admin: IndexDO admin + null litellm role keeps admin (non-regression)", () => {
-    expect(mapLiteLLMRole({ indexRole: "admin", litellmRole: null, litellmTeamIds: [] }).role).toBe("admin");
-  });
-  it("normal user with no litellm role keeps IndexDO role", () => {
-    expect(mapLiteLLMRole({ indexRole: "user", litellmRole: null, litellmTeamIds: [] }).role).toBe("user");
-  });
-  it("unknown litellm role keeps IndexDO role", () => {
-    expect(mapLiteLLMRole({ indexRole: "user", litellmRole: "internal_user", litellmTeamIds: [] }).role).toBe("user");
-  });
-  it("none IndexDO + no litellm role stays none", () => {
-    expect(mapLiteLLMRole({ indexRole: "none", litellmRole: null, litellmTeamIds: [] }).role).toBe("none");
-  });
-  it("IndexDO teamId wins over LiteLLM teams[0]", () => {
+  it("tenant facet: IndexDO invite teamId wins over LiteLLM teams[0]", () => {
     const r = mapLiteLLMRole({
-      indexRole: "user", litellmRole: null, litellmTeamIds: ["llm-team-a", "llm-team-b"],
+      litellmRole: null,
+      litellmTeamIds: ["llm-team-a", "llm-team-b"],
       indexTeamId: "idx-team-x",
     });
     expect(r.tenantTeamId).toBe("idx-team-x");
   });
-  it("falls back to LiteLLM teams[0] when IndexDO has no teamId", () => {
+  it("tenant facet: falls back to LiteLLM teams[0] when no IndexDO teamId", () => {
     const r = mapLiteLLMRole({
-      indexRole: "user", litellmRole: "proxy_admin_viewer",
-      litellmTeamIds: ["ea0e8075", "1255c10b"], indexTeamId: null,
+      litellmRole: "proxy_admin_viewer",
+      litellmTeamIds: ["ea0e8075", "1255c10b"],
+      indexTeamId: null,
     });
     expect(r.tenantTeamId).toBe("ea0e8075");
-    expect(r.role).toBe("user");
+    expect(r.role).toBe("admin_viewer");
+  });
+  it("tenant facet: null when neither source has a team", () => {
+    expect(mapLiteLLMRole({ litellmRole: "proxy_admin", litellmTeamIds: [] }).tenantTeamId).toBeNull();
   });
 });

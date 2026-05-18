@@ -94,7 +94,8 @@ function GlobalUserDetails() {
 export function UsageDashboard({ initialScope, initialWindow }: UsageDashboardProps = {}) {
   const { data: me } = useMe();
   const { data: preferences } = usePreferences();
-  const isAdmin = me?.role === "admin";
+  // admin_viewer is a global read-only owner: may view the global usage scope.
+  const isAdmin = me?.role === "admin" || me?.role === "admin_viewer";
   const [scope, setScope] = useState<DashboardScopeValue>(() => initialScope ?? "self");
   const [win, setWin] = useState<DashboardWindow>(() => initialWindow ?? "30d");
   const [appliedDefaults, setAppliedDefaults] = useState(false);

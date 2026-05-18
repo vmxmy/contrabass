@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { app } from "./routes";
 import { issueSession, SESSION_COOKIE_NAME } from "./auth/session";
 import { _clearRoleCacheForTests } from "./roles";
+import * as litellm from "./litellm";
 import type { LiteLLMPortalEnv } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -279,6 +280,30 @@ async function tenantRequest(
 // Setup / teardown
 // ---------------------------------------------------------------------------
 
+// Platform role is LiteLLM-single-source: the admin actor must resolve as
+// proxy_admin via LiteLLM (IndexDO role is no longer consulted for authz).
+// ONLY ADMIN_EMAIL is short-circuited; every other email delegates to the real
+// resolveLiteLLMUser so the tenant tests' mocked global fetch still drives
+// teamIds (and the non-admin paths still fail-closed to none → 403).
+beforeEach(async () => {
+  const actual = await vi.importActual<typeof import("./litellm")>("./litellm");
+  vi.spyOn(litellm, "resolveLiteLLMUser").mockImplementation(async (env, email) => {
+    if (email.toLowerCase() === ADMIN_EMAIL) {
+      return {
+        userId: ADMIN_EMAIL,
+        email: ADMIN_EMAIL,
+        spend: null,
+        maxBudget: null,
+        teamIds: [],
+        role: "proxy_admin",
+        found: true,
+        raw: null,
+      };
+    }
+    return actual.resolveLiteLLMUser(env, email);
+  });
+});
+
 afterEach(() => {
   _clearRoleCacheForTests();
   vi.restoreAllMocks();
@@ -313,10 +338,10 @@ describe("DO-path admin routes", () => {
       expect(team1?.lastSyncError).toBeNull();
     });
 
-    it("returns 403 when INDEX_DO binding is missing (role resolves to none)", async () => {
-      // When INDEX_DO is absent, getRoleViaIndexDO returns "none" for every user
-      // (including the session-cookie holder), so requireAdmin fires 403 before the
-      // route handler's own INDEX_DO guard is reached.
+    it("authz is INDEX_DO-independent: admin (LiteLLM proxy_admin) is NOT 403'd when INDEX_DO is missing", async () => {
+      // Single-source: platform role comes from LiteLLM, not IndexDO. INDEX_DO
+      // absence is now a data/runtime concern, not an authorization one — the
+      // admin still authorizes and the handler hits its own INDEX_DO guard.
       const teamStub = makeTeamConfigDOStub();
       const env = makeFlagOnEnv(makeIndexDOStub(), teamStub, { INDEX_DO: undefined });
 
@@ -325,9 +350,9 @@ describe("DO-path admin routes", () => {
         env,
       );
 
-      expect(res.status).toBe(403);
+      expect(res.status).not.toBe(403);
       const data = await res.json() as Record<string, unknown>;
-      expect(data.error).toBe("admin_required");
+      expect(data.error).not.toBe("admin_required");
     });
 
     it("returns 401 without a valid session cookie", async () => {
@@ -548,10 +573,10 @@ describe("DO-path admin routes", () => {
       expect(putArg.maxBudget).toBe(200);
     });
 
-    it("returns 403 when INDEX_DO binding is missing (role resolves to none)", async () => {
-      // INDEX_DO is used for both role resolution and the write handler.
-      // When the binding is absent, getRoleViaIndexDO returns "none" so
-      // requireAdmin blocks at 403 before the handler's own 503 guard fires.
+    it("authz is INDEX_DO-independent: admin write is NOT 403'd when INDEX_DO is missing (handler 5xx instead)", async () => {
+      // Single-source: the admin authorizes via LiteLLM regardless of INDEX_DO.
+      // The write handler then fails on its own missing-INDEX_DO path (5xx) —
+      // no longer a 403 admin_required from the role layer.
       const teamStub = makeTeamConfigDOStub();
       const env = makeFlagOnEnv(makeIndexDOStub(), teamStub, { INDEX_DO: undefined });
 
@@ -563,9 +588,10 @@ describe("DO-path admin routes", () => {
         env,
       );
 
-      expect(res.status).toBe(403);
+      expect(res.status).not.toBe(403);
+      expect(res.status).toBeGreaterThanOrEqual(500);
       const data = await res.json() as Record<string, unknown>;
-      expect(data.error).toBe("admin_required");
+      expect(data.error).not.toBe("admin_required");
     });
 
     it("returns 404 when user does not exist in IndexDO", async () => {
@@ -1264,7 +1290,9 @@ describe("DO-path admin routes", () => {
       expect(res.status).toBe(401);
     });
 
-    it("GET /api/admin/billing/:yearMonth returns 403 when INDEX_DO is missing", async () => {
+    it("authz is INDEX_DO-independent: admin billing read is NOT 403'd when INDEX_DO is missing", async () => {
+      // Single-source: role from LiteLLM, not IndexDO. The admin authorizes;
+      // INDEX_DO absence is no longer an authorization rejection.
       const env = makeFlagOnEnv(makeIndexDOStub(), makeTeamConfigDOStub(), {
         INDEX_DO: undefined,
         BILLING_ARCHIVE_R2: makeR2() as unknown as R2Bucket,
@@ -1275,8 +1303,8 @@ describe("DO-path admin routes", () => {
         env,
       );
 
-      expect(res.status).toBe(403);
-      expect((await res.json() as Record<string, unknown>).error).toBe("admin_required");
+      expect(res.status).not.toBe(403);
+      expect((await res.json() as Record<string, unknown>).error).not.toBe("admin_required");
     });
   });
 });

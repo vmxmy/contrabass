@@ -121,6 +121,9 @@ export function AccountCell({ email, userId }: { email: string | null | undefine
 function RoleBadge({ role }: { role: string | null | undefined }) {
   if (role == null || role === "") return <span className="text-kumo-subtle">—</span>;
   const lower = role.toLowerCase();
+  if (lower.includes("viewer")) {
+    return <Badge variant="warning">{role}（只读）</Badge>;
+  }
   if (lower.includes("admin") || lower === "proxy_admin") {
     return <Badge variant="danger">{role}</Badge>;
   }
@@ -201,7 +204,7 @@ export function TopModelsPanel({ data, loading }: { data: UsageTimeseries | null
   );
 }
 
-type PortalRole = "admin" | "user" | "none";
+type PortalRole = "admin" | "admin_viewer" | "user" | "none";
 
 
 
@@ -484,7 +487,9 @@ export function AdminCard({ title, children }: { title: string; children: React.
 }
 
 export function AdminSection({ role }: { role: PortalRole }) {
-  if (role !== "admin") return null;
+  // Read-only panel (already non-mutating by design) — both full admin and
+  // read-only admin_viewer may see it.
+  if (role !== "admin" && role !== "admin_viewer") return null;
 
   return (
     <section className="space-y-8" aria-label="全局管理（只读）">

@@ -48,19 +48,24 @@ const FULL_NAV: NavItem[] = [OVERVIEW, USAGE, API_KEY, MEMBERS, BUDGET, BILLING]
  * Identity → nav resolution per the Phase 1 Minimal decision.
  *
  * - `tenant_admin` (own team) → full 6-item nav.
- * - platform admin (`role === "admin"`) WITH a `tenantTeamId` → full nav too
- *   (an Owner who also belongs to a team manages that team here).
+ * - platform admin / admin_viewer WITH a `tenantTeamId` → full nav too (an
+ *   Owner who also belongs to a team manages/views that team here;
+ *   admin_viewer is read-only — server denies any tenant write).
  * - `member` → Overview / Usage / API Key only.
- * - pure Owner (`role === "admin"` WITHOUT a `tenantTeamId`) → no tenant nav;
+ * - pure Owner (admin/admin_viewer WITHOUT a `tenantTeamId`) → no tenant nav;
  *   a non-blocking Phase-2 notice + a working /manage legacy link instead.
  */
+function isOwnerTier(identity: PortalIdentity): boolean {
+  return identity.role === "admin" || identity.role === "admin_viewer";
+}
+
 function isPureOwner(identity: PortalIdentity): boolean {
-  return identity.role === "admin" && identity.tenantTeamId === null && identity.tenantRole === null;
+  return isOwnerTier(identity) && identity.tenantTeamId === null && identity.tenantRole === null;
 }
 
 function resolveNav(identity: PortalIdentity): NavItem[] {
   if (identity.tenantRole === "tenant_admin") return FULL_NAV;
-  if (identity.role === "admin" && identity.tenantTeamId !== null) return FULL_NAV;
+  if (isOwnerTier(identity) && identity.tenantTeamId !== null) return FULL_NAV;
   if (identity.tenantRole === "member") return MEMBER_NAV;
   // Least-privilege default for a null/unrecognised tenantRole (valid case: a
   // user not yet assigned to a team).

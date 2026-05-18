@@ -35,13 +35,15 @@ function byHref(href: string): OpsNavItem {
 }
 
 /**
- * Owner gate. The Operations Console is platform-internal and only visible to
- * a platform Owner (`role === "admin"`). Tenant-scoped roles never see the
- * nav — they get the forbidden card with a link back to `/`. The real
- * enforcement is the server-side Owner guard; this is the client-side surface.
+ * Owner gate. The Operations Console is platform-internal, visible to a
+ * platform Owner (`role === "admin"`) and read-only Owner
+ * (`role === "admin_viewer"`). Tenant-scoped roles never see the nav — they
+ * get the forbidden card with a link back to `/`. The real enforcement is the
+ * server-side Owner guard (admin_viewer writes are denied centrally); this is
+ * the client-side surface.
  */
 function isOwner(identity: PortalIdentity): boolean {
-  return identity.role === "admin";
+  return identity.role === "admin" || identity.role === "admin_viewer";
 }
 
 function OpsForbiddenCard() {
