@@ -1,0 +1,18 @@
+[
+  "app.tsx",
+  "app/create-key-button.tsx",
+  "app/keys-card.tsx",
+  "dashboard/panels/alert-panel.tsx",
+  "dashboard/panels/kpi-band.tsx",
+  "dashboard/views/member-overlay.tsx",
+  "ops-console/screens/audit.tsx",
+  "ops-console/screens/platform-settings.tsx",
+  "ops-console/screens/provisioning.tsx",
+  "ops-console/screens/tenant-detail.tsx",
+  "ops-console/screens/tenant-overview.tsx",
+  "ops-console/screens/user-detail.tsx",
+  "tenant-portal/screens/alerts.tsx",
+  "tenant-portal/screens/billing.tsx",
+  "tenant-portal/screens/members.tsx",
+  "tenant-portal/screens/overview.tsx"
+]
