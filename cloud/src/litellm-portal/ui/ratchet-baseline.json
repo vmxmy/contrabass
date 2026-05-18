@@ -2,7 +2,6 @@
   "app.tsx",
   "app/create-key-button.tsx",
   "app/keys-card.tsx",
-  "dashboard/panels/kpi-band.tsx",
   "dashboard/views/member-overlay.tsx",
   "ops-console/screens/audit.tsx",
   "ops-console/screens/platform-settings.tsx",
