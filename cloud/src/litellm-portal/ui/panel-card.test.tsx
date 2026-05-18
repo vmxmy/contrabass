@@ -62,3 +62,39 @@ describe("PanelCard — frame & header", () => {
     expect(card.className).not.toMatch(/(^|\s)mb-\d/);
   });
 });
+
+describe("PanelCard — density-driven body padding (S4)", () => {
+  it("uses comfortable padding p-6 by default (no DensityProvider)", () => {
+    const { container } = wrap(<PanelCard title="t">b</PanelCard>);
+    const body = container.querySelector(
+      "[data-panel-card-body]",
+    ) as HTMLElement;
+    expect(body.className).toContain("p-6");
+  });
+
+  it("uses compact padding p-4 under DensityProvider density=compact", () => {
+    const { container } = wrap(
+      <DensityProvider density="compact">
+        <PanelCard title="t">b</PanelCard>
+      </DensityProvider>,
+    );
+    const body = container.querySelector(
+      "[data-panel-card-body]",
+    ) as HTMLElement;
+    expect(body.className).toContain("p-4");
+    expect(body.className).not.toContain("p-6");
+  });
+
+  it("applies NO body padding class when padded={false}", () => {
+    const { container } = wrap(
+      <PanelCard title="t" padded={false}>
+        b
+      </PanelCard>,
+    );
+    const body = container.querySelector(
+      "[data-panel-card-body]",
+    ) as HTMLElement;
+    expect(body.className).not.toContain("p-6");
+    expect(body.className).not.toContain("p-4");
+  });
+});
