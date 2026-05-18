@@ -10,6 +10,7 @@ import { useStopImpersonation } from "../ops-console/hooks";
 import type { PortalIdentity } from "../types";
 import { DensityProvider, resolveDensity } from "../components/density";
 import { SideNav, type SideNavGroup, type SideNavItem } from "../components/side-nav";
+import { PageShell } from "../ui";
 import { useDashboard } from "../hooks/use-dashboard";
 import { usePreferences } from "../hooks/use-preferences";
 import { useTenantWebhook } from "./hooks";
@@ -289,22 +290,32 @@ export function TenantPortalShell({ identity, brand, impersonation, children }: 
   const hydrated = useHasHydrated();
 
   return (
-    <div
-      id="tenant-portal-shell-root"
-      className="flex min-h-screen flex-col bg-kumo-canvas text-kumo-default"
-      style={applyBrandVars(brand)}
-    >
-      <DensityProvider density={resolveDensity(densityPref, "comfortable")}>
-        {impersonation ? <ImpersonationBanner imp={impersonation} /> : null}
-        <BrandSummaryBar brand={brand} />
-        {owner ? (
+    <DensityProvider density={resolveDensity(densityPref, "comfortable")}>
+      {owner ? (
+        <div
+          id="tenant-portal-shell-root"
+          className="flex min-h-screen flex-col bg-kumo-canvas text-kumo-default"
+          style={applyBrandVars(brand)}
+        >
+          {impersonation ? <ImpersonationBanner imp={impersonation} /> : null}
+          <BrandSummaryBar brand={brand} />
           <main className="mx-auto w-full max-w-5xl px-6 py-10 opacity-100 motion-safe:transition-opacity motion-safe:duration-150">
             <OwnerOpsEntry />
             {children}
           </main>
-        ) : (
-          <div className="flex flex-1">
-            {hydrated ? (
+        </div>
+      ) : (
+        <PageShell
+          id="tenant-portal-shell-root"
+          style={applyBrandVars(brand)}
+          preHeader={
+            <>
+              {impersonation ? <ImpersonationBanner imp={impersonation} /> : null}
+              <BrandSummaryBar brand={brand} />
+            </>
+          }
+          nav={
+            hydrated ? (
               <SideNav
                 groups={navGroups}
                 currentPath={pathname}
@@ -317,11 +328,12 @@ export function TenantPortalShell({ identity, brand, impersonation, children }: 
                 currentPath={pathname}
                 ariaLabel={t`租户导航`}
               />
-            )}
-            <main className="min-w-0 flex-1 px-6 py-8 opacity-100 motion-safe:transition-opacity motion-safe:duration-150">{children}</main>
-          </div>
-        )}
-      </DensityProvider>
-    </div>
+            )
+          }
+        >
+          {children}
+        </PageShell>
+      )}
+    </DensityProvider>
   );
 }

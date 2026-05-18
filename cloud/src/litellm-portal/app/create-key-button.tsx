@@ -7,7 +7,6 @@ import { Field } from "@cloudflare/kumo/components/field";
 import { Input } from "@cloudflare/kumo/components/input";
 import { Select } from "@cloudflare/kumo/components/select";
 import { SensitiveInput } from "@cloudflare/kumo/components/sensitive-input";
-import { Surface } from "@cloudflare/kumo/components/surface";
 import { Text } from "@cloudflare/kumo/components/text";
 import { useToast } from "../hooks/use-toast";
 import { useCreateKey } from "../hooks/use-create-key";
@@ -19,6 +18,7 @@ import {
   NEVER_EXPIRES_VALUE,
   DURATION_OPTIONS,
 } from "./utils";
+import { PanelCard } from "../ui";
 
 export type CreateKeyResult = {
   rawKey: string;
@@ -123,7 +123,7 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
               description="关闭此对话框后将无法再次查看完整 Key。"
             />
 
-            <Surface className="rounded-xl p-5 ring-1 ring-kumo-line">
+            <PanelCard>
               <div className="space-y-1">
                 <Text variant="secondary" size="xs" className="font-semibold uppercase tracking-wider">Key 名称</Text>
                 <Text variant="heading3" as="p">{result.keyAlias || "—"}</Text>
@@ -142,7 +142,7 @@ export function CreateKeyButton({ onRefresh }: { onRefresh?: () => void } = {}) 
                   <Text variant="mono" as="p">{result.expires}</Text>
                 </div>
               ) : null}
-            </Surface>
+            </PanelCard>
 
             <div className="flex justify-end">
               <Dialog.Close

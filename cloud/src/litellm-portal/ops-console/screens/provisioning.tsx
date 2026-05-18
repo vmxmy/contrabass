@@ -19,6 +19,7 @@ import {
   useOpsSetTenantRole,
 } from "../hooks";
 import { PanelError } from "../../components/panel-state";
+import { PanelCard } from "../../ui";
 
 const REASON = "ops_provisioning";
 
@@ -53,13 +54,11 @@ function CreateTeamForm() {
   }, [alias, createTeam]);
 
   return (
-    <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-      <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-        <Text variant="heading3" as="p"><Trans>创建团队</Trans></Text>
-        <Text variant="secondary" as="p">
-          <Trans>为新租户创建一个团队。</Trans>
-        </Text>
-      </div>
+    <PanelCard
+      title={t`创建团队`}
+      subtitle={t`为新租户创建一个团队。`}
+      padded={false}
+    >
       <div className="space-y-5 p-6">
         {error ? (
           <PanelError title={t`创建团队失败`} error={new Error(error)} />
@@ -86,7 +85,7 @@ function CreateTeamForm() {
           </Button>
         </div>
       </div>
-    </article>
+    </PanelCard>
   );
 }
 
@@ -126,13 +125,11 @@ function InviteForm() {
   }, [email, teamId, teamRole, createInvite]);
 
   return (
-    <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-      <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-        <Text variant="heading3" as="p"><Trans>发送邀请</Trans></Text>
-        <Text variant="secondary" as="p">
-          <Trans>邀请用户加入指定团队。</Trans>
-        </Text>
-      </div>
+    <PanelCard
+      title={t`发送邀请`}
+      subtitle={t`邀请用户加入指定团队。`}
+      padded={false}
+    >
       <div className="space-y-5 p-6">
         {error ? (
           <PanelError title={t`邀请发送失败`} error={new Error(error)} />
@@ -181,7 +178,7 @@ function InviteForm() {
           </Button>
         </div>
       </div>
-    </article>
+    </PanelCard>
   );
 }
 
@@ -221,13 +218,11 @@ function TenantRoleForm() {
   }, [teamId, userId, tenantRole, setRole]);
 
   return (
-    <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-      <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-        <Text variant="heading3" as="p"><Trans>指派租户角色</Trans></Text>
-        <Text variant="secondary" as="p">
-          <Trans>为团队成员指派租户管理员或成员角色。</Trans>
-        </Text>
-      </div>
+    <PanelCard
+      title={t`指派租户角色`}
+      subtitle={t`为团队成员指派租户管理员或成员角色。`}
+      padded={false}
+    >
       <div className="space-y-5 p-6">
         {error ? (
           <PanelError title={t`指派角色失败`} error={new Error(error)} />
@@ -277,7 +272,7 @@ function TenantRoleForm() {
           </Button>
         </div>
       </div>
-    </article>
+    </PanelCard>
   );
 }
 

@@ -12,6 +12,7 @@ import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
 import { useOpsPlatformSettings } from "../hooks";
 import { PanelSkeleton, PanelError } from "../../components/panel-state";
+import { PanelCard } from "../../ui";
 
 function PlatformSettingsBody() {
   const { data, isLoading, isError, error } = useOpsPlatformSettings();
@@ -54,15 +55,9 @@ function PlatformSettingsBody() {
 export function OpsPlatformSettingsScreen() {
   return (
     <div id="ops-platform-settings-root" className="space-y-6">
-      <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-        <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-          <Text variant="heading3" as="p"><Trans>平台设置</Trans></Text>
-          <Text variant="secondary" as="p">
-            <Trans>平台名称、写操作开关与相关管理入口。</Trans>
-          </Text>
-        </div>
+      <PanelCard title={t`平台设置`} subtitle={t`平台名称、写操作开关与相关管理入口。`} padded={false}>
         <PlatformSettingsBody />
-      </article>
+      </PanelCard>
     </div>
   );
 }

@@ -67,3 +67,34 @@ describe("SideNav (§B.1)", () => {
     expect(container.querySelectorAll("[data-nav-icon]").length).toBe(3);
   });
 });
+
+describe("SideNav responsive drawer (S1)", () => {
+  it("renders a mobile menu toggle button that is hidden on md+ and starts collapsed", () => {
+    renderNav("/");
+    const toggle = screen.getByRole("button", { name: "打开导航菜单" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.className).toContain("md:hidden");
+  });
+
+  it("toggles aria-expanded and the nav's translate state when clicked", async () => {
+    const { container } = renderNav("/");
+    const toggle = screen.getByRole("button", { name: "打开导航菜单" });
+    const nav = container.querySelector("nav") as HTMLElement;
+    expect(nav.className).toContain("-translate-x-full");
+    expect(nav.className).toContain("md:translate-x-0");
+    toggle.click();
+    expect(
+      screen.getByRole("button", { name: "关闭导航菜单" }).getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(nav.className).toContain("max-md:translate-x-0");
+  });
+
+  it("keeps every nav link/heading/icon in the DOM regardless of drawer state (desktop unaffected)", () => {
+    const { container } = renderNav("/usage");
+    // identical guarantees to the existing contract — proves no DOM removal
+    expect(screen.getByRole("link", { current: "page" }).getAttribute("href")).toBe("/usage");
+    expect(screen.getByText("我的")).toBeTruthy();
+    expect(container.querySelectorAll("[data-nav-icon]").length).toBe(3);
+    expect(screen.getByRole("link", { name: /概览/ })).toBeTruthy();
+  });
+});

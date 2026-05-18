@@ -1,5 +1,6 @@
 import React from "react";
 import { fmtCompact } from "../../lib/format";
+import { PanelCard } from "../../ui";
 
 type Metric = { current: number; previous: number | null; deltaPct: number | null };
 type Kpi = { spend: Metric; requests: Metric; totalTokens: Metric };
@@ -19,11 +20,11 @@ function Delta({ pct }: { pct: number | null }) {
 
 function Card({ label, value, pct }: { label: string; value: string; pct: number | null }) {
   return (
-    <div className="rounded-xl border border-kumo-line bg-kumo-base p-5">
+    <PanelCard>
       <div className="text-xs uppercase tracking-wider text-kumo-subtle">{label}</div>
       <div className="mt-1 font-mono text-2xl font-semibold tabular-nums text-kumo-strong">{value}</div>
       <div className="mt-1 text-xs"><Delta pct={pct} /></div>
-    </div>
+    </PanelCard>
   );
 }
 
