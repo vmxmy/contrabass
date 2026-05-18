@@ -100,6 +100,7 @@ import {
 import { auditWrite } from "./observability/audit";
 import { reconcileUserRoles } from "./sync/litellm-importer";
 import { buildIdentityHygieneReport } from "./sync/identity-hygiene-report";
+import { runIdentityReconcile } from "./sync/identity-reconcile-cron";
 import { enqueueSync } from "./sync/queue-producer";
 import type { LiteLLMKey, LiteLLMTeam, JsonValue } from "./types";
 
@@ -1236,6 +1237,34 @@ const internalRoleChangedApp = new Hono<{ Bindings: LiteLLMPortalEnv }>().post("
   await invalidateRole(c.env, email);
   return new Response(null, { status: 204 });
 });
+
+// Token-authed (NOT session/role gated) on-demand identity-map reconcile —
+// mirrors the role-changed webhook auth. Lets an operator force-refresh the
+// durable identity map (email→LiteLLM user_role) without waiting for the
+// `15 */6 * * *` cron, e.g. right after changing a user's role in LiteLLM.
+// Role-independent on purpose: a user whose portal role just got demoted to
+// admin_viewer cannot call admin write endpoints, so this must not be one.
+const internalIdentityReconcileApp = new Hono<{ Bindings: LiteLLMPortalEnv }>().post(
+  "/_internal/identity-reconcile",
+  async (c) => {
+    let rawBody: unknown;
+    try {
+      rawBody = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid_json" }, 400);
+    }
+    const parsed = z.object({ secret: z.string().min(1) }).safeParse(rawBody);
+    if (!parsed.success) {
+      return c.json({ error: "invalid_body" }, 400);
+    }
+    const expectedToken = c.env.ROLE_INVALIDATION_WEBHOOK_TOKEN;
+    if (!expectedToken || parsed.data.secret !== expectedToken) {
+      return c.json({ error: "unauthorized" }, 401);
+    }
+    const result = await runIdentityReconcile(c.env);
+    return c.json(result);
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Feature flag helper
@@ -2543,6 +2572,7 @@ const app = new Hono<{ Bindings: LiteLLMPortalEnv }>()
   // Hono v4: use("/*", mw) in a sub-app intercepts all paths, so unauthenticated routes
   // must precede auth-gated sub-apps in the mount order.
   .route("/api", internalRoleChangedApp)
+  .route("/api", internalIdentityReconcileApp)
   .route("/api", meApp)
   .route("/api", preferencesApp)
   .route("/api", dashboardApp)
