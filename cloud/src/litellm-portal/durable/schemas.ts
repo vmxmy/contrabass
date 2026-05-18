@@ -29,6 +29,26 @@ export const UserRecordSchema = z.object({
 
 export type UserRecord = z.infer<typeof UserRecordSchema>;
 
+// Authoritative business→LiteLLM identity map. Keyed by the normalized
+// (lowercased, trimmed) email — the only stable business join key — because the
+// LiteLLM user_id is an arbitrary, non-derivable identifier (human slug, UUID,
+// or special account) that cannot be reconstructed from the email. Separate
+// authority from UserRecord so the role-cache / importer write tuple is
+// untouched. `origin` records how litellmUserId was established:
+//   "deterministic" — portal provisioned via POST /user/new with our id
+//   "recorded"      — observed from LiteLLM (importer / on-demand resolve)
+//   "migrated"      — controlled zero-spend migration repointed it
+export const IdentityMapRecordSchema = z.object({
+  emailLc: z.string(),
+  litellmUserId: z.string(),
+  teams: z.array(z.string()),
+  userRole: z.string().nullable(),
+  origin: z.enum(["deterministic", "recorded", "migrated"]),
+  lastReconciledAt: z.string().datetime(),
+}).strict();
+
+export type IdentityMapRecord = z.infer<typeof IdentityMapRecordSchema>;
+
 export const InviteRecordSchema = z.object({
   emailLc: z.string(),
   teamId: z.string(),

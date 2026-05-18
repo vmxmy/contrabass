@@ -1,5 +1,6 @@
 import type { JsonValue, LiteLLMAuditEvent, LiteLLMKey, LiteLLMKeyList, LiteLLMTeam, LiteLLMUser, LiteLLMPortalEnv } from "./types";
 import { isRecord, nullableRoundCurrency, readJson, roundCurrency, uniqueSorted } from "./utils";
+import { deterministicUserId, normalizeEmail } from "./identity/derive-user-id";
 
 export class LiteLLMRequestError extends Error {
   constructor(
@@ -42,13 +43,27 @@ export async function litellmFetch(env: LiteLLMPortalEnv, path: string, init: Re
   return response;
 }
 
-export async function listUserKeys(env: LiteLLMPortalEnv, userId: string): Promise<LiteLLMKeyList> {
-  const normalizedUserId = userId.trim().toLowerCase();
+/** Identity tuple for key ownership. `litellmUserId` is the opaque LiteLLM
+ *  slug/uuid (the real coupling key); `emailLc` is the normalized business
+ *  email used by the legacy/fallback tiers. `emailLc` is optional for callers
+ *  (e.g. migration gate) that only have the slug. */
+export type KeyOwner = { litellmUserId: string; emailLc?: string };
+
+function normalizeOwner(owner: KeyOwner): KeyOwner {
+  return {
+    litellmUserId: owner.litellmUserId.trim().toLowerCase(),
+    ...(owner.emailLc ? { emailLc: owner.emailLc.trim().toLowerCase() } : {}),
+  };
+}
+
+export async function listUserKeys(env: LiteLLMPortalEnv, owner: KeyOwner): Promise<LiteLLMKeyList> {
+  const normalizedOwner = normalizeOwner(owner);
+  const normalizedUserId = normalizedOwner.litellmUserId;
   try {
     const userInfoResponse = await litellmFetch(env, `/user/info?user_id=${encodeURIComponent(normalizedUserId)}`);
     const userInfo = await readJson(userInfoResponse);
     const userInfoRecords = extractRecords(userInfo)
-      .filter((record) => keyBelongsToUser(record, normalizedUserId));
+      .filter((record) => keyBelongsToUser(record, normalizedOwner));
     if (userInfoRecords.length > 0) {
       return {
         keys: userInfoRecords.map((record) => normalizeKey(record, normalizedUserId)),
@@ -62,7 +77,7 @@ export async function listUserKeys(env: LiteLLMPortalEnv, userId: string): Promi
   const response = await litellmFetch(env, `/key/list?user_id=${encodeURIComponent(normalizedUserId)}&return_full_object=true`);
   const body = await readJson(response);
   const records = extractRecords(body)
-    .filter((record) => keyBelongsToUser(record, normalizedUserId));
+    .filter((record) => keyBelongsToUser(record, normalizedOwner));
   const totalCount = isRecord(body) ? numberField(body, "total_count") ?? records.length : records.length;
   return {
     keys: records.map((record) => normalizeKey(record, normalizedUserId)),
@@ -247,19 +262,52 @@ export function publicTeam(team: LiteLLMTeam): Record<string, JsonValue> {
   };
 }
 
-export function keyBelongsToUser(record: Record<string, unknown>, userId: string): boolean {
-  const normalizedUserId = userId.trim().toLowerCase();
+/**
+ * Decide whether a LiteLLM key record belongs to the given owner.
+ *
+ * Precedence (each tier is checked; ANY match wins — unlike the old code which
+ * short-circuited to false on the first present-but-mismatched field):
+ *   1. key.user_id === litellmUserId        — the real LiteLLM coupling key
+ *   2. metadata.cb_identity.litellm_user_id  — the new structured portal tag
+ *   3. legacy metadata.portal_email          — historically held EITHER the
+ *      slug ("laoxu") OR the email ("xu@ziikoo.com"); compare against both
+ *   4. key.user_email === emailLc            — last-resort email match
+ *
+ * The legacy tier is mandatory until the hygiene report (Phase F) confirms zero
+ * keys are matched only via tier 3.
+ */
+export function keyBelongsToUser(record: Record<string, unknown>, owner: KeyOwner): boolean {
+  const litellmUserId = owner.litellmUserId.trim().toLowerCase();
+  const emailLc = owner.emailLc?.trim().toLowerCase();
   const merged = mergedKeyRecord(record);
-  const explicitUser = firstString(merged, ["user_id", "userId", "user_email", "userEmail"]);
-  if (explicitUser !== undefined) {
-    return explicitUser.trim().toLowerCase() === normalizedUserId;
+
+  const keyUserId = firstString(merged, ["user_id", "userId"]);
+  if (keyUserId !== undefined && keyUserId.trim().toLowerCase() === litellmUserId) {
+    return true;
   }
 
   const metadata = merged.metadata;
   if (isRecord(metadata)) {
-    const metadataUser = firstString(metadata, ["portal_email", "user_id", "user_email"]);
-    if (metadataUser !== undefined) {
-      return metadataUser.trim().toLowerCase() === normalizedUserId;
+    const cbIdentity = metadata.cb_identity;
+    if (isRecord(cbIdentity)) {
+      const tagged = firstString(cbIdentity, ["litellm_user_id"]);
+      if (tagged !== undefined && tagged.trim().toLowerCase() === litellmUserId) {
+        return true;
+      }
+    }
+    const portalEmail = firstString(metadata, ["portal_email"]);
+    if (portalEmail !== undefined) {
+      const v = portalEmail.trim().toLowerCase();
+      if (v === litellmUserId || (emailLc !== undefined && v === emailLc)) {
+        return true;
+      }
+    }
+  }
+
+  if (emailLc !== undefined) {
+    const keyEmail = firstString(merged, ["user_email", "userEmail"]);
+    if (keyEmail !== undefined && keyEmail.trim().toLowerCase() === emailLc) {
+      return true;
     }
   }
 
@@ -378,13 +426,15 @@ export type CreateKeyResult = {
 
 export async function createKey(
   env: LiteLLMPortalEnv,
-  userId: string,
+  owner: KeyOwner,
   params: CreateKeyParams,
 ): Promise<CreateKeyResult> {
+  const litellmUserId = owner.litellmUserId;
+  const emailLc = owner.emailLc ?? litellmUserId;
   const body: Record<string, unknown> = {
-    user_id: userId,
+    user_id: litellmUserId,
     key_alias: params.keyAlias,
-    metadata: { portal_email: userId },
+    metadata: { cb_identity: { litellm_user_id: litellmUserId, email_lc: emailLc, v: 1 } },
   };
   if (params.models && params.models.length > 0) body.models = params.models;
   if (params.maxBudget != null) body.max_budget = params.maxBudget;
@@ -588,6 +638,75 @@ export async function updateUser(
     method: "POST",
     headers,
     body: JSON.stringify(body),
+  });
+}
+
+export type ProvisionUserParams = {
+  teams?: string[];
+  userRole?: string;
+  maxBudget?: number | null;
+};
+
+export type ProvisionedUser = {
+  litellmUserId: string;
+  emailLc: string;
+};
+
+/**
+ * Provision a NEW LiteLLM user with a business-deterministic user_id.
+ *
+ * CONTRACT: only call when the email has no identity-map entry AND
+ * resolveLiteLLMUser found no existing LiteLLM user — otherwise this would
+ * create a second user row for the same email under a different user_id
+ * (user_email is not unique in LiteLLM; user_id is the PK). Existing users are
+ * recorded, never re-provisioned (see identity/migrate-user-id.ts for the
+ * controlled zero-spend repoint).
+ *
+ * The structured `metadata.cb_identity` tag replaces the misnamed, overloaded
+ * `portal_email` so attribution can join on a stable, typed field.
+ */
+export async function provisionLiteLLMUser(
+  env: LiteLLMPortalEnv,
+  email: string,
+  params: ProvisionUserParams = {},
+  changedBy?: string,
+): Promise<ProvisionedUser> {
+  const emailLc = normalizeEmail(email);
+  const litellmUserId = deterministicUserId(emailLc);
+  const headers = new Headers();
+  if (changedBy && changedBy.trim().length > 0) {
+    headers.set("litellm-changed-by", changedBy.trim());
+  }
+  const body: Record<string, unknown> = {
+    user_id: litellmUserId,
+    user_email: emailLc,
+    metadata: { cb_identity: { litellm_user_id: litellmUserId, email_lc: emailLc, v: 1 } },
+  };
+  if (params.userRole) body.user_role = params.userRole;
+  if (params.teams && params.teams.length > 0) body.teams = params.teams;
+  if (params.maxBudget != null) body.max_budget = params.maxBudget;
+
+  await litellmFetch(env, "/user/new", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  return { litellmUserId, emailLc };
+}
+
+export async function deleteUserById(
+  env: LiteLLMPortalEnv,
+  userId: string,
+  changedBy?: string,
+): Promise<void> {
+  const headers = new Headers();
+  if (changedBy && changedBy.trim().length > 0) {
+    headers.set("litellm-changed-by", changedBy.trim());
+  }
+  await litellmFetch(env, "/user/delete", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ user_ids: [userId] }),
   });
 }
 

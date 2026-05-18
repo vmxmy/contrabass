@@ -98,6 +98,7 @@ import {
 } from "./impersonation";
 import { auditWrite } from "./observability/audit";
 import { reconcileUserRoles } from "./sync/litellm-importer";
+import { buildIdentityHygieneReport } from "./sync/identity-hygiene-report";
 import { enqueueSync } from "./sync/queue-producer";
 import type { LiteLLMKey, LiteLLMTeam, JsonValue } from "./types";
 
@@ -586,7 +587,7 @@ export async function loadDashboard(
 ): Promise<Record<string, JsonValue>> {
   const user = await resolveLiteLLMUser(env, identity.email);
   const [keyList, activity] = await Promise.all([
-    listUserKeys(env, user.userId),
+    listUserKeys(env, { litellmUserId: user.userId, emailLc: user.email }),
     readUserDailyActivity(env, user.userId),
   ]);
   const teamIds = keyAwareTeamIds(user.teamIds, keyList.keys);
@@ -849,7 +850,7 @@ const modelsApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get("/model
 const keysGetApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get("/keys", async (c) => {
   const identity = c.get("identity");
   const user = await resolveLiteLLMUser(c.env, identity.email);
-  const keyList = await listUserKeys(c.env, user.userId);
+  const keyList = await listUserKeys(c.env, { litellmUserId: user.userId, emailLc: user.email });
   const teamIds = keyAwareTeamIds(user.teamIds, keyList.keys);
   const teams = await readUserTeams(c.env, teamIds);
   const modelAccess = await readAvailableModelsFromTeams(c.env, teamIds, teams);
@@ -896,7 +897,7 @@ const keysPostApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).post("/ke
   const { keyAlias, models, maxBudget, duration } = parsed.data;
 
   try {
-    const result = await createKey(c.env, user.userId, {
+    const result = await createKey(c.env, { litellmUserId: user.userId, emailLc: user.email }, {
       keyAlias,
       models,
       maxBudget: maxBudget ?? null,
@@ -947,7 +948,7 @@ const keysDeleteApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).delete(
     return c.json({ error: "user_not_found" }, 400);
   }
 
-  const keyList = await listUserKeys(c.env, user.userId);
+  const keyList = await listUserKeys(c.env, { litellmUserId: user.userId, emailLc: user.email });
   const key = keyList.keys.find((item) => item.id === keyId);
   if (key === undefined) {
     return c.json({ error: "key_not_found" }, 404);
@@ -960,7 +961,7 @@ const keysDeleteApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).delete(
 const usageApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get("/usage", async (c) => {
   const identity = c.get("identity");
   const user = await resolveLiteLLMUser(c.env, identity.email);
-  const keyList = await listUserKeys(c.env, user.userId);
+  const keyList = await listUserKeys(c.env, { litellmUserId: user.userId, emailLc: user.email });
   const teamIds = keyAwareTeamIds(user.teamIds, keyList.keys);
   const teams = await readUserTeams(c.env, teamIds);
   const modelAccess = await readAvailableModelsFromTeams(c.env, teamIds, teams);
@@ -1065,6 +1066,12 @@ function emptyDashboard(scopeLabel: string, window: DashboardWindow) {
     kpi: { spend:{current:0,previous:null,deltaPct:null}, requests:{current:0,previous:null,deltaPct:null}, totalTokens:{current:0,previous:null,deltaPct:null} },
     trend: [], models: [] };
 }
+function unmappedDashboard(scopeLabel: string, window: DashboardWindow) {
+  // Distinct from emptyDashboard: the user has no LiteLLM identity mapping, so
+  // "0" would be misleading. `unmapped: true` lets the UI say "identity not
+  // mapped" instead of rendering a false zero.
+  return { ...emptyDashboard(scopeLabel, window), unmapped: true as const };
+}
 function indexDOLike(env: LiteLLMPortalEnv): IndexDOLike | null {
   if (!env.INDEX_DO) return null;
   return env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOLike;
@@ -1087,7 +1094,11 @@ const usageOverviewApp = new Hono<HonoEnv>().use("/*", applyAuthMiddleware).get(
     );
     return c.json(res);
   } catch (e) {
-    if (e && typeof e === "object" && (e as { kind?: string }).kind === "unavailable") {
+    const kind = e && typeof e === "object" ? (e as { kind?: string }).kind : undefined;
+    if (kind === "unmapped") {
+      return c.json(unmappedDashboard("self", parsed.window), 200);
+    }
+    if (kind === "unavailable") {
       return c.json(emptyDashboard("self", parsed.window), 200);
     }
     throw e;
@@ -1114,12 +1125,44 @@ const adminUsageOverviewApp = new Hono<HonoEnv>()
       );
       return c.json(res);
     } catch (e) {
-      if (e && typeof e === "object" && (e as { kind?: string }).kind === "unavailable") {
-        const label = scope.kind === "global" ? "global" : `member:${scope.userId}`;
+      const kind = e && typeof e === "object" ? (e as { kind?: string }).kind : undefined;
+      const label = scope.kind === "global" ? "global" : `member:${scope.userId}`;
+      if (kind === "unmapped") {
+        return c.json(unmappedDashboard(label, parsed.window), 200);
+      }
+      if (kind === "unavailable") {
         return c.json(emptyDashboard(label, parsed.window), 200);
       }
       throw e;
     }
+  });
+
+const adminIdentityHygieneApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
+  .use("/admin/*", requireAdmin)
+  .get("/admin/identity/hygiene", async (c) => {
+    const identity = c.get("identity");
+    const report = await buildIdentityHygieneReport(c.env);
+    await auditWrite(c.env, {
+      actor: identity.email,
+      action: "admin_identity_hygiene_report",
+      target: "identity-map",
+      ip: c.req.header("cf-connecting-ip") ?? "unknown",
+      ts: new Date().toISOString(),
+      before: "",
+      after: JSON.stringify({
+        identities: report.totals.identities,
+        litellmUsers: report.totals.litellmUsers,
+        emailDrift: report.emailDrift.length,
+        orphans: report.orphans.length,
+        duplicateUserIds: report.duplicateUserIds.length,
+        migrationCandidates: report.migrationCandidates.length,
+        legacyOnlyKeys: report.legacyOnlyKeys.length,
+      }),
+      reason: "",
+    });
+    return c.json(report);
   });
 
 const adminRolesInvalidateApp = new Hono<HonoEnv>()
@@ -2477,6 +2520,7 @@ const app = new Hono<{ Bindings: LiteLLMPortalEnv }>()
   .route("/api", adminTeamsApp)
   .route("/api", adminAuditApp)
   .route("/api", adminUsageOverviewApp)
+  .route("/api", adminIdentityHygieneApp)
   .route("/api", adminPreferencesDefaultsApp)
   .route("/api", adminRolesInvalidateApp)
   .route("/api", adminDOStorageApp)

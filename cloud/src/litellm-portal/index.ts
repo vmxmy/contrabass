@@ -15,6 +15,7 @@ import type { ClientErrorPayload } from "./observability/client-error";
 import { scanBudgetThresholds } from "./notifications";
 import { runSpendSnapshotTick } from "./sync/spend-snapshot-cron";
 import { runMonthlyBillingArchive } from "./sync/billing-archive-cron";
+import { runIdentityReconcile } from "./sync/identity-reconcile-cron";
 import { runUsageRollup } from "./usage/usage-rollup";
 import { handleLiteLLMSyncBatch } from "./sync/queue-consumer";
 import type { SyncMessage } from "./durable/schemas";
@@ -297,6 +298,10 @@ export default {
     }
     if (controller.cron === "0 2 1 * *") {
       ctx.waitUntil(runMonthlyBillingArchive(env));
+      return;
+    }
+    if (controller.cron === "15 */6 * * *") {
+      ctx.waitUntil(runIdentityReconcile(env));
       return;
     }
   },

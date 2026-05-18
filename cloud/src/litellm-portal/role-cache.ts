@@ -1,4 +1,5 @@
 import type { LiteLLMPortalEnv, PortalRole } from "./types";
+import type { IdentityMapRecord } from "./durable/schemas";
 import { resolveLiteLLMUser } from "./litellm";
 import { mapLiteLLMRole } from "./role-mapping";
 
@@ -7,6 +8,11 @@ import { mapLiteLLMRole } from "./role-mapping";
 // ---------------------------------------------------------------------------
 
 const MEM_TTL_MS = 30 * 1000; // 30 seconds
+// Negative-cache TTL for the email-sentinel result (identity map missed AND
+// LiteLLM gave no match). Short so a freshly-populated identity map (importer /
+// concurrent persist-on-miss) is adopted in ~5s instead of serving the
+// misleading "unmapped" dashboard for the full 30s.
+const MEM_TTL_UNMAPPED_MS = 5 * 1000; // 5 seconds
 
 // ---------------------------------------------------------------------------
 // IndexDO path — 30-second in-process memory cache
@@ -24,6 +30,8 @@ type IndexDOStub = {
     userId: string,
     teamId: string,
   ): Promise<{ tenantRole: "tenant_admin" | "member" } | null>;
+  getIdentityByEmail(email: string): Promise<IdentityMapRecord | null>;
+  putIdentity(record: IdentityMapRecord): Promise<void>;
 };
 
 type TenantRole = "tenant_admin" | "member" | null;
@@ -40,13 +48,16 @@ const doCache = new Map<string, DOCacheEntry>();
 /**
  * Resolve the authoritative LiteLLM user_id for an email (self-scope spend).
  *
- * This portal authenticates via Cloudflare Access (no magic-link), so the
- * IndexDO row that `getRole` reads is never reconciled and its `userId` is the
- * stale email. Spend/usage events are keyed by the real LiteLLM user_id (e.g.
- * `laoxu`), so self-scope queries must use `resolveLiteLLMUser`'s value.
+ * Spend/usage events are keyed by the real LiteLLM user_id (e.g. `laoxu`),
+ * which is arbitrary and not derivable from the email. The durable identity
+ * map is the source of truth: read it first (no LiteLLM round-trip, and it
+ * survives the Cloudflare-Access path that never ran the magic-link
+ * reconcile). On a miss, resolve live via /user/list and persist the result
+ * (origin "recorded") so the next request — and the reconcile cron — build on
+ * it instead of repeating the fragile lookup.
  *
- * Falls back to the email when LiteLLM is unreachable or has no match — never
- * locks the user out (the caller's catch path still applies).
+ * Falls back to the email only when both the map misses AND LiteLLM is
+ * unreachable/empty — never locks the user out (caller's catch still applies).
  *
  * NOTE: the tenant facet (tenantRole/tenantTeamId) does NOT use this. Tenant
  * keys are derived from the portal-authoritative IndexDO user record so the
@@ -56,11 +67,44 @@ const doCache = new Map<string, DOCacheEntry>();
 async function resolveLitellmFacts(
   env: LiteLLMPortalEnv,
   email: string,
+  idxStub: IndexDOStub | null,
 ): Promise<{ userId: string; role: string | null; teamIds: string[] }> {
+  const emailLc = email.trim().toLowerCase();
+  if (idxStub) {
+    try {
+      const identity = await idxStub.getIdentityByEmail(emailLc);
+      if (identity && identity.litellmUserId.trim().length > 0) {
+        return {
+          userId: identity.litellmUserId,
+          role: identity.userRole,
+          teamIds: identity.teams,
+        };
+      }
+    } catch (err) {
+      console.warn("[role-cache] getIdentityByEmail failed (non-fatal):", String(err).slice(0, 120));
+    }
+  }
+
   try {
     const user = await resolveLiteLLMUser(env, email);
-    const userId = user.found && user.userId.trim().length > 0 ? user.userId : email;
-    return { userId, role: user.role, teamIds: user.teamIds };
+    if (user.found && user.userId.trim().length > 0) {
+      if (idxStub) {
+        try {
+          await idxStub.putIdentity({
+            emailLc,
+            litellmUserId: user.userId,
+            teams: user.teamIds,
+            userRole: user.role,
+            origin: "recorded",
+            lastReconciledAt: new Date().toISOString(),
+          });
+        } catch (err) {
+          console.warn("[role-cache] putIdentity failed (non-fatal):", String(err).slice(0, 120));
+        }
+      }
+      return { userId: user.userId, role: user.role, teamIds: user.teamIds };
+    }
+    return { userId: email, role: user.role, teamIds: user.teamIds };
   } catch {
     return { userId: email, role: null, teamIds: [] };
   }
@@ -122,8 +166,12 @@ async function resolveRoleAndUserId(
   let indexRole: PortalRole = "none";
   let tenantUserId: string | null = null;
   let indexTeamId: string | null = null;
-  if (env.INDEX_DO) {
-    const idxStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOStub;
+  // One stub per DO per resolution — shared by the role read, the identity-map
+  // resolve, and the persist-on-miss write (avoids redundant .get() round-trips).
+  const idxStub: IndexDOStub | null = env.INDEX_DO
+    ? (env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOStub)
+    : null;
+  if (idxStub) {
     const user = await idxStub.getUserByEmail(key);
     indexRole = user == null ? "none" : (user.role as PortalRole);
     if (user != null) {
@@ -131,7 +179,7 @@ async function resolveRoleAndUserId(
       indexTeamId = user.teamId;
     }
   }
-  const facts = await resolveLitellmFacts(env, key);
+  const facts = await resolveLitellmFacts(env, key, idxStub);
   const mapped = mapLiteLLMRole({
     indexRole,
     litellmRole: facts.role,
@@ -142,12 +190,16 @@ async function resolveRoleAndUserId(
   const tenantTeamId = mapped.tenantTeamId;
   const litellmUserId = facts.userId;
   const tenantRole = await resolveTenantRole(env, tenantUserId, tenantTeamId);
+  // `litellmUserId === key` means resolution fell back to the email sentinel
+  // (map miss + no LiteLLM match): negative-cache it briefly so a soon-after
+  // identity-map population is picked up quickly, not after the full 30s.
+  const ttl = litellmUserId === key ? MEM_TTL_UNMAPPED_MS : MEM_TTL_MS;
   doCache.set(key, {
     role,
     litellmUserId,
     tenantRole,
     tenantTeamId,
-    expiresAt: now + MEM_TTL_MS,
+    expiresAt: now + ttl,
   });
   return { role, litellmUserId, tenantRole, tenantTeamId };
 }

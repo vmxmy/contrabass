@@ -158,8 +158,9 @@ dead_letter_queue = "litellm-sync-dlq"
 # See openspec change portal-do-config-source-of-truth, capability portal-litellm-config-sync.
 # */30 * * * * → usage rollup (KV); daily 0 9 → budget-threshold scan.
 # 0 2 1 * * → monthly per-team billing CSV archive to R2 (previous full month).
+# 15 */6 * * * → reconcile durable identity map (email→LiteLLM user_id) vs /user/list.
 [triggers]
-crons = ["0 9 * * *", "* * * * *", "*/30 * * * *", "0 2 1 * *"]
+crons = ["0 9 * * *", "* * * * *", "*/30 * * * *", "0 2 1 * *", "15 */6 * * *"]
 
 [observability]
 enabled = true
