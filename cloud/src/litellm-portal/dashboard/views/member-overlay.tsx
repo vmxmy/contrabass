@@ -1,18 +1,15 @@
 import React from "react";
-import { useDashboard } from "../use-dashboard";
 import { KpiBand } from "../panels/kpi-band";
 import { TrendChart } from "../charts/trend-chart";
 import { ModelDonut } from "../charts/model-donut";
 import { PanelCard } from "../../ui";
+import { useMemberUsage } from "./use-member-usage";
 export function MemberOverlay({
   userId, maxBudget, onClose,
 }: {
   userId: string; maxBudget: number | null; onClose: () => void;
 }) {
-  const { data } = useDashboard({ kind: "member", userId }, "30d");
-  const { data: globalData } = useDashboard({ kind: "global" }, "30d");
-  const spend = data?.kpi.spend.current ?? 0;
-  const quotaPct = maxBudget && maxBudget > 0 ? Math.min(100, Math.round((spend / maxBudget) * 100)) : null;
+  const { data, spend, quotaPct, teamAvgPoints } = useMemberUsage(userId, maxBudget);
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-kumo-canvas">
@@ -48,28 +45,14 @@ export function MemberOverlay({
             </PanelCard>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <PanelCard padded={false}>
-                {(() => {
-                  const memberPoints: Array<[number, number]> = data.trend.map((b) => [b.startMs, b.totalTokens]);
-                  const userCount = globalData?.summary?.userCount ?? 0;
-                  const teamAvgPoints: Array<[number, number]> | null =
-                    globalData && userCount > 0
-                      ? globalData.trend
-                          .map((b, i): [number, number] | null => {
-                            const memberBucket = data.trend[i];
-                            if (!memberBucket) return null;
-                            return [memberBucket.startMs, b.totalTokens / userCount];
-                          })
-                          .filter((p): p is [number, number] => p !== null)
-                      : null;
-                  return (
-                    <TrendChart
-                      series={[
-                        { name: "个人", points: memberPoints },
-                        ...(teamAvgPoints ? [{ name: "团队人均", points: teamAvgPoints, dashed: true }] : []),
-                      ]}
-                    />
-                  );
-                })()}
+                <TrendChart
+                  series={[
+                    { name: "个人", points: data.trend.map((b) => [b.startMs, b.totalTokens]) },
+                    ...(teamAvgPoints
+                      ? [{ name: "团队人均", points: teamAvgPoints, dashed: true }]
+                      : []),
+                  ]}
+                />
               </PanelCard>
               <PanelCard padded={false}>
                 <ModelDonut slices={data.models.map((m) => ({ model: m.model, value: m.spend }))} />
