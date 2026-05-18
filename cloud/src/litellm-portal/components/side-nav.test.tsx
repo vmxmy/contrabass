@@ -98,3 +98,26 @@ describe("SideNav responsive drawer (S1)", () => {
     expect(screen.getByRole("link", { name: /概览/ })).toBeTruthy();
   });
 });
+
+describe("SideNav responsive=false (nested under PortalRootLayout: no drawer)", () => {
+  it("renders the static rail with NO hamburger toggle and no off-canvas transform", () => {
+    const { container } = render(
+      <I18nProvider i18n={i18n}>
+        <SideNav
+          groups={groups}
+          currentPath="/"
+          accent="brand"
+          ariaLabel="租户导航"
+          responsive={false}
+        />
+      </I18nProvider>,
+    );
+    expect(screen.queryByRole("button", { name: /导航菜单/ })).toBeNull();
+    const nav = container.querySelector("nav") as HTMLElement;
+    expect(nav.className).toContain("w-56");
+    expect(nav.className).not.toContain("fixed");
+    expect(nav.className).not.toContain("-translate-x-full");
+    expect(screen.getByRole("link", { name: /概览/ })).toBeTruthy();
+    expect(container.querySelectorAll("[data-nav-icon]").length).toBe(3);
+  });
+});
