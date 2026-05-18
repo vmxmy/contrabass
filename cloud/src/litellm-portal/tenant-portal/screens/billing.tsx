@@ -27,6 +27,7 @@ import { Trans } from "@lingui/react/macro";
 import { useMe } from "../../hooks/use-me";
 import { useTenantBillingPeriods, downloadTenantBilling } from "../hooks";
 import { MemberForbidden } from "../routes";
+import { PanelCard } from "../../ui";
 
 // ---------------------------------------------------------------------------
 // BillingPeriodRow — one row per YYYY-MM period with a per-row download button
@@ -135,15 +136,13 @@ export function TenantBillingScreen() {
 
   return (
     <div id="tenant-billing-root" className="space-y-6">
-      <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-        <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-          <Text variant="heading3" as="p"><Trans>账单下载</Trans></Text>
-          <Text variant="secondary" as="p">
-            <Trans>按账期下载团队 CSV 账单。服务端已按团队过滤，客户端不聚合数据。</Trans>
-          </Text>
-        </div>
+      <PanelCard
+        title={t`账单下载`}
+        subtitle={t`按账期下载团队 CSV 账单。服务端已按团队过滤，客户端不聚合数据。`}
+        padded={false}
+      >
         <BillingPeriodsTable />
-      </article>
+      </PanelCard>
     </div>
   );
 }
