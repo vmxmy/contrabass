@@ -97,6 +97,7 @@ import {
   type ImpersonationContext,
 } from "./impersonation";
 import { auditWrite } from "./observability/audit";
+import { reconcileUserRoles } from "./sync/litellm-importer";
 import { enqueueSync } from "./sync/queue-producer";
 import type { LiteLLMKey, LiteLLMTeam, JsonValue } from "./types";
 
@@ -2009,6 +2010,37 @@ const adminBillingArchiveApp = new Hono<HonoEnv>()
   .get("/admin/billing/:yearMonth", (c) => billingDownloadCore(c, "admin"));
 
 // ---------------------------------------------------------------------------
+// Admin maintenance — re-runnable role data scrub (security remediation)
+// ---------------------------------------------------------------------------
+
+const adminMaintenanceApp = new Hono<HonoEnv>()
+  .use("/*", applyAuthMiddleware)
+  .use("/admin/*", applyAdminRateLimit)
+  .use("/admin/*", requireAdmin)
+  .post("/admin/maintenance/reconcile-user-roles", async (c) => {
+    // Intentionally NOT gated by isWriteOpsEnabled: this is a security
+    // remediation that must be runnable while write-ops is globally disabled.
+    const identity = c.get("identity");
+    const summary = await reconcileUserRoles(c.env);
+    await auditWrite(c.env, {
+      actor: identity.email,
+      action: "admin_reconcile_user_roles",
+      target: "index",
+      ip: c.req.header("cf-connecting-ip") ?? "unknown",
+      ts: new Date().toISOString(),
+      before: "",
+      after: JSON.stringify({
+        scanned: summary.scanned,
+        corrected: summary.corrected,
+        unchanged: summary.unchanged,
+        errorCount: summary.errors.length,
+      }),
+      reason: `reconciled ${summary.corrected}/${summary.scanned} user roles from authoritative LiteLLM user_role`,
+    });
+    return c.json(summary);
+  });
+
+// ---------------------------------------------------------------------------
 // Tenant-scoped self-serve variants — /api/tenant/* (reuse F1/F2/F3 cores)
 // teamId is pinned to the caller's identity.tenantTeamId; body/param teamId is
 // ignored. Gated by requireTenantAdmin (Task 4).
@@ -2457,6 +2489,7 @@ const app = new Hono<{ Bindings: LiteLLMPortalEnv }>()
   .route("/api", adminTeamAlertWebhookApp)
   .route("/api", adminTenantRoleApp)
   .route("/api", adminBillingArchiveApp)
+  .route("/api", adminMaintenanceApp)
   .route("/api", tenantInvitesApp)
   .route("/api", tenantAlertWebhookApp)
   .route("/api", tenantBillingApp)

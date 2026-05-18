@@ -11,6 +11,15 @@ describe("mapLiteLLMRole", () => {
   it("proxy_admin_viewer NEVER yields admin even when IndexDO says user (escalation guard)", () => {
     expect(mapLiteLLMRole({ indexRole: "user", litellmRole: "proxy_admin_viewer", litellmTeamIds: [] }).role).toBe("user");
   });
+  it("poisoned IndexDO admin + proxy_admin_viewer litellm role → user (stale-state escalation guard)", () => {
+    expect(mapLiteLLMRole({ indexRole: "admin", litellmRole: "proxy_admin_viewer", litellmTeamIds: [] }).role).toBe("user");
+  });
+  it("poisoned IndexDO admin + internal_user litellm role → user (any known non-owner role capped)", () => {
+    expect(mapLiteLLMRole({ indexRole: "admin", litellmRole: "internal_user", litellmTeamIds: [] }).role).toBe("user");
+  });
+  it("bootstrap admin: IndexDO admin + null litellm role keeps admin (non-regression)", () => {
+    expect(mapLiteLLMRole({ indexRole: "admin", litellmRole: null, litellmTeamIds: [] }).role).toBe("admin");
+  });
   it("normal user with no litellm role keeps IndexDO role", () => {
     expect(mapLiteLLMRole({ indexRole: "user", litellmRole: null, litellmTeamIds: [] }).role).toBe("user");
   });

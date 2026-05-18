@@ -4,6 +4,7 @@ import {
   importUsers,
   applyBootstrapAdmins,
   finalizeImport,
+  reconcileUserRoles,
 } from "./litellm-importer";
 import type { LiteLLMPortalEnv } from "../types";
 import type { UserRecord } from "../durable/schemas";
@@ -443,5 +444,156 @@ describe("finalizeImport", () => {
     expect(second.alreadyImported).toBe(true);
     expect(idx.auditLog).toHaveLength(1);
     expect(idx.stub.appendAudit).toHaveBeenCalledOnce();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reconcileUserRoles — re-runnable role data scrub
+// ---------------------------------------------------------------------------
+
+describe("reconcileUserRoles", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  function seedUsersResponse(users: unknown[]) {
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+      const urlStr = String(url);
+      if (urlStr.includes("page=1")) {
+        return Promise.resolve(new Response(JSON.stringify({ users }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ users: [] }), { status: 200 }));
+    });
+  }
+
+  it("recomputes role from authoritative LiteLLM user_role; proxy_admin stays admin", async () => {
+    const idx = makeIndexStub();
+    const team = makeTeamStub();
+    const env = makeEnv(idx, team);
+
+    idx.users.set("admin1@x.com", {
+      userId: "u1", email: "admin1@x.com", role: "admin", teamId: "t1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    seedUsersResponse([
+      { user_id: "u1", email: "admin1@x.com", role: "proxy_admin", team_ids: ["t1"] },
+    ]);
+
+    const result = await reconcileUserRoles(env);
+
+    expect(result.scanned).toBe(1);
+    expect(result.corrected).toBe(0);
+    expect(result.unchanged).toBe(1);
+    expect((idx.users.get("admin1@x.com") as UserRecord).role).toBe("admin");
+  });
+
+  it("corrects a poisoned proxy_admin_viewer from admin → user, preserving all other facets", async () => {
+    const idx = makeIndexStub();
+    const team = makeTeamStub();
+    const env = makeEnv(idx, team);
+
+    idx.users.set("xu@gz-zhiyun.com", {
+      userId: "laoxu",
+      email: "xu@gz-zhiyun.com",
+      role: "admin",
+      teamId: "team-xyz",
+      tenantRole: "tenant_admin",
+      maxBudget: 42,
+      createdAt: "2026-02-02T00:00:00.000Z",
+    } as UserRecord);
+
+    seedUsersResponse([
+      { user_id: "laoxu", email: "xu@gz-zhiyun.com", role: "proxy_admin_viewer", team_ids: ["team-xyz"] },
+    ]);
+
+    const result = await reconcileUserRoles(env);
+
+    expect(result.scanned).toBe(1);
+    expect(result.corrected).toBe(1);
+    expect(result.unchanged).toBe(0);
+    expect(result.errors).toHaveLength(0);
+
+    const putArg = idx.stub.putUser.mock.calls.at(-1)?.[0] as UserRecord;
+    expect(putArg.role).toBe("user");
+    expect(putArg.userId).toBe("laoxu");
+    expect(putArg.email).toBe("xu@gz-zhiyun.com");
+    expect(putArg.teamId).toBe("team-xyz");
+    expect((putArg as UserRecord & { tenantRole?: string }).tenantRole).toBe("tenant_admin");
+    expect(putArg.maxBudget).toBe(42);
+    expect(putArg.createdAt).toBe("2026-02-02T00:00:00.000Z");
+    expect((idx.users.get("xu@gz-zhiyun.com") as UserRecord).role).toBe("user");
+  });
+
+  it("skips LiteLLM users absent from IndexDO (scanned, not corrected)", async () => {
+    const idx = makeIndexStub();
+    const team = makeTeamStub();
+    const env = makeEnv(idx, team);
+
+    seedUsersResponse([
+      { user_id: "ghost", email: "ghost@x.com", role: "internal_user", team_ids: [] },
+    ]);
+
+    const result = await reconcileUserRoles(env);
+
+    expect(result.scanned).toBe(1);
+    expect(result.corrected).toBe(0);
+    expect(result.unchanged).toBe(0);
+    expect(idx.stub.putUser).not.toHaveBeenCalled();
+  });
+
+  it("is idempotent: a second run corrects nothing", async () => {
+    const idx = makeIndexStub();
+    const team = makeTeamStub();
+    const env = makeEnv(idx, team);
+
+    idx.users.set("xu@gz-zhiyun.com", {
+      userId: "laoxu", email: "xu@gz-zhiyun.com", role: "admin", teamId: "team-xyz",
+      createdAt: "2026-02-02T00:00:00.000Z",
+    });
+    seedUsersResponse([
+      { user_id: "laoxu", email: "xu@gz-zhiyun.com", role: "proxy_admin_viewer", team_ids: ["team-xyz"] },
+    ]);
+
+    const first = await reconcileUserRoles(env);
+    expect(first.corrected).toBe(1);
+
+    const second = await reconcileUserRoles(env);
+    expect(second.corrected).toBe(0);
+    expect(second.unchanged).toBe(1);
+  });
+
+  it("isolates a per-user failure: loop continues, errors[] populated", async () => {
+    const idx = makeIndexStub();
+    const team = makeTeamStub();
+    const env = makeEnv(idx, team);
+
+    idx.users.set("bad@x.com", {
+      userId: "ubad", email: "bad@x.com", role: "admin", teamId: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    idx.users.set("good@x.com", {
+      userId: "ugood", email: "good@x.com", role: "admin", teamId: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    idx.stub.putUser
+      .mockRejectedValueOnce(new Error("storage exploded"))
+      .mockResolvedValue(undefined);
+
+    seedUsersResponse([
+      { user_id: "ubad", email: "bad@x.com", role: "internal_user", team_ids: [] },
+      { user_id: "ugood", email: "good@x.com", role: "internal_user", team_ids: [] },
+    ]);
+
+    const result = await reconcileUserRoles(env);
+
+    expect(result.scanned).toBe(2);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].userId).toBe("ubad");
+    expect(result.corrected).toBe(1);
+    // putUser called for both; the good user's write carries the corrected role.
+    expect(idx.stub.putUser).toHaveBeenCalledTimes(2);
+    const goodPut = idx.stub.putUser.mock.calls.at(-1)?.[0] as UserRecord;
+    expect(goodPut.userId).toBe("ugood");
+    expect(goodPut.role).toBe("user");
   });
 });

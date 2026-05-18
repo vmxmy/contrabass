@@ -20,10 +20,19 @@ export type MapLiteLLMRoleResult = {
 };
 
 export function mapLiteLLMRole(input: MapLiteLLMRoleInput): MapLiteLLMRoleResult {
-  const role: PortalRole =
-    input.litellmRole !== null && LITELLM_OWNER_ROLES.has(input.litellmRole)
-      ? "admin"
-      : input.indexRole;
+  // A known non-owner LiteLLM identity (e.g. proxy_admin_viewer, internal_user)
+  // must never resolve to portal admin: a stale/poisoned IndexDO role persisted
+  // "admin" by pre-fix code would otherwise escalate it. Only an absent LiteLLM
+  // identity (litellmRole === null — the bootstrap-admin path where IndexDO is
+  // authoritative) is allowed to keep an IndexDO admin.
+  let role: PortalRole;
+  if (input.litellmRole !== null && LITELLM_OWNER_ROLES.has(input.litellmRole)) {
+    role = "admin";
+  } else if (input.litellmRole !== null) {
+    role = input.indexRole === "admin" ? "user" : input.indexRole;
+  } else {
+    role = input.indexRole;
+  }
 
   const tenantTeamId =
     input.indexTeamId != null && input.indexTeamId.length > 0

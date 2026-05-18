@@ -1585,3 +1585,131 @@ describe("DO-path tenant routes (/api/tenant/*)", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/admin/maintenance/reconcile-user-roles — re-runnable role scrub
+// ---------------------------------------------------------------------------
+
+describe("POST /api/admin/maintenance/reconcile-user-roles", () => {
+  const RECON_ADMIN = "admin@gz-zhiyun.com";
+  const POISONED_EMAIL = "xu@gz-zhiyun.com";
+
+  // /user/list drives both auth (resolveLitellmFacts for the admin → proxy_admin)
+  // and reconcileUserRoles' enumeration. One mock serves both.
+  function stubReconcileFetch(): void {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/user/list")) {
+        const u = new URL(url);
+        const emailFilter = (u.searchParams.get("user_email") ?? "").toLowerCase();
+        if (emailFilter === RECON_ADMIN) {
+          // Auth path: resolveLitellmFacts filters by user_email.
+          return new Response(
+            JSON.stringify([{ user_id: RECON_ADMIN, user_email: RECON_ADMIN, role: "proxy_admin", teams: [] }]),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        // reconcileUserRoles pagination (no user_email filter).
+        if (u.searchParams.get("page") === "1") {
+          return new Response(
+            JSON.stringify({
+              users: [
+                { user_id: "laoxu", email: POISONED_EMAIL, role: "proxy_admin_viewer", team_ids: ["t1"] },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify({ users: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    });
+  }
+
+  function makeReconIndexStub() {
+    const base = makeIndexDOStub();
+    return {
+      ...base,
+      getUserByEmail: vi.fn(async (email: string) => {
+        const lc = email.toLowerCase();
+        if (lc === RECON_ADMIN) {
+          return { userId: RECON_ADMIN, email: RECON_ADMIN, role: "admin" as const, teamId: "t1", createdAt: new Date().toISOString() };
+        }
+        if (lc === POISONED_EMAIL) {
+          return { userId: "laoxu", email: POISONED_EMAIL, role: "admin" as const, teamId: "t1", createdAt: "2026-02-02T00:00:00.000Z" };
+        }
+        return null;
+      }),
+      putUser: vi.fn().mockResolvedValue(undefined),
+      appendAudit: vi.fn().mockResolvedValue(undefined),
+    };
+  }
+
+  async function reconAdminRequest(env: LiteLLMPortalEnv): Promise<Request> {
+    const value = await issueSession(env, { email: RECON_ADMIN, userId: RECON_ADMIN });
+    return new Request("https://x/api/admin/maintenance/reconcile-user-roles", {
+      method: "POST",
+      headers: { Cookie: `${SESSION_COOKIE_NAME}=${value}` },
+    });
+  }
+
+  it("requires admin: a non-admin caller gets 403 admin_required", async () => {
+    stubReconcileFetch();
+    const indexStub = makeReconIndexStub();
+    const teamStub = makeTeamConfigDOStub();
+    const env = makeFlagOnEnv(indexStub as unknown as ReturnType<typeof makeIndexDOStub>, teamStub);
+
+    const value = await issueSession(env, { email: "bob@gz-zhiyun.com", userId: "bob@gz-zhiyun.com" });
+    const res = await app.fetch(
+      new Request("https://x/api/admin/maintenance/reconcile-user-roles", {
+        method: "POST",
+        headers: { Cookie: `${SESSION_COOKIE_NAME}=${value}` },
+      }),
+      env,
+    );
+
+    expect(res.status).toBe(403);
+    const data = await res.json() as Record<string, unknown>;
+    expect(data.error).toBe("admin_required");
+  });
+
+  it("admin reconcile returns 200 + summary and corrects the poisoned user role", async () => {
+    stubReconcileFetch();
+    const indexStub = makeReconIndexStub();
+    const teamStub = makeTeamConfigDOStub();
+    const env = makeFlagOnEnv(indexStub as unknown as ReturnType<typeof makeIndexDOStub>, teamStub);
+
+    const res = await app.fetch(await reconAdminRequest(env), env);
+
+    expect(res.status).toBe(200);
+    const data = await res.json() as Record<string, unknown>;
+    expect(data.scanned).toBe(1);
+    expect(data.corrected).toBe(1);
+    expect(data.unchanged).toBe(0);
+    expect(data.errors).toEqual([]);
+
+    const putArg = indexStub.putUser.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(putArg.role).toBe("user");
+    expect(putArg.userId).toBe("laoxu");
+    expect(putArg.teamId).toBe("t1");
+    expect(indexStub.appendAudit).toHaveBeenCalled();
+  });
+
+  it("runs while write-ops is globally disabled (NOT 404 — security remediation)", async () => {
+    stubReconcileFetch();
+    const indexStub = makeReconIndexStub();
+    const teamStub = makeTeamConfigDOStub();
+    const env = makeFlagOnEnv(
+      indexStub as unknown as ReturnType<typeof makeIndexDOStub>,
+      teamStub,
+      { LITELLM_PORTAL_WRITE_OPS_ENABLED: undefined },
+    );
+
+    const res = await app.fetch(await reconAdminRequest(env), env);
+
+    expect(res.status).toBe(200);
+    expect(res.status).not.toBe(404);
+    const data = await res.json() as Record<string, unknown>;
+    expect(data.corrected).toBe(1);
+  });
+});

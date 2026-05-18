@@ -15,6 +15,47 @@ export type ImportTeamsResult = {
 
 const PAGE_CAP = 100;
 
+/** Walk all pages of LiteLLM /user/list (bounded at PAGE_CAP) and invoke
+ *  `onRecord` for every raw user record. Single source of truth for the
+ *  user-listing pagination shared by importUsers and reconcileUserRoles so
+ *  they can never diverge on how LiteLLM users are enumerated.
+ *
+ *  Returns limited=true if the upstream paginator did not signal end before
+ *  the cap.
+ */
+async function forEachLiteLLMUser(
+  env: LiteLLMPortalEnv,
+  onRecord: (record: Record<string, unknown>) => Promise<void>,
+): Promise<{ limited: boolean }> {
+  let limited = false;
+  for (let page = 1; page <= PAGE_CAP; page++) {
+    const response = await litellmFetch(env, `/user/list?page=${page}`);
+    const body = await readJson(response);
+    const records = extractRecords(body);
+
+    if (records.length === 0) {
+      break;
+    }
+
+    for (const record of records) {
+      await onRecord(record);
+    }
+
+    if (page === PAGE_CAP) {
+      limited = true;
+    }
+  }
+  return { limited };
+}
+
+/** Authoritative LiteLLM user_role → portal UserRecord.role mapping. Single
+ *  predicate shared by importUsers and reconcileUserRoles: only "proxy_admin"
+ *  is an owner; proxy_admin_viewer / internal_user / null all map to "user".
+ */
+function desiredUserRoleFromLiteLLM(litellmRole: unknown): "admin" | "user" {
+  return litellmRole === "proxy_admin" ? "admin" : "user";
+}
+
 function toTeamRecord(t: LiteLLMTeam): TeamRecord {
   return {
     id: t.id,
@@ -207,20 +248,12 @@ export async function importUsers(env: LiteLLMPortalEnv): Promise<ImportUsersRes
   const errors: Array<{ userId: string; reason: string }> = [];
   let scannedUsers = 0;
   let insertedUsers = 0;
-  let limited = false;
 
   const indexStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDO;
+  // Narrowed once here; the closure below loses the early-throw narrowing.
+  const teamConfigNs = env.TEAM_CONFIG_DO;
 
-  for (let page = 1; page <= PAGE_CAP; page++) {
-    const response = await litellmFetch(env, `/user/list?page=${page}`);
-    const body = await readJson(response);
-    const records = extractRecords(body);
-
-    if (records.length === 0) {
-      break;
-    }
-
-    for (const record of records) {
+  const { limited } = await forEachLiteLLMUser(env, async (record) => {
       const userId =
         (typeof record.user_id === "string" && record.user_id.trim().length > 0
           ? record.user_id.trim()
@@ -232,7 +265,7 @@ export async function importUsers(env: LiteLLMPortalEnv): Promise<ImportUsersRes
 
       if (userId === "") {
         errors.push({ userId: "(unknown)", reason: "user record has no user_id or id field" });
-        continue;
+        return;
       }
 
       scannedUsers++;
@@ -243,7 +276,7 @@ export async function importUsers(env: LiteLLMPortalEnv): Promise<ImportUsersRes
         }
         const email = record.email.trim();
 
-        const role: "admin" | "user" = record.role === "proxy_admin" ? "admin" : "user";
+        const role: "admin" | "user" = desiredUserRoleFromLiteLLM(record.role);
 
         const teamIds: string[] = Array.isArray(record.team_ids)
           ? (record.team_ids as unknown[]).filter((t): t is string => typeof t === "string")
@@ -283,8 +316,8 @@ export async function importUsers(env: LiteLLMPortalEnv): Promise<ImportUsersRes
         await indexStub.putUser(userRecord);
 
         for (const tid of teamIds) {
-          const teamStub = env.TEAM_CONFIG_DO.get(
-            env.TEAM_CONFIG_DO.idFromName(tid),
+          const teamStub = teamConfigNs.get(
+            teamConfigNs.idFromName(tid),
           ) as unknown as TeamConfigDO;
           await teamStub.upsertMember({ userId, role });
         }
@@ -296,14 +329,93 @@ export async function importUsers(env: LiteLLMPortalEnv): Promise<ImportUsersRes
           reason: err instanceof Error ? err.message : String(err),
         });
       }
-    }
-
-    if (page === PAGE_CAP) {
-      limited = true;
-    }
-  }
+  });
 
   return { scannedUsers, insertedUsers, errors, limited };
+}
+
+/** Result summary of the re-runnable role reconcile. */
+export type ReconcileUserRolesResult = {
+  scanned: number;
+  corrected: number;
+  unchanged: number;
+  errors: Array<{ userId: string; reason: string }>;
+};
+
+/** Re-runnable, idempotent role data scrub. Unlike the one-shot importUsers
+ *  (gated behind IndexDO.isImported/markImported via IndexDO.init), this can
+ *  be invoked any time to re-heal IndexDO UserRecord.role values that were
+ *  poisoned by pre-fix code.
+ *
+ *  For every LiteLLM user it recomputes the authoritative role
+ *  (desiredUserRoleFromLiteLLM — same predicate as importUsers), resolves the
+ *  existing IndexDO record by email, and — only when the stored role differs —
+ *  does a READ-MODIFY-WRITE that overwrites ONLY the role facet (every other
+ *  facet: userId, email, teamId, tenantRole, maxBudget, createdAt, … is
+ *  preserved verbatim). Users absent from IndexDO are skipped (counted as
+ *  scanned, not corrected). A per-user failure is isolated to errors[] and
+ *  never aborts the scan. A second run yields corrected:0.
+ */
+export async function reconcileUserRoles(
+  env: LiteLLMPortalEnv,
+): Promise<ReconcileUserRolesResult> {
+  if (!env.INDEX_DO) {
+    throw new Error("reconcileUserRoles: binding INDEX_DO is not configured");
+  }
+  if (!env.LITELLM_BASE_URL?.trim()) {
+    throw new Error("reconcileUserRoles: env.LITELLM_BASE_URL is not configured");
+  }
+  if (!env.LITELLM_MASTER_KEY?.trim()) {
+    throw new Error("reconcileUserRoles: env.LITELLM_MASTER_KEY is not configured");
+  }
+
+  const errors: Array<{ userId: string; reason: string }> = [];
+  let scanned = 0;
+  let corrected = 0;
+  let unchanged = 0;
+
+  const indexStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDO;
+
+  await forEachLiteLLMUser(env, async (record) => {
+    const userId =
+      (typeof record.user_id === "string" && record.user_id.trim().length > 0
+        ? record.user_id.trim()
+        : undefined) ??
+      (typeof record.id === "string" && record.id.trim().length > 0
+        ? record.id.trim()
+        : undefined) ??
+      "(unknown)";
+
+    scanned++;
+
+    try {
+      if (typeof record.email !== "string" || record.email.trim().length === 0) {
+        throw new Error("user record has no valid email field");
+      }
+      const email = record.email.trim();
+      const desiredRole = desiredUserRoleFromLiteLLM(record.role);
+
+      const existing = await indexStub.getUserByEmail(email);
+      if (existing == null) {
+        return;
+      }
+
+      if (existing.role === desiredRole) {
+        unchanged++;
+        return;
+      }
+
+      await indexStub.putUser({ ...existing, role: desiredRole });
+      corrected++;
+    } catch (err) {
+      errors.push({
+        userId,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
+  return { scanned, corrected, unchanged, errors };
 }
 
 /** Result summary of the bootstrap-admin pass. */
