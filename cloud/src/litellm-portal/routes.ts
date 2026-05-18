@@ -752,6 +752,12 @@ async function requireImpersonationForOwnerWrite(
   c: Context<HonoEnv>,
   next: () => Promise<void>,
 ): Promise<Response | void> {
+  // Defense-in-depth: admin_viewer is read-only. The central chokepoint in
+  // applyAuthMiddleware already 403s this, but enforce it independently here
+  // too so the read-only contract holds even if the chokepoint regresses.
+  if (c.req.method !== "GET" && c.get("identity").role === "admin_viewer") {
+    return c.json({ error: "write_not_permitted_for_admin_viewer" }, 403);
+  }
   if (
     c.req.method !== "GET" &&
     c.get("identity").role === "admin" &&
