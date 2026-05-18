@@ -507,7 +507,9 @@ export async function handleMagicCallback(request: Request, env: LiteLLMPortalEn
       userId,
       domain: emailLc.split("@")[1] ?? "",
     });
-    if (id.ok && id.identity.role === "admin") landing = "/ops";
+    if (id.ok && (id.identity.role === "admin" || id.identity.role === "admin_viewer")) {
+      landing = "/ops";
+    }
   } catch {
     landing = "/";
   }

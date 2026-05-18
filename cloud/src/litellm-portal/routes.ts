@@ -6,6 +6,7 @@ import { applyAdminRateLimit } from "./security/rate-limit-middleware";
 import { authenticateRequest } from "./auth";
 import { resolveIdentity } from "./roles";
 import { invalidateRole } from "./role-cache";
+import { litellmRoleToTier } from "./role-mapping";
 import { KVUserPrefsStore } from "./preferences";
 import { sendEmail } from "./notifications";
 import { portalCompanyName, roundCurrency, sumDefinedNumbers, uniqueSorted } from "./utils";
@@ -645,6 +646,22 @@ async function applyAuthMiddleware(c: Context<HonoEnv>, next: () => Promise<void
   }
   c.set("identity", identityResult.identity);
 
+  // admin_viewer (LiteLLM proxy_admin_viewer) is a read-only owner: it may READ
+  // every admin/ops surface but perform NO state mutation and NO impersonation.
+  // Single central chokepoint — runs after identity is set, before any sub-app
+  // handler — so there is no per-route omission (= privilege-escalation) risk.
+  // Scoped to the admin/ops/tenant write surfaces (self-service paths unaffected).
+  if (identityResult.identity.role === "admin_viewer" && c.req.method !== "GET") {
+    const path = new URL(c.req.url).pathname;
+    if (
+      path.startsWith("/api/admin/") ||
+      path.startsWith("/api/ops/") ||
+      path.startsWith("/api/tenant/")
+    ) {
+      return c.json({ error: "write_not_permitted_for_admin_viewer" }, 403);
+    }
+  }
+
   // Derive impersonation context from the signed cb_imp token (transport).
   // H4: each verified request slides the 30-minute idle window within the
   // hard 2-hour absolute cap by re-minting on activity.
@@ -677,15 +694,22 @@ function impersonationSecret(env: LiteLLMPortalEnv): string | null {
   return env.PORTAL_SESSION_SECRET ?? null;
 }
 
+// admin AND admin_viewer may READ admin/ops surfaces. Writes are denied
+// centrally for admin_viewer in applyAuthMiddleware (defense-in-depth: a single
+// chokepoint, no per-route omission risk).
+function isAdminTier(role: string): boolean {
+  return role === "admin" || role === "admin_viewer";
+}
+
 async function requireAdmin(c: Context<HonoEnv>, next: () => Promise<void>): Promise<Response | void> {
-  if (c.get("identity").role !== "admin") {
+  if (!isAdminTier(c.get("identity").role)) {
     return c.json({ error: "admin_required" }, 403);
   }
   await next();
 }
 
 async function requireOwner(c: Context<HonoEnv>, next: () => Promise<void>): Promise<Response | void> {
-  if (c.get("identity").role !== "admin") {
+  if (!isAdminTier(c.get("identity").role)) {
     return c.json({ error: "owner_required" }, 403);
   }
   await next();
@@ -703,8 +727,9 @@ function tenantTeamIdFromReq(c: Context<HonoEnv>): string | null {
 
 async function requireTenantAdmin(c: Context<HonoEnv>, next: () => Promise<void>): Promise<Response | void> {
   const id = c.get("identity");
-  // Platform admin is a superset (Owner / impersonation).
-  if (id.role === "admin") { await next(); return; }
+  // Platform admin / admin_viewer is a superset (global Owner). Writes by
+  // admin_viewer are still denied centrally in applyAuthMiddleware.
+  if (isAdminTier(id.role)) { await next(); return; }
   const targetTeam = tenantTeamIdFromReq(c) ?? id.tenantTeamId;
   if (
     id.tenantRole === "tenant_admin" &&
@@ -2168,6 +2193,7 @@ type IndexDOOpsStub = {
   >;
   getUserById(userId: string): Promise<{ userId: string; email: string; role: "admin" | "user"; teamId: string | null; maxBudget?: number } | null>;
   getUserByEmail(email: string): Promise<{ userId: string; email: string; role: "admin" | "user"; teamId: string | null; maxBudget?: number } | null>;
+  getIdentityByEmail(email: string): Promise<{ userRole: string | null } | null>;
 };
 
 type TeamConfigDOOpsStub = {
@@ -2305,11 +2331,15 @@ const opsUserDetailApp = new Hono<HonoEnv>()
     if (rec == null) return c.json({ error: "user_not_found" }, 404);
     const roles = await idx.listTenantRoles();
     const role = roles.find((r) => r.userId === rec.userId) ?? null;
+    // Platform role is LiteLLM-single-source: derive the displayed tier from
+    // the identity map's LiteLLM user_role (not the deprecated UserRecord.role,
+    // which is a coarse denormalization that cannot represent admin_viewer).
+    const identity = await idx.getIdentityByEmail(rec.email);
     return c.json(
       OpsUserDetailSchema.parse({
         userId: rec.userId,
         email: rec.email,
-        platformRole: rec.role === "admin" ? "admin" : "user",
+        platformRole: litellmRoleToTier(identity?.userRole ?? null),
         teamId: rec.teamId,
         tenantRole: role?.tenantRole ?? null,
         spend: null,

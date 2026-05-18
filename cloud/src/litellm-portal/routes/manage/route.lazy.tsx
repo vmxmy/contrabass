@@ -20,7 +20,8 @@ const adminNavItems = [
 
 export function ManageLayout() {
   const { data: me } = useMe();
-  const isAdmin = me?.role === "admin";
+  // admin_viewer navigates the same admin pages read-only (server denies writes).
+  const isAdmin = me?.role === "admin" || me?.role === "admin_viewer";
   const pathname = useRouterState({ select: (s) => s.location.pathname });
 
   const navItems = isAdmin ? adminNavItems : manageNavItems;

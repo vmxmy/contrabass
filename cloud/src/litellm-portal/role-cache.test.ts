@@ -21,10 +21,13 @@ function litellmUser(overrides: Partial<LiteLLMUser> = {}): LiteLLMUser {
 }
 
 beforeEach(() => {
-  // Default: LiteLLM resolves the authoritative user_id "laoxu" for any email.
-  vi.spyOn(litellm, "resolveLiteLLMUser").mockImplementation(async (_env, email) =>
-    litellmUser({ email: email.toLowerCase() }),
-  );
+  // Platform role is LiteLLM-single-source. Default mock: `admin@*` resolves as
+  // proxy_admin (→ admin), everyone else as internal_user (→ user). user_id is
+  // the authoritative "laoxu" for any email. Tests override the spy as needed.
+  vi.spyOn(litellm, "resolveLiteLLMUser").mockImplementation(async (_env, email) => {
+    const lc = email.toLowerCase();
+    return litellmUser({ email: lc, role: lc.startsWith("admin@") ? "proxy_admin" : "internal_user" });
+  });
 });
 
 afterEach(() => {
@@ -68,6 +71,7 @@ const _cookieCache = new Map<string, string>();
 const _testEmails = [
   "admin@gz-zhiyun.com",
   "user@gz-zhiyun.com",
+  "viewer@gz-zhiyun.com",
 ];
 
 beforeAll(async () => {
@@ -134,12 +138,13 @@ describe("role-cache", () => {
       expect(result.litellmUserId).toBe("laoxu");
     });
 
-    it("keeps role from IndexDO (admin) but litellmUserId from resolveLiteLLMUser", async () => {
+    it("role + litellmUserId both come from LiteLLM, not IndexDO (single source)", async () => {
+      // IndexDO says "user" but LiteLLM says proxy_admin — LiteLLM wins.
       vi.spyOn(litellm, "resolveLiteLLMUser").mockResolvedValue(
-        litellmUser({ userId: "bob-litellm", email: "bob@gz-zhiyun.com" }),
+        litellmUser({ userId: "bob-litellm", email: "bob@gz-zhiyun.com", role: "proxy_admin" }),
       );
       const indexDO = makeIndexDO({
-        "bob@gz-zhiyun.com": { role: "admin", userId: "bob-uid" },
+        "bob@gz-zhiyun.com": { role: "user", userId: "bob-uid" },
       });
       const env = baseEnv({ INDEX_DO: indexDO });
       const result = await getRole(env, "bob@gz-zhiyun.com");
@@ -160,25 +165,31 @@ describe("role-cache", () => {
       expect(result.litellmUserId).toBe("ghost@gz-zhiyun.com");
     });
 
-    it("falls back to email when resolveLiteLLMUser throws (no login lockout)", async () => {
+    it("fail-closed: resolveLiteLLMUser throws → role none, no login lockout (litellmUserId=email)", async () => {
       vi.spyOn(litellm, "resolveLiteLLMUser").mockRejectedValue(new Error("litellm down"));
       const indexDO = makeIndexDO({ "down@gz-zhiyun.com": { role: "user", userId: "down@gz-zhiyun.com" } });
       const env = baseEnv({ INDEX_DO: indexDO });
       const result = await getRole(env, "down@gz-zhiyun.com");
 
-      expect(result.role).toBe("user");
+      // Pure fail-closed: LiteLLM unreachable → none (IndexDO role NOT trusted).
+      expect(result.role).toBe("none");
       expect(result.litellmUserId).toBe("down@gz-zhiyun.com");
     });
 
-    it("falls back to email when INDEX_DO binding is absent", async () => {
+    it("role still resolves from LiteLLM when INDEX_DO binding is absent", async () => {
+      // Single-source: INDEX_DO is only the tenant facet; platform role is
+      // LiteLLM. noidx@ → internal_user (default mock) → "user".
       const env = baseEnv();
       const result = await getRole(env, "noidx@gz-zhiyun.com");
 
-      expect(result.role).toBe("none");
+      expect(result.role).toBe("user");
       expect(result.litellmUserId).toBe("laoxu");
     });
 
-    it("returns none when IndexDO has no user", async () => {
+    it("fail-closed: no LiteLLM match (found:false) → role none", async () => {
+      vi.spyOn(litellm, "resolveLiteLLMUser").mockResolvedValue(
+        litellmUser({ userId: "unknown@gz-zhiyun.com", email: "unknown@gz-zhiyun.com", found: false, role: null }),
+      );
       const indexDO = makeIndexDO({});
       const env = baseEnv({ INDEX_DO: indexDO });
       const result = await getRole(env, "unknown@gz-zhiyun.com");
@@ -186,16 +197,9 @@ describe("role-cache", () => {
       expect(result.role).toBe("none");
     });
 
-    it("returns none when INDEX_DO binding is absent", async () => {
-      const env = baseEnv();
-      const result = await getRole(env, "alice@gz-zhiyun.com");
-
-      expect(result.role).toBe("none");
-    });
-
     it("serves from 30s memory cache on second call (IndexDO + resolveLiteLLMUser not re-queried)", async () => {
       const resolveSpy = vi.spyOn(litellm, "resolveLiteLLMUser").mockResolvedValue(
-        litellmUser({ userId: "carol-id", email: "carol@gz-zhiyun.com" }),
+        litellmUser({ userId: "carol-id", email: "carol@gz-zhiyun.com", role: "proxy_admin" }),
       );
       const indexDO = makeIndexDO({ "carol@gz-zhiyun.com": { role: "admin" } });
       const stub = (indexDO.get as ReturnType<typeof vi.fn>).mock?.results?.[0]?.value;
@@ -370,6 +374,37 @@ describe("POST /api/admin/roles/invalidate", () => {
 });
 
 // ---------------------------------------------------------------------------
+// admin_viewer central write-deny (denyAdminViewerWrite chokepoint)
+// ---------------------------------------------------------------------------
+
+describe("admin_viewer read-only enforcement (central chokepoint)", () => {
+  it("admin_viewer is denied a write to /api/admin/* (403 write_not_permitted_for_admin_viewer)", async () => {
+    vi.spyOn(litellm, "resolveLiteLLMUser").mockResolvedValue(
+      litellmUser({ userId: "laoxu", email: "viewer@gz-zhiyun.com", role: "proxy_admin_viewer" }),
+    );
+    const indexDO = makeIndexDO({ "viewer@gz-zhiyun.com": { role: "user" } });
+    const response = await handleLiteLLMPortalRequest(
+      devRequest("https://portal.test/api/admin/roles/invalidate?email=t%40gz-zhiyun.com", "viewer@gz-zhiyun.com", { method: "POST" }),
+      portalEnv({ INDEX_DO: indexDO }),
+    );
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "write_not_permitted_for_admin_viewer" });
+  });
+
+  it("full admin (proxy_admin) is NOT affected by the viewer write-deny (204)", async () => {
+    vi.spyOn(litellm, "resolveLiteLLMUser").mockResolvedValue(
+      litellmUser({ userId: "boss", email: "admin@gz-zhiyun.com", role: "proxy_admin" }),
+    );
+    const indexDO = makeIndexDO({ "admin@gz-zhiyun.com": { role: "admin" } });
+    const response = await handleLiteLLMPortalRequest(
+      devRequest("https://portal.test/api/admin/roles/invalidate?email=t%40gz-zhiyun.com", "admin@gz-zhiyun.com", { method: "POST" }),
+      portalEnv({ INDEX_DO: indexDO }),
+    );
+    expect(response.status).toBe(204);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Integration tests: internal webhook endpoint
 // ---------------------------------------------------------------------------
 
@@ -466,24 +501,24 @@ describe("_clearRoleCacheForTests (roles.ts re-export)", () => {
 // F2 LiteLLM role mapping (proxy_admin_viewer + teams)
 // ---------------------------------------------------------------------------
 
-describe("F2 LiteLLM role mapping (proxy_admin_viewer + teams)", () => {
-  it("maps proxy_admin_viewer with teams to its IndexDO role (NOT admin — escalation guard)", async () => {
+describe("LiteLLM single-source role mapping (admin_viewer + teams)", () => {
+  it("proxy_admin_viewer → admin_viewer (read-only owner), tenantTeamId from LiteLLM", async () => {
     vi.spyOn(litellm, "resolveLiteLLMUser").mockResolvedValue({
       userId: "laoxu", email: "xu@gz-zhiyun.com", spend: null, maxBudget: null,
       teamIds: ["ea0e8075", "1255c10b"], role: "proxy_admin_viewer", found: true, raw: null,
     });
     const env = { INDEX_DO: makeIndexDO({ "xu@gz-zhiyun.com": { role: "user", userId: "laoxu", teamId: null } }) } as unknown as LiteLLMPortalEnv;
     const r = await getRole(env, "xu@gz-zhiyun.com");
-    expect(r.role).toBe("user");
+    expect(r.role).toBe("admin_viewer");
     expect(r.litellmUserId).toBe("laoxu");
     expect(r.tenantTeamId).toBe("ea0e8075");
   });
 
-  it("fail-closed: LiteLLM throw keeps the IndexDO role (no escalation)", async () => {
+  it("fail-closed: LiteLLM throw → none (IndexDO role NOT trusted, no escalation)", async () => {
     vi.spyOn(litellm, "resolveLiteLLMUser").mockRejectedValue(new Error("litellm down"));
     const env = { INDEX_DO: makeIndexDO({ "n@x.com": { role: "user", userId: "n", teamId: null } }) } as unknown as LiteLLMPortalEnv;
     const r = await getRole(env, "n@x.com");
-    expect(r.role).toBe("user");
+    expect(r.role).toBe("none");
   });
 
   it("proxy_admin maps to admin even when IndexDO says none", async () => {

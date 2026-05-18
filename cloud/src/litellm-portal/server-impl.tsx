@@ -112,9 +112,13 @@ export async function renderPortalSSR(
     }
   })();
 
-  const role = identity.role === "admin" || identity.role === "user" || identity.role === "none"
-    ? identity.role
-    : "none";
+  const role =
+    identity.role === "admin" ||
+    identity.role === "admin_viewer" ||
+    identity.role === "user" ||
+    identity.role === "none"
+      ? identity.role
+      : "none";
 
   const history = createMemoryHistory({ initialEntries: [initialPath] });
   const router = createPortalRouter(history, { role });

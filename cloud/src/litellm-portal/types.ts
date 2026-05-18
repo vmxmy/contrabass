@@ -75,7 +75,11 @@ export type AuthResult =
   | { ok: true; principal: PortalPrincipal }
   | { ok: false; status: 401 | 403 | 500; error: string };
 
-export type PortalRole = "admin" | "user" | "none";
+// admin: LiteLLM proxy_admin — full owner (read + write + impersonate)
+// admin_viewer: LiteLLM proxy_admin_viewer — read-only owner (no write/impersonate)
+// user: any other LiteLLM role — self-service only
+// none: LiteLLM gave no role (unreachable/unmapped) — fail-closed, no access
+export type PortalRole = "admin" | "admin_viewer" | "user" | "none";
 
 export type PortalIdentity = PortalPrincipal & {
   litellmUserId: string;

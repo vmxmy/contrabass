@@ -327,7 +327,7 @@ function PreferencesBootstrap() {
 
 export type AppProps = {
   initialData?: InitialDashboardData | null;
-  role?: "admin" | "user" | "none";
+  role?: "admin" | "admin_viewer" | "user" | "none";
   dehydratedState?: unknown;
 };
 
