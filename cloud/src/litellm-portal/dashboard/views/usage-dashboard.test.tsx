@@ -97,7 +97,7 @@ describe("UsageDashboard", () => {
     const { getByText } = wrap(<UsageDashboard />);
 
     await waitFor(() => expect(getByText("$45.20")).toBeTruthy());
-    expect(getByText("消费趋势")).toBeTruthy();
+    expect(getByText("Token 消耗趋势")).toBeTruthy();
     expect(globalThis.fetch).toHaveBeenCalledWith("/api/usage/overview?window=30d", {
       headers: { "content-type": "application/json" },
     });

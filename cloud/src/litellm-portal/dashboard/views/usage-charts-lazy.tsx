@@ -58,7 +58,7 @@ export async function warmUsageCharts(): Promise<void> {
   await Promise.all([importTrend(), importRank(), importDonut()]);
 }
 
-export function TrendChartLazy(props: { series: TrendSeries[]; height?: number; ariaLabel?: string }) {
+export function TrendChartLazy(props: { series: TrendSeries[]; height?: number; ariaLabel?: string; yAxisFormatter?: (value: number) => string; stacked?: boolean }) {
   return (
     <BlockErrorBoundary blockLabel="用量图表">
       <React.Suspense fallback={<PanelSkeleton lines={3} />}>

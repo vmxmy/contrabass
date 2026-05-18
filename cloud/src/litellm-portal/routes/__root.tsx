@@ -11,7 +11,7 @@
 
 import React, { useEffect } from "react";
 import { Link, createRootRouteWithContext, Outlet, useRouter, useRouterState } from "@tanstack/react-router";
-import { Switch } from "@cloudflare/kumo/components/switch";
+import { Sun, Moon } from "@phosphor-icons/react";
 import { Button, LinkButton } from "@cloudflare/kumo/components/button";
 import { Toasty } from "@cloudflare/kumo/components/toast";
 import { Loader } from "@cloudflare/kumo/components/loader";
@@ -81,15 +81,15 @@ function HeaderActions() {
   return (
     <>
       <LinkButton href="/manage/preferences" variant="ghost"><Trans>偏好设置</Trans></LinkButton>
-      <LinkButton href="/manage" variant="secondary"><Trans>管理</Trans></LinkButton>
-      <Switch
-        controlFirst={false}
-        checked={isDark}
-        transitioning={updatePreferences.isPending}
-        onCheckedChange={(next: boolean) => updatePreferences.mutate({ theme: next ? "dark" : "light" })}
+      <LinkButton href="/manage" variant="ghost"><Trans>管理</Trans></LinkButton>
+      <Button
+        variant="ghost"
+        size="sm"
         aria-label={isDark ? "切换浅色模式" : "切换深色模式"}
-        label={isDark ? <Trans>深色</Trans> : <Trans>浅色</Trans>}
-      />
+        onClick={() => updatePreferences.mutate({ theme: isDark ? "light" : "dark" })}
+      >
+        {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+      </Button>
       <form method="POST" action="/logout" style={{ display: "inline" }}>
         <Button variant="outline" type="submit" aria-label="退出登录">
           <Trans>退出登录</Trans>

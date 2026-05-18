@@ -4,7 +4,7 @@ import { usePortalDarkMode, kumoAxisColors, categorical, TOOLTIP_STYLE } from ".
 
 export type TrendSeries = { name: string; points: Array<[number, number]>; dashed?: boolean };
 
-export function TrendChart({ series, height = 300, ariaLabel }: { series: TrendSeries[]; height?: number; ariaLabel?: string }) {
+export function TrendChart({ series, height = 300, ariaLabel, yAxisFormatter, stacked }: { series: TrendSeries[]; height?: number; ariaLabel?: string; yAxisFormatter?: (value: number) => string; stacked?: boolean }) {
   const dark = usePortalDarkMode();
   const ref = useRef<HTMLDivElement>(null);
 
@@ -14,17 +14,19 @@ export function TrendChart({ series, height = 300, ariaLabel }: { series: TrendS
     const c = kumoAxisColors(dark);
     chart.setOption({
       backgroundColor: "transparent",
-      tooltip: { trigger: "axis", ...TOOLTIP_STYLE(dark) },
+      tooltip: { trigger: "axis", order: stacked ? "valueDesc" : "seriesAsc", ...TOOLTIP_STYLE(dark) },
       legend: series.length > 1 ? { textStyle: { color: c.label }, top: 0 } : undefined,
       grid: { left: 50, right: 20, top: series.length > 1 ? 30 : 16, bottom: 28 },
       xAxis: { type: "time", axisLine: { lineStyle: { color: c.axisLine } }, axisLabel: { color: c.label } },
-      yAxis: { type: "value", axisLine: { show: false }, splitLine: { lineStyle: { color: c.splitLine } }, axisLabel: { color: c.label } },
+      yAxis: { type: "value", axisLine: { show: false }, splitLine: { lineStyle: { color: c.splitLine } }, axisLabel: { color: c.label, formatter: yAxisFormatter ? (v: number) => yAxisFormatter(v) : undefined } },
       series: series.map((s, i) => ({
         name: s.name, type: "line", smooth: true, showSymbol: false,
         data: s.points,
+        stack: stacked ? "total" : undefined,
         lineStyle: { width: 2, type: s.dashed ? "dashed" : "solid" },
         itemStyle: { color: categorical(i, dark) },
-        areaStyle: series.length === 1 ? { opacity: 0.12 } : undefined,
+        areaStyle: stacked ? { opacity: 0.22 } : series.length === 1 ? { opacity: 0.12 } : undefined,
+        emphasis: stacked ? { focus: "series" } : undefined,
       })),
     });
     const onResize = () => chart.resize();

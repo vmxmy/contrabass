@@ -8,6 +8,7 @@ import { Text } from "@cloudflare/kumo/components/text";
 import { Tooltip } from "@cloudflare/kumo/components/tooltip";
 import React, { useCallback, useState } from "react";
 import { PanelSkeleton, PanelError } from "./components/panel-state";
+import { SsrSafeSkeleton } from "./components/ssr-safe-skeleton";
 import { useAdminUsers } from "./hooks/use-admin-users";
 import { useAdminTeams } from "./hooks/use-admin-teams";
 import { useAdminAudit } from "./hooks/use-admin-audit";
@@ -64,7 +65,7 @@ export function AdminStatusHeader({ summary, loading }: { summary: AdminStatusSu
     <div className="flex flex-wrap items-center gap-3 rounded-lg border border-kumo-line bg-kumo-elevated px-4 py-3">
       <div className="flex flex-1 flex-wrap items-center gap-2">
         {loading ? (
-          <SkeletonLine minWidth={160} maxWidth={280} blockHeight={16} />
+          <SsrSafeSkeleton minWidth={160} maxWidth={280} blockHeight={16} />
         ) : (
           <Text size="sm" className={tone === "success" ? "text-kumo-success" : tone === "danger" ? "text-kumo-danger" : "text-kumo-warning"}>
             {message}
@@ -168,8 +169,8 @@ export function TopModelsPanel({ data, loading }: { data: UsageTimeseries | null
       <div className="flex flex-col gap-3">
         {Array.from({ length: 3 }, (_, index) => (
           <div key={index} className="rounded-lg bg-kumo-recessed p-4">
-            <SkeletonLine minWidth={120} maxWidth={220} blockHeight={16} />
-            <SkeletonLine className="mt-2" minWidth={180} maxWidth={260} blockHeight={13} />
+            <SsrSafeSkeleton minWidth={120} maxWidth={220} blockHeight={16} />
+            <SsrSafeSkeleton className="mt-2" minWidth={180} maxWidth={260} blockHeight={13} />
           </div>
         ))}
       </div>

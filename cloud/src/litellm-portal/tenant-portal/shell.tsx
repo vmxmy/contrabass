@@ -139,6 +139,9 @@ function SummaryBarMetrics() {
 
   return (
     <div className="ml-auto flex items-center gap-3">
+      <Text variant="secondary" size="xs" className="hidden sm:inline">
+        <Trans>团队预算</Trans>
+      </Text>
       {teamBudget != null ? (
         <Meter
           className="w-40"
