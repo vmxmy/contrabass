@@ -98,3 +98,78 @@ describe("PanelCard — density-driven body padding (S4)", () => {
     expect(body.className).not.toContain("p-4");
   });
 });
+
+describe("PanelCard — four content states render inside the frame (S3-C)", () => {
+  it("state=loading renders the skeleton and NOT children", () => {
+    const { container } = wrap(
+      <PanelCard title="t" state={{ kind: "loading", lines: 3 }}>
+        <p>should-not-show</p>
+      </PanelCard>,
+    );
+    expect(container.querySelector("[data-panel-skeleton]")).not.toBeNull();
+    expect(
+      container.querySelectorAll("[data-panel-skeleton-line]").length,
+    ).toBe(3);
+    expect(screen.queryByText("should-not-show")).toBeNull();
+  });
+
+  it("state=empty renders PanelEmpty with title/description/action", () => {
+    wrap(
+      <PanelCard
+        title="t"
+        state={{
+          kind: "empty",
+          title: "暂无密钥",
+          description: "去创建一个",
+          action: <a href="/x">创建</a>,
+        }}
+      >
+        c
+      </PanelCard>,
+    );
+    expect(screen.getByText("暂无密钥")).toBeTruthy();
+    expect(screen.getByText("去创建一个")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "创建" })).toBeTruthy();
+  });
+
+  it("state=error uses the card title as the error title and never leaks a non-catalog raw message (§F.3)", () => {
+    // PanelCard renders the title in BOTH the header and (when state=error)
+    // the PanelError banner — that is the intended contract (the card title
+    // IS the error title). Assert it precisely inside the error region rather
+    // than with a page-wide getByText, which would (correctly) find two nodes.
+    const { container } = wrap(
+      <PanelCard
+        title="加载失败"
+        state={{ kind: "error", error: new Error("Failed to fetch") }}
+      >
+        c
+      </PanelCard>,
+    );
+    const errRegion = container.querySelector("[data-panel-error]");
+    expect(errRegion).not.toBeNull();
+    expect(errRegion?.textContent).toContain("加载失败");
+    expect(container.textContent).not.toContain("Failed to fetch");
+    expect(container.textContent).toContain("网络请求失败");
+  });
+
+  it("state=error falls back to a default title when card has no title", () => {
+    wrap(
+      <PanelCard state={{ kind: "error", error: new Error("boom") }}>
+        c
+      </PanelCard>,
+    );
+    expect(screen.getByText("加载失败")).toBeTruthy();
+  });
+
+  it("state=inlineLoading renders the labelled Kumo loader", () => {
+    wrap(
+      <PanelCard
+        title="t"
+        state={{ kind: "inlineLoading", label: "正在加载" }}
+      >
+        c
+      </PanelCard>,
+    );
+    expect(screen.getByLabelText("正在加载")).toBeTruthy();
+  });
+});
