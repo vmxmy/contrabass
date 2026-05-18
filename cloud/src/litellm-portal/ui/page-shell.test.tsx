@@ -60,3 +60,42 @@ describe("PageShell — unified surface chrome (S2)", () => {
     );
   });
 });
+
+describe("PageShell — id/style/className passthrough (shell-migration unblock)", () => {
+  it("forwards id and inline style to the root (preserves Ops steel accent / anchors)", () => {
+    const { container } = render(
+      <PageShell
+        id="ops-console-shell-root"
+        style={{ ["--kumo-brand" as string]: "#71717a" }}
+        nav={<aside />}
+      >
+        x
+      </PageShell>,
+    );
+    const root = container.querySelector("[data-page-shell]") as HTMLElement;
+    expect(root.id).toBe("ops-console-shell-root");
+    expect(root.style.getPropertyValue("--kumo-brand")).toBe("#71717a");
+  });
+
+  it("appends className to the canonical token set without replacing it", () => {
+    const { container } = render(
+      <PageShell className="extra-shell-class" nav={<aside />}>
+        x
+      </PageShell>,
+    );
+    const root = container.querySelector("[data-page-shell]") as HTMLElement;
+    expect(root.className).toContain(
+      "flex min-h-screen flex-col bg-kumo-canvas text-kumo-default",
+    );
+    expect(root.className).toContain("extra-shell-class");
+  });
+
+  it("still emits the exact canonical tokens when no passthrough is given (regression)", () => {
+    const { container } = render(<PageShell nav={<aside />}>x</PageShell>);
+    const root = container.querySelector("[data-page-shell]") as HTMLElement;
+    expect(root.className).toBe(
+      "flex min-h-screen flex-col bg-kumo-canvas text-kumo-default",
+    );
+    expect(root.id).toBe("");
+  });
+});
