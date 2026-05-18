@@ -17,38 +17,47 @@ import { Badge } from "@cloudflare/kumo/components/badge";
 import { LayerCard } from "@cloudflare/kumo/components/layer-card";
 import { Meter } from "@cloudflare/kumo/components/meter";
 import { Text } from "@cloudflare/kumo/components/text";
+import { Tooltip } from "@cloudflare/kumo/components/tooltip";
 import { t } from "@lingui/core/macro";
 import { Trans } from "@lingui/react/macro";
+import { Cpu, UsersIcon, CheckCircle, WarningCircle } from "@phosphor-icons/react";
 import { useMe } from "../../hooks/use-me";
 import { useDashboard } from "../../hooks/use-dashboard";
 import { useTenantWebhook } from "../hooks";
 import { PanelSkeleton, PanelEmpty } from "../../components/panel-state";
-import { fmt, fmtInt } from "../../lib/format";
+import { fmt, fmtInt, fmtCompact } from "../../lib/format";
 
 // ---------------------------------------------------------------------------
 // TeamIdentityTile — shows company/brand name and team identity
 // ---------------------------------------------------------------------------
 
-function TeamIdentityTile({ company }: { company: string }) {
+function TeamIdentityTile({ company, email, role }: { company: string; email?: string | null; role?: string | null }) {
   const name = company.trim() === "" ? "Portal" : company;
   return (
     <LayerCard className="p-6">
       <div className="flex items-center gap-2">
-        <span className="inline-block h-2 w-2 rounded-full bg-kumo-brand" />
+        <UsersIcon className="h-4 w-4 text-kumo-brand" />
         <Text
           variant="secondary"
           size="xs"
           className="font-semibold uppercase tracking-wider"
         >
-          <Trans>团队</Trans>
+          <Trans>当前身份</Trans>
         </Text>
       </div>
-      <Text variant="heading2" as="p" className="mt-4 truncate">
+      <Text variant="heading2" as="p" className="mt-4 truncate font-bold">
         {name}
       </Text>
-      <Text variant="secondary" as="p" className="mt-2 text-xs">
-        <Trans>当前租户团队</Trans>
-      </Text>
+      {email ? (
+        <Text variant="mono" as="p" className="mt-2 truncate text-xs text-kumo-subtle">
+          {email}
+        </Text>
+      ) : null}
+      {role ? (
+        <Badge variant="secondary" className="mt-2 rounded-full text-xs">
+          {role}
+        </Badge>
+      ) : null}
     </LayerCard>
   );
 }
@@ -80,10 +89,10 @@ function PersonalSpendTile() {
           size="xs"
           className="font-semibold uppercase tracking-wider"
         >
-          <Trans>个人花费</Trans>
+          <Trans>个人累计</Trans>
         </Text>
       </div>
-      <Text variant="heading1" as="p" className="mt-4 leading-tight">
+      <Text variant="heading1" as="p" className="mt-4 leading-tight font-bold">
         {fmt(totalSpend)}
       </Text>
       {maxBudget != null ? (
@@ -95,7 +104,7 @@ function PersonalSpendTile() {
         />
       ) : null}
       <Text variant="secondary" as="p" className="mt-2 text-xs">
-        <Trans>累计花费</Trans>
+        <Trans>自注册以来的总花费</Trans>
       </Text>
     </LayerCard>
   );
@@ -134,7 +143,7 @@ function TeamBudgetTile() {
           <Trans>团队预算</Trans>
         </Text>
       </div>
-      <Text variant="heading1" as="p" className="mt-4 leading-tight">
+      <Text variant="heading1" as="p" className="mt-4 leading-tight font-bold">
         {fmt(teamSpend)}
       </Text>
       {teamBudget != null ? (
@@ -173,7 +182,7 @@ function WebhookStatusTile() {
     return (
       <LayerCard className="p-6" id="tenant-overview-webhook-tile">
         <div className="flex items-center gap-2">
-          <span className="inline-block h-2 w-2 rounded-full bg-kumo-warning" />
+          <WarningCircle className="h-4 w-4 text-kumo-warning" />
           <Text
             variant="secondary"
             size="xs"
@@ -194,9 +203,11 @@ function WebhookStatusTile() {
   return (
     <LayerCard className="p-6" id="tenant-overview-webhook-tile">
       <div className="flex items-center gap-2">
-        <span
-          className={`inline-block h-2 w-2 rounded-full ${isConfigured ? "bg-kumo-success" : "bg-kumo-warning"}`}
-        />
+        {isConfigured ? (
+          <CheckCircle className="h-4 w-4 text-kumo-success" />
+        ) : (
+          <WarningCircle className="h-4 w-4 text-kumo-warning" />
+        )}
         <Text
           variant="secondary"
           size="xs"
@@ -268,9 +279,12 @@ function TopModelsTile() {
   return (
     <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
       <div className="flex items-center justify-between border-b border-kumo-line bg-kumo-elevated p-6">
-        <Text variant="heading3" as="p">
-          <Trans>高频模型</Trans>
-        </Text>
+        <div className="flex items-center gap-2">
+          <Cpu className="h-4 w-4 text-kumo-brand" />
+          <Text variant="heading3" as="p">
+            <Trans>高频模型</Trans>
+          </Text>
+        </div>
         <Badge variant="outline" className="rounded-full">
           {models.length} <Trans>个模型</Trans>
         </Badge>
@@ -319,14 +333,22 @@ function RecentActivityTile() {
           size="xs"
           className="font-semibold uppercase tracking-wider"
         >
-          <Trans>近 30 天</Trans>
+          <Trans>个人近 30 天</Trans>
         </Text>
       </div>
-      <Text variant="heading1" as="p" className="mt-4 leading-tight">
+      <Text variant="heading1" as="p" className="mt-4 leading-tight font-bold">
         {fmt(recentSpend)}
       </Text>
       <Text variant="secondary" as="p" className="mt-3 text-sm">
-        {fmtInt(requestCount)} <Trans>次请求</Trans> · {fmtInt(totalTokens)} tokens
+        {fmtInt(requestCount)} <Trans>次请求</Trans>
+        {totalTokens != null ? (
+          <>
+            {" · "}
+            <Tooltip content={`${fmtInt(totalTokens)} tokens`}>
+              <span>{fmtCompact(totalTokens)} tokens</span>
+            </Tooltip>
+          </>
+        ) : null}
       </Text>
     </LayerCard>
   );
@@ -347,7 +369,7 @@ export function TenantOverviewScreen() {
     <div id="tenant-overview-root" className="space-y-6">
       {/* KPI row: identity + personal spend + (team budget ring for admin) + recent activity */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <TeamIdentityTile company={company} />
+        <TeamIdentityTile company={company} email={me?.email} role={me?.tenantRole} />
         <PersonalSpendTile />
         {isTenantAdmin ? <TeamBudgetTile /> : null}
         <RecentActivityTile />
