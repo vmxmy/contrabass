@@ -332,19 +332,23 @@ git -c commit.gpgsign=false commit -m "fix(litellm-portal): use ICU named args f
 Create `cloud/src/litellm-portal/i18n/catalog-migration.test.ts`:
 
 ```ts
+// NOTE: uses the repo's established test path idiom — plain cwd-relative
+// string paths to readFileSync/existsSync (cwd = cloud/ when vitest runs),
+// mirroring src/litellm-portal/a11y/type-scale.test.ts. The
+// fileURLToPath(new URL(..., import.meta.url)) idiom does NOT typecheck under
+// cloud/tsconfig.json (@cloudflare/workers-types, no node URL→fileURLToPath
+// overload) for an included `.ts` test — it would add non-baseline TS2769.
 import { describe, expect, it } from "vitest";
 import { readFileSync, existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
-const enPo = () =>
-  readFileSync(fileURLToPath(new URL("./locales/en/messages.po", import.meta.url)), "utf8");
-const zhPo = () =>
-  fileURLToPath(new URL("./locales/zh-CN/messages.po", import.meta.url));
+const EN_PO = "src/litellm-portal/i18n/locales/en/messages.po";
+const ZH_PO = "src/litellm-portal/i18n/locales/zh-CN/messages.po";
+const enPo = () => readFileSync(EN_PO, "utf8");
 
 describe("F1 catalog migration", () => {
   it("po catalogs exist for both locales", () => {
-    expect(existsSync(zhPo())).toBe(true);
-    expect(existsSync(fileURLToPath(new URL("./locales/en/messages.po", import.meta.url)))).toBe(true);
+    expect(existsSync(ZH_PO)).toBe(true);
+    expect(existsSync(EN_PO)).toBe(true);
   });
   it("carries the human English translation for a representative key", () => {
     const po = enPo();
@@ -435,12 +439,161 @@ git -c commit.gpgsign=false commit -m "feat(litellm-portal): migrate human i18n 
 
 ---
 
+## Task 3b (F1): Reconcile placeholder-message translations lost by the exact-match seed
+
+**Files:**
+- Modify: `cloud/scripts/seed-litellm-portal-catalogs.mjs`
+- Modify: `cloud/src/litellm-portal/i18n/locales/en/messages.po`
+- Modify: `cloud/src/litellm-portal/i18n/catalog-migration.test.ts`
+
+**Context (real-code evidence, verified on HEAD `1513059b`):** Task 2 intentionally reshaped three JS-`${}` template strings into Lingui ICU placeholders. Task 3's seed (`seed-litellm-portal-catalogs.mjs`) is a *verbatim exact-source-match* copy: it only writes a legacy `msgstr` when the extracted `.po` `msgid` is byte-identical to a legacy source-text key. The reshape changed the source text, so the new ICU `msgid` no longer matches the legacy key — the human English translation provably exists but is **lost** (`msgstr ""`). Three LIVE messages are affected (the other 51 empty en msgstr are Phase-3 net-new / non-macro `<Trans>` strings → genuine human follow-up, NOT loss):
+
+| # | New ICU `msgid` (en `.po`) | Legacy key (`i18n/messages/en.ts`) | Legacy en value | Source |
+|---|---|---|---|---|
+| 1 | `下载 {period}` | `下载 ${period}` (en.ts:271) | `Download ${period}` | `tenant-portal/screens/billing.tsx:63` |
+| 2 | `请输入「{email}」以确认撤销` | `请输入「${email}」以确认撤销` (en.ts:299) | `Enter "${email}" to confirm revocation` | `tenant-portal/screens/members.tsx:90` |
+| 3 | `{0} 正在代表团队 {1} 操作。所有操作均被审计。` | `{realActor} 正在代表团队 {effectiveTeamId} 操作。所有操作均被审计。` (en.ts:411-412) | `{realActor} is acting on behalf of team {effectiveTeamId}. All actions are audited.` | `tenant-portal/shell.tsx:204-206` |
+
+**Impersonation (#3) — positional-vs-named investigation (NOT a correctness bug):** `shell.tsx:204-206` is `<Trans>{imp.realActor} 正在代表团队 {imp.effectiveTeamId} 操作。所有操作均被审计。</Trans>`. The Lingui `<Trans>` macro extracts JSX member expressions (`imp.realActor`) as **positional** ICU args — the en `.po` entry (verified) is:
+
+```
+#. placeholder {0}: imp.realActor
+#. placeholder {1}: imp.effectiveTeamId
+#: src/litellm-portal/tenant-portal/shell.tsx:204
+msgid "{0} 正在代表团队 {1} 操作。所有操作均被审计。"
+msgstr ""
+```
+
+At compile time the same macro emits the binding object positionally (`{0: imp.realActor, 1: imp.effectiveTeamId}`), so positional `{0}/{1}` in the compiled catalog bind to the macro-generated positional values — **catalog and component are internally consistent; it interpolates correctly post-F1-compile.** The ONLY defect for #3 is the lost en string (legacy key was *named* `{realActor}/{effectiveTeamId}`, new msgid is *positional* `{0}/{1}` → exact-match seed cannot bridge). Therefore **no source change to `shell.tsx` is required** — all three are pure translation-loss, fixed by an explicit old-key→new-message remap. (zh-CN is the source locale; Task 3 already wrote identity `msgstr` for all three — verified `zh-CN/messages.po` lines 23-24, 87-88, 789-790 — so only en needs reconciliation, preserving zh-CN source identity.)
+
+**Note — `${}`→`{}` normalization:** the legacy en values embed JS-template syntax (`Download ${period}`, `Enter "${email}" to confirm revocation`). The ICU runtime interpolates `{name}`, not `${name}`; copying verbatim would ship a literal `${period}`. The remap therefore writes the ICU-correct target explicitly (not a blind copy). #3's legacy value also carries *named* args; the remap writes the *positional* `{0}/{1}` form to match the extracted msgid.
+
+- [ ] **Step 1: Extend the failing migration test with the three loss assertions**
+
+Add this `it` block to `cloud/src/litellm-portal/i18n/catalog-migration.test.ts` (inside the existing `describe("F1 catalog migration", ...)`), and add a `poEntry` helper near the top of the file (after `const enPo = ...`). This asserts each of the 3 messages has a NON-empty en `msgstr` with the exact expected English, so the loss can never silently recur:
+
+```ts
+// add after: const enPo = () => readFileSync(EN_PO, "utf8");
+const enMsgstrFor = (msgid: string): string => {
+  const po = enPo();
+  const escaped = msgid.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = po.match(
+    new RegExp(`msgid "${escaped}"\\nmsgstr ("(?:[^"\\\\]|\\\\.)*"(?:\\n"(?:[^"\\\\]|\\\\.)*")*)`),
+  );
+  if (!m) throw new Error(`no en .po entry for msgid ${JSON.stringify(msgid)}`);
+  return JSON.parse(`[${m[1].replace(/"\n"/g, '","')}]`).join("");
+};
+```
+
+```ts
+  it("reconciles the 3 placeholder messages whose en translation the exact-match seed lost", () => {
+    expect(enMsgstrFor("下载 {period}")).toBe("Download {period}");
+    expect(enMsgstrFor("请输入「{email}」以确认撤销")).toBe(
+      'Enter "{email}" to confirm revocation',
+    );
+    expect(enMsgstrFor("{0} 正在代表团队 {1} 操作。所有操作均被审计。")).toBe(
+      "{0} is acting on behalf of team {1}. All actions are audited.",
+    );
+  });
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/i18n/catalog-migration.test.ts`
+Expected: FAIL — the new `it` fails with `expect(received).toBe(expected)` showing `received: ""` for all three (the post-Task-3 `.po` has `msgstr ""` for these ids; the pre-existing 3 `it`s still pass).
+
+- [ ] **Step 3: Add the idempotent post-seed remap to `seed-litellm-portal-catalogs.mjs`**
+
+Append a reconciliation pass to `cloud/scripts/seed-litellm-portal-catalogs.mjs` that runs ONLY for the `en` locale, AFTER the existing exact-match `patchPo`. It is an explicit old-key→new-message remap table; it sets the en `msgstr` for the 3 reshaped ICU ids unconditionally (idempotent: re-running yields a byte-identical file). It does NOT touch zh-CN, does NOT re-run extract, does NOT mutate the legacy `.ts` maps.
+
+Add this constant after the `const root = ...` line:
+
+```js
+// Task 2 reshaped three JS-`${}` templates into ICU placeholders, so their new
+// `.po` msgid no longer byte-matches the legacy source-text key and the
+// exact-match seed above leaves en `msgstr` empty. Carry the human English
+// forward explicitly, normalized to ICU `{name}` / positional `{0}{1}`
+// (the impersonation <Trans> extracts positional args). en-only; zh-CN is the
+// source locale and Task 3 already wrote identity msgstr for these ids.
+const EN_PLACEHOLDER_REMAP = {
+  "下载 {period}": "Download {period}",
+  "请输入「{email}」以确认撤销": 'Enter "{email}" to confirm revocation',
+  "{0} 正在代表团队 {1} 操作。所有操作均被审计。":
+    "{0} is acting on behalf of team {1}. All actions are audited.",
+};
+
+function remapEnPlaceholders(poText) {
+  return poText.replace(
+    /(msgid\s+("(?:[^"\\]|\\.)*"(?:\n"(?:[^"\\]|\\.)*")*)\nmsgstr\s+)("(?:[^"\\]|\\.)*"(?:\n"(?:[^"\\]|\\.)*")*)/g,
+    (whole, _head, rawMsgid) => {
+      const src = JSON.parse(`[${rawMsgid.replace(/"\n"/g, '","')}]`).join("");
+      if (Object.prototype.hasOwnProperty.call(EN_PLACEHOLDER_REMAP, src)) {
+        return whole.replace(
+          /msgstr\s+"(?:[^"\\]|\\.)*"(?:\n"(?:[^"\\]|\\.)*")*/,
+          `msgstr ${JSON.stringify(EN_PLACEHOLDER_REMAP[src])}`,
+        );
+      }
+      return whole;
+    },
+  );
+}
+```
+
+Then change the per-locale loop body so the en pass also applies the remap. Replace:
+
+```js
+  const patched = patchPo(readFileSync(poPath, "utf8"), legacy);
+  writeFileSync(poPath, patched);
+```
+
+with:
+
+```js
+  let patched = patchPo(readFileSync(poPath, "utf8"), legacy);
+  if (locale === "en") patched = remapEnPlaceholders(patched);
+  writeFileSync(poPath, patched);
+```
+
+- [ ] **Step 4: Re-run the seed script (idempotent — does NOT re-extract)**
+
+Run: `cd /Users/xumingyang/github/contrabass/cloud && node scripts/seed-litellm-portal-catalogs.mjs`
+Expected: same two lines as Task 3 (`seeded zh-CN: <N> legacy entries applied` / `seeded en: <M> legacy entries applied`). The en `.po` now has `msgstr "Download {period}"` under `msgid "下载 {period}"`, `msgstr "Enter \"{email}\" to confirm revocation"` under `msgid "请输入「{email}」以确认撤销"`, and `msgstr "{0} is acting on behalf of team {1}. All actions are audited."` under `msgid "{0} 正在代表团队 {1} 操作。所有操作均被审计。"`. zh-CN `.po` is byte-unchanged.
+
+- [ ] **Step 5: Verify idempotency**
+
+Run: `cd /Users/xumingyang/github/contrabass/cloud && cp src/litellm-portal/i18n/locales/en/messages.po /tmp/en.po.1 && node scripts/seed-litellm-portal-catalogs.mjs && diff src/litellm-portal/i18n/locales/en/messages.po /tmp/en.po.1`
+Expected: `diff` prints nothing and exits 0 (second run produces a byte-identical file).
+
+- [ ] **Step 6: Run the test to verify it passes**
+
+Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/i18n/catalog-migration.test.ts`
+Expected: PASS (4 passed — the original 3 plus the new reconciliation assertion).
+
+- [ ] **Step 7: Typecheck (baseline-only)**
+
+Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run typecheck`
+Expected: only the documented baseline error `server.ts(6,33): error TS6142`. No new errors (the test additions use `string`-typed helpers, no `as any`, no `ts-ignore`).
+
+- [ ] **Step 8: Commit**
+
+```bash
+cd /Users/xumingyang/github/contrabass
+git -c commit.gpgsign=false add cloud/scripts/seed-litellm-portal-catalogs.mjs cloud/src/litellm-portal/i18n/locales/en/messages.po cloud/src/litellm-portal/i18n/catalog-migration.test.ts
+git -c commit.gpgsign=false commit -m "fix(litellm-portal): reconcile placeholder en translations lost by exact-match seed"
+```
+
+> **Coordination with Task 5:** the impersonation regression in Task 5 (Step 1, `it("interpolates the impersonation banner message in en")`) used a *named* id+values shape; the extracted/compiled msgid is *positional* `{0} 正在代表团队 {1} ...`. Task 5 has been amended in this plan to query the positional id with positional `values: { 0: ..., 1: ... }` so it is consistent with the arg shape reconciled here. No `shell.tsx` source change is needed (positional binding is correct post-compile, per the investigation above).
+
+---
+
 ## Task 4 (F1): Compile catalogs and switch `setup.ts` to the token-array runtime
 
 **Files:**
 - Create (generated, committed): `cloud/src/litellm-portal/i18n/locales/zh-CN/messages.mjs`, `cloud/src/litellm-portal/i18n/locales/en/messages.mjs`
 - Modify: `cloud/src/litellm-portal/i18n/setup.ts`
-- Delete: `cloud/src/litellm-portal/i18n/messages/zh-CN.ts`, `cloud/src/litellm-portal/i18n/messages/en.ts`
+- Create (test): `cloud/src/litellm-portal/i18n/setup-source.test.ts`
+
+> **Scope boundary (amended — PLAN-DESIGN gap closure):** Task 4 STOPS at the runtime switch. It does **NOT** delete the legacy source-text maps `cloud/src/litellm-portal/i18n/messages/{zh-CN,en}.ts`. Reason: three other `src` test files genuinely `import` those maps and are NOT in Task 4's allowed file list — `ops-console/i18n-completeness.test.ts`, `tenant-portal/i18n-completeness.test.ts`, `i18n-completeness-phase3.test.ts`. Deleting the maps in Task 4 would break those suites and make Task 4 non-independently-green. The legacy-map deletion + the migration of those three completeness gates to the compiled-catalog source-of-truth is now its own task, **Task 4c**, inserted immediately after this task (before Task 5). With the maps kept, Task 4 is independently green: the 3 completeness tests still pass (maps still exist), the full i18n suite is green, and typecheck stays baseline-only. (Note: `cloud/scripts/seed-litellm-portal-catalogs.mjs` also imports the legacy maps, but it is the one-shot migration tool already run with `.po`/`.mjs` committed — its post-deletion breakage is acceptable dead-tool fallout; do NOT modify it. `app.generated.ts:412-413` are string literals, not imports; Task 13 regenerates — ignore.)
 
 **Context — verified runtime behavior** (`cloud/node_modules/@lingui/core/dist/index.mjs`):
 - L237-241: the message compiler is registered ONLY when `process.env.NODE_ENV !== "production"`. The portal build sets `process.env.NODE_ENV: "\"production\""` (`build-litellm-portal-app.mjs:94-96`), so in the shipped bundle `this._messageCompiler` is `undefined`.
@@ -462,11 +615,14 @@ Expected: contains `export const messages = JSON.parse(` OR an object literal wh
 Create `cloud/src/litellm-portal/i18n/setup-source.test.ts`:
 
 ```ts
+// repo test path idiom: plain cwd-relative string readFileSync (cwd = cloud/
+// when vitest runs), per src/litellm-portal/a11y/type-scale.test.ts. The
+// fileURLToPath(new URL(...)) idiom adds non-baseline TS2769 under
+// cloud/tsconfig.json (@cloudflare/workers-types) for an included `.ts` test.
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
-const setup = readFileSync(fileURLToPath(new URL("./setup.ts", import.meta.url)), "utf8");
+const setup = readFileSync("src/litellm-portal/i18n/setup.ts", "utf8");
 
 describe("F1 setup loads compiled catalogs", () => {
   it("imports the compiled .mjs catalogs, not the legacy source-text maps", () => {
@@ -523,27 +679,599 @@ const catalogs: Record<SupportedLocale, Record<string, unknown>> = {
 
 (The `Record<string, unknown>` reflects compiled values being token arrays OR strings; `loadAndActivate` accepts this. Do NOT change `detectLocale` or `setupI18n` bodies — only the imports + the `catalogs` type.)
 
-- [ ] **Step 5: Delete the legacy source-text maps**
+- [ ] **Step 5: Keep the legacy source-text maps; report their remaining importers (do NOT delete here)**
+
+The legacy maps are deliberately retained until Task 4c migrates the completeness gates. Do not `git rm` them in this task. Just enumerate the remaining importers so Task 4c's scope is anchored:
+
+Run: `cd /Users/xumingyang/github/contrabass/cloud && grep -rl "i18n/messages/\(en\|zh-CN\)" src --include="*.ts" --include="*.tsx"`
+Expected (exactly these `src` importers — all migrate or get retired in Task 4c): `src/litellm-portal/ops-console/i18n-completeness.test.ts`, `src/litellm-portal/tenant-portal/i18n-completeness.test.ts`, `src/litellm-portal/i18n-completeness-phase3.test.ts`. (`setup.ts` no longer imports them after Step 4. `scripts/seed-litellm-portal-catalogs.mjs` under `scripts/` is the spent migration tool — out of scope, not modified.)
+
+- [ ] **Step 6: Run the setup test + the full i18n suite + typecheck (prove Task 4 is independently green)**
+
+Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/i18n/setup-source.test.ts`
+Expected: PASS (1 passed).
+Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/i18n src/litellm-portal/ops-console/i18n-completeness.test.ts src/litellm-portal/tenant-portal/i18n-completeness.test.ts src/litellm-portal/i18n-completeness-phase3.test.ts`
+Expected: ALL PASS — the 3 completeness suites still pass because the legacy maps still exist (kept by Step 5); no regression from the runtime switch.
+Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run typecheck 2>&1 | grep -E "setup.ts|messages/(en|zh-CN)" || echo "NO NEW ERRORS"`
+Expected: `NO NEW ERRORS` (only the `server.ts(6,33)` baseline persists).
+
+- [ ] **Step 7: Commit (runtime switch only — legacy maps NOT staged/removed here)**
+
+```bash
+cd /Users/xumingyang/github/contrabass
+git -c commit.gpgsign=false add cloud/src/litellm-portal/i18n/locales/zh-CN/messages.mjs cloud/src/litellm-portal/i18n/locales/en/messages.mjs cloud/src/litellm-portal/i18n/setup.ts cloud/src/litellm-portal/i18n/setup-source.test.ts
+git -c commit.gpgsign=false commit -m "feat(litellm-portal): load compiled token-array i18n catalogs"
+```
+
+(The legacy `messages/{zh-CN,en}.ts` are intentionally absent from this commit — they are removed in Task 4c after the completeness gates are migrated.)
+
+---
+
+## Task 4d (F1): Make dynamically-referenced i18n strings statically extractable (`defineMessage` refactor) + reseed/recompile
+
+**Sequencing:** runs AFTER Task 4 (compiled-catalog runtime is live) and BEFORE Task 4c (so the catalog already covers these strings when Task 4c's migrated, non-vacuous gate runs). Task 4c now runs after Task 4d.
+
+**Files:**
+- Modify: `cloud/src/litellm-portal/errors/error-messages.ts` — convert `MAP`/`GENERIC_FALLBACK_ID` from plain `string` to Lingui `defineMessage` descriptors; `errorMessage` returns the descriptor's catalog `id`.
+- Modify: `cloud/src/litellm-portal/tenant-portal/shell.tsx` — wrap the two bare-string SideNav headings (`"我的"`, `"团队管理"`) in the `t` macro (the only other dynamically-referenced plain-string i18n sites the audit found; see "Audit result" below).
+- Create (test, RED-first): `cloud/src/litellm-portal/errors/error-messages-i18n.test.ts`
+- Modify (generated, committed — re-extract/re-seed/re-compile output): `cloud/src/litellm-portal/i18n/locales/en/messages.po`, `cloud/src/litellm-portal/i18n/locales/zh-CN/messages.po`, `cloud/src/litellm-portal/i18n/locales/en/messages.mjs`, `cloud/src/litellm-portal/i18n/locales/zh-CN/messages.mjs` (+ their `.d.mts` sidecars only if the compiled export shape changes — verify; T4's sidecars are by-locale, the export name `messages` is unchanged so the sidecars normally need no edit — confirm in Step 8 and only stage them if `git status` shows a real diff).
+- Modify: `cloud/scripts/seed-litellm-portal-catalogs.mjs` — extend `EN_PLACEHOLDER_REMAP` only if a newly-extracted §F.3 msgid is a placeholder form whose legacy en differs (none of the 36 §F.3 strings nor `"团队管理"` carry placeholders — verified: no `${}`/`{}` in any MAP value or the two headings — so the exact-match `patchPo` path already carries zh-CN identity; the new en is authored via a dedicated reviewed map, see Step 5). The script stays the spent one-shot tool; do NOT change its `loadLegacyMap` contract.
+
+> **RETAINED (security/contract):** this task touches the §F.3 error path (`error-messages.ts` → `extract-error.ts` → `PanelError`). Two-stage RETAINED review REQUIRED (spec-conformance/security/#418 reviewer, then code-quality reviewer), per the F1 RETAINED rule. The reviewer MUST verify (a) the §F.3 strict-narrowing contract is preserved or strengthened (no raw non-catalog technical string can reach a Banner), and (b) per-string English translation fidelity for all 36 §F.3 strings + the generic fallback (not vacuous — read each zh source against its en).
+
+**Context — verified root cause (why this task exists):**
+
+Task 4c's migrated i18n-completeness gate (correct, non-vacuous) is BLOCKED because 37 live fixture strings are absent from the compiled `.po`/`.mjs`: ~36 are `errors/error-messages.ts` `MAP` values + `GENERIC_FALLBACK_ID` declared as a `Record<string, string>` of bare zh literals (`error-messages.ts:14` `GENERIC_FALLBACK_ID`, `:16-55` `MAP`), plus `"我的"` (`tenant-portal/shell.tsx:96`). `lingui extract` only sees macro-wrapped strings (`t\`\``, `<Trans>`, `defineMessage`/`msg`); a bare object-literal string is invisible to it, so these never enter the `.po` and the gate's "every fixture source string is an extracted `.po` msgid" assertion fails for exactly these 37 (probe verified: 0 occurrences of the §F.3 strings in `en/messages.po`).
+
+**Audit result — the COMPLETE set of dynamically-referenced plain-string i18n (read, not assumed):**
+1. `errors/error-messages.ts` `MAP` (35 entries, lines 17-54) + `GENERIC_FALLBACK_ID` (line 14) = **36** bare zh strings, consumed via `errorMessage(code)` → `MAP[code] ?? GENERIC_FALLBACK_ID` (`:62-65`).
+2. `tenant-portal/shell.tsx:96` `heading: "我的"` and `:97` `heading: "团队管理"` — **2** bare string literals. (`ops-console/shell.tsx:148,155` already use `t\`租户\``/`t\`平台\`` — extractable; only the tenant shell's two headings are bare. `phase3-keys.ts:25-28` lists all four headings; `"租户"`/`"平台"` are already covered, only `"我的"`/`"团队管理"` need fixing.)
+
+No other dynamic site exists: grep for `t(<lowercase var>)` / `i18n._(<var>)` / other `Record<string,string>` message maps consumed via a variable returned **zero** further hits (`i18n.messages/zh-CN.ts`/`en.ts` are the legacy maps Task 4c deletes; `app.tsx:136 sourceLabels` and `app.tsx:88` are not i18n-catalog strings — they are not in any completeness fixture and out of scope). Scope is therefore exactly: `error-messages.ts` (36) + `shell.tsx` two headings (2).
+
+**Context — verified consumer chain of `error-messages.ts` (every site, file:line):**
+- `errors/error-messages.ts:14` `GENERIC_FALLBACK_ID` (exported), `:16-55` `MAP`, `:57` `KNOWN_ERROR_CODES = Object.keys(MAP)`, `:62-65` `errorMessage(code)` returns `MAP[code] ?? GENERIC_FALLBACK_ID`.
+- `errors/extract-error.ts:1` imports `errorMessage`; `:15` `return errorMessage(code)` — the ONLY runtime caller. Returns a `string`, thrown as `new Error(extractError(json, fallbackCode))`.
+- Thrown-error producers (transport = `Error.message`, a string): `tenant-portal/hooks.ts:38,74,108,131,161,191,214,261` and `ops-console/hooks.ts:35,103,121,145,162,178,198` — all `throw new Error(extractError(...))` inside TanStack Query `useQuery`/`useMutation`. The `Error` propagates to the query's `error` and into `<PanelError error={error} />`.
+- Render boundary (the §F.3 narrowing): `components/panel-state.tsx:60-85` `PanelError`. `:68` `raw = error instanceof Error ? error.message : ""`; `:78-79` `const message = raw && i18n.messages[raw] !== undefined ? i18n._(raw) : t\`网络请求失败\``. **This is the §F.3 strict-narrowing leak guard** — only resolve `raw` through i18n when it is a known catalog key, else the generic `网络请求失败`.
+- `PanelError` callers (unaffected — they pass `error={error}`): `ops-console/screens/{tenant-overview,user-detail,audit,tenant-detail,platform-settings}.tsx` etc. (16 sites). No signature change reaches them.
+- Tests: `errors/error-messages.test.ts` (asserts the §F.3 contract on the returned string) — updated here; `errors/extract-error.test.ts` if present (unchanged behavior — still returns a string id).
+- NOT consumers: `hooks/use-preferences.ts:171` and `hooks/use-admin-preferences-defaults.ts:70` define their OWN local `extractError` that returns the raw code/fallback verbatim and do NOT touch `MAP` — pre-existing separate pattern, explicitly out of scope (not part of the §F.3 humanization contract, no behavior change here).
+
+**Context — verified `i18n._` mechanics (the security crux), from `node_modules/@lingui/core/dist/index.mjs:313-360` + `index.d.mts:63-68,127`:**
+- `MessageDescriptor = { id: string; comment?; message?; values? }`. `defineMessage`/`msg` (from `@lingui/core/macro`, `core/macro/index.d.mts:205-230`) returns a `MessageDescriptor` whose `.id` is the SAME Lingui content-hash that `lingui extract` writes and `lingui compile` keys the token-array `.mjs` by (verified: compiled `.mjs` is `JSON.parse("{\"--rP8r\":[...],\"0xzGzQ\":[[\"0\"],...]}")` — hash-id keyed).
+- `i18n._(idString)` → `messageForId = this.messages[idString]`; `translation = messageForId || message || id`; token-array → `interpolate(...)`. So a **hash id** string resolves to the localized compiled message; an arbitrary non-catalog string (e.g. `"Failed to fetch"`) → `this.messages[that]` is `undefined` → falls to `id` itself (raw echo).
+- **THE KEY INSIGHT:** post-F1 the compiled catalog is hash-keyed, so `PanelError`'s `i18n.messages[raw]` is only ever truthy when `raw` IS a catalog hash id. Today `errorMessage` returns the zh **source string** (NOT a hash id) → post-F1 `i18n.messages[<zh source>]` is `undefined` for EVERY §F.3 code → PanelError would silently fall to the generic fallback for ALL humanized errors (a **latent post-F1 regression** the bare-string MAP would have shipped). Returning `descriptor.id` (the catalog hash) from `errorMessage` makes the EXISTING narrowing resolve correctly **and** keeps it strictly leak-safe: a raw fetch-layer `TypeError` message is never a hash id, so it still narrows to generic. **§F.3 is preserved by construction and the latent regression is fixed — verified, not assumed.** No change to `PanelError`, `extract-error.ts`, or any hook is required; the transport stays `string`.
+
+- [ ] **Step 1: Write the failing test (RED) — descriptor id resolves to en under en locale + raw non-catalog still narrows generic**
+
+Create `cloud/src/litellm-portal/errors/error-messages-i18n.test.ts`:
+
+```ts
+// Repo test-path idiom: this suite does NOT readFileSync source — it
+// exercises the live runtime (errorMessage + the compiled catalog via
+// setupI18n), the same idiom as errors/error-messages.test.ts which already
+// imports setupI18n. RED before the defineMessage refactor (errorMessage
+// returns a zh source string, not a catalog id, so i18n._ echoes the raw
+// zh and the en assertion fails); GREEN after (returns descriptor.id; the
+// compiled en catalog resolves it).
+import { describe, expect, it } from "vitest";
+import { setupI18n } from "../i18n/setup";
+import { errorMessage, KNOWN_ERROR_CODES } from "./error-messages";
+
+describe("§F.3 errorMessage returns a catalog id that resolves per-locale", () => {
+  it("a known code resolves to its English string under the en locale", () => {
+    const i18n = setupI18n("en");
+    const id = errorMessage("admin_required");
+    // errorMessage now returns the Lingui catalog id (a hash), present in
+    // the compiled en catalog → i18n._ yields the authored English.
+    expect(i18n.messages[id], `id ${id} must be a known en catalog key`).toBeDefined();
+    const en = i18n._(id);
+    expect(en).toBe(
+      "Platform administrator access is required for this action. Sign in with an administrator account and try again.",
+    );
+    // never the zh source, never the raw code
+    expect(en).not.toContain("管理员权限");
+    expect(en).not.toBe("admin_required");
+  });
+
+  it("every known code resolves to a non-empty, non-code en string", () => {
+    const i18n = setupI18n("en");
+    for (const code of KNOWN_ERROR_CODES) {
+      const id = errorMessage(code);
+      expect(i18n.messages[id], `code ${code} → id ${id} not in en catalog`).toBeDefined();
+      const en = i18n._(id);
+      expect(en.length, `code ${code} en too short`).toBeGreaterThan(8);
+      expect(en, `code ${code} leaks snake_case`).not.toMatch(/[a-z]+_[a-z_]+/);
+    }
+  });
+
+  it("§F.3 leak guard preserved: a raw non-catalog technical string is NOT a catalog id", () => {
+    // PanelError narrows on `i18n.messages[raw] !== undefined`. A fetch-layer
+    // Error message is not a Lingui hash id → undefined → generic fallback.
+    const i18n = setupI18n("en");
+    const raw = "TypeError: Failed to fetch";
+    expect(i18n.messages[raw]).toBeUndefined();
+    // and an unknown code still routes to the generic fallback id, which IS
+    // a catalog id (so it localizes), never the raw code.
+    const fallbackId = errorMessage("internal_db_shard_7_panic");
+    expect(fallbackId).not.toContain("shard");
+    expect(i18n.messages[fallbackId], "generic fallback must be a catalog id").toBeDefined();
+  });
+});
+```
+
+- [ ] **Step 2: Run the test — verify RED**
+
+Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/errors/error-messages-i18n.test.ts`
+Expected: FAIL — `errorMessage` returns the zh source string `"需要平台管理员权限…"`, which is NOT a key in the hash-keyed compiled `en` catalog → `i18n.messages[id]` is `undefined` → first assertion fails. (Confirms the latent post-F1 regression the bare MAP would have shipped.)
+
+- [ ] **Step 3: Refactor `error-messages.ts` to `defineMessage` descriptors (GREEN path)**
+
+Convert `MAP` from `Record<string, string>` of bare zh strings to `Record<string, MessageDescriptor>` via the `msg` macro; `errorMessage` returns `descriptor.id`. New shape (representative — full file converts all 35 entries + the fallback the same way; zh text is the message source verbatim, unchanged byte-for-byte from the current values):
+
+```ts
+import { msg } from "@lingui/core/macro";
+import type { MessageDescriptor } from "@lingui/core";
+
+/** §F.3 generic safe fallback — a real catalog message (extractable). */
+export const GENERIC_FALLBACK = msg`操作未完成，请重试；若反复出现请联系管理员。`;
+
+const MAP: Record<string, MessageDescriptor> = {
+  admin_required: msg`需要平台管理员权限才能执行此操作。请用管理员账号登录后重试。`,
+  owner_required: msg`此操作仅平台 Owner 可执行。请联系平台 Owner 处理。`,
+  // … all 35 entries, each `code: msg\`<exact existing zh value>\``,
+  //   multi-line values stay single template literals (no concatenation):
+  impersonation_required: msg`对该团队的写操作需先以租户身份进入。请从运营台点击「进入租户」后重试，你填写的内容未丢失。`,
+  // … through litellm_team_create_failed
+};
+
+export const KNOWN_ERROR_CODES = Object.keys(MAP);
+
+/**
+ * Resolve a server/client error code to its Lingui catalog message id.
+ * Unknown / undefined / non-string → the generic fallback's id. NEVER
+ * returns the raw code. The id is a catalog hash (defineMessage), so the
+ * §F.3 render boundary (PanelError) resolves it through the active i18n
+ * and a non-catalog raw string can never collide with it (leak-safe).
+ */
+export function errorMessage(code: unknown): string {
+  if (typeof code !== "string") return GENERIC_FALLBACK.id;
+  return (MAP[code] ?? GENERIC_FALLBACK).id;
+}
+```
+
+Notes for the implementer:
+- `GENERIC_FALLBACK_ID` (the old exported **string** constant) is renamed to `GENERIC_FALLBACK` (a `MessageDescriptor`). Update the one external importer: `errors/error-messages.test.ts:45` `import { GENERIC_FALLBACK_ID }` and `:28` `expect(msg).toBe(GENERIC_FALLBACK_ID)` → `import { GENERIC_FALLBACK }` and `expect(errorMessage("internal_db_shard_7_panic")).toBe(GENERIC_FALLBACK.id)`. Update the rest of `error-messages.test.ts` so its existing §F.3 string-contract assertions run against `i18n._(errorMessage(code))` under a `setupI18n("zh-CN")` (the source locale → identity msgstr → original zh sentence), preserving every existing assertion's intent (no-snake_case, no-tech-token, length>8, recovery-affordance, drift-count ≥27) but now through the resolved catalog string instead of the raw MAP value. Do NOT weaken any assertion.
+- Every `msg\`…\`` uses the EXACT current zh value (copy verbatim, including the multi-line `impersonation_required`/`impersonation_secret_unavailable` ones — as a single backtick literal, NOT string `+` concatenation, so the extracted msgid byte-matches the `phase3-keys.ts` fixture entry).
+- No `as any`, no `ts-ignore`. `MessageDescriptor` is the typed return of `msg` (`@lingui/core` `index.d.mts:63-68,205-230`).
+
+- [ ] **Step 4: Wrap the two bare SideNav headings in `tenant-portal/shell.tsx`**
+
+`shell.tsx:6` already `import { t } from "@lingui/core/macro";`. Change `:96-97`:
+
+```ts
+// FROM:
+  const groups: SideNavGroup[] = [{ heading: "我的", items: personal }];
+  if (team.length > 0) groups.push({ heading: "团队管理", items: team });
+// TO:
+  const groups: SideNavGroup[] = [{ heading: t`我的`, items: personal }];
+  if (team.length > 0) groups.push({ heading: t`团队管理`, items: team });
+```
+
+`SideNavGroup.heading` is `string`; `t\`…\`` returns `string` at runtime (the active-locale rendered value) — type-compatible, no signature change. (Consistent with `ops-console/shell.tsx:148,155` which already do this for `t\`租户\``/`t\`平台\``.)
+
+- [ ] **Step 5: Re-extract, author the 36 English §F.3 strings + the 2 headings, re-seed, re-compile**
+
+1. Re-extract: `cd /Users/xumingyang/github/contrabass/cloud && bun run i18n:extract`
+   Expected: the 36 §F.3 zh strings + `"我的"`/`"团队管理"` now appear as new `msgid`s in BOTH `locales/{zh-CN,en}/messages.po` (zh msgstr = identity by source-locale; en msgstr = empty until seeded). Verify: `grep -c '需要平台管理员权限' src/litellm-portal/i18n/locales/en/messages.po` ⇒ ≥1 (was 0 — the BLOCKED probe now resolves).
+2. zh-CN identity: `lingui extract` writes the source-locale msgstr = msgid for new strings (zh-CN is `sourceLocale`); the existing `patchPo` exact-match seed also re-affirms identity for any whose source-text key still exists. No zh source change — verify `git diff src/litellm-portal/i18n/locales/zh-CN/messages.po` shows only ADDED entries, never a changed existing zh msgstr.
+3. **Author the English** — add a dedicated, reviewed map to `scripts/seed-litellm-portal-catalogs.mjs` carrying FAITHFUL English for each new zh source (accurate, clear operational English — these are security-relevant §F.3 messages; correctness/clarity is REQUIRED now, a later native-speaker polish pass is an acceptable non-blocking nicety but NOT a substitute). Extend the existing en-carry mechanism with an `F3_EN` block applied by the same `remapEnPlaceholders`-style msgid-keyed pass (no placeholders in these → exact source-keyed write). The 36 + 2 authored English (implementer pastes verbatim; reviewer verifies each against its zh in Stage-1 RETAINED):
+
+```js
+// §F.3 + tenant SideNav headings — faithful English of the new zh msgids.
+// Keyed by the zh source (msgid). Authored 2026-05-18; per-string fidelity
+// verified in Task 4d Stage-1 RETAINED review.
+const F3_EN = {
+  "操作未完成，请重试；若反复出现请联系管理员。":
+    "The action did not complete. Please try again; if it keeps happening, contact your administrator.",
+  "需要平台管理员权限才能执行此操作。请用管理员账号登录后重试。":
+    "Platform administrator access is required for this action. Sign in with an administrator account and try again.",
+  "此操作仅平台 Owner 可执行。请联系平台 Owner 处理。":
+    "Only the platform Owner can perform this action. Please contact the platform Owner.",
+  "需要团队管理员权限才能执行此操作。请联系团队管理员处理。":
+    "Team administrator access is required for this action. Please contact a team administrator.",
+  "对该团队的写操作需先以租户身份进入。请从运营台点击「进入租户」后重试，你填写的内容未丢失。":
+    "Writing to this team requires entering as a tenant first. From the operations console, click “Enter tenant” and try again — your input has been preserved.",
+  "登录状态已失效。请重新登录后重试。":
+    "Your session has expired. Please sign in again and retry.",
+  "当前账号未归属任何团队，无法执行该操作。请联系管理员分配团队。":
+    "This account is not assigned to any team, so this action cannot be performed. Please ask an administrator to assign a team.",
+  "请填写邮箱后重试。": "Please enter an email address and try again.",
+  "缺少团队信息，请返回重新选择团队后重试。":
+    "Team information is missing. Please go back, reselect the team, and try again.",
+  "缺少用户信息，请返回重新选择用户后重试。":
+    "User information is missing. Please go back, reselect the user, and try again.",
+  "缺少 Key 信息，请刷新后重试。":
+    "API key information is missing. Please refresh and try again.",
+  "请同时选择团队与用户后重试。":
+    "Please select both a team and a user, then try again.",
+  "提交的内容格式有误。请检查输入后重试，你填写的内容未丢失。":
+    "The submitted content is malformed. Please check your input and try again — your input has been preserved.",
+  "提交的内容不完整或格式有误。请检查必填项后重试，输入未丢失。":
+    "The submitted content is incomplete or malformed. Please check the required fields and try again — your input has been preserved.",
+  "部分输入不符合要求。请按提示修正后重试，输入未丢失。":
+    "Some input does not meet the requirements. Please correct it as indicated and try again — your input has been preserved.",
+  "选择的账单周期无效。请重新选择有效周期后重试。":
+    "The selected billing period is invalid. Please choose a valid period and try again.",
+  "请填写 Key 名称后重试，你填写的内容未丢失。":
+    "Please enter a key name and try again — your input has been preserved.",
+  "该 Key 名称已被占用。请改用其它名称后重试，你填写的内容未丢失。":
+    "That key name is already in use. Please choose a different name and try again — your input has been preserved.",
+  "缺少审计事件信息，请返回重新选择事件后重试。":
+    "Audit event information is missing. Please go back, reselect the event, and try again.",
+  "请输入完整名称以确认此操作。":
+    "Enter the full name to confirm this action.",
+  "确认名称与目标不一致，操作已取消。请重新输入完全一致的名称。":
+    "The confirmation name does not match the target; the action was cancelled. Please enter the exact name.",
+  "请输入完整邮箱以确认此操作。":
+    "Enter the full email address to confirm this action.",
+  "确认邮箱与目标不一致，操作已取消。请重新输入完全一致的邮箱。":
+    "The confirmation email does not match the target; the action was cancelled. Please enter the exact email address.",
+  "未找到对应的 API Key，可能已被删除。请刷新列表后重试。":
+    "The API key was not found and may have been deleted. Please refresh the list and try again.",
+  "未找到对应的团队，可能已变更。请刷新后重试。":
+    "The team was not found and may have changed. Please refresh and try again.",
+  "未找到对应的用户，可能已变更。请刷新后重试。":
+    "The user was not found and may have changed. Please refresh and try again.",
+  "未找到对应的邀请，可能已被撤销或失效。请刷新邀请列表。":
+    "The invitation was not found and may have been revoked or expired. Please refresh the invitation list.",
+  "该邀请已被接受，无需重复操作。请刷新邀请列表查看最新状态。":
+    "This invitation has already been accepted; no further action is needed. Refresh the invitation list to see the latest status.",
+  "未找到对应的审计事件，可能已变更。请刷新后重试。":
+    "The audit event was not found and may have changed. Please refresh and try again.",
+  "未找到请求的资源，可能已变更或被移除。请刷新后重试。":
+    "The requested resource was not found and may have changed or been removed. Please refresh and try again.",
+  "该周期暂无可下载的账单归档。请确认周期后重试，或稍后再试。":
+    "There is no downloadable billing archive for this period. Please confirm the period and try again, or check back later.",
+  "账单归档服务暂不可用。请稍后重试；若持续请联系管理员。":
+    "The billing archive service is temporarily unavailable. Please try again later; if it persists, contact your administrator.",
+  "数据服务暂时不可用。请稍后重试；若持续请联系管理员。":
+    "The data service is temporarily unavailable. Please try again later; if it persists, contact your administrator.",
+  "团队配置服务暂时不可用。请稍后重试；若持续请联系管理员。":
+    "The team configuration service is temporarily unavailable. Please try again later; if it persists, contact your administrator.",
+  "进入租户的服务暂时不可用。请稍后重试；若持续请联系管理员。":
+    "The enter-tenant service is temporarily unavailable. Please try again later; if it persists, contact your administrator.",
+  "团队创建未成功。请稍后重试，你填写的内容未丢失；若持续请联系管理员。":
+    "Team creation did not succeed. Please try again later — your input has been preserved; if it persists, contact your administrator.",
+  "我的": "Personal",
+  "团队管理": "Team management",
+};
+```
+
+   Apply `F3_EN` via the same source-keyed `.po` patch the script already uses for the legacy map (write `msgstr` where `msgid` ∈ `F3_EN` and current en `msgstr` is empty). Run: `cd /Users/xumingyang/github/contrabass/cloud && node scripts/seed-litellm-portal-catalogs.mjs` then verify `grep -A1 '需要平台管理员权限' src/litellm-portal/i18n/locales/en/messages.po` shows the authored English msgstr (non-empty).
+4. Re-compile: `cd /Users/xumingyang/github/contrabass/cloud && bun run i18n:compile`
+   Expected: `locales/{zh-CN,en}/messages.mjs` regenerated; the new §F.3 hash ids now present as token-array (here plain-string, no placeholders) entries in both compiled catalogs.
+
+- [ ] **Step 6: Run the RED test — verify GREEN + full §F.3 + i18n suites green**
+
+Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/errors/error-messages-i18n.test.ts src/litellm-portal/errors/error-messages.test.ts src/litellm-portal/errors/extract-error.test.ts src/litellm-portal/i18n`
+Expected: ALL PASS. The new test is GREEN (errorMessage returns the catalog id; en resolves to the authored English; raw non-catalog string is not a catalog id → §F.3 leak guard intact). `error-messages.test.ts` (updated to assert via `i18n._` under zh-CN source locale) still enforces every original §F.3 contract.
+
+- [ ] **Step 7: Typecheck (baseline-only)**
+
+Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run typecheck 2>&1 | tail -5`
+Expected: ONLY `server.ts(6,33): error TS6142` (the documented `--jsx` baseline). No new error from the `MessageDescriptor` typing, the `msg` macro import, or the `shell.tsx` heading change (`t\`\`` → `string`). No `as any` / `ts-ignore`.
+
+- [ ] **Step 8: Commit (explicit paths; messages.{po,mjs} are generated-but-committed — expected churn here)**
+
+Confirm `.d.mts` sidecars: `git -C /Users/xumingyang/github/contrabass status --porcelain cloud/src/litellm-portal/i18n/locales` — stage `*.d.mts` ONLY if it shows a real diff (export name `messages` is unchanged so normally no sidecar diff; do not force-stage). `app.generated.ts` MUST remain untouched (T13 only).
+
+```bash
+cd /Users/xumingyang/github/contrabass
+git -c commit.gpgsign=false add \
+  cloud/src/litellm-portal/errors/error-messages.ts \
+  cloud/src/litellm-portal/errors/error-messages.test.ts \
+  cloud/src/litellm-portal/errors/error-messages-i18n.test.ts \
+  cloud/src/litellm-portal/tenant-portal/shell.tsx \
+  cloud/scripts/seed-litellm-portal-catalogs.mjs \
+  cloud/src/litellm-portal/i18n/locales/en/messages.po \
+  cloud/src/litellm-portal/i18n/locales/zh-CN/messages.po \
+  cloud/src/litellm-portal/i18n/locales/en/messages.mjs \
+  cloud/src/litellm-portal/i18n/locales/zh-CN/messages.mjs
+git -c commit.gpgsign=false commit -m "feat(litellm-portal): make §F.3 error + nav strings extractable via defineMessage"
+```
+
+(The committed `messages.{mjs,po}` change again here — expected and intended; T13/T14's drift gate already treats them as generated-but-committed. The seed script is re-extended but remains the spent one-shot tool — Task 4c's "do NOT modify it" still holds for Task 4c's scope; this is Task 4d's authoring step.)
+
+---
+
+## Task 4c (F1): Migrate the 3 i18n-completeness gates to the compiled-catalog source-of-truth, then retire the legacy maps
+
+> **Sequencing (amended):** Task 4c now runs AFTER Task 4d. By the time Task 4c's gate runs, the 37 previously-BLOCKED strings (36 §F.3 + `"我的"`/`"团队管理"`) are macro-extractable and seeded, so the gate is satisfiable and non-vacuous as designed.
+
+**Files:**
+- Create (shared test helper): `cloud/src/litellm-portal/i18n/__fixtures__/po-coverage.ts`
+- Modify: `cloud/src/litellm-portal/ops-console/i18n-completeness.test.ts`
+- Modify: `cloud/src/litellm-portal/tenant-portal/i18n-completeness.test.ts`
+- Modify: `cloud/src/litellm-portal/i18n-completeness-phase3.test.ts`
+- Delete: `cloud/src/litellm-portal/i18n/messages/zh-CN.ts`, `cloud/src/litellm-portal/i18n/messages/en.ts`
+
+**Context — what the 3 gates assert today and why a naive port is vacuous:**
+
+All three tests currently do `import enMessages from "../i18n/messages/en"` + `import zhCNMessages from "../i18n/messages/zh-CN"` and assert, for an explicit allowlist of **source strings**, that `key in enMessages` and `key in zhCNMessages` (the legacy maps are keyed by source text), plus an en/zh **key-set parity** check (`Object.keys(enMessages)` vs `Object.keys(zhCNMessages)`). Evidence:
+
+- `ops-console/i18n-completeness.test.ts:29-30` import; `:174-199` the `key in enMessages` / `key in zhCNMessages` / parity assertions over `OPS_KEYS` (`:38-143`); `:201-210` the no-silent-shadow guard over `PHASE1_TENANT_KEYS`.
+- `tenant-portal/i18n-completeness.test.ts:20-21` import; `:39-64` `key in enMessages` / `key in zhCNMessages` / parity over `PHASE1_TENANT_KEYS` (`__fixtures__/phase1-keys.ts`).
+- `i18n-completeness-phase3.test.ts:2-3` import; `:9-22` `k in enMessages` / `k in zhCNMessages` / parity over `PHASE3_KEYS` (`__fixtures__/phase3-keys.ts`).
+
+After F1 (decision A) the source of truth is the compiled `.po` (and `.mjs`), which is keyed by **content-hash ids** (`"--rP8r"`, `"0xzGzQ"`), NOT source text. A literal port to `key in enMessages`-against-`.mjs` would be **vacuously false for every key** (no source string is a hash id). The correct post-F1 invariant: the **`.po` `msgid` IS the source string** (verified: `zh-CN/messages.po:638` `msgid "登录"`, `:87` `msgid "下载 {period}"`, `:789` `msgid "请输入「{email}」以确认撤销"`), with a documented Lingui normalization — JS template `${x}` collapses to ICU `{x}` (`phase1-keys.ts:78` `"下载 ${period}"` / `:96` `"请输入「${email}」以确认撤销"` → `.po` msgid `"下载 {period}"` / `"请输入「{email}」以确认撤销"`), and a literal-brace source gets brace-escaped (`phase3-keys.ts:42` `"Token …{window}…"` → `zh-CN/messages.po:62` `msgid "Token 用量趋势图，时间范围为 '{'window'}'，共 '{'points'}' 个 '{'grain'}' 粒度数据点。"`).
+
+So the migrated gate must: (1) for every fixture source string, assert it is present **as a `.po` msgid** after applying the documented `${x}`→`{x}` normalization (this preserves the original "every macro-used id is in the catalog" coverage — it would still fail if a future macro string were never extracted/seeded); (2) assert its **`msgstr` is non-empty** in BOTH locales, **modulo a documented acceptable-empties allowlist** (zh-CN is the source locale: 0 empty `msgstr` — `zh-CN/messages.po` has only the header empty; en `messages.po` has a bounded set of empty `msgstr` — net-new/non-macro zh-only strings with no English yet; these are acceptable and listed. The exact count is NOT pinned here: it was 52 at the T3b snapshot but Task 4d (runs before this task) authored English for the 37 §F.3+nav strings, so the live empty count is lower — re-derive it from the current `.po` at execution time). This keeps the gate **non-vacuous**: it still fails if any *live fixture-listed* message has an empty translation. The en/zh key-set parity check ports to "the set of `.po` msgids is identical across locales" (extract emits one `.po` per locale from the same template, so msgid sets are identical by construction — the assertion still catches a hand-edited divergence).
+
+> Brace-escaping note: only `phase3-keys.ts:42` (the chart-aria template with *literal* `{window}` braces) hits the `'{'…'}'` escaped form. The shared helper normalizes by reading msgids verbatim and additionally indexing each msgid with `'{'`/`'}'` collapsed back to `{`/`}`, so both the raw and the de-escaped form resolve. The `${x}`→`{x}` collapse covers `phase1-keys.ts:78,96`. No fixture is edited — the normalization lives in the helper, keeping fixtures behavior-preserving per their own header contract.
+
+- [ ] **Step 1: Add the shared `.po`-coverage helper**
+
+Create `cloud/src/litellm-portal/i18n/__fixtures__/po-coverage.ts`:
+
+```ts
+// Post-F1 source-of-truth for the i18n-completeness gates. The compiled
+// catalogs are hash-id-keyed; the .po msgid IS the source string. We parse
+// the two .po files once and expose: the msgid set per locale (for the
+// "source string is covered" check, modulo Lingui normalization) and the
+// set of msgids whose msgstr is non-empty (for the "actually translated"
+// check). Repo test-path idiom: plain cwd-relative readFileSync (cwd=cloud/
+// under vitest), per src/litellm-portal/a11y/type-scale.test.ts:10 — NOT
+// fileURLToPath(new URL(...)), which adds non-baseline TS2769 under
+// @cloudflare/workers-types for an included .ts.
+import { readFileSync } from "node:fs";
+
+export interface PoCatalog {
+  /** Every msgid present, plus a brace-de-escaped alias for each. */
+  readonly msgids: ReadonlySet<string>;
+  /** msgids whose msgstr is a non-empty string. */
+  readonly translated: ReadonlySet<string>;
+}
+
+function deEscapeBraces(s: string): string {
+  // Lingui escapes literal ICU braces in .po as '{' / '}'.
+  return s.replace(/'\{'/g, "{").replace(/'\}'/g, "}");
+}
+
+/**
+ * Map a fixture's NAMED ICU placeholders to positional `{0},{1},…` in
+ * first-appearance order. Lingui extracts a `<Trans>` whose interpolations
+ * are JSX member expressions (`{imp.realActor}`) as POSITIONAL args — the
+ * emitted msgid is `{0} 正在代表团队 {1} …`, not `{realActor} … {effectiveTeamId} …`
+ * (verified: en/messages.po line ~23 `msgid "{0} 正在代表团队 {1} 操作。所有操作均被审计。"`,
+ * #. placeholder {0}: imp.realActor / {1}: imp.effectiveTeamId). A fixture
+ * that still carries the legacy NAMED form (`{realActor}/{effectiveTeamId}`)
+ * would never match the positional msgid, making the coverage assertion a
+ * false-negative. We rewrite each distinct `{name}` to `{<index>}` by order
+ * of first appearance. Pure-positional fixtures (`{0}/{1}`) and
+ * single-token literals are unaffected (a token that is already all-digits
+ * keeps its value; ordering is stable). Applied AFTER the `${x}`→`{x}`
+ * collapse so `${realActor}`-style legacy forms normalize too.
+ */
+function namedToPositional(key: string): string {
+  const order: string[] = [];
+  return key.replace(/\{([^}]+)\}/g, (_m, name: string) => {
+    if (/^\d+$/.test(name)) return `{${name}}`; // already positional
+    let idx = order.indexOf(name);
+    if (idx === -1) {
+      idx = order.length;
+      order.push(name);
+    }
+    return `{${idx}}`;
+  });
+}
+
+/**
+ * Fixture → .po msgid normalization, applied in order:
+ *  1. JS-template `${x}` → ICU `{x}` (existing rule).
+ *  2. NAMED ICU placeholders → POSITIONAL `{0},{1},…` (first-appearance
+ *     order) so a fixture's named `{realActor}/{effectiveTeamId}` matches
+ *     the positional `{0}/{1}` msgid Lingui emits for `<Trans>` JSX member
+ *     expressions. (Literal-brace de-escaping is handled separately in
+ *     `parsePo`, which indexes each msgid both raw and brace-de-escaped.)
+ */
+export function normalizeFixtureKey(key: string): string {
+  const dollarCollapsed = key.replace(/\$\{([^}]+)\}/g, "{$1}");
+  return namedToPositional(dollarCollapsed);
+}
+
+function parsePo(path: string): PoCatalog {
+  const raw = readFileSync(path, "utf8");
+  const msgids = new Set<string>();
+  const translated = new Set<string>();
+  // Entries are blank-line separated; we only need single-line msgid/msgstr,
+  // which is the form @lingui/cli emits for this catalog (verified: no
+  // multi-line continuation in either messages.po).
+  const blocks = raw.split(/\n\n+/);
+  for (const block of blocks) {
+    const idMatch = block.match(/^msgid "((?:[^"\\]|\\.)*)"/m);
+    const strMatch = block.match(/^msgstr "((?:[^"\\]|\\.)*)"/m);
+    if (!idMatch) continue;
+    const id = idMatch[1];
+    if (id === "") continue; // header
+    msgids.add(id);
+    msgids.add(deEscapeBraces(id));
+    if (strMatch && strMatch[1] !== "") {
+      translated.add(id);
+      translated.add(deEscapeBraces(id));
+    }
+  }
+  return { msgids, translated };
+}
+
+export const EN_PO = parsePo("src/litellm-portal/i18n/locales/en/messages.po");
+export const ZH_PO = parsePo("src/litellm-portal/i18n/locales/zh-CN/messages.po");
+
+/**
+ * Fixture source strings that are intentionally absent from the en
+ * translation (empty msgstr) post-extract: net-new / non-macro / zh-only
+ * strings the seed had no English for. Documented & bounded — adding to
+ * this list is a reviewed decision, not a silent escape hatch. zh-CN is the
+ * source locale and has ZERO empty msgstr, so there is no zh allowlist.
+ *
+ * The implementer MUST populate this from the actual extract: run
+ *   grep -B1 '^msgstr ""$' src/litellm-portal/i18n/locales/en/messages.po \
+ *     | grep '^msgid ' | sed 's/^msgid "//; s/"$//'
+ * then intersect with the union of PHASE1_TENANT_KEYS ∪ PHASE3_KEYS ∪
+ * OPS_KEYS — only the intersection belongs here (a fixture-listed live
+ * string that genuinely has no English yet). Non-fixture empties never
+ * reach an assertion and are NOT listed.
+ * NOTE: the raw empty-msgstr count is NOT fixed at 52. That number was the
+ * T3b (commit 60309d44) snapshot; Task 4d (runs BEFORE this task) seeds the
+ * 37 previously-blocked strings (36 §F.3 + "我的"/"团队管理") with authored
+ * English, so the intersection — and this allowlist — SHRINKS toward empty
+ * relative to that snapshot. Re-derive the count from the live `.po` at
+ * Task-4c execution time; do NOT hardcode 52 (or any number) — the only
+ * source of truth is the current extract.
+ * Do NOT add a fixture string here merely to make a red test green — that
+ * would re-introduce the vacuity this task removes.
+ */
+export const EN_UNTRANSLATED_ALLOWLIST: ReadonlySet<string> = new Set<string>([
+  // <implementer: exact normalized fixture strings from the intersection above>
+]);
+```
+
+- [ ] **Step 2: Migrate `tenant-portal/i18n-completeness.test.ts` (the canonical pattern)**
+
+Replace the legacy-map import and the three `it` blocks. The new gate reads `EN_PO`/`ZH_PO` and asserts coverage + non-empty translation (minus the allowlist), plus msgid-set parity:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { PHASE1_TENANT_KEYS } from "../i18n/__fixtures__/phase1-keys";
+import {
+  EN_PO,
+  ZH_PO,
+  EN_UNTRANSLATED_ALLOWLIST,
+  normalizeFixtureKey,
+} from "../i18n/__fixtures__/po-coverage";
+
+const UNIQUE_KEYS = [...new Set(PHASE1_TENANT_KEYS)].map(normalizeFixtureKey);
+
+describe("tenant-portal i18n completeness", () => {
+  it("every tenant-portal source string is an extracted .po msgid (both locales)", () => {
+    const missingEn = UNIQUE_KEYS.filter((k) => !EN_PO.msgids.has(k));
+    const missingZh = UNIQUE_KEYS.filter((k) => !ZH_PO.msgids.has(k));
+    expect(missingEn, `Not extracted into en .po: ${JSON.stringify(missingEn)}`).toHaveLength(0);
+    expect(missingZh, `Not extracted into zh-CN .po: ${JSON.stringify(missingZh)}`).toHaveLength(0);
+  });
+
+  it("every tenant-portal string is translated in both locales (modulo the documented en allowlist)", () => {
+    const untranslatedZh = UNIQUE_KEYS.filter((k) => !ZH_PO.translated.has(k));
+    const untranslatedEn = UNIQUE_KEYS.filter(
+      (k) => !EN_PO.translated.has(k) && !EN_UNTRANSLATED_ALLOWLIST.has(k),
+    );
+    expect(untranslatedZh, `Empty zh-CN msgstr: ${JSON.stringify(untranslatedZh)}`).toHaveLength(0);
+    expect(
+      untranslatedEn,
+      `Empty en msgstr and NOT on the documented allowlist: ${JSON.stringify(untranslatedEn)}`,
+    ).toHaveLength(0);
+  });
+
+  it("en and zh-CN .po have an identical msgid set", () => {
+    const enOnly = [...EN_PO.msgids].filter((k) => !ZH_PO.msgids.has(k));
+    const zhOnly = [...ZH_PO.msgids].filter((k) => !EN_PO.msgids.has(k));
+    expect(enOnly, `msgid in en but not zh-CN: ${JSON.stringify(enOnly)}`).toHaveLength(0);
+    expect(zhOnly, `msgid in zh-CN but not en: ${JSON.stringify(zhOnly)}`).toHaveLength(0);
+  });
+});
+```
+
+- [ ] **Step 3: Migrate `i18n-completeness-phase3.test.ts`**
+
+Same shape, fixture `PHASE3_KEYS`, import path `./i18n/__fixtures__/...` (file is one level up from `tenant-portal/`):
+
+```ts
+import { describe, expect, it } from "vitest";
+import { PHASE3_KEYS } from "./i18n/__fixtures__/phase3-keys";
+import {
+  EN_PO,
+  ZH_PO,
+  EN_UNTRANSLATED_ALLOWLIST,
+  normalizeFixtureKey,
+} from "./i18n/__fixtures__/po-coverage";
+
+const UNIQUE = [...new Set<string>(PHASE3_KEYS)].map(normalizeFixtureKey);
+
+describe("phase-3 i18n completeness", () => {
+  it("every phase-3 source string is an extracted .po msgid (both locales)", () => {
+    expect(UNIQUE.filter((k) => !EN_PO.msgids.has(k)), "missing en").toHaveLength(0);
+    expect(UNIQUE.filter((k) => !ZH_PO.msgids.has(k)), "missing zh-CN").toHaveLength(0);
+  });
+  it("every phase-3 string is translated in both locales (modulo the en allowlist)", () => {
+    expect(UNIQUE.filter((k) => !ZH_PO.translated.has(k)), "empty zh-CN").toHaveLength(0);
+    expect(
+      UNIQUE.filter((k) => !EN_PO.translated.has(k) && !EN_UNTRANSLATED_ALLOWLIST.has(k)),
+      "empty en, not allowlisted",
+    ).toHaveLength(0);
+  });
+  it("en and zh-CN .po have an identical msgid set", () => {
+    expect([...EN_PO.msgids].filter((k) => !ZH_PO.msgids.has(k)), "en-only").toHaveLength(0);
+    expect([...ZH_PO.msgids].filter((k) => !EN_PO.msgids.has(k)), "zh-only").toHaveLength(0);
+  });
+});
+```
+
+- [ ] **Step 4: Migrate `ops-console/i18n-completeness.test.ts` (keeps the no-silent-shadow guard)**
+
+The OPS-specific value (the no-silent-shadow guard over `INTENTIONAL_SHARED` / `PHASE1_TENANT_KEYS`) does NOT depend on the legacy maps — only the `*Messages` import and the first three `it` blocks do. Replace the import + first three blocks with the `.po`-coverage form (as Step 2, fixture = `OPS_KEYS` with `.map(normalizeFixtureKey)`); **keep `OPS_KEYS` (`:38-143`), `INTENTIONAL_SHARED` (`:155-167`), `TENANT_PORTAL_KEYS_OVERLAP`, and the `"no ops-console key silently shadows a Phase-1 key"` test (`:201-210`) byte-for-byte** — that guard compares fixture sets, not catalog contents, and must remain unchanged. Drop only the two now-unused imports (`enMessages`, `zhCNMessages`).
+
+- [ ] **Step 5: Populate `EN_UNTRANSLATED_ALLOWLIST` from the real extract (no guessing)**
+
+Run: `cd /Users/xumingyang/github/contrabass/cloud && grep -B1 '^msgstr ""$' src/litellm-portal/i18n/locales/en/messages.po | grep '^msgid ' | sed 's/^msgid "//; s/"$//' > /tmp/en-empty-msgids.txt && wc -l /tmp/en-empty-msgids.txt`
+Expected: a positive count — but NOT 52. The T3b (commit `60309d44`) snapshot was 52; Task 4d (which runs BEFORE this task) seeded the 37 previously-blocked strings with authored English, so the live count is LOWER. Do NOT assert any specific number — read whatever the live `.po` reports and proceed; the count is data, not a gate.
+For each of the 3 fixtures, intersect its normalized keys (via `normalizeFixtureKey`, which now also maps named→positional) with `/tmp/en-empty-msgids.txt`; the union of those intersections is the EXACT content of `EN_UNTRANSLATED_ALLOWLIST`. Post-4d this intersection should be markedly smaller — ideally empty — because the §F.3 strings + the two nav headings now carry authored English. Paste only the strings that genuinely remain empty AND are fixture-listed (normalized form, matching the `.po` msgid). Do NOT add any non-fixture empty msgid (it never reaches an assertion). Do NOT add a fixture string that DOES have an English translation. The implementer MUST derive this list from the file — do not guess, and do not pad it back toward the old 52.
+
+- [ ] **Step 6: Run the 3 migrated suites — they must PASS and be provably non-vacuous**
+
+Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/ops-console/i18n-completeness.test.ts src/litellm-portal/tenant-portal/i18n-completeness.test.ts src/litellm-portal/i18n-completeness-phase3.test.ts`
+Expected: ALL PASS. (Legacy-map "run-fail-first" is **N/A** — the pre-migration gate form imports the soon-deleted maps; the meaningful RED/GREEN here is structural: the migrated gate PASSES now AND would FAIL if a live fixture string had an empty `msgstr` outside the allowlist. Prove non-vacuity in Step 7 without committing the dirty state.)
+
+- [ ] **Step 7: Sanity-prove non-vacuity (no commit of the dirty state)**
+
+Temporarily blank one fixture-listed string's en `msgstr` (pick a translated one, e.g. the `msgstr` for `msgid "登录"` at `en/messages.po:639`), rerun the tenant-portal suite, expect the "translated in both locales" test to FAIL, then restore:
+
+```bash
+cd /Users/xumingyang/github/contrabass/cloud
+cp src/litellm-portal/i18n/locales/en/messages.po /tmp/en.po.bak
+perl -0pi -e 's/(msgid "登录"\nmsgstr ")Sign in(")/${1}${2}/' src/litellm-portal/i18n/locales/en/messages.po
+bun run test src/litellm-portal/tenant-portal/i18n-completeness.test.ts || echo "GATE CORRECTLY FAILED ON EMPTY TRANSLATION"
+cp /tmp/en.po.bak src/litellm-portal/i18n/locales/en/messages.po && rm /tmp/en.po.bak
+```
+
+Expected: `GATE CORRECTLY FAILED ON EMPTY TRANSLATION`, then the file is restored byte-identical (`git status --porcelain src/litellm-portal/i18n/locales/en/messages.po` empty).
+
+- [ ] **Step 8: Retire the legacy source-text maps**
 
 ```bash
 cd /Users/xumingyang/github/contrabass
 git -c commit.gpgsign=false rm cloud/src/litellm-portal/i18n/messages/zh-CN.ts cloud/src/litellm-portal/i18n/messages/en.ts
 ```
 
-- [ ] **Step 6: Run test + typecheck**
+(`scripts/seed-litellm-portal-catalogs.mjs` will now fail to import these — acceptable: it is the spent one-shot migration tool, already run, `.po`/`.mjs` committed. Do NOT modify it. It is not exercised by the vitest suite or typecheck.)
 
-Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/i18n/setup-source.test.ts`
-Expected: PASS (1 passed).
-Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run typecheck 2>&1 | grep -E "setup.ts|messages/(en|zh-CN)" || echo "NO NEW ERRORS"`
-Expected: `NO NEW ERRORS` (only the `server.ts(6,33)` baseline persists).
+- [ ] **Step 9: Full i18n + completeness suites + typecheck (baseline only)**
 
-- [ ] **Step 7: Commit**
+Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/i18n src/litellm-portal/ops-console/i18n-completeness.test.ts src/litellm-portal/tenant-portal/i18n-completeness.test.ts src/litellm-portal/i18n-completeness-phase3.test.ts`
+Expected: ALL PASS (legacy maps gone, gates read `.po`).
+Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run typecheck 2>&1 | tail -5`
+Expected: ONLY `server.ts(6,33): error TS6142` (the documented `--jsx` baseline). No new error from the deleted maps (no surviving `src` importer) or the new helper/tests.
+
+- [ ] **Step 10: Commit**
 
 ```bash
 cd /Users/xumingyang/github/contrabass
-git -c commit.gpgsign=false add cloud/src/litellm-portal/i18n/locales/zh-CN/messages.mjs cloud/src/litellm-portal/i18n/locales/en/messages.mjs cloud/src/litellm-portal/i18n/setup.ts cloud/src/litellm-portal/i18n/setup-source.test.ts cloud/src/litellm-portal/i18n/messages/zh-CN.ts cloud/src/litellm-portal/i18n/messages/en.ts
-git -c commit.gpgsign=false commit -m "feat(litellm-portal): load compiled token-array i18n catalogs and drop legacy maps"
+git -c commit.gpgsign=false add cloud/src/litellm-portal/i18n/__fixtures__/po-coverage.ts cloud/src/litellm-portal/ops-console/i18n-completeness.test.ts cloud/src/litellm-portal/tenant-portal/i18n-completeness.test.ts cloud/src/litellm-portal/i18n-completeness-phase3.test.ts cloud/src/litellm-portal/i18n/messages/zh-CN.ts cloud/src/litellm-portal/i18n/messages/en.ts
+git -c commit.gpgsign=false commit -m "test(litellm-portal): migrate i18n-completeness gates to compiled .po and drop legacy maps"
 ```
+
+(The `git rm` from Step 8 plus the `git add` of the modified test files + new helper above are committed together. The deleted `.ts` paths are listed explicitly so the removal is part of this single commit, per the explicit-path git constraint.)
 
 ---
 
@@ -593,17 +1321,22 @@ describe("F1 production-mode i18n (no runtime compiler)", () => {
   });
 
   it("interpolates the impersonation banner message in en", () => {
+    // shell.tsx:204-206 is <Trans>{imp.realActor} ... {imp.effectiveTeamId} ...</Trans>.
+    // The macro extracts JSX member expressions as POSITIONAL ICU args, so the
+    // compiled msgid is "{0} 正在代表团队 {1} ..." and the compiled <Trans> binds
+    // values positionally ({0: imp.realActor, 1: imp.effectiveTeamId}). Query
+    // with the positional id + positional values — consistent with Task 3b's
+    // reconciled positional en string.
     const i18n = setupI18n();
     i18n.load({ en: enMessages });
     i18n.activate("en");
     const out = i18n._({
-      id: "{realActor} 正在代表团队 {effectiveTeamId} 操作。所有操作均被审计。",
-      values: { realActor: "ops@x.com", effectiveTeamId: "team-9" },
+      id: "{0} 正在代表团队 {1} 操作。所有操作均被审计。",
+      values: { 0: "ops@x.com", 1: "team-9" },
     });
-    expect(out).toContain("ops@x.com");
-    expect(out).toContain("team-9");
-    expect(out).not.toContain("{realActor}");
-    expect(out).not.toContain("{effectiveTeamId}");
+    expect(out).toBe("ops@x.com is acting on behalf of team team-9. All actions are audited.");
+    expect(out).not.toContain("{0}");
+    expect(out).not.toContain("{1}");
   });
 });
 ```
@@ -1595,11 +2328,12 @@ Re-run the V2.0 browser-harness production E2E pass that originally surfaced F1�
 
 | Spec item | Task(s) |
 |---|---|
-| F1 decision A: `@lingui/cli` extract+compile pipeline | 1, 3, 4 |
+| F1 decision A: `@lingui/cli` extract+compile pipeline | 1, 3, 4, 4c |
 | F1: `lingui.config` added | 1 |
 | F1: migrate zh-CN/en human translations, no loss | 3 (seed script + migration test) |
 | F1: wire `lingui compile` into `build:litellm-portal` & deploy | 1 |
-| F1: `setup.ts` loads compiled catalogs | 4 |
+| F1: `setup.ts` loads compiled catalogs (legacy maps retired) | 4 (runtime switch), 4c (retire maps) |
+| F1: i18n-completeness gates migrated to compiled `.po` source-of-truth, non-vacuous | 4c |
 | F1: token-array runtime interpolates w/o compiler — verified | 4 (Context, `index.mjs:330-360` cited) |
 | F1: fix `billing.tsx:63` / `members.tsx:90` `${}` misuse | 2 |
 | F1: non-vacuous prod-mode regression test | 5 |
