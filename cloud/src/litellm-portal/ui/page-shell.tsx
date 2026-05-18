@@ -25,6 +25,11 @@ export type PageShellProps = {
   header?: React.ReactNode;
   /** The fully-formed navigation element (the shell supplies its own SideNav). */
   nav: React.ReactNode;
+  /**
+   * Optional full-width region rendered BEFORE the header band and OUTSIDE the
+   * nav/main flex (no chrome). For tenant's ImpersonationBanner + BrandSummaryBar.
+   */
+  preHeader?: React.ReactNode;
   /** Optional id forwarded to the root (e.g. shell anchors / test selectors). */
   id?: string;
   /** Optional inline style forwarded to the root (e.g. Ops OPS_STEEL_ACCENT). */
@@ -43,6 +48,7 @@ const MAIN =
 export function PageShell({
   header,
   nav,
+  preHeader,
   id,
   style,
   className,
@@ -55,12 +61,15 @@ export function PageShell({
       style={style}
       data-page-shell
     >
+      {preHeader !== undefined ? (
+        <div data-page-shell-preheader>{preHeader}</div>
+      ) : null}
       {header !== undefined ? (
         <div className={HEADER} data-page-shell-header>
           {header}
         </div>
       ) : null}
-      <div className="flex flex-1">
+      <div className="flex flex-1" data-page-shell-body>
         {nav}
         <main className={MAIN} data-page-shell-main>
           {children}
