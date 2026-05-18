@@ -1,3 +1,15 @@
+/**
+ * F5/D5 — legacy-redirect SPA-side fallback (NOT the authority).
+ *
+ * The single source of truth for legacy `/admin/*` and `/preferences`
+ * redirects is the worker-layer `legacyPortalRedirectTarget` in
+ * `litellm-portal/index.ts`, which 302s on full-page navigation before the
+ * SPA loads. This TanStack route table is the intentionally-layered fallback
+ * for client-side (SPA) navigations that never reach the worker. Its targets
+ * MUST stay consistent with the worker mappings — any change to the worker
+ * authority MUST be mirrored here (enforced by
+ * `redirects-single-source.test.ts`).
+ */
 import { createRoute, redirect } from "@tanstack/react-router";
 import { rootRoute } from "../__root";
 
