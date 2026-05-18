@@ -41,6 +41,7 @@ function makeIndexDO(
   usersByEmail: Record<string, { role: "admin" | "user"; userId?: string; teamId?: string | null } | null>,
   tenantRolesByKey: Record<string, { tenantRole: "tenant_admin" | "member" } | null> = {},
 ): DurableObjectNamespace {
+  const identityByEmail = new Map<string, unknown>();
   const stub = {
     getUserByEmail: vi.fn(async (email: string) => {
       const u = usersByEmail[email];
@@ -49,6 +50,10 @@ function makeIndexDO(
     }),
     getTenantRole: vi.fn(async (userId: string, teamId: string) => {
       return tenantRolesByKey[`${userId}|${teamId}`] ?? null;
+    }),
+    getIdentityByEmail: vi.fn(async (email: string) => identityByEmail.get(email) ?? null),
+    putIdentity: vi.fn(async (rec: { emailLc: string }) => {
+      identityByEmail.set(rec.emailLc, rec);
     }),
   };
   return {

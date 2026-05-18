@@ -3,6 +3,8 @@ import { z } from "zod";
 import {
   UserRecordSchema,
   type UserRecord,
+  IdentityMapRecordSchema,
+  type IdentityMapRecord,
   InviteRecordSchema,
   type InviteRecord,
   MagicLinkNonceSchema,
@@ -112,6 +114,17 @@ function userFromRow(row: SqlRow): UserRecord {
     createdAt: String(row.created_at),
   };
   return UserRecordSchema.parse(record);
+}
+
+function identityFromRow(row: SqlRow): IdentityMapRecord {
+  return IdentityMapRecordSchema.parse({
+    emailLc: String(row.email_lc),
+    litellmUserId: String(row.litellm_user_id),
+    teams: JSON.parse(String(row.teams_json)),
+    userRole: row.user_role === null ? null : String(row.user_role),
+    origin: String(row.origin),
+    lastReconciledAt: String(row.last_reconciled_at),
+  });
 }
 
 function inviteFromRow(row: SqlRow): InviteRecord {
@@ -262,6 +275,17 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
       );
       CREATE INDEX IF NOT EXISTS cb_index_impersonation_actor_idx
         ON cb_index_impersonation (real_actor, started_at DESC);
+      CREATE TABLE IF NOT EXISTS cb_index_identity (
+        email_lc TEXT PRIMARY KEY,
+        litellm_user_id TEXT NOT NULL,
+        teams_json TEXT NOT NULL,
+        user_role TEXT,
+        origin TEXT NOT NULL CHECK (origin IN ('deterministic', 'recorded', 'migrated')),
+        last_reconciled_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS cb_index_identity_user_idx
+        ON cb_index_identity (litellm_user_id);
     `);
 
     const auditCols = sql
@@ -375,6 +399,30 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
       parsed.teamId,
       parsed.maxBudget ?? null,
       parsed.createdAt,
+      new Date().toISOString(),
+    );
+  }
+
+  private putIdentitySql(sql: SqlStorage, record: IdentityMapRecord): void {
+    const parsed = IdentityMapRecordSchema.parse(record);
+    sql.exec(
+      `INSERT INTO cb_index_identity (
+         email_lc, litellm_user_id, teams_json, user_role, origin,
+         last_reconciled_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(email_lc) DO UPDATE SET
+         litellm_user_id = excluded.litellm_user_id,
+         teams_json = excluded.teams_json,
+         user_role = excluded.user_role,
+         origin = excluded.origin,
+         last_reconciled_at = excluded.last_reconciled_at,
+         updated_at = excluded.updated_at`,
+      parsed.emailLc.toLowerCase(),
+      parsed.litellmUserId,
+      JSON.stringify(parsed.teams),
+      parsed.userRole,
+      parsed.origin,
+      parsed.lastReconciledAt,
       new Date().toISOString(),
     );
   }
@@ -589,6 +637,68 @@ export class IndexDO extends DurableObject<LiteLLMPortalEnv> {
       await txn.put(userKey(parsed.userId), parsed);
       await txn.put(emailKey(parsed.email), pointer);
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Identity map (authoritative email -> LiteLLM user_id; SQL-only)
+  // -------------------------------------------------------------------------
+
+  async getIdentityByEmail(email: string): Promise<IdentityMapRecord | null> {
+    if (typeof email !== "string" || email.length === 0) {
+      throw new Error("getIdentityByEmail: email must be a non-empty string");
+    }
+    const sql = await this.sql();
+    if (sql === null) throw new Error("getIdentityByEmail: SQL backend required");
+    const row = firstRow(sql.exec<SqlRow>(
+      "SELECT * FROM cb_index_identity WHERE email_lc = ?",
+      email.trim().toLowerCase(),
+    ));
+    return row == null ? null : identityFromRow(row);
+  }
+
+  async getIdentityByUserId(userId: string): Promise<IdentityMapRecord | null> {
+    if (typeof userId !== "string" || userId.length === 0) {
+      throw new Error("getIdentityByUserId: userId must be a non-empty string");
+    }
+    const sql = await this.sql();
+    if (sql === null) throw new Error("getIdentityByUserId: SQL backend required");
+    const row = firstRow(sql.exec<SqlRow>(
+      "SELECT * FROM cb_index_identity WHERE litellm_user_id = ? ORDER BY email_lc ASC",
+      userId,
+    ));
+    return row == null ? null : identityFromRow(row);
+  }
+
+  async putIdentity(record: IdentityMapRecord): Promise<void> {
+    const parsed = IdentityMapRecordSchema.parse(record);
+    const sql = await this.sql();
+    if (sql === null) throw new Error("putIdentity: SQL backend required");
+    this.putIdentitySql(sql, parsed);
+  }
+
+  async listIdentities(opts?: { limit?: number; cursor?: string }): Promise<{ identities: IdentityMapRecord[]; cursor: string | undefined }> {
+    const limit = opts?.limit ?? 100;
+    const sql = await this.sql();
+    if (sql === null) throw new Error("listIdentities: SQL backend required");
+    const cursor = opts?.cursor ?? null;
+    const rows = cursor === null
+      ? sql.exec<SqlRow>("SELECT * FROM cb_index_identity ORDER BY email_lc ASC LIMIT ?", limit).toArray()
+      : sql.exec<SqlRow>("SELECT * FROM cb_index_identity WHERE email_lc > ? ORDER BY email_lc ASC LIMIT ?", cursor, limit).toArray();
+    const identities = rows.map(identityFromRow);
+    const last = identities.at(-1);
+    return {
+      identities,
+      cursor: identities.length >= limit && last != null ? last.emailLc : undefined,
+    };
+  }
+
+  async deleteIdentity(email: string): Promise<void> {
+    if (typeof email !== "string" || email.length === 0) {
+      throw new Error("deleteIdentity: email must be a non-empty string");
+    }
+    const sql = await this.sql();
+    if (sql === null) throw new Error("deleteIdentity: SQL backend required");
+    sql.exec("DELETE FROM cb_index_identity WHERE email_lc = ?", email.trim().toLowerCase());
   }
 
   // -------------------------------------------------------------------------

@@ -16,6 +16,21 @@ const ROLES: Record<string, { role: "admin" | "user" }> = {
 function makeIndexDO(): DurableObjectNamespace {
   const stub = {
     getUserByEmail: vi.fn(async (email: string) => ROLES[email] ?? null),
+    // Mapped identity: a real (non-"@") LiteLLM user_id slug, so self-scope
+    // usage resolves to a mapped user (not the email-fallback "unmapped" path).
+    getIdentityByEmail: vi.fn(async (email: string) => {
+      const r = ROLES[email];
+      if (!r) return null;
+      return {
+        emailLc: email.toLowerCase(),
+        litellmUserId: email.split("@")[0],
+        teams: [],
+        userRole: r.role === "admin" ? "proxy_admin" : "internal_user",
+        origin: "recorded" as const,
+        lastReconciledAt: new Date().toISOString(),
+      };
+    }),
+    putIdentity: vi.fn(async () => {}),
     listTeams: vi.fn(async () => [{ id: "t1", alias: "alpha" }]),
     listAllUsers: vi.fn(async () => ({
       users: [

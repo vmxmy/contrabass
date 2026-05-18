@@ -278,11 +278,18 @@ export async function importUsers(env: LiteLLMPortalEnv): Promise<ImportUsersRes
 
         const role: "admin" | "user" = desiredUserRoleFromLiteLLM(record.role);
 
-        const teamIds: string[] = Array.isArray(record.team_ids)
-          ? (record.team_ids as unknown[]).filter((t): t is string => typeof t === "string")
-          : Array.isArray(record.teamIds)
-            ? (record.teamIds as unknown[]).filter((t): t is string => typeof t === "string")
-            : [];
+        // LiteLLM /user/list returns the membership array as `teams` (matches
+        // resolveLiteLLMUser and the LiteLLM_UserTable.teams column). The old
+        // code read `team_ids`/`teamIds`, which the API never sends — so team
+        // membership silently collapsed to empty. Prefer `teams`; keep the
+        // legacy names as a defensive fallback only.
+        const teamIds: string[] = Array.isArray(record.teams)
+          ? (record.teams as unknown[]).filter((t): t is string => typeof t === "string")
+          : Array.isArray(record.team_ids)
+            ? (record.team_ids as unknown[]).filter((t): t is string => typeof t === "string")
+            : Array.isArray(record.teamIds)
+              ? (record.teamIds as unknown[]).filter((t): t is string => typeof t === "string")
+              : [];
 
         const maxBudget: number | undefined =
           typeof record.max_budget === "number" && Number.isFinite(record.max_budget)
@@ -314,6 +321,18 @@ export async function importUsers(env: LiteLLMPortalEnv): Promise<ImportUsersRes
         };
 
         await indexStub.putUser(userRecord);
+
+        // Record the authoritative email -> real LiteLLM user_id mapping.
+        // `userId` is the record's true LiteLLM id (arbitrary slug/uuid);
+        // never rewritten here. origin "recorded" = observed, not provisioned.
+        await indexStub.putIdentity({
+          emailLc: email.trim().toLowerCase(),
+          litellmUserId: userId,
+          teams: teamIds,
+          userRole: typeof record.role === "string" ? record.role : null,
+          origin: "recorded",
+          lastReconciledAt: new Date().toISOString(),
+        });
 
         for (const tid of teamIds) {
           const teamStub = teamConfigNs.get(

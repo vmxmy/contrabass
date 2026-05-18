@@ -9,10 +9,25 @@ const TZ_MS = TZ_OFFSET_MIN * 60 * 1000;
 const CACHE_TTL_S = 120;
 const FETCH_TIMEOUT_MS = 8000;
 
-export type UsageUnavailable = { kind: "unavailable"; reason: string };
+export type UsageUnavailable =
+  | { kind: "unavailable"; reason: string }
+  | { kind: "unmapped"; reason: string };
 
 function unavailable(reason: string): UsageUnavailable {
   return { kind: "unavailable", reason };
+}
+
+function unmapped(reason: string): UsageUnavailable {
+  return { kind: "unmapped", reason };
+}
+
+/** A user-scope id that still looks like an email means identity resolution
+ *  fell back to the email sentinel (no map entry, no LiteLLM match). Querying
+ *  /user/daily/activity?user_id=<email> returns zero — a misleading "0 spend".
+ *  Detect it so callers can surface "identity not mapped" instead. LiteLLM
+ *  user_id slugs/uuids never contain "@". */
+function isUnmappedUserId(userId: string): boolean {
+  return userId.includes("@");
 }
 
 function shDate(ms: number): string {
@@ -41,6 +56,9 @@ export class LiteLLMUsageSource implements UsageSource {
     const start = shDate(fromMs);
     const end = shDate(toMs);
     const isUser = scope.kind === "user";
+    if (scope.kind === "user" && isUnmappedUserId(scope.userId)) {
+      throw unmapped(scope.userId);
+    }
     const path = isUser ? "/user/daily/activity" : "/user/daily/activity/aggregated";
     const qs = new URLSearchParams({ start_date: start, end_date: end, timezone: String(-TZ_OFFSET_MIN), page_size: "1000" });
     if (isUser) qs.set("user_id", scope.userId);

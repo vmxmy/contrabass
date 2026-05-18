@@ -16,6 +16,7 @@ import type { UserRecord } from "../durable/schemas";
 function makeIndexStub() {
   const teams: Array<{ id: string; alias: string }> = [];
   const users = new Map<string, UserRecord>();
+  const identities = new Map<string, { emailLc: string; litellmUserId: string; teams: string[] }>();
   let imported = false;
   const auditLog: unknown[] = [];
   const stub = {
@@ -25,12 +26,15 @@ function makeIndexStub() {
     putUser: vi.fn(async (rec: UserRecord) => {
       users.set(rec.email.toLowerCase(), rec);
     }),
+    putIdentity: vi.fn(async (rec: { emailLc: string; litellmUserId: string; teams: string[] }) => {
+      identities.set(rec.emailLc, rec);
+    }),
     getUserByEmail: vi.fn(async (email: string) => users.get(email.toLowerCase()) ?? null),
     isImported: vi.fn(async () => imported),
     markImported: vi.fn(async () => { imported = true; }),
     appendAudit: vi.fn(async (e: unknown) => { auditLog.push(e); }),
   };
-  return { teams, users, auditLog, isImported: () => imported, setImported: (v: boolean) => { imported = v; }, stub };
+  return { teams, users, identities, auditLog, isImported: () => imported, setImported: (v: boolean) => { imported = v; }, stub };
 }
 
 function makeTeamStub() {
