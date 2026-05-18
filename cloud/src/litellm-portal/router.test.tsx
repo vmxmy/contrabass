@@ -216,19 +216,18 @@ describe("/ shell selection from useMe()", () => {
     expect(nav.textContent).not.toContain("账单");
   });
 
-  it("renders the Phase-2 notice variant with a /manage link for a pure Owner", async () => {
+  it("renders the Ops Console entry variant with a /ops link for a pure Owner", async () => {
     await renderPortalAt("/", pureOwnerMe);
 
     await waitFor(() => {
       expect(document.getElementById("tenant-portal-shell-root")).not.toBeNull();
     });
-    const ownerNotice = document.getElementById("owner-phase2-root");
-    expect(ownerNotice).not.toBeNull();
-    expect(screen.getAllByText(/Phase 2/).length).toBeGreaterThan(0);
-    // Scope to the Phase-2 notice region: RootLayout chrome also has a /manage
-    // link, so query the notice's own link explicitly.
-    const noticeLink = within(ownerNotice as HTMLElement).getByRole("link");
-    expect(noticeLink.getAttribute("href")).toBe("/manage");
+    const ownerEntry = document.getElementById("owner-ops-entry-root");
+    expect(ownerEntry).not.toBeNull();
+    expect(screen.getAllByText(/运营控制台|Operations Console/).length).toBeGreaterThan(0);
+    // Scope to the ops-entry region to avoid matching other /ops links in chrome.
+    const entryLink = within(ownerEntry as HTMLElement).getByRole("link");
+    expect(entryLink.getAttribute("href")).toBe("/ops");
     expect(screen.queryByLabelText("租户导航")).toBeNull();
   });
 });
