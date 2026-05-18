@@ -25,6 +25,7 @@ import {
 } from "../hooks";
 import { MemberForbidden } from "../routes";
 import { PanelSkeleton, PanelEmpty, PanelError } from "../../components/panel-state";
+import { PanelCard } from "../../ui";
 
 // ---------------------------------------------------------------------------
 // RevokeInviteDialog — typed-confirm dialog mirroring DeleteKeyButton idiom
@@ -181,13 +182,11 @@ function CreateInviteForm() {
   }, [email, teamRole, createInvite]);
 
   return (
-    <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-      <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-        <Text variant="heading3" as="p"><Trans>发送邀请</Trans></Text>
-        <Text variant="secondary" as="p">
-          <Trans>邀请新成员加入当前团队。</Trans>
-        </Text>
-      </div>
+    <PanelCard
+      title={t`发送邀请`}
+      subtitle={t`邀请新成员加入当前团队。`}
+      padded={false}
+    >
       <div className="space-y-5 p-6">
         <Field
           label={t`邮箱`}
@@ -228,7 +227,7 @@ function CreateInviteForm() {
           </Button>
         </div>
       </div>
-    </article>
+    </PanelCard>
   );
 }
 
@@ -313,15 +312,13 @@ export function TenantMembersScreen() {
 
   return (
     <div id="tenant-members-root" className="space-y-6">
-      <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-        <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-          <Text variant="heading3" as="p"><Trans>成员与邀请</Trans></Text>
-          <Text variant="secondary" as="p">
-            <Trans>管理团队成员的邀请状态。</Trans>
-          </Text>
-        </div>
+      <PanelCard
+        title={t`成员与邀请`}
+        subtitle={t`管理团队成员的邀请状态。`}
+        padded={false}
+      >
         <InvitesTable />
-      </article>
+      </PanelCard>
       <CreateInviteForm />
     </div>
   );
