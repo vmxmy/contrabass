@@ -1882,33 +1882,47 @@ Stage 1 (security/#418): confirm no open redirect (landing is a fixed literal `/
 ## Task 9 (F3): Retire the stale Phase-2 notice; gate it from non-Owners
 
 **Files:**
-- Modify: `cloud/src/litellm-portal/tenant-portal/shell.tsx:176-194,288-296`
-- Modify: `cloud/src/litellm-portal/i18n/locales/{zh-CN,en}/messages.po` (via re-extract)
+- Modify: `cloud/src/litellm-portal/tenant-portal/shell.tsx:176-194` (`OwnerPhase2Notice` → `OwnerOpsEntry`) and `:292-296` (render site inside the `owner ? (` branch)
+- Modify: `cloud/src/litellm-portal/i18n/__fixtures__/phase1-keys.ts:25-28` (swap the 3 `// Phase-2 owner notice` fixture entries for the replacement's strings — required so the `i18n-completeness` gate stays green and now guards the NEW strings)
+- Modify (generated-but-committed; hand-author the net-new `msgstr`, then recompile): `cloud/src/litellm-portal/i18n/locales/en/messages.po`, `cloud/src/litellm-portal/i18n/locales/zh-CN/messages.po`, `cloud/src/litellm-portal/i18n/locales/en/messages.mjs`, `cloud/src/litellm-portal/i18n/locales/zh-CN/messages.mjs`
+- Create: `cloud/src/litellm-portal/tenant-portal/shell-ops-entry.test.tsx`
 
-**Context:** `OwnerPhase2Notice` (`shell.tsx:176-194`) renders a Banner titled `t\`运营控制台将在 Phase 2 提供\`` / `<Trans>Operations Console arrives in Phase 2</Trans>` with an action linking to `/manage`. It is rendered at `shell.tsx:288-296` only when `owner === isPureOwner(identity)` is true (`isPureOwner`: `role==="admin" && tenantTeamId===null && tenantRole===null`, lines 57-58). The spec says: replace the stale Phase-2 copy with a valid Ops entry pointing to `/ops`, and ensure non-Owners never see it (the audience bug — a member also saw it; with F2 fixing roles the gate is now correct, but the copy is still stale). The en catalog mapped the stale strings at the old `en.ts:232-234`; after F1 these live in the `.po`/`.mjs` and will be regenerated.
+**Context:** `OwnerPhase2Notice` (`shell.tsx:176-194`, verified at integration HEAD `f86d944e`) renders a Banner titled `t\`运营控制台将在 Phase 2 提供\`` / `<Trans>Operations Console arrives in Phase 2</Trans>` with an action `<a href="/manage">` whose text is `<Trans>管理控制台</Trans>`. It is rendered at `shell.tsx:292-296` only when `owner` is true, where `owner = isPureOwner(identity)` (`shell.tsx:278`); `isPureOwner` (`shell.tsx:57-59`) is `identity.role === "admin" && identity.tenantTeamId === null && identity.tenantRole === null`. The spec (F3) requires: replace the stale Phase-2 copy with a valid Ops entry pointing to `/ops`, and ensure non-Owners never see it (the audience bug — a member also saw it under the pre-F2 role bug; F2 corrects the role so the existing `isPureOwner` gate is now sufficient — the gate itself is sound and is NOT changed here).
 
-- [ ] **Step 1: Write the failing test**
+**Post-F1 catalog reality (why the original Task-9 procedure is non-executable):**
+- F1 replaced the source-text-keyed `i18n/messages/{en,zh-CN}.ts` (DELETED by T4c) with the standard `@lingui/cli` pipeline: the macro emits content-hash ids; catalogs are the compiled `i18n/locales/{en,zh-CN}/messages.{po,mjs}`; the completeness gates read the `.po` via `i18n/__fixtures__/po-coverage.ts` plus the `phase1-keys.ts`/`phase3-keys.ts` fixtures.
+- `scripts/seed-litellm-portal-catalogs.mjs` is a SPENT one-shot. Its `loadLegacyMap` imports `src/litellm-portal/i18n/messages/${locale}.ts`, which T4c deleted — running it now fails with `ERR_MODULE_NOT_FOUND` for `…/i18n/messages/zh-CN.ts` (reproduced at HEAD `f86d944e`). The post-F1 re-catalog procedure **MUST NOT call the seed script** (this is the correction to the original Step 4, which chained `node scripts/seed-litellm-portal-catalogs.mjs`).
+- `运营控制台` is **already an extracted msgid** in BOTH `.po` (line 992: zh `msgstr "运营控制台"`, en `msgstr "Operations Console"`), referenced by `#: src/litellm-portal/ops-console/shell.tsx:127` / `:130`. The replacement's `t\`运营控制台\`` reuses this exact msgid — re-extract only ADDS a `#: …/tenant-portal/shell.tsx:<line>` reference comment to the existing entry; it does NOT create a duplicate and needs NO hand-authored msgstr. Do not add a second `运营控制台` entry.
+- The two replacement strings `进入运营控制台` and `使用运营控制台管理团队、用量与审计` are net-new (verified absent from both `.po`). zh-CN is the `sourceLocale`, so `lingui extract` writes their zh `msgstr` = msgid (identity) automatically; their en `msgstr` is empty until hand-authored (Step 4). Authoritative English (authored 2026-05-18, per-string fidelity to be re-verified in this task's Stage-1 RETAINED): `进入运营控制台` → `Open Operations Console`; `使用运营控制台管理团队、用量与审计` → `Manage teams, usage, and audit in the Operations Console`.
+- The three retired strings each carry a `#: src/litellm-portal/tenant-portal/shell.tsx:18x` reference and an entry in BOTH `.po`: `运营控制台将在 Phase 2 提供` (zh line 1000 / en line 1000, en `msgstr "Operations Console arrives in Phase 2"`), `Operations Console arrives in Phase 2` (the `<Trans>` literal becomes a msgid; zh line 64 `msgstr "运营控制台将在 Phase 2 提供"`), and `管理控制台` (zh/en line 792 `msgstr "管理控制台"`). After the source edit + re-extract their `shell.tsx` reference disappears; `运营控制台将在 Phase 2 提供` and `管理控制台` also still appear elsewhere only if referenced elsewhere (they are not — sole reference is `tenant-portal/shell.tsx`), so they become obsolete (`#~`) or are dropped. `Operations Console arrives in Phase 2` is dropped entirely (it existed ONLY as the old `<Trans>` literal).
+- **Fixture-coupling regression (the load-bearing fix):** `i18n/__fixtures__/phase1-keys.ts:25-28` still lists the three retired strings under the `// Phase-2 owner notice` comment, and `tenant-portal/i18n-completeness.test.ts` asserts every `PHASE1_TENANT_KEYS` entry is an extracted msgid in BOTH locales (and translated in both). Removing the strings from `shell.tsx` + re-extract drops those msgids → that currently-green gate goes RED unless `phase1-keys.ts` is updated in lockstep. Step 3b swaps the three retired entries for the replacement's net-new strings (`进入运营控制台`, `使用运营控制台管理团队、用量与审计`). `运营控制台` is intentionally NOT added to the fixture: it is already covered as an ops-console string and `phase1-keys.ts`'s header forbids adding entries to satisfy a new namespace — the completeness gate already guards it via the ops-console fixture; adding it here would duplicate coverage and violate the documented membership rule.
 
-Create `cloud/src/litellm-portal/tenant-portal/shell-ops-entry.test.tsx`:
+**Does T8's Owner→/ops redirect make this redundant?** No. Task 8 changes only the ONE-TIME post-login destination in `handleMagicCallback` (Owner → `/ops`). It does NOT make `/` unreachable for Owners: a pure-Owner still reaches `/` via bookmark, manual URL, the `概览` nav, a returning session, or any deep-link back to `/`. When that happens `TenantPortalShell` renders the `owner ? (` branch (`shell.tsx:292-296`) — the ONLY Owner surface at `/`. So the in-shell Ops affordance remains the correct UX for Owners who land on `/`, and the audience-gating fix (non-Owners must never see it) is independent of T8. Task 9's value is undiminished; T8 and T9 are complementary (T8 = default landing; T9 = the `/` shell fallback affordance + audience gate).
+
+- [ ] **Step 1: Write the failing test (repo readFileSync idiom — NOT `fileURLToPath`)**
+
+Create `cloud/src/litellm-portal/tenant-portal/shell-ops-entry.test.tsx`. Use the repo test-path idiom: plain cwd-relative `readFileSync` with `cwd = cloud/` under vitest, per `src/litellm-portal/a11y/type-scale.test.ts:10` and the explicit comment in `src/litellm-portal/i18n/__fixtures__/po-coverage.ts:6-9`. Do **NOT** use `fileURLToPath(new URL(...))` — under `@cloudflare/workers-types` it introduces a non-baseline `TS2769` for an included `.ts`, violating the baseline-only typecheck constraint.
 
 ```tsx
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
-const shell = readFileSync(fileURLToPath(new URL("./shell.tsx", import.meta.url)), "utf8");
+const shell = readFileSync("src/litellm-portal/tenant-portal/shell.tsx", "utf8");
 
 describe("F3 Phase-2 notice retired", () => {
   it("no longer references the stale Phase 2 copy", () => {
     expect(shell).not.toContain("运营控制台将在 Phase 2 提供");
     expect(shell).not.toContain("Operations Console arrives in Phase 2");
+    expect(shell).not.toContain("OwnerPhase2Notice");
   });
   it("offers a valid Ops Console entry pointing to /ops", () => {
     expect(shell).toContain('href="/ops"');
     expect(shell).toContain("OwnerOpsEntry");
+    expect(shell).toContain("t`运营控制台`");
   });
   it("the Owner entry is still gated behind isPureOwner only", () => {
-    expect(shell).toContain("owner ? (");
+    expect(shell).toContain("const owner = isPureOwner(identity)");
+    expect(shell).toContain("{owner ? (");
     expect(shell).toContain("<OwnerOpsEntry />");
   });
 });
@@ -1917,11 +1931,11 @@ describe("F3 Phase-2 notice retired", () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/tenant-portal/shell-ops-entry.test.tsx`
-Expected: FAIL — stale strings still present, no `OwnerOpsEntry`.
+Expected: FAIL — `OwnerPhase2Notice` and the stale strings are still present; `OwnerOpsEntry` / `href="/ops"` / `` t`运营控制台` `` are absent.
 
 - [ ] **Step 3: Replace the notice component**
 
-In `cloud/src/litellm-portal/tenant-portal/shell.tsx` replace the `OwnerPhase2Notice` function (lines 176-194):
+In `cloud/src/litellm-portal/tenant-portal/shell.tsx` replace the entire `OwnerPhase2Notice` function (lines 176-194):
 
 ```tsx
 function OwnerPhase2Notice() {
@@ -1969,7 +1983,7 @@ function OwnerOpsEntry() {
 }
 ```
 
-Then at the render site (line ~294 inside the `owner ? (` branch) replace:
+Then at the render site (inside the `{owner ? (` branch, currently `shell.tsx:294`) replace:
 
 ```tsx
             <OwnerPhase2Notice />
@@ -1981,36 +1995,88 @@ with:
             <OwnerOpsEntry />
 ```
 
-(The `owner ?` gate at line 288 is unchanged — `isPureOwner` already excludes non-Owners; F2 makes that role correct so the audience bug is resolved by the role fix + this gate. Do NOT widen or change the gate.)
+The `owner ? (` gate at `shell.tsx:292` and `isPureOwner` (`shell.tsx:57-59`) are unchanged — `isPureOwner` already excludes non-Owners, and F2 makes that role correct, so the audience bug is resolved by the F2 role fix + this existing gate. Do **NOT** widen, narrow, or otherwise change the gate or `isPureOwner`.
 
-- [ ] **Step 4: Re-extract + recompile catalogs for the new strings**
+- [ ] **Step 3b: Swap the stale fixture entries (keeps the i18n-completeness gate green)**
 
-Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run i18n:extract && node scripts/seed-litellm-portal-catalogs.mjs && bun run i18n:compile`
-Expected: extract reports updated catalogs; the new ids for `运营控制台` / `进入运营控制台` / `使用运营控制台管理团队、用量与审计` appear in both `.po` files; the stale Phase-2 ids are dropped (or marked obsolete `#~`). Recompiled `.mjs` updated.
+In `cloud/src/litellm-portal/i18n/__fixtures__/phase1-keys.ts` replace exactly these three entries (lines 25-28, the block under the `// Phase-2 owner notice` comment):
 
-> Note: the seed script maps legacy `en.ts` source-text keys; the brand-new zh strings have no legacy English. Add their English to `cloud/src/litellm-portal/i18n/locales/en/messages.po` `msgstr` by hand: `运营控制台`→`Operations Console`, `使用运营控制台管理团队、用量与审计`→`Manage teams, usage, and audit from the Operations Console`, `进入运营控制台`→`Open Operations Console`. Then re-run `bun run i18n:compile`.
+```ts
+  // Phase-2 owner notice
+  "运营控制台将在 Phase 2 提供",
+  "Operations Console arrives in Phase 2",
+  "管理控制台",
+```
 
-- [ ] **Step 5: Run test to verify it passes**
+with:
+
+```ts
+  // Owner ops-console entry (F3 — replaces the retired Phase-2 notice)
+  "进入运营控制台",
+  "使用运营控制台管理团队、用量与审计",
+```
+
+Do NOT add `"运营控制台"` here: it is already covered as an ops-console msgid (sole `.po` references are `ops-console/shell.tsx:127,130`), and `phase1-keys.ts`'s header comment explicitly forbids adding entries to satisfy a new namespace — the completeness gate already guards it via the ops-console fixture. Leave every other entry in `PHASE1_TENANT_KEYS` byte-for-byte unchanged.
+
+- [ ] **Step 4: Re-extract, hand-author net-new English msgstr, recompile (NO seed script)**
+
+This is the post-F1 re-catalog procedure. It mirrors Task 4d's established post-extract authoring (re-extract → zh identity is automatic for the source locale → hand-author en for net-new ids → recompile), but Task 4d ran during F1 when the seed script was still alive; post-T4c the seed script is a dead one-shot (`ERR_MODULE_NOT_FOUND`), so the English is hand-written directly into `en/messages.po` instead of via the seed script's `F3_EN` map. Do **NOT** run `node scripts/seed-litellm-portal-catalogs.mjs`. Do **NOT** run `bun run build:litellm-portal` (full build is out of scope; `app.generated.ts` is OFF LIMITS — Task 13 only). Do **NOT** hand-edit any `.mjs` (they are regenerated by `i18n:compile`).
+
+1. Re-extract:
+
+   Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run i18n:extract`
+   Expected: extract rewrites both `.po`. The three retired msgids lose their `#: src/litellm-portal/tenant-portal/shell.tsx:18x` reference (`Operations Console arrives in Phase 2` is dropped entirely; `运营控制台将在 Phase 2 提供` and `管理控制台` are dropped or marked obsolete `#~` since no other source references them). `进入运营控制台` and `使用运营控制台管理团队、用量与审计` are ADDED to both `.po` with zh `msgstr` = msgid (zh-CN is `sourceLocale`) and en `msgstr ""` (empty, pending Step 4.2). The existing `运营控制台` entry (line 992) gains a `#: src/litellm-portal/tenant-portal/shell.tsx:<line>` reference and is otherwise unchanged — verify NO duplicate `msgid "运营控制台"` is created.
+   Verify: `cd /Users/xumingyang/github/contrabass/cloud && grep -c 'msgid "运营控制台"$' src/litellm-portal/i18n/locales/en/messages.po` ⇒ `1` (exactly one; reused, not duplicated).
+   Verify: `cd /Users/xumingyang/github/contrabass/cloud && git diff src/litellm-portal/i18n/locales/zh-CN/messages.po | grep '^-msgstr' | grep -v '^-msgstr ""'` ⇒ NO output (no existing zh `msgstr` value changed — only additions / reference-comment churn / obsoleting).
+
+2. Hand-author the net-new English in BOTH `.po` (zh is already identity from extract; only en needs authoring). Edit `cloud/src/litellm-portal/i18n/locales/en/messages.po`: locate the two new entries and set their `msgstr` (replace the empty `msgstr ""`):
+   - `msgid "进入运营控制台"` → `msgstr "Open Operations Console"`
+   - `msgid "使用运营控制台管理团队、用量与审计"` → `msgstr "Manage teams, usage, and audit in the Operations Console"`
+
+   Confirm `cloud/src/litellm-portal/i18n/locales/zh-CN/messages.po` already has these two as identity (extract wrote `msgstr "进入运营控制台"` and `msgstr "使用运营控制台管理团队、用量与审计"`); do NOT edit zh by hand. Do NOT touch the `运营控制台` entry's en `msgstr "Operations Console"` (already correct, reused).
+
+   Verify: `cd /Users/xumingyang/github/contrabass/cloud && grep -A1 'msgid "进入运营控制台"' src/litellm-portal/i18n/locales/en/messages.po` shows `msgstr "Open Operations Console"` (non-empty).
+
+3. Recompile:
+
+   Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run i18n:compile`
+   Expected: `i18n/locales/{en,zh-CN}/messages.mjs` regenerated; the two net-new hash ids are present as plain-string token-array entries in both compiled catalogs; the dropped Phase-2 hash ids are gone from the `.mjs`. Do not hand-edit the `.mjs`.
+
+- [ ] **Step 5: Run the new test to verify it passes**
 
 Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/tenant-portal/shell-ops-entry.test.tsx`
-Expected: PASS (3 passed).
+Expected: PASS (3 passed) — stale strings + `OwnerPhase2Notice` gone; `OwnerOpsEntry`, `href="/ops"`, `` t`运营控制台` `` present; gate unchanged.
 
-- [ ] **Step 6: Run the tenant-portal shell test suite (regression)**
+- [ ] **Step 6: Run the i18n-completeness + shell regression suites**
 
-Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/tenant-portal/shell.test.tsx`
-Expected: PASS (any test asserting the old Phase-2 copy must be updated to the new Ops copy — that assertion encoded the stale state; update it, do not delete).
+Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run test src/litellm-portal/tenant-portal/i18n-completeness.test.ts src/litellm-portal/i18n src/litellm-portal/tenant-portal/shell.test.tsx`
+Expected: ALL PASS. Specifically: `tenant-portal/i18n-completeness.test.ts`'s three `it` blocks stay green — the fixture swap (Step 3b) keeps every `PHASE1_TENANT_KEYS` entry an extracted+translated msgid in both locales, now guarding `进入运营控制台` / `使用运营控制台管理团队、用量与审计` instead of the retired Phase-2 strings; the en↔zh identical-msgid-set assertion holds (both net-new ids exist in both `.po`). If `shell.test.tsx` (or any sibling) asserts the OLD Phase-2 copy / `OwnerPhase2Notice` / `href="/manage"`, that assertion encoded the stale state — UPDATE it to the new Ops copy (`运营控制台` / `进入运营控制台` / `href="/ops"` / `OwnerOpsEntry`), do NOT delete it. If a test still expects the stale strings to be absent, no change is needed.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Typecheck (baseline-only) + commit (explicit paths)**
+
+Run: `cd /Users/xumingyang/github/contrabass/cloud && bun run typecheck 2>&1 | tail -5`
+Expected: ONLY the documented baseline `server.ts(6,33): error TS6142`. No new error from the new test file (plain `readFileSync`, no `fileURLToPath`), the `shell.tsx` component rename, or the `phase1-keys.ts` fixture edit. No `as any` / `@ts-ignore` / `@ts-expect-error` anywhere.
+
+Confirm the `.d.mts` sidecars: `git -C /Users/xumingyang/github/contrabass status --porcelain cloud/src/litellm-portal/i18n/locales` — stage `*.d.mts` ONLY if it shows a real diff (the compiled export name `messages` is unchanged, so normally there is no sidecar diff; do not force-stage). `app.generated.ts` MUST remain untouched (Task 13 only).
 
 ```bash
 cd /Users/xumingyang/github/contrabass
-git -c commit.gpgsign=false add cloud/src/litellm-portal/tenant-portal/shell.tsx cloud/src/litellm-portal/tenant-portal/shell-ops-entry.test.tsx cloud/src/litellm-portal/tenant-portal/shell.test.tsx cloud/src/litellm-portal/i18n/locales/zh-CN/messages.po cloud/src/litellm-portal/i18n/locales/en/messages.po cloud/src/litellm-portal/i18n/locales/zh-CN/messages.mjs cloud/src/litellm-portal/i18n/locales/en/messages.mjs
+git -c commit.gpgsign=false add \
+  cloud/src/litellm-portal/tenant-portal/shell.tsx \
+  cloud/src/litellm-portal/tenant-portal/shell-ops-entry.test.tsx \
+  cloud/src/litellm-portal/i18n/__fixtures__/phase1-keys.ts \
+  cloud/src/litellm-portal/i18n/locales/en/messages.po \
+  cloud/src/litellm-portal/i18n/locales/zh-CN/messages.po \
+  cloud/src/litellm-portal/i18n/locales/en/messages.mjs \
+  cloud/src/litellm-portal/i18n/locales/zh-CN/messages.mjs
 git -c commit.gpgsign=false commit -m "feat(litellm-portal): replace stale phase-2 notice with ops console entry"
 ```
 
+(If Step 6 required updating an existing `shell.test.tsx` assertion, add `cloud/src/litellm-portal/tenant-portal/shell.test.tsx` to the explicit `git add` list above. Do NOT `git add -A` / `git add .`.)
+
 - [ ] **Step 8: RETAINED two-stage review (F3 copy/audience)**
 
-Stage 1 (spec/audience): confirm non-Owners cannot see the entry (gate + corrected F2 role), copy is non-stale, catalogs carry both locales. Stage 2 (code-quality).
+Stage 1 (spec/security/#418/audience reviewer): confirm (a) non-Owners can never see the entry — the `isPureOwner` gate (`shell.tsx:57-59,292`) is unchanged and the corrected F2 role makes it precise; (b) copy is non-stale and `/ops` is the literal, non-user-controlled href (no open-redirect surface); (c) `运营控制台` reuses msgid 992 (no duplicate); (d) per-string English fidelity for the two net-new strings (`进入运营控制台` → `Open Operations Console`; `使用运营控制台管理团队、用量与审计` → `Manage teams, usage, and audit in the Operations Console`) — read each zh against its en; (e) the `phase1-keys.ts` swap keeps the completeness gate non-vacuous and now guards the new strings. Stage 2 (code-quality reviewer): no `as any`/ts-ignore, repo readFileSync idiom honored, file sizes, immutability, no seed-script call, no `.mjs` hand-edit, `app.generated.ts` untouched. Address CRITICAL/HIGH before continuing.
 
 ---
 
@@ -2475,5 +2541,6 @@ Re-run the V2.0 browser-harness production E2E pass that originally surfaced F1�
 **Spec requirements that could NOT be anchored with real code (reported to user):**
 - **D6 premise stale:** the spec calls `ops-console/screens/global-usage.tsx` a "4-line empty shell, no loading/empty/error". The real file (read in planning) delegates to `<UsageDashboard initialScope="global" />` — it is NOT an empty shell. Task 12 keeps it and adds a regression smoke test instead of "finishing or removing"; flagged here because the spec's described defect does not match current code.
 - **D4 premise partially stale:** the spec says client `requireAdminRoute` has "no client role seed". Real code already seeds it (`client.tsx:22,50`, `server-impl.tsx:115-120`). Task 12 converts D4 into a regression guard (server-authoritative, client-optimized) rather than implementing a missing seed; flagged.
+- **§5.1 (Task 9) post-F1 re-catalog deviation:** Task 9's original Step 4 chained `node scripts/seed-litellm-portal-catalogs.mjs`; post-T4c that script `ERR_MODULE_NOT_FOUND`s (it imports the deleted legacy `i18n/messages/{en,zh-CN}.ts`), so the rewritten Task 9 hand-authors net-new English directly in `en/messages.po` (mirroring Task 4d's authoring intent without the dead seed script), reuses existing msgid `运营控制台` (`.po` line 992, no duplicate), and expands its Files scope to include `i18n/__fixtures__/phase1-keys.ts:25-28` so the `i18n-completeness` gate stays green and now guards the replacement strings; T8's Owner→/ops redirect is post-login-only and does NOT make the `/`-shell affordance redundant — Task 9 retains full value; flagged.
 - **F2 mechanism reconciliation:** the spec frames F2 as "`roles.ts:resolveIdentity`→`getRole(...)` LiteLLM role mapping". The actual platform role is resolved in `role-cache.ts:resolveRoleAndUserId` from **IndexDO**, with LiteLLM `user_role`/`teams` fetched but discarded. The plan fixes the real discard site (`role-cache.ts:117-138`) — semantically equivalent to the spec intent but anchored to the true code path; noted so the reviewer expects `role-cache.ts`, not `roles.ts`, to change.
 - All other spec requirements are anchored to concrete file:line with real code shown.
