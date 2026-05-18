@@ -7,6 +7,7 @@ import { Trans } from "@lingui/react/macro";
 import { useOpsTenants } from "../hooks";
 import { PanelSkeleton, PanelEmpty, PanelError } from "../../components/panel-state";
 import { densityClasses, useDensity } from "../../components/density";
+import { PanelCard } from "../../ui";
 
 function TenantsTable() {
   const { data, isLoading, isError, error } = useOpsTenants();
@@ -63,15 +64,9 @@ function TenantsTable() {
 export function OpsTenantOverviewScreen() {
   return (
     <div id="ops-tenant-overview-root" className="space-y-6">
-      <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-        <div className="border-b border-l-2 border-kumo-line border-l-kumo-brand bg-kumo-elevated p-6">
-          <Text variant="heading3" as="p"><Trans>租户总览</Trans></Text>
-          <Text variant="secondary" as="p">
-            <Trans>所有租户的成员、花费、告警与账单状态。</Trans>
-          </Text>
-        </div>
+      <PanelCard title={t`租户总览`} subtitle={t`所有租户的成员、花费、告警与账单状态。`} padded={false}>
         <TenantsTable />
-      </article>
+      </PanelCard>
     </div>
   );
 }

@@ -6,7 +6,6 @@
   "ops-console/screens/platform-settings.tsx",
   "ops-console/screens/provisioning.tsx",
   "ops-console/screens/tenant-detail.tsx",
-  "ops-console/screens/tenant-overview.tsx",
   "tenant-portal/screens/alerts.tsx",
   "tenant-portal/screens/billing.tsx",
   "tenant-portal/screens/members.tsx",
