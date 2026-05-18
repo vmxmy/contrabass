@@ -26,6 +26,7 @@ import { useDashboard } from "../../hooks/use-dashboard";
 import { useTenantWebhook } from "../hooks";
 import { PanelSkeleton, PanelEmpty } from "../../components/panel-state";
 import { fmt, fmtInt, fmtCompact } from "../../lib/format";
+import { PanelCard } from "../../ui";
 
 // ---------------------------------------------------------------------------
 // TeamIdentityTile — shows company/brand name and team identity
@@ -248,14 +249,7 @@ function TopModelsTile() {
 
   if (isLoading) {
     return (
-      <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-        <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-          <Text variant="heading3" as="p">
-            <Trans>高频模型</Trans>
-          </Text>
-        </div>
-        <PanelSkeleton lines={2} />
-      </article>
+      <PanelCard title={t`高频模型`} state={{ kind: "loading", lines: 2 }} />
     );
   }
 
@@ -263,32 +257,26 @@ function TopModelsTile() {
 
   if (models.length === 0) {
     return (
-      <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-        <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-          <Text variant="heading3" as="p">
-            <Trans>高频模型</Trans>
-          </Text>
-        </div>
-        <PanelEmpty title={t`暂无模型数据`} />
-      </article>
+      <PanelCard
+        title={t`高频模型`}
+        state={{ kind: "empty", title: t`暂无模型数据` }}
+      />
     );
   }
 
   const preview = models.slice(0, 5);
 
   return (
-    <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-      <div className="flex items-center justify-between border-b border-kumo-line bg-kumo-elevated p-6">
-        <div className="flex items-center gap-2">
-          <Cpu className="h-4 w-4 text-kumo-brand" />
-          <Text variant="heading3" as="p">
-            <Trans>高频模型</Trans>
-          </Text>
-        </div>
+    <PanelCard
+      title={t`高频模型`}
+      icon={<Cpu className="h-4 w-4 text-kumo-brand" />}
+      actions={
         <Badge variant="outline" className="rounded-full">
           {models.length} <Trans>个模型</Trans>
         </Badge>
-      </div>
+      }
+      padded={false}
+    >
       <div className="flex flex-wrap gap-2 p-6">
         {preview.map((model) => (
           <Badge key={model} variant="secondary" className="rounded-full font-mono text-xs">
@@ -301,7 +289,7 @@ function TopModelsTile() {
           </Badge>
         ) : null}
       </div>
-    </article>
+    </PanelCard>
   );
 }
 

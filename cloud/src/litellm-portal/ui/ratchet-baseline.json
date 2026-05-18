@@ -1,5 +1,4 @@
 [
   "app.tsx",
-  "dashboard/views/member-overlay.tsx",
-  "tenant-portal/screens/overview.tsx"
+  "dashboard/views/member-overlay.tsx"
 ]
