@@ -6,6 +6,7 @@ export type SsrSafeSkeletonProps = {
   minWidth?: number;
   maxWidth?: number;
   blockHeight?: number;
+  className?: string;
 };
 
 /**
@@ -18,7 +19,7 @@ export type SsrSafeSkeletonProps = {
  * (client-only, so its randomness never participates in hydration). NO
  * `suppressHydrationWarning` — this is a real deterministic-SSR fix.
  */
-export function SsrSafeSkeleton({ minWidth = 80, maxWidth, blockHeight = 16 }: SsrSafeSkeletonProps) {
+export function SsrSafeSkeleton({ minWidth = 80, maxWidth, blockHeight = 16, className }: SsrSafeSkeletonProps) {
   const hydrated = useHasHydrated();
   if (!hydrated) {
     // Deterministic placeholder: fixed geometry from props, NO Math.random,
@@ -28,7 +29,7 @@ export function SsrSafeSkeleton({ minWidth = 80, maxWidth, blockHeight = 16 }: S
       <div
         data-ssr-skeleton-placeholder
         aria-hidden="true"
-        className="animate-none rounded bg-kumo-recessed"
+        className={`animate-none rounded bg-kumo-recessed${className ? " " + className : ""}`}
         style={{ width: `${minWidth}px`, height: `${blockHeight}px` }}
       />
     );

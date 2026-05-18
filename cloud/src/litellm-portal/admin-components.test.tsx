@@ -11,8 +11,11 @@
 import React from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { axe } from "vitest-axe";
 import { toHaveNoViolations } from "vitest-axe/matchers";
+import { ADMIN_AUDIT_QUERY_KEY } from "./hooks/use-admin-audit";
+import { ADMIN_TEAMS_QUERY_KEY } from "./hooks/use-admin-teams";
 
 beforeAll(() => {
   expect.extend({ toHaveNoViolations });
@@ -40,6 +43,13 @@ vi.mock("@cloudflare/kumo/components/chart", async () => {
       ReactModule.createElement("div", { "data-testid": "kumo-timeseries-chart", role: "img", "aria-label": ariaDescription }),
   };
 });
+
+function wrap(ui: React.ReactElement, data?: Record<string, unknown>) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (data?.adminTeams) qc.setQueryData(ADMIN_TEAMS_QUERY_KEY, data.adminTeams);
+  if (data?.adminAudit) qc.setQueryData(ADMIN_AUDIT_QUERY_KEY({ page: 1, size: 50, window: "" }), data.adminAudit);
+  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+}
 
 afterEach(() => {
   cleanup();
@@ -223,14 +233,9 @@ describe("TopModelsPanel", () => {
 
 describe("AdminAuditFeed — empty state", () => {
   it("shows explanatory copy instead of bare 暂无审计日志", async () => {
-    globalThis.fetch = vi.fn(async () => Response.json({
-      events: [],
-      totalCount: 0,
-      page: 1,
-      size: 50,
-    })) as typeof fetch;
-
-    const { container } = render(<AdminAuditFeed />);
+    const { container } = wrap(<AdminAuditFeed />, {
+      adminAudit: { events: [], totalCount: 0, page: 1, size: 50 },
+    });
 
     await waitFor(() => {
       // Must include the explanatory sentence
@@ -250,18 +255,18 @@ describe("AdminAuditFeed — empty state", () => {
 
 describe("AdminTeamsTable — model chips overflow", () => {
   it("shows +N badge when team has more than 3 models", async () => {
-    globalThis.fetch = vi.fn(async () => Response.json({
-      teams: [{
-        id: "team-1",
-        alias: "Platform",
-        models: ["gpt-4o", "gpt-4o-mini", "deepseek-v3", "claude-3-5-sonnet", "llama-3"],
-        spend: 5,
-        tpmLimit: null,
-        rpmLimit: null,
-      }],
-    })) as typeof fetch;
-
-    const { container } = render(<AdminTeamsTable />);
+    const { container } = wrap(<AdminTeamsTable />, {
+      adminTeams: {
+        teams: [{
+          id: "team-1",
+          alias: "Platform",
+          models: ["gpt-4o", "gpt-4o-mini", "deepseek-v3", "claude-3-5-sonnet", "llama-3"],
+          spend: 5,
+          tpmLimit: null,
+          rpmLimit: null,
+        }],
+      },
+    });
 
     await waitFor(() => {
       expect(screen.queryByText("gpt-4o")).not.toBeNull();
@@ -277,18 +282,18 @@ describe("AdminTeamsTable — model chips overflow", () => {
   });
 
   it("shows all models as chips when count <= 3", async () => {
-    globalThis.fetch = vi.fn(async () => Response.json({
-      teams: [{
-        id: "team-2",
-        alias: "Small",
-        models: ["gpt-4o", "deepseek-v3"],
-        spend: 1,
-        tpmLimit: null,
-        rpmLimit: null,
-      }],
-    })) as typeof fetch;
-
-    render(<AdminTeamsTable />);
+    wrap(<AdminTeamsTable />, {
+      adminTeams: {
+        teams: [{
+          id: "team-2",
+          alias: "Small",
+          models: ["gpt-4o", "deepseek-v3"],
+          spend: 1,
+          tpmLimit: null,
+          rpmLimit: null,
+        }],
+      },
+    });
 
     await waitFor(() => {
       expect(screen.queryByText("gpt-4o")).not.toBeNull();
