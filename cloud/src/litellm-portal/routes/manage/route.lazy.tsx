@@ -33,6 +33,7 @@ export function ManageLayout() {
         currentPath={pathname}
         accent="brand"
         ariaLabel={t`管理导航`}
+        responsive={false}
       />
       <section className="min-w-0 flex-1 space-y-8 px-6 py-8">
         <Outlet />

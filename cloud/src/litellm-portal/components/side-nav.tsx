@@ -25,11 +25,20 @@ export function SideNav({
   currentPath,
   accent,
   ariaLabel,
+  responsive = true,
 }: {
   groups: SideNavGroup[];
   currentPath: string;
   accent: SideNavAccent;
   ariaLabel: string;
+  /**
+   * Off-canvas responsive drawer (S1). Default true for genuine top-level
+   * sidebar shells (Ops). Pass false when the shell is NESTED inside
+   * PortalRootLayout (tenant / manage) — there the outer header already owns
+   * top-level navigation, so a floating hamburger would be an orphaned,
+   * redundant control; render the original static rail instead.
+   */
+  responsive?: boolean;
 }) {
   // Both accents resolve through --kumo-brand (the shell sets it: tenant brand
   // or OPS_STEEL_ACCENT steel). The accent bar uses bg-kumo-brand either way;
@@ -41,36 +50,9 @@ export function SideNav({
   // icon stays in the DOM and the existing a11y/test contract is preserved.
   // useState(false) is deterministic on SSR + client first render (#418-safe).
   const [open, setOpen] = React.useState(false);
-  return (
-    <>
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls="side-nav-drawer"
-        aria-label={open ? "关闭导航菜单" : "打开导航菜单"}
-        onClick={() => flushSync(() => setOpen((v) => !v))}
-        className={`fixed left-3 top-3 z-50 inline-flex h-9 w-9 items-center justify-center rounded-md border border-kumo-line bg-kumo-elevated text-kumo-strong md:hidden ${FOCUS_RING}`}
-      >
-        <span aria-hidden="true" className="text-lg leading-none">{open ? "✕" : "☰"}</span>
-      </button>
-      {open ? (
-        <button
-          type="button"
-          aria-hidden="true"
-          tabIndex={-1}
-          onClick={() => flushSync(() => setOpen(false))}
-          className="fixed inset-0 z-30 bg-black/40 md:hidden"
-        />
-      ) : null}
-      <nav
-        id="side-nav-drawer"
-        aria-label={ariaLabel}
-        className={`fixed inset-y-0 left-0 z-40 w-56 shrink-0 overflow-y-auto border-r border-kumo-line bg-kumo-elevated px-3 py-6 transition-transform duration-200 -translate-x-full md:static md:z-auto md:translate-x-0 md:transition-none ${
-          open ? "max-md:translate-x-0" : ""
-        }`}
-      >
-        <div className="space-y-6">
-        {groups.map((group, gi) => (
+  const navItems = (
+    <div className="space-y-6">
+      {groups.map((group, gi) => (
           <div key={group.heading ?? `g${gi}`} className="space-y-1">
             {group.heading ? (
               <Text
@@ -110,8 +92,50 @@ export function SideNav({
               })}
             </ul>
           </div>
-        ))}
-        </div>
+      ))}
+    </div>
+  );
+
+  if (!responsive) {
+    return (
+      <nav
+        aria-label={ariaLabel}
+        className="w-56 shrink-0 border-r border-kumo-line bg-kumo-elevated px-3 py-6"
+      >
+        {navItems}
+      </nav>
+    );
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls="side-nav-drawer"
+        aria-label={open ? "关闭导航菜单" : "打开导航菜单"}
+        onClick={() => flushSync(() => setOpen((v) => !v))}
+        className={`fixed left-3 top-3 z-50 inline-flex h-9 w-9 items-center justify-center rounded-md border border-kumo-line bg-kumo-elevated text-kumo-strong md:hidden ${FOCUS_RING}`}
+      >
+        <span aria-hidden="true" className="text-lg leading-none">{open ? "✕" : "☰"}</span>
+      </button>
+      {open ? (
+        <button
+          type="button"
+          aria-hidden="true"
+          tabIndex={-1}
+          onClick={() => flushSync(() => setOpen(false))}
+          className="fixed inset-0 z-30 bg-black/40 md:hidden"
+        />
+      ) : null}
+      <nav
+        id="side-nav-drawer"
+        aria-label={ariaLabel}
+        className={`fixed inset-y-0 left-0 z-40 w-56 shrink-0 overflow-y-auto border-r border-kumo-line bg-kumo-elevated px-3 py-6 transition-transform duration-200 -translate-x-full md:static md:z-auto md:translate-x-0 md:transition-none ${
+          open ? "max-md:translate-x-0" : ""
+        }`}
+      >
+        {navItems}
       </nav>
     </>
   );

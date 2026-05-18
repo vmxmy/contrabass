@@ -321,6 +321,7 @@ export function TenantPortalShell({ identity, brand, impersonation, children }: 
                 currentPath={pathname}
                 accent="brand"
                 ariaLabel={t`租户导航`}
+                responsive={false}
               />
             ) : (
               <SideNavSsrFallback
