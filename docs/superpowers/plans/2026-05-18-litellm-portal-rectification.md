@@ -1006,11 +1006,11 @@ All three tests currently do `import enMessages from "../i18n/messages/en"` + `i
 - `tenant-portal/i18n-completeness.test.ts:20-21` import; `:39-64` `key in enMessages` / `key in zhCNMessages` / parity over `PHASE1_TENANT_KEYS` (`__fixtures__/phase1-keys.ts`).
 - `i18n-completeness-phase3.test.ts:2-3` import; `:9-22` `k in enMessages` / `k in zhCNMessages` / parity over `PHASE3_KEYS` (`__fixtures__/phase3-keys.ts`).
 
-After F1 (decision A) the source of truth is the compiled `.po` (and `.mjs`), which is keyed by **content-hash ids** (`"--rP8r"`, `"0xzGzQ"`), NOT source text. A literal port to `key in enMessages`-against-`.mjs` would be **vacuously false for every key** (no source string is a hash id). The correct post-F1 invariant: the **`.po` `msgid` IS the source string** (verified: `zh-CN/messages.po:638` `msgid "登录"`, `:87` `msgid "下载 {period}"`, `:789` `msgid "请输入「{email}」以确认撤销"`), with a documented Lingui normalization — JS template `${x}` collapses to ICU `{x}` (`phase1-keys.ts:78` `"下载 ${period}"` / `:96` `"请输入「${email}」以确认撤销"` → `.po` msgid `"下载 {period}"` / `"请输入「{email}」以确认撤销"`), and a literal-brace source gets brace-escaped (`phase3-keys.ts:42` `"Token …{window}…"` → `zh-CN/messages.po:62` `msgid "Token 用量趋势图，时间范围为 '{'window'}'，共 '{'points'}' 个 '{'grain'}' 粒度数据点。"`).
+After F1 (decision A) the source of truth is the compiled `.po` (and `.mjs`), which is keyed by **content-hash ids** (`"--rP8r"`, `"0xzGzQ"`), NOT source text. A literal port to `key in enMessages`-against-`.mjs` would be **vacuously false for every key** (no source string is a hash id). The correct post-F1 invariant: the **`.po` `msgid` IS the source string** (verified against the live post-T4d catalog, laneA HEAD `d68ce3e1`: `zh-CN/messages.po:709` `msgid "登录"`, `:93` `msgid "下载 {period}"`, `:912` `msgid "请输入「{email}」以确认撤销"` — line numbers are illustrative; the gate matches by content, not line). The fixture→msgid mapping is NOT a single deterministic rewrite: Lingui keeps `t`/named-`<Trans>` msgids NAMED (`下载 {period}`, `请输入「{email}」以确认撤销`, `将撤销「{email}」的邀请。…` — matched via the `${x}`→`{x}` dollar-collapse) but emits member-expression `<Trans>` msgids POSITIONAL (`{realActor} 正在代表团队 {effectiveTeamId} …` → live `.po` `{0} 正在代表团队 {1} 操作。所有操作均被审计。`, `#. placeholder {0}: imp.realActor` / `{1}: imp.effectiveTeamId` — matched via the positional candidate), and a literal-brace source gets brace-escaped (`phase3-keys.ts:42` `"Token …{window}…{points}…{grain}…"` → `zh-CN/messages.po:68` `msgid "Token 用量趋势图，时间范围为 '{'window'}'，共 '{'points'}' 个 '{'grain'}' 粒度数据点。"` — matched via `parsePo`'s brace-de-escaped alias, never positionalized). Because the fixture string is the structurally-identical `{simpleIdent}` form in every case, the helper emits BOTH the named-collapsed and the positional candidate and the gate asserts membership of ANY candidate.
 
-So the migrated gate must: (1) for every fixture source string, assert it is present **as a `.po` msgid** after applying the documented `${x}`→`{x}` normalization (this preserves the original "every macro-used id is in the catalog" coverage — it would still fail if a future macro string were never extracted/seeded); (2) assert its **`msgstr` is non-empty** in BOTH locales, **modulo a documented acceptable-empties allowlist** (zh-CN is the source locale: 0 empty `msgstr` — `zh-CN/messages.po` has only the header empty; en `messages.po` has a bounded set of empty `msgstr` — net-new/non-macro zh-only strings with no English yet; these are acceptable and listed. The exact count is NOT pinned here: it was 52 at the T3b snapshot but Task 4d (runs before this task) authored English for the 37 §F.3+nav strings, so the live empty count is lower — re-derive it from the current `.po` at execution time). This keeps the gate **non-vacuous**: it still fails if any *live fixture-listed* message has an empty translation. The en/zh key-set parity check ports to "the set of `.po` msgids is identical across locales" (extract emits one `.po` per locale from the same template, so msgid sets are identical by construction — the assertion still catches a hand-edited divergence).
+So the migrated gate must: (1) for every fixture source string, assert that SOME candidate of its normalized candidate set is present **as a `.po` msgid** — the candidate set is `{ ${x}→{x} dollar-collapsed form, its positional {0},{1},… form }` because Lingui keeps `t`/named-`<Trans>` msgids NAMED but emits member-expression `<Trans>` msgids POSITIONAL and the fixture string alone cannot tell which (this preserves the original "every macro-used id is in the catalog" coverage — it would still fail if EVERY candidate were absent because the string was never extracted/seeded); (2) assert its **`msgstr` is non-empty** in BOTH locales, **modulo a documented acceptable-empties allowlist** (zh-CN is the source locale: 0 empty `msgstr` — `zh-CN/messages.po` has only the header empty; en `messages.po` has a bounded set of empty `msgstr` — net-new/non-macro zh-only strings with no English yet; these are acceptable and listed. The exact count is NOT pinned here: it was 52 at the T3b snapshot but Task 4d (runs before this task) authored English for the 37 §F.3+nav strings, so the live empty count is lower — re-derive it from the current `.po` at execution time). This keeps the gate **non-vacuous**: it still fails if any *live fixture-listed* message has an empty translation. The en/zh key-set parity check ports to "the set of `.po` msgids is identical across locales" (extract emits one `.po` per locale from the same template, so msgid sets are identical by construction — the assertion still catches a hand-edited divergence).
 
-> Brace-escaping note: only `phase3-keys.ts:42` (the chart-aria template with *literal* `{window}` braces) hits the `'{'…'}'` escaped form. The shared helper normalizes by reading msgids verbatim and additionally indexing each msgid with `'{'`/`'}'` collapsed back to `{`/`}`, so both the raw and the de-escaped form resolve. The `${x}`→`{x}` collapse covers `phase1-keys.ts:78,96`. No fixture is edited — the normalization lives in the helper, keeping fixtures behavior-preserving per their own header contract.
+> Brace-escaping note: only `phase3-keys.ts:42` (the chart-aria template with *literal* `{window}/{points}/{grain}` braces) hits the `'{'…'}'` escaped form (live `.po`: `msgid "Token 用量趋势图，时间范围为 '{'window'}'，共 '{'points'}' 个 '{'grain'}' 粒度数据点。"`). `parsePo` indexes each msgid both verbatim and with `'{'`/`'}'` collapsed back to `{`/`}`, so this fixture matches via its candidate (1) (dollar-collapsed = identity here) against the de-escaped alias. It is NEVER positionalized — the positional candidate (2) is generated but simply unused, and because membership is "ANY candidate ∈ msgids" the unused positional candidate cannot cause a false negative. The `${x}`→`{x}` collapse covers `phase1-keys.ts:78,96` (`下载 ${period}` / `请输入「${email}」以确认撤销`, whose `.po` msgids are NAMED `下载 {period}` / `请输入「{email}」以确认撤销` — matched by candidate (1), positional candidate unused). The impersonation `OPS_KEYS:141` `{realActor}/{effectiveTeamId}` is matched by candidate (2) (positional `{0} 正在代表团队 {1} …`), its named candidate unused. §F.3 `msg\`\`` descriptors have no placeholder; candidate (1) is the identity and matches the exact msgid. No fixture is edited — the normalization lives in the helper, keeping fixtures behavior-preserving per their own header contract.
 
 - [ ] **Step 1: Add the shared `.po`-coverage helper**
 
@@ -1042,18 +1042,28 @@ function deEscapeBraces(s: string): string {
 
 /**
  * Map a fixture's NAMED ICU placeholders to positional `{0},{1},…` in
- * first-appearance order. Lingui extracts a `<Trans>` whose interpolations
- * are JSX member expressions (`{imp.realActor}`) as POSITIONAL args — the
- * emitted msgid is `{0} 正在代表团队 {1} …`, not `{realActor} … {effectiveTeamId} …`
- * (verified: en/messages.po line ~23 `msgid "{0} 正在代表团队 {1} 操作。所有操作均被审计。"`,
- * #. placeholder {0}: imp.realActor / {1}: imp.effectiveTeamId). A fixture
- * that still carries the legacy NAMED form (`{realActor}/{effectiveTeamId}`)
- * would never match the positional msgid, making the coverage assertion a
- * false-negative. We rewrite each distinct `{name}` to `{<index>}` by order
- * of first appearance. Pure-positional fixtures (`{0}/{1}`) and
- * single-token literals are unaffected (a token that is already all-digits
- * keeps its value; ordering is stable). Applied AFTER the `${x}`→`{x}`
- * collapse so `${realActor}`-style legacy forms normalize too.
+ * first-appearance order. Lingui's placeholder form is construct-dependent
+ * and the choice is NOT recoverable from the fixture string alone (every
+ * fixture placeholder is the structurally-identical `{simpleIdent}` form):
+ *  - `t` macro / `<Trans>` whose interpolation is a SIMPLE identifier
+ *    (`{period}`, `{email}`) → Lingui keeps the msgid NAMED. Live `.po`
+ *    evidence (laneA HEAD d68ce3e1): en/messages.po
+ *    `msgid "下载 {period}"`, `msgid "请输入「{email}」以确认撤销"`,
+ *    `msgid "将撤销「{email}」的邀请。此操作不可撤销。"`.
+ *  - `<Trans>` whose interpolation is a MEMBER expression
+ *    (`{imp.realActor}`, `{this.props.blockLabel}`) or a composite →
+ *    Lingui emits POSITIONAL args. Live `.po` evidence:
+ *    `msgid "{0} 正在代表团队 {1} 操作。所有操作均被审计。"` with
+ *    `#. placeholder {0}: imp.realActor` / `#. placeholder {1}:
+ *    imp.effectiveTeamId`; the OPS fixture for this string is the NAMED
+ *    `"{realActor} 正在代表团队 {effectiveTeamId} …"`.
+ * Because a single deterministic rewrite cannot satisfy both (the named
+ * t-macro strings must NOT be positionalized, the impersonation `<Trans>`
+ * MUST be), `normalizeFixtureKey` instead returns the FULL candidate set
+ * (named-collapsed AND positional) and the gate asserts ANY candidate is
+ * covered. This function produces the positional candidate only. A token
+ * that is already all-digits keeps its value (pure-positional fixtures are
+ * unaffected); ordering is stable by first appearance.
  */
 function namedToPositional(key: string): string {
   const order: string[] = [];
@@ -1069,17 +1079,28 @@ function namedToPositional(key: string): string {
 }
 
 /**
- * Fixture → .po msgid normalization, applied in order:
- *  1. JS-template `${x}` → ICU `{x}` (existing rule).
- *  2. NAMED ICU placeholders → POSITIONAL `{0},{1},…` (first-appearance
- *     order) so a fixture's named `{realActor}/{effectiveTeamId}` matches
- *     the positional `{0}/{1}` msgid Lingui emits for `<Trans>` JSX member
- *     expressions. (Literal-brace de-escaping is handled separately in
- *     `parsePo`, which indexes each msgid both raw and brace-de-escaped.)
+ * Fixture → set of candidate `.po` msgid forms. Membership is checked as
+ * "ANY candidate ∈ msgids / ∈ translated", because Lingui's named-vs-
+ * positional choice depends on the emitting construct (`t`/named-`<Trans>`
+ * → NAMED; member-expr `<Trans>` → POSITIONAL) and that information is
+ * absent from the fixture string. Candidates, in order:
+ *  1. The `${x}`→`{x}` dollar-collapsed form (covers `t`-macro / named
+ *     `<Trans>` whose msgid Lingui keeps NAMED — `下载 {period}`,
+ *     `请输入「{email}」以确认撤销`, `将撤销「{email}」的邀请。…`; also the
+ *     identity for no-placeholder §F.3 `msg\`\`` descriptors).
+ *  2. The positional form of (1) (covers member-expr `<Trans>` whose msgid
+ *     Lingui emits POSITIONAL — `{0} 正在代表团队 {1} …`).
+ * The literal-ICU-brace fixture (`phase3-keys.ts:42`, `{window}/{points}/
+ * {grain}`) is matched via candidate (1) against the brace-de-escaped
+ * alias `parsePo` already indexes for the `'{'window'}'`-escaped msgid —
+ * it is NOT positionalized (candidate (2) is simply unused there). The
+ * set is deliberately small and fixed; this is a disjunction over the two
+ * possible emit shapes, NOT a relaxation — the gate still fails when EVERY
+ * candidate is absent (truly unextracted) or untranslated.
  */
-export function normalizeFixtureKey(key: string): string {
+export function normalizeFixtureKey(key: string): ReadonlySet<string> {
   const dollarCollapsed = key.replace(/\$\{([^}]+)\}/g, "{$1}");
-  return namedToPositional(dollarCollapsed);
+  return new Set<string>([dollarCollapsed, namedToPositional(dollarCollapsed)]);
 }
 
 function parsePo(path: string): PoCatalog {
@@ -1119,10 +1140,13 @@ export const ZH_PO = parsePo("src/litellm-portal/i18n/locales/zh-CN/messages.po"
  * The implementer MUST populate this from the actual extract: run
  *   grep -B1 '^msgstr ""$' src/litellm-portal/i18n/locales/en/messages.po \
  *     | grep '^msgid ' | sed 's/^msgid "//; s/"$//'
- * then intersect with the union of PHASE1_TENANT_KEYS ∪ PHASE3_KEYS ∪
- * OPS_KEYS — only the intersection belongs here (a fixture-listed live
- * string that genuinely has no English yet). Non-fixture empties never
- * reach an assertion and are NOT listed.
+ * then keep only the empty msgids for which SOME candidate of a fixture
+ * string (`normalizeFixtureKey(fixture)` over PHASE1_TENANT_KEYS ∪
+ * PHASE3_KEYS ∪ OPS_KEYS) equals that msgid — i.e. the empty msgid IS the
+ * .po form a live fixture resolves to. Store the EXACT raw `.po` msgid
+ * string here (that is the value the gate's `.some(c => …has(c))` check
+ * compares a candidate against). Non-fixture empties never reach an
+ * assertion and are NOT listed.
  * NOTE: the raw empty-msgstr count is NOT fixed at 52. That number was the
  * T3b (commit 60309d44) snapshot; Task 4d (runs BEFORE this task) seeds the
  * 37 previously-blocked strings (36 §F.3 + "我的"/"团队管理") with authored
@@ -1152,21 +1176,37 @@ import {
   normalizeFixtureKey,
 } from "../i18n/__fixtures__/po-coverage";
 
-const UNIQUE_KEYS = [...new Set(PHASE1_TENANT_KEYS)].map(normalizeFixtureKey);
+// Each fixture string maps to a SET of candidate .po msgid forms (named-
+// collapsed AND positional); a fixture is satisfied if ANY candidate is
+// present. Lingui keeps `t`/named-`<Trans>` msgids NAMED but emits
+// member-expr `<Trans>` POSITIONAL, and the fixture string alone cannot
+// say which — so we test the disjunction over both shapes.
+const UNIQUE_KEYS = [...new Set(PHASE1_TENANT_KEYS)].map((k) => ({
+  fixture: k,
+  candidates: [...normalizeFixtureKey(k)],
+}));
 
 describe("tenant-portal i18n completeness", () => {
   it("every tenant-portal source string is an extracted .po msgid (both locales)", () => {
-    const missingEn = UNIQUE_KEYS.filter((k) => !EN_PO.msgids.has(k));
-    const missingZh = UNIQUE_KEYS.filter((k) => !ZH_PO.msgids.has(k));
+    const missingEn = UNIQUE_KEYS.filter(
+      ({ candidates }) => !candidates.some((c) => EN_PO.msgids.has(c)),
+    ).map((e) => e.fixture);
+    const missingZh = UNIQUE_KEYS.filter(
+      ({ candidates }) => !candidates.some((c) => ZH_PO.msgids.has(c)),
+    ).map((e) => e.fixture);
     expect(missingEn, `Not extracted into en .po: ${JSON.stringify(missingEn)}`).toHaveLength(0);
     expect(missingZh, `Not extracted into zh-CN .po: ${JSON.stringify(missingZh)}`).toHaveLength(0);
   });
 
   it("every tenant-portal string is translated in both locales (modulo the documented en allowlist)", () => {
-    const untranslatedZh = UNIQUE_KEYS.filter((k) => !ZH_PO.translated.has(k));
+    const untranslatedZh = UNIQUE_KEYS.filter(
+      ({ candidates }) => !candidates.some((c) => ZH_PO.translated.has(c)),
+    ).map((e) => e.fixture);
     const untranslatedEn = UNIQUE_KEYS.filter(
-      (k) => !EN_PO.translated.has(k) && !EN_UNTRANSLATED_ALLOWLIST.has(k),
-    );
+      ({ candidates }) =>
+        !candidates.some((c) => EN_PO.translated.has(c)) &&
+        !candidates.some((c) => EN_UNTRANSLATED_ALLOWLIST.has(c)),
+    ).map((e) => e.fixture);
     expect(untranslatedZh, `Empty zh-CN msgstr: ${JSON.stringify(untranslatedZh)}`).toHaveLength(0);
     expect(
       untranslatedEn,
@@ -1197,17 +1237,43 @@ import {
   normalizeFixtureKey,
 } from "./i18n/__fixtures__/po-coverage";
 
-const UNIQUE = [...new Set<string>(PHASE3_KEYS)].map(normalizeFixtureKey);
+// Same candidate-set membership as the tenant-portal gate (Step 2). The
+// phase-3 chart-aria fixture `Token …{window}…{points}…{grain}…` matches
+// candidate (1) against parsePo's brace-de-escaped alias of the
+// `'{'window'}'`-escaped msgid; it is never positionalized.
+const UNIQUE = [...new Set<string>(PHASE3_KEYS)].map((k) => ({
+  fixture: k,
+  candidates: [...normalizeFixtureKey(k)],
+}));
 
 describe("phase-3 i18n completeness", () => {
   it("every phase-3 source string is an extracted .po msgid (both locales)", () => {
-    expect(UNIQUE.filter((k) => !EN_PO.msgids.has(k)), "missing en").toHaveLength(0);
-    expect(UNIQUE.filter((k) => !ZH_PO.msgids.has(k)), "missing zh-CN").toHaveLength(0);
+    expect(
+      UNIQUE.filter(({ candidates }) => !candidates.some((c) => EN_PO.msgids.has(c))).map(
+        (e) => e.fixture,
+      ),
+      "missing en",
+    ).toHaveLength(0);
+    expect(
+      UNIQUE.filter(({ candidates }) => !candidates.some((c) => ZH_PO.msgids.has(c))).map(
+        (e) => e.fixture,
+      ),
+      "missing zh-CN",
+    ).toHaveLength(0);
   });
   it("every phase-3 string is translated in both locales (modulo the en allowlist)", () => {
-    expect(UNIQUE.filter((k) => !ZH_PO.translated.has(k)), "empty zh-CN").toHaveLength(0);
     expect(
-      UNIQUE.filter((k) => !EN_PO.translated.has(k) && !EN_UNTRANSLATED_ALLOWLIST.has(k)),
+      UNIQUE.filter(({ candidates }) => !candidates.some((c) => ZH_PO.translated.has(c))).map(
+        (e) => e.fixture,
+      ),
+      "empty zh-CN",
+    ).toHaveLength(0);
+    expect(
+      UNIQUE.filter(
+        ({ candidates }) =>
+          !candidates.some((c) => EN_PO.translated.has(c)) &&
+          !candidates.some((c) => EN_UNTRANSLATED_ALLOWLIST.has(c)),
+      ).map((e) => e.fixture),
       "empty en, not allowlisted",
     ).toHaveLength(0);
   });
@@ -1220,13 +1286,58 @@ describe("phase-3 i18n completeness", () => {
 
 - [ ] **Step 4: Migrate `ops-console/i18n-completeness.test.ts` (keeps the no-silent-shadow guard)**
 
-The OPS-specific value (the no-silent-shadow guard over `INTENTIONAL_SHARED` / `PHASE1_TENANT_KEYS`) does NOT depend on the legacy maps — only the `*Messages` import and the first three `it` blocks do. Replace the import + first three blocks with the `.po`-coverage form (as Step 2, fixture = `OPS_KEYS` with `.map(normalizeFixtureKey)`); **keep `OPS_KEYS` (`:38-143`), `INTENTIONAL_SHARED` (`:155-167`), `TENANT_PORTAL_KEYS_OVERLAP`, and the `"no ops-console key silently shadows a Phase-1 key"` test (`:201-210`) byte-for-byte** — that guard compares fixture sets, not catalog contents, and must remain unchanged. Drop only the two now-unused imports (`enMessages`, `zhCNMessages`).
+The OPS-specific value (the no-silent-shadow guard over `INTENTIONAL_SHARED` / `PHASE1_TENANT_KEYS`) does NOT depend on the legacy maps — only the `*Messages` import and the first three `it` blocks do. **Keep `OPS_KEYS` (`:38-143`), `INTENTIONAL_SHARED` (`:155-167`), `TENANT_PORTAL_KEYS_OVERLAP`, and the `"no ops-console key silently shadows a Phase-1 key"` test (`:201-210`) byte-for-byte** — that guard compares fixture sets, not catalog contents, and must remain unchanged. Drop only the two now-unused imports (`enMessages`, `zhCNMessages`) and replace the first three `it` blocks with the candidate-set form below. `OPS_KEYS:141` is the impersonation string `"{realActor} 正在代表团队 {effectiveTeamId} 操作。所有操作均被审计。"`; its live `.po` msgid is the POSITIONAL `"{0} 正在代表团队 {1} 操作。所有操作均被审计。"` (`#. placeholder {0}: imp.realActor` / `{1}: imp.effectiveTeamId`), so its positional candidate — not its named-collapsed candidate — is what matches. This is the canonical case the candidate-set design exists for. Insert the new imports (`EN_PO, ZH_PO, EN_UNTRANSLATED_ALLOWLIST, normalizeFixtureKey` from `../i18n/__fixtures__/po-coverage`) alongside the retained fixture imports, then:
+
+```ts
+const OPS_UNIQUE = [...new Set<string>(OPS_KEYS)].map((k) => ({
+  fixture: k,
+  candidates: [...normalizeFixtureKey(k)],
+}));
+
+describe("ops-console i18n completeness", () => {
+  it("every ops-console source string is an extracted .po msgid (both locales)", () => {
+    const missingEn = OPS_UNIQUE.filter(
+      ({ candidates }) => !candidates.some((c) => EN_PO.msgids.has(c)),
+    ).map((e) => e.fixture);
+    const missingZh = OPS_UNIQUE.filter(
+      ({ candidates }) => !candidates.some((c) => ZH_PO.msgids.has(c)),
+    ).map((e) => e.fixture);
+    expect(missingEn, `Not extracted into en .po: ${JSON.stringify(missingEn)}`).toHaveLength(0);
+    expect(missingZh, `Not extracted into zh-CN .po: ${JSON.stringify(missingZh)}`).toHaveLength(0);
+  });
+
+  it("every ops-console string is translated in both locales (modulo the documented en allowlist)", () => {
+    const untranslatedZh = OPS_UNIQUE.filter(
+      ({ candidates }) => !candidates.some((c) => ZH_PO.translated.has(c)),
+    ).map((e) => e.fixture);
+    const untranslatedEn = OPS_UNIQUE.filter(
+      ({ candidates }) =>
+        !candidates.some((c) => EN_PO.translated.has(c)) &&
+        !candidates.some((c) => EN_UNTRANSLATED_ALLOWLIST.has(c)),
+    ).map((e) => e.fixture);
+    expect(untranslatedZh, `Empty zh-CN msgstr: ${JSON.stringify(untranslatedZh)}`).toHaveLength(0);
+    expect(
+      untranslatedEn,
+      `Empty en msgstr and NOT on the documented allowlist: ${JSON.stringify(untranslatedEn)}`,
+    ).toHaveLength(0);
+  });
+
+  it("en and zh-CN .po have an identical msgid set", () => {
+    const enOnly = [...EN_PO.msgids].filter((k) => !ZH_PO.msgids.has(k));
+    const zhOnly = [...ZH_PO.msgids].filter((k) => !EN_PO.msgids.has(k));
+    expect(enOnly, `msgid in en but not zh-CN: ${JSON.stringify(enOnly)}`).toHaveLength(0);
+    expect(zhOnly, `msgid in zh-CN but not en: ${JSON.stringify(zhOnly)}`).toHaveLength(0);
+  });
+});
+```
+
+The `"no ops-console key silently shadows a Phase-1 key"` test that follows (`:201-210`) and its `INTENTIONAL_SHARED`/`TENANT_PORTAL_KEYS_OVERLAP` inputs are NOT part of this `describe` and remain byte-for-byte unchanged.
 
 - [ ] **Step 5: Populate `EN_UNTRANSLATED_ALLOWLIST` from the real extract (no guessing)**
 
 Run: `cd /Users/xumingyang/github/contrabass/cloud && grep -B1 '^msgstr ""$' src/litellm-portal/i18n/locales/en/messages.po | grep '^msgid ' | sed 's/^msgid "//; s/"$//' > /tmp/en-empty-msgids.txt && wc -l /tmp/en-empty-msgids.txt`
 Expected: a positive count — but NOT 52. The T3b (commit `60309d44`) snapshot was 52; Task 4d (which runs BEFORE this task) seeded the 37 previously-blocked strings with authored English, so the live count is LOWER. Do NOT assert any specific number — read whatever the live `.po` reports and proceed; the count is data, not a gate.
-For each of the 3 fixtures, intersect its normalized keys (via `normalizeFixtureKey`, which now also maps named→positional) with `/tmp/en-empty-msgids.txt`; the union of those intersections is the EXACT content of `EN_UNTRANSLATED_ALLOWLIST`. Post-4d this intersection should be markedly smaller — ideally empty — because the §F.3 strings + the two nav headings now carry authored English. Paste only the strings that genuinely remain empty AND are fixture-listed (normalized form, matching the `.po` msgid). Do NOT add any non-fixture empty msgid (it never reaches an assertion). Do NOT add a fixture string that DOES have an English translation. The implementer MUST derive this list from the file — do not guess, and do not pad it back toward the old 52.
+For each of the 3 fixtures, expand every fixture string to its candidate set via `normalizeFixtureKey` (which now returns `ReadonlySet<string>` of the named-collapsed + positional forms), then keep an empty msgid from `/tmp/en-empty-msgids.txt` iff it equals SOME candidate of SOME fixture string AND no other candidate of that same fixture string is already a non-empty `msgstr` (only genuinely-untranslated fixtures belong here). The union of those kept raw `.po` msgid strings is the EXACT content of `EN_UNTRANSLATED_ALLOWLIST`. Post-4d this should be markedly smaller — ideally empty — because the §F.3 strings + the two nav headings now carry authored English. Store the raw `.po` msgid string verbatim (that is what the gate's `.some(c => EN_UNTRANSLATED_ALLOWLIST.has(c))` compares a candidate against). Do NOT add any non-fixture empty msgid (it never reaches an assertion). Do NOT add a fixture string whose other candidate already has an English translation. The implementer MUST derive this list from the file — do not guess, and do not pad it back toward the old 52.
 
 - [ ] **Step 6: Run the 3 migrated suites — they must PASS and be provably non-vacuous**
 
