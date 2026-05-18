@@ -9,6 +9,7 @@ import { useOpsAuditEvent } from "../hooks";
 import { PanelSkeleton, PanelEmpty, PanelError } from "../../components/panel-state";
 import { densityClasses, useDensity } from "../../components/density";
 import { BlockErrorBoundary } from "../../errors/error-boundary";
+import { PanelCard } from "../../ui";
 
 export function AuditEventDetailCard({ eventId }: { eventId: string }) {
   const { data, isLoading, isError, error } = useOpsAuditEvent(eventId);
@@ -20,10 +21,8 @@ export function AuditEventDetailCard({ eventId }: { eventId: string }) {
   }
   if (!data) return <PanelEmpty title={t`未找到审计事件`} />;
   return (
-    <article id="ops-audit-detail-root" className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-      <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-        <Text variant="heading3" as="p"><Trans>审计事件详情</Trans></Text>
-      </div>
+    <div id="ops-audit-detail-root">
+      <PanelCard title={t`审计事件详情`} padded={false}>
       <dl className="grid grid-cols-1 gap-4 p-6 sm:grid-cols-2">
         <div>
           <dt className="text-xs text-kumo-secondary"><Trans>动作</Trans></dt>
@@ -54,7 +53,8 @@ export function AuditEventDetailCard({ eventId }: { eventId: string }) {
           <dd>{data.reason ?? "—"}</dd>
         </div>
       </dl>
-    </article>
+      </PanelCard>
+    </div>
   );
 }
 
@@ -111,13 +111,11 @@ export function OpsAuditScreen() {
       {params.eventId ? (
         <AuditEventDetailCard eventId={params.eventId} />
       ) : (
-        <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-          <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-            <Text variant="heading3" as="p"><Trans>平台审计</Trans></Text>
-            <Text variant="secondary" as="p">
-              <Trans>跨租户的运营动作审计日志。</Trans>
-            </Text>
-          </div>
+        <PanelCard
+          title={t`平台审计`}
+          subtitle={t`跨租户的运营动作审计日志。`}
+          padded={false}
+        >
           {/*
             §F.4: per-block render/runtime isolation for the audit feed body.
             LAYERED on top of the MAJOR-1 client.tsx chunk-fetch try/catch
@@ -126,7 +124,7 @@ export function OpsAuditScreen() {
           <BlockErrorBoundary blockLabel="审计列表">
             <AuditFeedTable />
           </BlockErrorBoundary>
-        </article>
+        </PanelCard>
       )}
     </div>
   );
