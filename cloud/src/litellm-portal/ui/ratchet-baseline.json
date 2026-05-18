@@ -1,6 +1,5 @@
 [
   "app.tsx",
-  "app/create-key-button.tsx",
   "dashboard/views/member-overlay.tsx",
   "ops-console/screens/audit.tsx",
   "ops-console/screens/provisioning.tsx",
