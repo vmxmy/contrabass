@@ -10,6 +10,7 @@ import { BudgetBadge } from "./budget-badge";
 import { ModelsCell } from "./model-badges";
 import { DeleteKeyButton } from "./delete-key-button";
 import { CreateKeyButton } from "./create-key-button";
+import { PanelCard } from "../ui";
 
 export function ApiKeysCard() {
   const { data, isLoading } = useDashboard();
@@ -17,14 +18,12 @@ export function ApiKeysCard() {
   const loaded = !isLoading;
 
   return (
-    <section className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-kumo-line bg-kumo-elevated p-6">
-        <div>
-          <Text variant="heading3" as="p">API Keys</Text>
-          <Text variant="secondary" as="p">仅列出当前 LiteLLM 用户拥有的密钥。</Text>
-        </div>
-        <CreateKeyButton />
-      </div>
+    <PanelCard
+      title="API Keys"
+      subtitle="仅列出当前 LiteLLM 用户拥有的密钥。"
+      actions={<CreateKeyButton />}
+      padded={false}
+    >
       <div className="overflow-x-auto">
         {!loaded ? (
           <div className="space-y-3 p-6" aria-live="polite">
@@ -78,6 +77,6 @@ export function ApiKeysCard() {
           </Table>
         )}
       </div>
-    </section>
+    </PanelCard>
   );
 }
