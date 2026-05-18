@@ -5,6 +5,7 @@ import { Trans } from "@lingui/react/macro";
 import { useParams } from "@tanstack/react-router";
 import { useOpsUserDetail } from "../hooks";
 import { PanelSkeleton, PanelEmpty, PanelError } from "../../components/panel-state";
+import { PanelCard } from "../../ui";
 
 export function OpsUserDetailBody({ userId }: { userId: string }) {
   const { data, isLoading, isError, error } = useOpsUserDetail(userId);
@@ -33,11 +34,7 @@ export function OpsUserDetailBody({ userId }: { userId: string }) {
 
   return (
     <div id="ops-user-detail-root" className="space-y-6">
-      <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-        <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-          <Text variant="heading3" as="p">{data.email}</Text>
-          <Text variant="secondary" as="p">{data.userId}</Text>
-        </div>
+      <PanelCard title={data.email} subtitle={data.userId} padded={false}>
         <dl className="grid grid-cols-2 gap-4 p-6 text-sm sm:grid-cols-3">
           <div>
             <dt className="text-kumo-subtle"><Trans>平台角色</Trans></dt>
@@ -66,7 +63,7 @@ export function OpsUserDetailBody({ userId }: { userId: string }) {
             <dd className="tabular-nums text-kumo-default">{data.keyCount}</dd>
           </div>
         </dl>
-      </article>
+      </PanelCard>
     </div>
   );
 }
