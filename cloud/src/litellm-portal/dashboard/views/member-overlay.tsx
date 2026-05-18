@@ -3,6 +3,7 @@ import { useDashboard } from "../use-dashboard";
 import { KpiBand } from "../panels/kpi-band";
 import { TrendChart } from "../charts/trend-chart";
 import { ModelDonut } from "../charts/model-donut";
+import { PanelCard } from "../../ui";
 export function MemberOverlay({
   userId, maxBudget, onClose,
 }: {
@@ -25,8 +26,7 @@ export function MemberOverlay({
           : (
           <>
             <KpiBand kpi={data.kpi} />
-            <div className="mb-4 rounded-xl border border-kumo-line bg-kumo-base p-5">
-              <div className="text-xs uppercase tracking-wider text-kumo-subtle">配额使用</div>
+            <PanelCard title="配额使用">
               <div className="mt-1 font-mono text-xl font-semibold tabular-nums text-kumo-strong">
                 {quotaPct == null ? "无预算限制" : `${quotaPct}%`}
               </div>
@@ -38,17 +38,16 @@ export function MemberOverlay({
               <div className="mt-1 font-mono text-xs text-kumo-subtle">
                 ${spend.toFixed(2)}{maxBudget != null ? ` / $${maxBudget.toFixed(2)}` : ""}
               </div>
-            </div>
-            <div className="mb-4 rounded-xl border border-kumo-line bg-kumo-base p-5">
-              <div className="mb-2 text-xs uppercase tracking-wider text-kumo-subtle">近 30 天使用过的模型</div>
+            </PanelCard>
+            <PanelCard title="近 30 天使用过的模型">
               <div className="flex flex-wrap gap-2">
                 {data.models.map((m) => (
                   <span key={m.model} className="rounded-full bg-kumo-fill px-3 py-1 font-mono text-xs text-kumo-subtle">{m.model}</span>
                 ))}
               </div>
-            </div>
+            </PanelCard>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div className="rounded-xl border border-kumo-line bg-kumo-base p-5">
+              <PanelCard padded={false}>
                 {(() => {
                   const memberPoints: Array<[number, number]> = data.trend.map((b) => [b.startMs, b.totalTokens]);
                   const userCount = globalData?.summary?.userCount ?? 0;
@@ -71,10 +70,10 @@ export function MemberOverlay({
                     />
                   );
                 })()}
-              </div>
-              <div className="rounded-xl border border-kumo-line bg-kumo-base p-5">
+              </PanelCard>
+              <PanelCard padded={false}>
                 <ModelDonut slices={data.models.map((m) => ({ model: m.model, value: m.spend }))} />
-              </div>
+              </PanelCard>
             </div>
           </>
         )}
