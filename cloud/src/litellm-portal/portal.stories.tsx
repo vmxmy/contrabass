@@ -18,15 +18,15 @@ import {
   TeamsAccessCard,
   ApiKeysCard,
   HeaderActions,
-  type InitialDashboardData,
 } from "./app";
+import type { Dashboard } from "./schemas";
 import { AdminSection } from "./admin-components";
 
 // ---------------------------------------------------------------------------
 // Shared fixture data
 // ---------------------------------------------------------------------------
 
-const sampleInitialData: InitialDashboardData = {
+const sampleInitialData: Dashboard = {
   me: { email: "alice@example.com", domain: "example.com", company: "Acme AI" },
   user: { litellmUserId: "usr_abc123", totalSpend: 12.34, maxBudget: 50 },
   summary: {
