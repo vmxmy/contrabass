@@ -1,14 +1,16 @@
 import { Badge } from "@cloudflare/kumo/components/badge";
-import { Banner } from "@cloudflare/kumo/components/banner";
 import { Collapsible } from "@cloudflare/kumo/components/collapsible";
 import { Empty } from "@cloudflare/kumo/components/empty";
 import { LayerCard } from "@cloudflare/kumo/components/layer-card";
-import { SkeletonLine } from "@cloudflare/kumo/components/loader";
 import { Pagination } from "@cloudflare/kumo/components/pagination";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Text } from "@cloudflare/kumo/components/text";
 import { Tooltip } from "@cloudflare/kumo/components/tooltip";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useState } from "react";
+import { PanelSkeleton, PanelError } from "./components/panel-state";
+import { useAdminUsers } from "./hooks/use-admin-users";
+import { useAdminTeams } from "./hooks/use-admin-teams";
+import { useAdminAudit } from "./hooks/use-admin-audit";
 import type { UsageTimeseries } from "./chart";
 import { fmt, fmtInt } from "./lib/format";
 
@@ -200,68 +202,16 @@ export function TopModelsPanel({ data, loading }: { data: UsageTimeseries | null
 
 type PortalRole = "admin" | "user" | "none";
 
-type AdminUsersResponse = {
-  users: Array<{
-    userId: string;
-    email: string;
-    spend: number | null;
-    maxBudget: number | null;
-    teamIds: string[];
-    role: string | null;
-  }>;
-  totalCount: number;
-  page: number;
-  size: number;
-};
 
-type AdminTeam = {
-  id: string;
-  alias: string | null;
-  models: string[];
-  spend: number | null;
-  tpmLimit: number | null;
-  rpmLimit: number | null;
-};
-
-type AdminTeamsResponse = {
-  teams: AdminTeam[];
-};
-
-type AdminAuditEvent = {
-  id: string;
-  createdAt: string | null;
-  action: string;
-  actorUserId: string | null;
-  actorUserEmail: string | null;
-  objectType: string | null;
-  objectId: string | null;
-};
-
-type AdminAuditResponse = {
-  events: AdminAuditEvent[];
-  totalCount: number;
-  page: number;
-  size: number;
-};
 
 const ADMIN_PAGE_SIZE = 50;
 
 function AdminLoadingSkeleton() {
-  return (
-    <div className="space-y-3 p-6" aria-live="polite">
-      {Array.from({ length: 4 }, (_, index) => (
-        <SkeletonLine key={index} minWidth={260} maxWidth={760} blockHeight={20} />
-      ))}
-    </div>
-  );
+  return <PanelSkeleton lines={4} />;
 }
 
 function AdminErrorBanner({ message }: { message: string }) {
-  return (
-    <div className="p-6">
-      <Banner variant="error" title="数据加载失败" description={message} />
-    </div>
-  );
+  return <PanelError title="数据加载失败" error={new Error(message)} />;
 }
 
 function AdminPager({
@@ -297,323 +247,219 @@ function AdminPager({
   );
 }
 
-// TODO(CONTRABASS-3 follow-up): Migrate AdminUsersTable to a dedicated useAdminUsers() RPC hook.
 export function AdminUsersTable() {
-  const [data, setData] = useState<AdminUsersResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
-  const requestIdRef = useRef(0);
+  const { data, isLoading, isError, error } = useAdminUsers(page, ADMIN_PAGE_SIZE);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    const requestId = ++requestIdRef.current;
-    setLoading(true);
-    setError(null);
-
-    const params = new URLSearchParams({ page: String(page), size: String(ADMIN_PAGE_SIZE) });
-    fetch(`/api/admin/users?${params.toString()}`, {
-      signal: controller.signal,
-      headers: { "content-type": "application/json" },
-    })
-      .then(async (response) => {
-        const body = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(typeof body.error === "string" ? body.error : "全员账户加载失败");
-        }
-        return body as AdminUsersResponse;
-      })
-      .then((body) => {
-        if (requestId !== requestIdRef.current) return;
-        setData(body);
-        setError(null);
-      })
-      .catch((fetchError: unknown) => {
-        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
-        if (requestId !== requestIdRef.current) return;
-        setData(null);
-        setError(fetchError instanceof Error ? fetchError.message : "全员账户加载失败");
-      })
-      .finally(() => {
-        if (requestId === requestIdRef.current) setLoading(false);
-      });
-
-    return () => controller.abort();
-  }, [page]);
+  if (isLoading) {
+    return <AdminLoadingSkeleton />;
+  }
+  if (isError) {
+    return <AdminErrorBanner message={error instanceof Error ? error.message : "全员账户加载失败"} />;
+  }
+  if (!data || data.users.length === 0) {
+    return <Empty size="sm" title="暂无用户数据" />;
+  }
 
   return (
     <div>
-      {loading ? (
-        <AdminLoadingSkeleton />
-      ) : error ? (
-        <AdminErrorBanner message={error} />
-      ) : !data || data.users.length === 0 ? (
-        <Empty size="sm" title="暂无用户数据" />
-      ) : (
-        <div className="overflow-x-auto">
-          <Table className="w-full text-left text-sm text-kumo-default">
-            <Table.Header>
-              <Table.Row className="border-b border-kumo-line">
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">账户</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">角色</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">累计消费</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">团队数</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">最大预算</Table.Head>
+      <div className="overflow-x-auto">
+        <Table className="w-full text-left text-sm text-kumo-default">
+          <Table.Header>
+            <Table.Row className="border-b border-kumo-line">
+              <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">账户</Table.Head>
+              <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">角色</Table.Head>
+              <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">累计消费</Table.Head>
+              <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">团队数</Table.Head>
+              <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">最大预算</Table.Head>
+            </Table.Row>
+          </Table.Header>
+          <Table.Body>
+            {data.users.map((user) => (
+              <Table.Row key={user.userId} className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
+                <Table.Cell className="py-3 pl-5 pr-3">
+                  <AccountCell email={user.email} userId={user.userId} />
+                </Table.Cell>
+                <Table.Cell className="py-3 pr-3">
+                  <RoleBadge role={user.role} />
+                </Table.Cell>
+                <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmt(user.spend)}</Table.Cell>
+                <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmtInt(user.teamIds.length)}</Table.Cell>
+                <Table.Cell className="py-3 pr-5 text-right font-mono text-kumo-default">{user.maxBudget == null ? "—" : fmt(user.maxBudget)}</Table.Cell>
               </Table.Row>
-            </Table.Header>
-            <Table.Body>
-              {data.users.map((user) => (
-                <Table.Row key={user.userId} className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
-                  <Table.Cell className="py-3 pl-5 pr-3">
-                    <AccountCell email={user.email} userId={user.userId} />
-                  </Table.Cell>
-                  <Table.Cell className="py-3 pr-3">
-                    <RoleBadge role={user.role} />
-                  </Table.Cell>
-                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmt(user.spend)}</Table.Cell>
-                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmtInt(user.teamIds.length)}</Table.Cell>
-                  <Table.Cell className="py-3 pr-5 text-right font-mono text-kumo-default">{user.maxBudget == null ? "—" : fmt(user.maxBudget)}</Table.Cell>
-                </Table.Row>
-              ))}
-            </Table.Body>
-          </Table>
-        </div>
-      )}
-      {data ? (
-        <AdminPager
-          page={page}
-          setPage={setPage}
-          totalCount={data.totalCount}
-          perPage={ADMIN_PAGE_SIZE}
-        />
-      ) : null}
+            ))}
+          </Table.Body>
+        </Table>
+      </div>
+      <AdminPager
+        page={page}
+        setPage={setPage}
+        totalCount={data.totalCount}
+        perPage={ADMIN_PAGE_SIZE}
+      />
     </div>
   );
 }
 
-// TODO(CONTRABASS-3 follow-up): Migrate AdminTeamsTable to a dedicated useAdminTeams() RPC hook.
 export function AdminTeamsTable() {
-  const [data, setData] = useState<AdminTeamsResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { data, isLoading, isError, error } = useAdminTeams();
 
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch("/api/admin/teams", {
-      signal: controller.signal,
-      headers: { "content-type": "application/json" },
-    })
-      .then(async (response) => {
-        const body = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(typeof body.error === "string" ? body.error : "全部团队加载失败");
-        }
-        return body as AdminTeamsResponse;
-      })
-      .then((body) => setData(body))
-      .catch((fetchError: unknown) => {
-        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
-        setError(fetchError instanceof Error ? fetchError.message : "全部团队加载失败");
-      })
-      .finally(() => setLoading(false));
-
-    return () => controller.abort();
-  }, []);
+  if (isLoading) {
+    return <AdminLoadingSkeleton />;
+  }
+  if (isError) {
+    return <AdminErrorBanner message={error instanceof Error ? error.message : "全部团队加载失败"} />;
+  }
+  if (!data || data.teams.length === 0) {
+    return <Empty size="sm" title="暂无团队数据" />;
+  }
 
   return (
-    <div>
-      {loading ? (
-        <AdminLoadingSkeleton />
-      ) : error ? (
-        <AdminErrorBanner message={error} />
-      ) : !data || data.teams.length === 0 ? (
-        <Empty size="sm" title="暂无团队数据" />
-      ) : (
-        <div className="overflow-x-auto">
-          <Table className="w-full text-left text-sm text-kumo-default">
-            <Table.Header>
-              <Table.Row className="border-b border-kumo-line">
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">ID</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">别名</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">可用模型</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">消费</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">TPM</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">RPM</Table.Head>
-              </Table.Row>
-            </Table.Header>
-            <Table.Body>
-              {data.teams.map((team) => (
-                <Table.Row key={team.id} className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
-                  <Table.Cell className="py-3 pl-5 pr-3 font-mono text-xs text-kumo-subtle">
-                    <Tooltip content={team.id}>
-                      <span className="block max-w-[120px] truncate">{text(team.id)}</span>
-                    </Tooltip>
-                  </Table.Cell>
-                  <Table.Cell className="py-3 pr-3 text-kumo-default">{text(team.alias)}</Table.Cell>
-                  <Table.Cell className="py-3 pr-3">
-                    <ModelChips models={team.models} />
-                  </Table.Cell>
-                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmt(team.spend)}</Table.Cell>
-                  <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{team.tpmLimit == null ? "—" : fmtInt(team.tpmLimit)}</Table.Cell>
-                  <Table.Cell className="py-3 pr-5 text-right font-mono text-kumo-default">{team.rpmLimit == null ? "—" : fmtInt(team.rpmLimit)}</Table.Cell>
-                </Table.Row>
-              ))}
-            </Table.Body>
-          </Table>
-        </div>
-      )}
+    <div className="overflow-x-auto">
+      <Table className="w-full text-left text-sm text-kumo-default">
+        <Table.Header>
+          <Table.Row className="border-b border-kumo-line">
+            <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">ID</Table.Head>
+            <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">别名</Table.Head>
+            <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">可用模型</Table.Head>
+            <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">消费</Table.Head>
+            <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">TPM</Table.Head>
+            <Table.Head className="bg-kumo-base p-5 text-right text-xs font-semibold uppercase tracking-wider text-kumo-subtle">RPM</Table.Head>
+          </Table.Row>
+        </Table.Header>
+        <Table.Body>
+          {data.teams.map((team) => (
+            <Table.Row key={team.id} className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
+              <Table.Cell className="py-3 pl-5 pr-3 font-mono text-xs text-kumo-subtle">
+                <Tooltip content={team.id}>
+                  <span className="block max-w-[120px] truncate">{text(team.id)}</span>
+                </Tooltip>
+              </Table.Cell>
+              <Table.Cell className="py-3 pr-3 text-kumo-default">{text(team.alias)}</Table.Cell>
+              <Table.Cell className="py-3 pr-3">
+                <ModelChips models={team.models} />
+              </Table.Cell>
+              <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{fmt(team.spend)}</Table.Cell>
+              <Table.Cell className="py-3 pr-3 text-right font-mono text-kumo-default">{team.tpmLimit == null ? "—" : fmtInt(team.tpmLimit)}</Table.Cell>
+              <Table.Cell className="py-3 pr-5 text-right font-mono text-kumo-default">{team.rpmLimit == null ? "—" : fmtInt(team.rpmLimit)}</Table.Cell>
+            </Table.Row>
+          ))}
+        </Table.Body>
+      </Table>
     </div>
   );
 }
 
-// TODO(CONTRABASS-3 follow-up): Migrate AdminAuditFeed to a dedicated useAdminAudit() RPC hook.
 export function AdminAuditFeed() {
-  const [data, setData] = useState<AdminAuditResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const requestIdRef = useRef(0);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    const requestId = ++requestIdRef.current;
-    setLoading(true);
-    setError(null);
-
-    const params = new URLSearchParams({ page: String(page), size: String(ADMIN_PAGE_SIZE) });
-    fetch(`/api/admin/audit?${params.toString()}`, {
-      signal: controller.signal,
-      headers: { "content-type": "application/json" },
-    })
-      .then(async (response) => {
-        const body = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(typeof body.error === "string" ? body.error : "审计日志加载失败");
-        }
-        return body as AdminAuditResponse;
-      })
-      .then((body) => {
-        if (requestId !== requestIdRef.current) return;
-        setData(body);
-        setError(null);
-      })
-      .catch((fetchError: unknown) => {
-        if (fetchError instanceof DOMException && fetchError.name === "AbortError") return;
-        if (requestId !== requestIdRef.current) return;
-        setData(null);
-        setError(fetchError instanceof Error ? fetchError.message : "审计日志加载失败");
-      })
-      .finally(() => {
-        if (requestId === requestIdRef.current) setLoading(false);
-      });
-
-    return () => controller.abort();
-  }, [page]);
+  const { data, isLoading, isError, error } = useAdminAudit({ page, size: ADMIN_PAGE_SIZE });
 
   const toggleRow = useCallback((id: string) => {
     setExpandedId((prev) => (prev === id ? null : id));
   }, []);
 
+  if (isLoading) {
+    return <AdminLoadingSkeleton />;
+  }
+  if (isError) {
+    return <AdminErrorBanner message={error instanceof Error ? error.message : "审计日志加载失败"} />;
+  }
+  if (!data || data.events.length === 0) {
+    return (
+      <div className="p-6">
+        <Empty
+          size="sm"
+          title="暂无审计日志"
+          description="尚未记录管理员操作，admin 写操作开启后此处会出现条目。"
+        />
+      </div>
+    );
+  }
+
   return (
     <div>
-      {loading ? (
-        <AdminLoadingSkeleton />
-      ) : error ? (
-        <AdminErrorBanner message={error} />
-      ) : !data || data.events.length === 0 ? (
-        <div className="p-6">
-          <Empty
-            size="sm"
-            title="暂无审计日志"
-            description="尚未记录管理员操作，admin 写操作开启后此处会出现条目。"
-          />
-        </div>
-      ) : (
-        <div className="overflow-x-auto">
-          <Table className="w-full text-left text-sm text-kumo-default">
-            <Table.Header>
-              <Table.Row className="border-b border-kumo-line">
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">创建时间</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">操作</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">操作者</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">对象类型</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">对象 ID</Table.Head>
-                <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">详情</Table.Head>
-              </Table.Row>
-            </Table.Header>
-            <Table.Body>
-              {data.events.map((event) => (
-                <React.Fragment key={event.id}>
-                  <Table.Row className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
-                    <Table.Cell className="py-3 pl-5 pr-3 font-mono text-xs text-kumo-subtle">{event.createdAt ? event.createdAt.slice(0, 19).replace("T", " ") : "—"}</Table.Cell>
-                    <Table.Cell className="py-3 pr-3 text-kumo-default">{text(event.action)}</Table.Cell>
-                    <Table.Cell className="py-3 pr-3 text-kumo-default">
-                      <Tooltip content={event.actorUserEmail ?? event.actorUserId}>
-                        <span className="block max-w-[160px] truncate">{text(event.actorUserEmail ?? event.actorUserId)}</span>
-                      </Tooltip>
-                    </Table.Cell>
-                    <Table.Cell className="py-3 pr-3 text-kumo-subtle">{text(event.objectType)}</Table.Cell>
-                    <Table.Cell className="py-3 pr-3 font-mono text-xs text-kumo-subtle">
-                      <Tooltip content={event.objectId}>
-                        <span className="block max-w-[120px] truncate">{text(event.objectId)}</span>
-                      </Tooltip>
-                    </Table.Cell>
-                    <Table.Cell className="py-3 pr-5">
-                      <button
-                        type="button"
-                        className="text-xs font-semibold text-kumo-brand hover:text-kumo-brand-hover"
-                        onClick={() => toggleRow(event.id)}
-                        aria-expanded={expandedId === event.id}
-                      >
-                        {expandedId === event.id ? "收起" : "展开"}
-                      </button>
+      <div className="overflow-x-auto">
+        <Table className="w-full text-left text-sm text-kumo-default">
+          <Table.Header>
+            <Table.Row className="border-b border-kumo-line">
+              <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">创建时间</Table.Head>
+              <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">操作</Table.Head>
+              <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">操作者</Table.Head>
+              <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">对象类型</Table.Head>
+              <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">对象 ID</Table.Head>
+              <Table.Head className="bg-kumo-base p-5 text-xs font-semibold uppercase tracking-wider text-kumo-subtle">详情</Table.Head>
+            </Table.Row>
+          </Table.Header>
+          <Table.Body>
+            {data.events.map((event) => (
+              <React.Fragment key={event.id}>
+                <Table.Row className="border-b border-kumo-fill transition-colors hover:bg-kumo-tint">
+                  <Table.Cell className="py-3 pl-5 pr-3 font-mono text-xs text-kumo-subtle">{event.createdAt ? event.createdAt.slice(0, 19).replace("T", " ") : "—"}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-kumo-default">{text(event.action)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-kumo-default">
+                    <Tooltip content={event.actorUserEmail ?? event.actorUserId}>
+                      <span className="block max-w-[160px] truncate">{text(event.actorUserEmail ?? event.actorUserId)}</span>
+                    </Tooltip>
+                  </Table.Cell>
+                  <Table.Cell className="py-3 pr-3 text-kumo-subtle">{text(event.objectType)}</Table.Cell>
+                  <Table.Cell className="py-3 pr-3 font-mono text-xs text-kumo-subtle">
+                    <Tooltip content={event.objectId}>
+                      <span className="block max-w-[120px] truncate">{text(event.objectId)}</span>
+                    </Tooltip>
+                  </Table.Cell>
+                  <Table.Cell className="py-3 pr-5">
+                    <button
+                      type="button"
+                      className="text-xs font-semibold text-kumo-brand hover:text-kumo-brand-hover"
+                      onClick={() => toggleRow(event.id)}
+                      aria-expanded={expandedId === event.id}
+                    >
+                      {expandedId === event.id ? "收起" : "展开"}
+                    </button>
+                  </Table.Cell>
+                </Table.Row>
+                {expandedId === event.id ? (
+                  <Table.Row className="border-b border-kumo-fill bg-kumo-recessed">
+                    <Table.Cell colSpan={6} className="px-5 py-4">
+                      <div className="space-y-4 text-xs">
+                        <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3">
+                          <div>
+                            <dt className="font-semibold uppercase tracking-wider text-kumo-subtle">操作者</dt>
+                            <dd className="mt-1 font-mono text-kumo-default">{text(event.actorUserEmail ?? event.actorUserId)}</dd>
+                          </div>
+                          <div>
+                            <dt className="font-semibold uppercase tracking-wider text-kumo-subtle">操作</dt>
+                            <dd className="mt-1 text-kumo-default">{text(event.action)}</dd>
+                          </div>
+                          <div>
+                            <dt className="font-semibold uppercase tracking-wider text-kumo-subtle">对象</dt>
+                            <dd className="mt-1 font-mono text-kumo-default">{text(event.objectType)} {text(event.objectId)}</dd>
+                          </div>
+                          <div>
+                            <dt className="font-semibold uppercase tracking-wider text-kumo-subtle">时间</dt>
+                            <dd className="mt-1 font-mono text-kumo-subtle">{event.createdAt ? event.createdAt.slice(0, 19).replace("T", " ") : "—"}</dd>
+                          </div>
+                        </dl>
+                        <div>
+                          <Text variant="secondary" size="xs" className="mb-1 font-semibold uppercase tracking-wider">原始数据</Text>
+                          <pre className="overflow-x-auto rounded-lg bg-kumo-base p-3 font-mono text-kumo-default ring-1 ring-kumo-line">{JSON.stringify(event, null, 2)}</pre>
+                        </div>
+                      </div>
                     </Table.Cell>
                   </Table.Row>
-                  {expandedId === event.id ? (
-                    <Table.Row className="border-b border-kumo-fill bg-kumo-recessed">
-                      <Table.Cell colSpan={6} className="px-5 py-4">
-                        <div className="space-y-4 text-xs">
-                          <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3">
-                            <div>
-                              <dt className="font-semibold uppercase tracking-wider text-kumo-subtle">操作者</dt>
-                              <dd className="mt-1 font-mono text-kumo-default">{text(event.actorUserEmail ?? event.actorUserId)}</dd>
-                            </div>
-                            <div>
-                              <dt className="font-semibold uppercase tracking-wider text-kumo-subtle">操作</dt>
-                              <dd className="mt-1 text-kumo-default">{text(event.action)}</dd>
-                            </div>
-                            <div>
-                              <dt className="font-semibold uppercase tracking-wider text-kumo-subtle">对象</dt>
-                              <dd className="mt-1 font-mono text-kumo-default">{text(event.objectType)} {text(event.objectId)}</dd>
-                            </div>
-                            <div>
-                              <dt className="font-semibold uppercase tracking-wider text-kumo-subtle">时间</dt>
-                              <dd className="mt-1 font-mono text-kumo-subtle">{event.createdAt ? event.createdAt.slice(0, 19).replace("T", " ") : "—"}</dd>
-                            </div>
-                          </dl>
-                          <div>
-                            <Text variant="secondary" size="xs" className="mb-1 font-semibold uppercase tracking-wider">原始数据</Text>
-                            <pre className="overflow-x-auto rounded-lg bg-kumo-base p-3 font-mono text-kumo-default ring-1 ring-kumo-line">{JSON.stringify(event, null, 2)}</pre>
-                          </div>
-                        </div>
-                      </Table.Cell>
-                    </Table.Row>
-                  ) : null}
-                </React.Fragment>
-              ))}
-            </Table.Body>
-          </Table>
-        </div>
-      )}
-      {data ? (
-        <AdminPager
-          page={page}
-          setPage={setPage}
-          totalCount={data.totalCount}
-          perPage={ADMIN_PAGE_SIZE}
-        />
-      ) : null}
+                ) : null}
+              </React.Fragment>
+            ))}
+          </Table.Body>
+        </Table>
+      </div>
+      <AdminPager
+        page={page}
+        setPage={setPage}
+        totalCount={data.totalCount}
+        perPage={ADMIN_PAGE_SIZE}
+      />
     </div>
   );
 }

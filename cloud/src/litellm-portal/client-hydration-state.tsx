@@ -1,4 +1,4 @@
-import type { InitialDashboardData } from "./app";
+import type { Dashboard } from "./schemas";
 import type { UserPreferences } from "./schemas";
 import type { JsonValue } from "./types";
 
@@ -7,7 +7,7 @@ export type PortalRole = "admin" | "user" | "none";
 export type ClientHydrationState = {
   title: string;
   nonce: string;
-  initialData: InitialDashboardData | null;
+  initialData: Dashboard | null;
   shellInitialData: JsonValue | null;
   dehydratedState: unknown;
   role: PortalRole | undefined;
@@ -17,19 +17,19 @@ export type ClientHydrationState = {
 const PREFERENCES_QUERY_KEY = ["me", "preferences"] as const;
 
 export function readClientHydrationState(doc: Document): ClientHydrationState {
-  let initialData: InitialDashboardData | null = null;
+  let initialData: Dashboard | null = null;
   let shellInitialData: JsonValue | null = null;
   let dehydratedState: unknown = undefined;
 
   const dataEl = doc.getElementById("initial-data");
   if (dataEl?.textContent) {
     try {
-      const parsed = JSON.parse(dataEl.textContent) as InitialDashboardData & { queryClient?: unknown };
+      const parsed = JSON.parse(dataEl.textContent) as Dashboard & { queryClient?: unknown };
       shellInitialData = parsed as JsonValue;
       dehydratedState = parsed.queryClient;
       const { queryClient: _queryClient, ...rest } = parsed;
       void _queryClient;
-      initialData = rest as InitialDashboardData;
+      initialData = rest as Dashboard;
     } catch {
       // Malformed JSON — hydrate without preloaded data.
     }
