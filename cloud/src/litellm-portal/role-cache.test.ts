@@ -520,6 +520,25 @@ describe("POST /api/_internal/identity-reconcile", () => {
     expect(response.status).toBe(400);
   });
 
+  it("is CSRF-exempt: session cookie + token still succeeds (not 403)", async () => {
+    // The operator's browser session may be degraded to admin_viewer; the
+    // shared-secret trigger must work even WITH a session cookie present
+    // (csrf.ts exemption parity with /_internal/role-changed).
+    const response = await handleLiteLLMPortalRequest(
+      new Request("https://portal.test/api/_internal/identity-reconcile", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Cookie: `${SESSION_COOKIE_NAME}=${_cookieCache.get("user@gz-zhiyun.com")}`,
+        },
+        body: JSON.stringify({ secret: "super-secret" }),
+      }),
+      portalEnv({ ROLE_INVALIDATION_WEBHOOK_TOKEN: "super-secret" }),
+    );
+    expect(response.status).not.toBe(403);
+    expect(response.status).toBe(200);
+  });
+
   it("runs reconcile with a valid token (role-independent; 200 + summary)", async () => {
     const response = await handleLiteLLMPortalRequest(
       new Request("https://portal.test/api/_internal/identity-reconcile", {
