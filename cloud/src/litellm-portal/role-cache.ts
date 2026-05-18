@@ -8,6 +8,11 @@ import { mapLiteLLMRole } from "./role-mapping";
 // ---------------------------------------------------------------------------
 
 const MEM_TTL_MS = 30 * 1000; // 30 seconds
+// Negative-cache TTL for the email-sentinel result (identity map missed AND
+// LiteLLM gave no match). Short so a freshly-populated identity map (importer /
+// concurrent persist-on-miss) is adopted in ~5s instead of serving the
+// misleading "unmapped" dashboard for the full 30s.
+const MEM_TTL_UNMAPPED_MS = 5 * 1000; // 5 seconds
 
 // ---------------------------------------------------------------------------
 // IndexDO path — 30-second in-process memory cache
@@ -185,12 +190,16 @@ async function resolveRoleAndUserId(
   const tenantTeamId = mapped.tenantTeamId;
   const litellmUserId = facts.userId;
   const tenantRole = await resolveTenantRole(env, tenantUserId, tenantTeamId);
+  // `litellmUserId === key` means resolution fell back to the email sentinel
+  // (map miss + no LiteLLM match): negative-cache it briefly so a soon-after
+  // identity-map population is picked up quickly, not after the full 30s.
+  const ttl = litellmUserId === key ? MEM_TTL_UNMAPPED_MS : MEM_TTL_MS;
   doCache.set(key, {
     role,
     litellmUserId,
     tenantRole,
     tenantTeamId,
-    expiresAt: now + MEM_TTL_MS,
+    expiresAt: now + ttl,
   });
   return { role, litellmUserId, tenantRole, tenantTeamId };
 }
