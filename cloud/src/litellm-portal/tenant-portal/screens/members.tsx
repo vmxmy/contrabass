@@ -87,7 +87,7 @@ function RevokeInviteDialog({ email }: { email: string }) {
         ) : null}
         <Field
           label={t`输入邮箱确认`}
-          description={t`请输入「${email}」以确认撤销`}
+          description={t({ message: "请输入「{email}」以确认撤销", values: { email } })}
         >
           <Input
             id={`revoke-confirm-${email}`}

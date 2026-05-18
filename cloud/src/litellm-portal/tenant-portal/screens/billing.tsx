@@ -60,7 +60,7 @@ function BillingPeriodRow({ period }: { period: string }) {
             loading={isPending}
             disabled={isPending}
             onClick={handleDownload}
-            aria-label={t`下载 ${period}`}
+            aria-label={t({ message: "下载 {period}", values: { period } })}
           >
             <Trans>下载</Trans>
           </Button>

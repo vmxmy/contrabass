@@ -5,6 +5,7 @@ import { issueSession, buildSessionCookieHeader, clearSessionHeader } from "./se
 import { resolveLiteLLMUser } from "../litellm";
 import { enqueueSync } from "../sync/queue-producer";
 import { invalidateRole } from "../role-cache";
+import { resolveIdentity } from "../roles";
 
 // ---------------------------------------------------------------------------
 // SANCTIONED local style constants (spec §D.2). /login is a standalone SSR
@@ -499,10 +500,22 @@ export async function handleMagicCallback(request: Request, env: LiteLLMPortalEn
     return htmlResp(expiredLinkPage(), 500);
   }
 
+  let landing = "/";
+  try {
+    const id = await resolveIdentity(env, {
+      email: emailLc,
+      userId,
+      domain: emailLc.split("@")[1] ?? "",
+    });
+    if (id.ok && id.identity.role === "admin") landing = "/ops";
+  } catch {
+    landing = "/";
+  }
+
   return new Response(null, {
     status: 302,
     headers: {
-      Location: "/",
+      Location: landing,
       "Set-Cookie": buildSessionCookieHeader(sessionValue),
     },
   });

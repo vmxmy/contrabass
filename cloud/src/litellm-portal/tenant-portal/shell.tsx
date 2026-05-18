@@ -93,8 +93,8 @@ function resolveNavGroups(identity: PortalIdentity): SideNavGroup[] {
   });
   const personal = nav.filter((i) => PERSONAL_HREFS.has(i.href)).map(toItem);
   const team = nav.filter((i) => TEAM_HREFS.has(i.href)).map(toItem);
-  const groups: SideNavGroup[] = [{ heading: "我的", items: personal }];
-  if (team.length > 0) groups.push({ heading: "团队管理", items: team });
+  const groups: SideNavGroup[] = [{ heading: t`我的`, items: personal }];
+  if (team.length > 0) groups.push({ heading: t`团队管理`, items: team });
   return groups;
 }
 
@@ -173,19 +173,19 @@ function BrandSummaryBar({ brand }: { brand: TenantBrand }) {
   );
 }
 
-function OwnerPhase2Notice() {
+function OwnerOpsEntry() {
   return (
-    <div className="space-y-6" id="owner-phase2-root">
+    <div className="space-y-6" id="owner-ops-entry-root">
       <Banner
         variant="default"
-        title={t`运营控制台将在 Phase 2 提供`}
-        description={<Trans>Operations Console arrives in Phase 2</Trans>}
+        title={t`运营控制台`}
+        description={<Trans>使用运营控制台管理团队、用量与审计</Trans>}
         action={
           <a
-            href="/manage"
+            href="/ops"
             className="font-semibold text-kumo-link underline underline-offset-2"
           >
-            <Trans>管理控制台</Trans>
+            <Trans>进入运营控制台</Trans>
           </a>
         }
       />
@@ -291,7 +291,7 @@ export function TenantPortalShell({ identity, brand, impersonation, children }: 
         <BrandSummaryBar brand={brand} />
         {owner ? (
           <main className="mx-auto w-full max-w-5xl px-6 py-10 opacity-100 motion-safe:transition-opacity motion-safe:duration-150">
-            <OwnerPhase2Notice />
+            <OwnerOpsEntry />
             {children}
           </main>
         ) : (

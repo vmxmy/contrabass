@@ -601,6 +601,34 @@ describe("DO-path admin routes", () => {
       const data = await res.json() as Record<string, unknown>;
       expect(data.error).toBe("user_not_found");
     });
+
+    it("proxy_admin_viewer MUST NOT persist as admin in IndexDO (escalation guard)", async () => {
+      // Regression: submitting role:"proxy_admin_viewer" must persist "user" to
+      // IndexDO, NOT "admin". Previously the || predicate mapped viewer→admin,
+      // creating a back-door identical to the litellm-importer path already fixed.
+      const indexStub = makeIndexDOStub();
+      const teamStub = makeTeamConfigDOStub();
+      const env = makeFlagOnEnv(indexStub, teamStub);
+
+      const targetEmail = "bob@gz-zhiyun.com";
+      const res = await app.fetch(
+        await adminRequest(
+          `https://x/api/admin/users/${encodeURIComponent(targetEmail)}`,
+          env,
+          {
+            method: "PATCH",
+            body: JSON.stringify({ role: "proxy_admin_viewer", reason: "test" }),
+          },
+        ),
+        env,
+      );
+
+      expect(res.status).toBe(200);
+      expect(indexStub.putUser).toHaveBeenCalledOnce();
+      const putArg = indexStub.putUser.mock.calls[0][0] as Record<string, unknown>;
+      // MUST persist "user", never "admin"
+      expect(putArg.role).toBe("user");
+    });
   });
 
   describe("Non-admin user (flag=true)", () => {

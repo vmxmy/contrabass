@@ -186,7 +186,8 @@ export type ImportUsersResult = {
  *  Does NOT mark meta:imported (T-6.4's job).
  *
  *  Role mapping (from LiteLLM.role → DO UserRecord.role):
- *    "proxy_admin" | "proxy_admin_viewer"  -> "admin"
+ *    "proxy_admin"                              -> "admin"
+ *    "proxy_admin_viewer" (read-only owner)     -> "user"  (escalation guard)
  *    everything else (including null/undefined) -> "user"
  */
 export async function importUsers(env: LiteLLMPortalEnv): Promise<ImportUsersResult> {
@@ -242,8 +243,7 @@ export async function importUsers(env: LiteLLMPortalEnv): Promise<ImportUsersRes
         }
         const email = record.email.trim();
 
-        const role: "admin" | "user" =
-          record.role === "proxy_admin" || record.role === "proxy_admin_viewer" ? "admin" : "user";
+        const role: "admin" | "user" = record.role === "proxy_admin" ? "admin" : "user";
 
         const teamIds: string[] = Array.isArray(record.team_ids)
           ? (record.team_ids as unknown[]).filter((t): t is string => typeof t === "string")

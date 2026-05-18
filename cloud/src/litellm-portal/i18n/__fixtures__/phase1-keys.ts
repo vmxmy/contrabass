@@ -22,10 +22,9 @@ export const PHASE1_TENANT_KEYS = [
   "租户品牌",
   "租户导航",
 
-  // Phase-2 owner notice
-  "运营控制台将在 Phase 2 提供",
-  "Operations Console arrives in Phase 2",
-  "管理控制台",
+  // Owner ops-console entry (F3 — replaces the retired Phase-2 notice)
+  "进入运营控制台",
+  "使用运营控制台管理团队、用量与审计",
 
   // Routes — placeholder / member guard
   "待实现",

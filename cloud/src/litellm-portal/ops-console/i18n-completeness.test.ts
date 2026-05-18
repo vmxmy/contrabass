@@ -26,9 +26,13 @@
  * matching entries to BOTH catalogs before merging.
  */
 import { describe, expect, it } from "vitest";
-import enMessages from "../i18n/messages/en";
-import zhCNMessages from "../i18n/messages/zh-CN";
 import { PHASE1_TENANT_KEYS } from "../i18n/__fixtures__/phase1-keys";
+import {
+  EN_PO,
+  ZH_PO,
+  EN_UNTRANSLATED_ALLOWLIST,
+  normalizeFixtureKey,
+} from "../i18n/__fixtures__/po-coverage";
 
 const TENANT_PORTAL_KEYS_OVERLAP = new Set<string>(PHASE1_TENANT_KEYS);
 
@@ -170,32 +174,44 @@ const INTENTIONAL_SHARED = new Set<string>([
 // Tests
 // ---------------------------------------------------------------------------
 
+const OPS_UNIQUE = [...new Set<string>(OPS_KEYS)].map((k) => ({
+  fixture: k,
+  candidates: [...normalizeFixtureKey(k)],
+}));
+
 describe("ops-console i18n completeness", () => {
-  it("every ops-console key exists in en catalog", () => {
-    const missing = UNIQUE_KEYS.filter((key) => !(key in enMessages));
-    expect(missing, `Missing from en: ${JSON.stringify(missing)}`).toHaveLength(0);
+  it("every ops-console source string is an extracted .po msgid (both locales)", () => {
+    const missingEn = OPS_UNIQUE.filter(
+      ({ candidates }) => !candidates.some((c) => EN_PO.msgids.has(c)),
+    ).map((e) => e.fixture);
+    const missingZh = OPS_UNIQUE.filter(
+      ({ candidates }) => !candidates.some((c) => ZH_PO.msgids.has(c)),
+    ).map((e) => e.fixture);
+    expect(missingEn, `Not extracted into en .po: ${JSON.stringify(missingEn)}`).toHaveLength(0);
+    expect(missingZh, `Not extracted into zh-CN .po: ${JSON.stringify(missingZh)}`).toHaveLength(0);
   });
 
-  it("every ops-console key exists in zh-CN catalog", () => {
-    const missing = UNIQUE_KEYS.filter((key) => !(key in zhCNMessages));
-    expect(missing, `Missing from zh-CN: ${JSON.stringify(missing)}`).toHaveLength(0);
+  it("every ops-console string is translated in both locales (modulo the documented en allowlist)", () => {
+    const untranslatedZh = OPS_UNIQUE.filter(
+      ({ candidates }) => !candidates.some((c) => ZH_PO.translated.has(c)),
+    ).map((e) => e.fixture);
+    const untranslatedEn = OPS_UNIQUE.filter(
+      ({ candidates }) =>
+        !candidates.some((c) => EN_PO.translated.has(c)) &&
+        !candidates.some((c) => EN_UNTRANSLATED_ALLOWLIST.has(c)),
+    ).map((e) => e.fixture);
+    expect(untranslatedZh, `Empty zh-CN msgstr: ${JSON.stringify(untranslatedZh)}`).toHaveLength(0);
+    expect(
+      untranslatedEn,
+      `Empty en msgstr and NOT on the documented allowlist: ${JSON.stringify(untranslatedEn)}`,
+    ).toHaveLength(0);
   });
 
-  it("en and zh-CN catalogs have the same complete key set (no locale-only key in either)", () => {
-    const enKeys = new Set(Object.keys(enMessages));
-    const zhKeys = new Set(Object.keys(zhCNMessages));
-
-    const enOnly = [...enKeys].filter((k) => !zhKeys.has(k));
-    const zhOnly = [...zhKeys].filter((k) => !enKeys.has(k));
-
-    expect(
-      enOnly,
-      `Keys in en but not zh-CN: ${JSON.stringify(enOnly)}`,
-    ).toHaveLength(0);
-    expect(
-      zhOnly,
-      `Keys in zh-CN but not en: ${JSON.stringify(zhOnly)}`,
-    ).toHaveLength(0);
+  it("en and zh-CN .po have an identical msgid set", () => {
+    const enOnly = [...EN_PO.msgids].filter((k) => !ZH_PO.msgids.has(k));
+    const zhOnly = [...ZH_PO.msgids].filter((k) => !EN_PO.msgids.has(k));
+    expect(enOnly, `msgid in en but not zh-CN: ${JSON.stringify(enOnly)}`).toHaveLength(0);
+    expect(zhOnly, `msgid in zh-CN but not en: ${JSON.stringify(zhOnly)}`).toHaveLength(0);
   });
 
   it("no ops-console key silently shadows a Phase-1 tenant-portal key (overlap must be declared intentional)", () => {

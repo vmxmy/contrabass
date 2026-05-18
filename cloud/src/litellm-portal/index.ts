@@ -34,6 +34,18 @@ const portalChunkByFileName = new Map<string, { fileName: string; js: string }>(
   portalBundleChunks.map((chunk) => [chunk.fileName, chunk]),
 );
 
+/**
+ * F5/D5 — legacy-redirect single source of truth.
+ *
+ * This worker-layer function is THE authority for legacy `/admin/*` and
+ * `/preferences` redirects: it returns a 302 on full-page navigation before
+ * the SPA ever loads. The TanStack route table in
+ * `routes/legacy/redirects.tsx` is the intentionally-layered SPA-side
+ * fallback for client-side navigations that never reach the worker; its
+ * targets must stay consistent with the mappings below. Any change here MUST
+ * be mirrored there (enforced by
+ * `routes/legacy/redirects-single-source.test.ts`).
+ */
 function legacyPortalRedirectTarget(url: URL): string | null {
   const search = url.search;
   if (url.pathname === "/preferences") return `/manage/preferences${search}`;

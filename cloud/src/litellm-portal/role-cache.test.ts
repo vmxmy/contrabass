@@ -456,3 +456,38 @@ describe("_clearRoleCacheForTests (roles.ts re-export)", () => {
     expect((indexDO.get as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAfterFirst + 1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// F2 LiteLLM role mapping (proxy_admin_viewer + teams)
+// ---------------------------------------------------------------------------
+
+describe("F2 LiteLLM role mapping (proxy_admin_viewer + teams)", () => {
+  it("maps proxy_admin_viewer with teams to its IndexDO role (NOT admin — escalation guard)", async () => {
+    vi.spyOn(litellm, "resolveLiteLLMUser").mockResolvedValue({
+      userId: "laoxu", email: "xu@gz-zhiyun.com", spend: null, maxBudget: null,
+      teamIds: ["ea0e8075", "1255c10b"], role: "proxy_admin_viewer", found: true, raw: null,
+    });
+    const env = { INDEX_DO: makeIndexDO({ "xu@gz-zhiyun.com": { role: "user", userId: "laoxu", teamId: null } }) } as unknown as LiteLLMPortalEnv;
+    const r = await getRole(env, "xu@gz-zhiyun.com");
+    expect(r.role).toBe("user");
+    expect(r.litellmUserId).toBe("laoxu");
+    expect(r.tenantTeamId).toBe("ea0e8075");
+  });
+
+  it("fail-closed: LiteLLM throw keeps the IndexDO role (no escalation)", async () => {
+    vi.spyOn(litellm, "resolveLiteLLMUser").mockRejectedValue(new Error("litellm down"));
+    const env = { INDEX_DO: makeIndexDO({ "n@x.com": { role: "user", userId: "n", teamId: null } }) } as unknown as LiteLLMPortalEnv;
+    const r = await getRole(env, "n@x.com");
+    expect(r.role).toBe("user");
+  });
+
+  it("proxy_admin maps to admin even when IndexDO says none", async () => {
+    vi.spyOn(litellm, "resolveLiteLLMUser").mockResolvedValue({
+      userId: "boss", email: "boss@x.com", spend: null, maxBudget: null,
+      teamIds: [], role: "proxy_admin", found: true, raw: null,
+    });
+    const env = { INDEX_DO: makeIndexDO({ "boss@x.com": null }) } as unknown as LiteLLMPortalEnv;
+    const r = await getRole(env, "boss@x.com");
+    expect(r.role).toBe("admin");
+  });
+});

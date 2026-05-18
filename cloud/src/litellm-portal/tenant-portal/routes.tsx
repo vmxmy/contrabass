@@ -89,9 +89,8 @@ export function createTenantPortalRoutes(
     createRoute({
       getParentRoute: () => parentRoute,
       path: spec.path,
-      component: spec.adminOnly
-        ? (spec.component ?? MemberForbidden)
-        : (spec.component ?? (() => <Placeholder id={spec.id} label={spec.label} />)),
+      component:
+        spec.component ?? (() => <Placeholder id={spec.id} label={spec.label} />),
     }),
   );
 }
@@ -172,9 +171,8 @@ export function createTenantPortalLayoutRoute(parentRoute: AnyRoute) {
     createRoute({
       getParentRoute: () => tenantLayoutRoute,
       path: spec.path,
-      component: spec.adminOnly
-        ? (spec.component ?? MemberForbidden)
-        : (spec.component ?? (() => <Placeholder id={spec.id} label={spec.label} />)),
+      component:
+        spec.component ?? (() => <Placeholder id={spec.id} label={spec.label} />),
     }),
   );
   return tenantLayoutRoute.addChildren(children);

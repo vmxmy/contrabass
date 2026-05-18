@@ -218,7 +218,7 @@ describe("importUsers", () => {
     expect(team.stub.upsertMember).toHaveBeenCalledTimes(3);
   });
 
-  it("maps proxy_admin and proxy_admin_viewer to admin, everything else to user", async () => {
+  it("maps only proxy_admin to admin; proxy_admin_viewer and everything else to user", async () => {
     const idx = makeIndexStub();
     const team = makeTeamStub();
     const env = makeEnv(idx, team);
@@ -247,7 +247,7 @@ describe("importUsers", () => {
     await importUsers(env);
 
     const storedRoles = Array.from(idx.users.values()).map((u) => u.role);
-    expect(storedRoles).toEqual(["admin", "admin", "user", "user", "user"]);
+    expect(storedRoles).toEqual(["admin", "user", "user", "user", "user"]);
   });
 
   it("stores the canonical LiteLLM user_id (not the email) and keeps email separate", async () => {
