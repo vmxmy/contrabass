@@ -497,7 +497,7 @@ async function adminUpdateUserDO(
   const currentUser = await idxStub.getUserById(userId);
   if (!currentUser) return c.json({ error: "user_not_found" }, 404);
   const updatedRole: "admin" | "user" =
-    body.role === "proxy_admin" || body.role === "proxy_admin_viewer"
+    body.role === "proxy_admin"
       ? "admin"
       : body.role != null
         ? "user"
