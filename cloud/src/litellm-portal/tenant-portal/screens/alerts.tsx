@@ -27,6 +27,7 @@ import {
   useClearTenantWebhook,
 } from "../hooks";
 import { MemberForbidden } from "../routes";
+import { PanelCard } from "../../ui";
 
 // Reason presets mirror WriteReasonSchema REASON_PRESETS from schemas.ts.
 const REASON_OPTIONS = [
@@ -189,24 +190,20 @@ export function TenantAlertsScreen() {
 
   return (
     <div id="tenant-alerts-root" className="space-y-6">
-      <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-        <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-          <Text variant="heading3" as="p"><Trans>告警 Webhook</Trans></Text>
-          <Text variant="secondary" as="p">
-            <Trans>配置预算告警通知的 Webhook 地址。</Trans>
-          </Text>
-        </div>
+      <PanelCard
+        title={t`告警 Webhook`}
+        subtitle={t`配置预算告警通知的 Webhook 地址。`}
+        padded={false}
+      >
         <CurrentWebhookStatus />
-      </article>
-      <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-        <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-          <Text variant="heading3" as="p"><Trans>更新 Webhook</Trans></Text>
-          <Text variant="secondary" as="p">
-            <Trans>设置或清除告警 Webhook URL。客户端不校验 URL，服务端负责安全验证。</Trans>
-          </Text>
-        </div>
+      </PanelCard>
+      <PanelCard
+        title={t`更新 Webhook`}
+        subtitle={t`设置或清除告警 Webhook URL。客户端不校验 URL，服务端负责安全验证。`}
+        padded={false}
+      >
         <WebhookConfigForm />
-      </article>
+      </PanelCard>
     </div>
   );
 }
