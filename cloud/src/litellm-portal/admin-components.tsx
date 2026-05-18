@@ -14,48 +14,17 @@ import { useAdminTeams } from "./hooks/use-admin-teams";
 import { useAdminAudit } from "./hooks/use-admin-audit";
 import type { UsageTimeseries } from "./chart";
 import { fmt, fmtInt } from "./lib/format";
-
-function text(value: unknown): string {
-  return value == null || value === "" ? "—" : String(value);
-}
+import {
+  text,
+  deriveHealthSummary,
+  relativeTime,
+  type AdminStatusSummary,
+} from "./admin/derive";
 
 // ---------------------------------------------------------------------------
 // Section 1: AdminStatusHeader
 // ---------------------------------------------------------------------------
 
-type AdminStatusSummary = {
-  riskCount?: number | null;
-  overBudgetUserCount?: number | null;
-  overBudgetTeamCount?: number | null;
-  unmanagedRoleCount?: number | null;
-  noTeamUserCount?: number | null;
-  limited?: boolean;
-};
-
-function deriveHealthSummary(summary: AdminStatusSummary): { message: string; tone: "success" | "warning" | "danger" } {
-  const overBudgetTeams = Number(summary.overBudgetTeamCount ?? 0);
-  const overBudgetUsers = Number(summary.overBudgetUserCount ?? 0);
-  const riskCount = Number(summary.riskCount ?? 0);
-  const unmanagedRoles = Number(summary.unmanagedRoleCount ?? 0);
-  const noTeamUsers = Number(summary.noTeamUserCount ?? 0);
-
-  if (overBudgetTeams > 0 || overBudgetUsers > 0) {
-    const parts: string[] = [];
-    if (overBudgetTeams > 0) parts.push(`${overBudgetTeams} 个团队超预算`);
-    if (overBudgetUsers > 0) parts.push(`${overBudgetUsers} 个用户超预算`);
-    const tone = riskCount >= 10 ? "danger" : "warning";
-    return { message: parts.join("，"), tone };
-  }
-
-  if (riskCount > 0) {
-    const parts: string[] = [];
-    if (unmanagedRoles > 0) parts.push(`${unmanagedRoles} 个未映射角色`);
-    if (noTeamUsers > 0) parts.push(`${noTeamUsers} 个用户未关联团队`);
-    return { message: parts.join("，") || `${riskCount} 个风险项`, tone: "warning" };
-  }
-
-  return { message: "系统正常", tone: "success" };
-}
 
 export function AdminStatusHeader({ summary, loading }: { summary: AdminStatusSummary; loading?: boolean }) {
   const { message, tone } = loading ? { message: "", tone: "success" as const } : deriveHealthSummary(summary);
@@ -532,18 +501,6 @@ export type SyncStatusBadgeProps = {
   dirty?: boolean;
 };
 
-function relativeTime(iso: string): string {
-  const diffMs = Date.now() - new Date(iso).getTime();
-  if (!Number.isFinite(diffMs) || diffMs < 0) return "just now";
-  const diffSec = Math.floor(diffMs / 1000);
-  if (diffSec < 60) return "just now";
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  const diffDay = Math.floor(diffHr / 24);
-  return `${diffDay}d ago`;
-}
 
 export function SyncStatusBadge({ lastSyncedAt, lastSyncError, dirty }: SyncStatusBadgeProps): JSX.Element | null {
   if (lastSyncError) {
