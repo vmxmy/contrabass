@@ -158,22 +158,21 @@ async function resolveRoleAndUserId(
     };
   }
 
-  // Role comes from IndexDO/role-cache (fast). litellmUserId is resolved
-  // authoritatively via LiteLLM /user/list so it is auth-path-independent.
-  // The tenant facet keys (tenantUserId, tenantTeamId) come from the SAME
-  // IndexDO user record — the portal-authoritative tuple the invite auto-join
-  // seeds the tenantRole under — so the read key matches the write key.
-  let indexRole: PortalRole = "none";
+  // Platform role is LiteLLM-single-source: it comes ONLY from facts.role
+  // (identity map → live /user/list → null) via litellmRoleToTier. The IndexDO
+  // user record is still read, but ONLY for the tenant facet (tenantUserId,
+  // tenantTeamId) — the portal-authoritative tuple the invite auto-join seeds
+  // the tenantRole under. IndexDO.role is NOT consulted for authorization.
   let tenantUserId: string | null = null;
   let indexTeamId: string | null = null;
-  // One stub per DO per resolution — shared by the role read, the identity-map
-  // resolve, and the persist-on-miss write (avoids redundant .get() round-trips).
+  // One stub per DO per resolution — shared by the tenant-facet read, the
+  // identity-map resolve, and the persist-on-miss write (avoids redundant
+  // .get() round-trips).
   const idxStub: IndexDOStub | null = env.INDEX_DO
     ? (env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOStub)
     : null;
   if (idxStub) {
     const user = await idxStub.getUserByEmail(key);
-    indexRole = user == null ? "none" : (user.role as PortalRole);
     if (user != null) {
       tenantUserId = user.userId;
       indexTeamId = user.teamId;
@@ -181,7 +180,6 @@ async function resolveRoleAndUserId(
   }
   const facts = await resolveLitellmFacts(env, key, idxStub);
   const mapped = mapLiteLLMRole({
-    indexRole,
     litellmRole: facts.role,
     litellmTeamIds: facts.teamIds,
     indexTeamId,

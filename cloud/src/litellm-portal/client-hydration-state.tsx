@@ -2,7 +2,7 @@ import type { Dashboard } from "./schemas";
 import type { UserPreferences } from "./schemas";
 import type { JsonValue } from "./types";
 
-export type PortalRole = "admin" | "user" | "none";
+export type PortalRole = "admin" | "admin_viewer" | "user" | "none";
 
 export type ClientHydrationState = {
   title: string;
@@ -37,7 +37,9 @@ export function readClientHydrationState(doc: Document): ClientHydrationState {
 
   const roleRaw = initialData?.role;
   const role: PortalRole | undefined =
-    roleRaw === "admin" || roleRaw === "user" || roleRaw === "none" ? roleRaw : undefined;
+    roleRaw === "admin" || roleRaw === "admin_viewer" || roleRaw === "user" || roleRaw === "none"
+      ? roleRaw
+      : undefined;
 
   return {
     title: doc.title,

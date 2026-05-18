@@ -101,7 +101,7 @@ const routeTree = rootRoute.addChildren([
 
 export type RouterContext = {
   /** Resolved role, seeded by SSR identity; may be undefined before useMe resolves. */
-  role?: "admin" | "user" | "none";
+  role?: "admin" | "admin_viewer" | "user" | "none";
 };
 
 /**

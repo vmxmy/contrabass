@@ -17,7 +17,7 @@ export const MeSchema = z.object({
   userId: z.string(),
   company: z.string(),
   domain: z.string(),
-  role: z.enum(["admin", "user", "none"]),
+  role: z.enum(["admin", "admin_viewer", "user", "none"]),
   tenantRole: z.enum(["tenant_admin", "member"]).nullable(),
   tenantTeamId: z.string().nullable(),
   impersonation: z
@@ -593,7 +593,7 @@ export type OpsTenantDetail = z.infer<typeof OpsTenantDetailSchema>;
 export const OpsUserDetailSchema = z.object({
   userId: z.string(),
   email: z.string(),
-  platformRole: z.enum(["admin", "user", "none"]),
+  platformRole: z.enum(["admin", "admin_viewer", "user", "none"]),
   teamId: z.string().nullable(),
   tenantRole: z.enum(["tenant_admin", "member"]).nullable(),
   spend: z.number().nullable(),
