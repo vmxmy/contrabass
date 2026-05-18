@@ -6,6 +6,12 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "X-Generator: @lingui/cli\n"
 "Language: zh-CN\n"
+"Project-Id-Version: \n"
+"Report-Msgid-Bugs-To: \n"
+"PO-Revision-Date: \n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"Plural-Forms: \n"
 
 #. placeholder {0}: fmt(teamSpend)
 #. placeholder {0}: fmt(totalSpend)
@@ -254,14 +260,23 @@ msgstr "团队"
 msgid "团队 ID"
 msgstr "团队 ID"
 
+#: src/litellm-portal/errors/error-messages.ts:58
+msgid "团队创建未成功。请稍后重试，你填写的内容未丢失；若持续请联系管理员。"
+msgstr "团队创建未成功。请稍后重试，你填写的内容未丢失；若持续请联系管理员。"
+
 #: src/litellm-portal/ops-console/screens/provisioning.tsx:67
 #: src/litellm-portal/ops-console/screens/provisioning.tsx:71
 msgid "团队名称"
 msgstr "团队名称"
 
 #: src/litellm-portal/routes/manage/teams/index.lazy.tsx:7
+#: src/litellm-portal/tenant-portal/shell.tsx:97
 msgid "团队管理"
 msgstr "团队管理"
+
+#: src/litellm-portal/errors/error-messages.ts:56
+msgid "团队配置服务暂时不可用。请稍后重试；若持续请联系管理员。"
+msgstr "团队配置服务暂时不可用。请稍后重试；若持续请联系管理员。"
 
 #: src/litellm-portal/tenant-portal/screens/overview.tsx:134
 msgid "团队预算"
@@ -301,6 +316,10 @@ msgstr "审计管理"
 #: src/litellm-portal/components/density-toggle.tsx:30
 msgid "宽松"
 msgstr "宽松"
+
+#: src/litellm-portal/errors/error-messages.ts:27
+msgid "对该团队的写操作需先以租户身份进入。请从运营台点击「进入租户」后重试，你填写的内容未丢失。"
+msgstr "对该团队的写操作需先以租户身份进入。请从运营台点击「进入租户」后重试，你填写的内容未丢失。"
 
 #: src/litellm-portal/ops-console/screens/audit.tsx:37
 #: src/litellm-portal/ops-console/screens/audit.tsx:79
@@ -366,6 +385,10 @@ msgstr "当前 Webhook URL"
 msgid "当前租户团队"
 msgstr "当前租户团队"
 
+#: src/litellm-portal/errors/error-messages.ts:29
+msgid "当前账号未归属任何团队，无法执行该操作。请联系管理员分配团队。"
+msgstr "当前账号未归属任何团队，无法执行该操作。请联系管理员分配团队。"
+
 #: src/litellm-portal/tenant-portal/screens/members.tsx:146
 msgid "待处理"
 msgstr "待处理"
@@ -401,6 +424,10 @@ msgstr "成员"
 msgid "成员角色：管理员"
 msgstr "管理员"
 
+#: src/litellm-portal/tenant-portal/shell.tsx:96
+msgid "我的"
+msgstr "我的"
+
 #: src/litellm-portal/ops-console/screens/provisioning.tsx:152
 #: src/litellm-portal/ops-console/screens/user-detail.tsx:47
 msgid "所属团队"
@@ -435,6 +462,14 @@ msgstr "指派角色失败"
 msgid "按账期下载团队 CSV 账单。服务端已按团队过滤，客户端不聚合数据。"
 msgstr "按账期下载团队 CSV 账单。服务端已按团队过滤，客户端不聚合数据。"
 
+#: src/litellm-portal/errors/error-messages.ts:36
+msgid "提交的内容不完整或格式有误。请检查必填项后重试，输入未丢失。"
+msgstr "提交的内容不完整或格式有误。请检查必填项后重试，输入未丢失。"
+
+#: src/litellm-portal/errors/error-messages.ts:35
+msgid "提交的内容格式有误。请检查输入后重试，你填写的内容未丢失。"
+msgstr "提交的内容格式有误。请检查输入后重试，你填写的内容未丢失。"
+
 #: src/litellm-portal/routes/portal-command-palette.tsx:186
 msgid "搜索用户、团队、审计事件或操作…"
 msgstr "搜索用户、团队、审计事件或操作…"
@@ -465,10 +500,18 @@ msgstr "操作"
 msgid "操作失败"
 msgstr "操作失败"
 
+#: src/litellm-portal/errors/error-messages.ts:20
+msgid "操作未完成，请重试；若反复出现请联系管理员。"
+msgstr "操作未完成，请重试；若反复出现请联系管理员。"
+
 #: src/litellm-portal/ops-console/screens/audit.tsx:33
 #: src/litellm-portal/ops-console/screens/audit.tsx:78
 msgid "操作者"
 msgstr "操作者"
+
+#: src/litellm-portal/errors/error-messages.ts:55
+msgid "数据服务暂时不可用。请稍后重试；若持续请联系管理员。"
+msgstr "数据服务暂时不可用。请稍后重试；若持续请联系管理员。"
 
 #: src/litellm-portal/routes/portal-command-palette.tsx:122
 msgid "新建 Key"
@@ -527,6 +570,26 @@ msgstr "更新 Webhook"
 msgid "未找到审计事件"
 msgstr "未找到审计事件"
 
+#: src/litellm-portal/errors/error-messages.ts:46
+msgid "未找到对应的 API Key，可能已被删除。请刷新列表后重试。"
+msgstr "未找到对应的 API Key，可能已被删除。请刷新列表后重试。"
+
+#: src/litellm-portal/errors/error-messages.ts:47
+msgid "未找到对应的团队，可能已变更。请刷新后重试。"
+msgstr "未找到对应的团队，可能已变更。请刷新后重试。"
+
+#: src/litellm-portal/errors/error-messages.ts:51
+msgid "未找到对应的审计事件，可能已变更。请刷新后重试。"
+msgstr "未找到对应的审计事件，可能已变更。请刷新后重试。"
+
+#: src/litellm-portal/errors/error-messages.ts:48
+msgid "未找到对应的用户，可能已变更。请刷新后重试。"
+msgstr "未找到对应的用户，可能已变更。请刷新后重试。"
+
+#: src/litellm-portal/errors/error-messages.ts:49
+msgid "未找到对应的邀请，可能已被撤销或失效。请刷新邀请列表。"
+msgstr "未找到对应的邀请，可能已被撤销或失效。请刷新邀请列表。"
+
 #: src/litellm-portal/ops-console/screens/user-detail.tsx:29
 msgid "未找到用户"
 msgstr "未找到用户"
@@ -534,6 +597,10 @@ msgstr "未找到用户"
 #: src/litellm-portal/ops-console/screens/tenant-detail.tsx:46
 msgid "未找到租户"
 msgstr "未找到租户"
+
+#: src/litellm-portal/errors/error-messages.ts:52
+msgid "未找到请求的资源，可能已变更或被移除。请刷新后重试。"
+msgstr "未找到请求的资源，可能已变更或被移除。请刷新后重试。"
 
 #: src/litellm-portal/ops-console/screens/tenant-detail.tsx:81
 #: src/litellm-portal/ops-console/screens/tenant-overview.tsx:51
@@ -577,6 +644,10 @@ msgstr "正在加载全局默认设置"
 #: src/litellm-portal/ops-console/routes.tsx:64
 msgid "正在加载运营控制台"
 msgstr "正在加载运营控制台"
+
+#: src/litellm-portal/errors/error-messages.ts:24
+msgid "此操作仅平台 Owner 可执行。请联系平台 Owner 处理。"
+msgstr "此操作仅平台 Owner 可执行。请联系平台 Owner 处理。"
 
 #: src/litellm-portal/routes/portal-command-palette.tsx:210
 msgid "没有匹配的命令"
@@ -642,9 +713,21 @@ msgstr "登录"
 msgid "登录后优先进入个人视图或管理员视图。"
 msgstr "登录后优先进入个人视图或管理员视图。"
 
+#: src/litellm-portal/errors/error-messages.ts:28
+msgid "登录状态已失效。请重新登录后重试。"
+msgstr "登录状态已失效。请重新登录后重试。"
+
+#: src/litellm-portal/errors/error-messages.ts:43
+msgid "确认名称与目标不一致，操作已取消。请重新输入完全一致的名称。"
+msgstr "确认名称与目标不一致，操作已取消。请重新输入完全一致的名称。"
+
 #: src/litellm-portal/tenant-portal/screens/members.tsx:122
 msgid "确认撤销"
 msgstr "确认撤销"
+
+#: src/litellm-portal/errors/error-messages.ts:45
+msgid "确认邮箱与目标不一致，操作已取消。请重新输入完全一致的邮箱。"
+msgstr "确认邮箱与目标不一致，操作已取消。请重新输入完全一致的邮箱。"
 
 #: src/litellm-portal/ops-console/screens/tenant-overview.tsx:27
 #: src/litellm-portal/ops-console/shell.tsx:87
@@ -722,6 +805,22 @@ msgstr "紧凑模式会减少列表和卡片留白。"
 msgid "累计花费"
 msgstr "累计花费"
 
+#: src/litellm-portal/errors/error-messages.ts:33
+msgid "缺少 Key 信息，请刷新后重试。"
+msgstr "缺少 Key 信息，请刷新后重试。"
+
+#: src/litellm-portal/errors/error-messages.ts:31
+msgid "缺少团队信息，请返回重新选择团队后重试。"
+msgstr "缺少团队信息，请返回重新选择团队后重试。"
+
+#: src/litellm-portal/errors/error-messages.ts:41
+msgid "缺少审计事件信息，请返回重新选择事件后重试。"
+msgstr "缺少审计事件信息，请返回重新选择事件后重试。"
+
+#: src/litellm-portal/errors/error-messages.ts:32
+msgid "缺少用户信息，请返回重新选择用户后重试。"
+msgstr "缺少用户信息，请返回重新选择用户后重试。"
+
 #: src/litellm-portal/components/panel-state.tsx:79
 msgid "网络请求失败"
 msgstr "网络请求失败"
@@ -764,6 +863,14 @@ msgstr "设置或清除告警 Webhook URL。客户端不校验 URL，服务端�
 msgid "设置管理"
 msgstr "设置管理"
 
+#: src/litellm-portal/errors/error-messages.ts:40
+msgid "该 Key 名称已被占用。请改用其它名称后重试，你填写的内容未丢失。"
+msgstr "该 Key 名称已被占用。请改用其它名称后重试，你填写的内容未丢失。"
+
+#: src/litellm-portal/errors/error-messages.ts:53
+msgid "该周期暂无可下载的账单归档。请确认周期后重试，或稍后再试。"
+msgstr "该周期暂无可下载的账单归档。请确认周期后重试，或稍后再试。"
+
 #: src/litellm-portal/errors/error-boundary.tsx:41
 msgid "该模块加载出错"
 msgstr "该模块加载出错"
@@ -771,6 +878,10 @@ msgstr "该模块加载出错"
 #: src/litellm-portal/ops-console/screens/tenant-detail.tsx:96
 msgid "该租户的所有成员及其门户角色与花费。"
 msgstr "该租户的所有成员及其门户角色与花费。"
+
+#: src/litellm-portal/errors/error-messages.ts:50
+msgid "该邀请已被接受，无需重复操作。请刷新邀请列表查看最新状态。"
+msgstr "该邀请已被接受，无需重复操作。请刷新邀请列表查看最新状态。"
 
 #: src/litellm-portal/tenant-portal/routes.tsx:46
 msgid "该页面仅对团队管理员开放。"
@@ -785,6 +896,18 @@ msgstr "详情"
 msgid "语言"
 msgstr "语言"
 
+#: src/litellm-portal/errors/error-messages.ts:34
+msgid "请同时选择团队与用户后重试。"
+msgstr "请同时选择团队与用户后重试。"
+
+#: src/litellm-portal/errors/error-messages.ts:39
+msgid "请填写 Key 名称后重试，你填写的内容未丢失。"
+msgstr "请填写 Key 名称后重试，你填写的内容未丢失。"
+
+#: src/litellm-portal/errors/error-messages.ts:30
+msgid "请填写邮箱后重试。"
+msgstr "请填写邮箱后重试。"
+
 #: src/litellm-portal/tenant-portal/screens/members.tsx:90
 msgid "请输入「{email}」以确认撤销"
 msgstr "请输入「{email}」以确认撤销"
@@ -796,6 +919,14 @@ msgstr "请输入团队 ID 与用户 ID"
 #: src/litellm-portal/ops-console/screens/provisioning.tsx:37
 msgid "请输入团队名称"
 msgstr "请输入团队名称"
+
+#: src/litellm-portal/errors/error-messages.ts:42
+msgid "请输入完整名称以确认此操作。"
+msgstr "请输入完整名称以确认此操作。"
+
+#: src/litellm-portal/errors/error-messages.ts:44
+msgid "请输入完整邮箱以确认此操作。"
+msgstr "请输入完整邮箱以确认此操作。"
 
 #: src/litellm-portal/ops-console/screens/provisioning.tsx:145
 #: src/litellm-portal/tenant-portal/screens/members.tsx:163
@@ -820,6 +951,10 @@ msgstr "账单下载"
 #: src/litellm-portal/tenant-portal/screens/billing.tsx:92
 msgid "账单列表加载失败"
 msgstr "账单列表加载失败"
+
+#: src/litellm-portal/errors/error-messages.ts:54
+msgid "账单归档服务暂不可用。请稍后重试；若持续请联系管理员。"
+msgstr "账单归档服务暂不可用。请稍后重试；若持续请联系管理员。"
 
 #: src/litellm-portal/ops-console/screens/tenant-detail.tsx:86
 msgid "账单期数"
@@ -902,6 +1037,10 @@ msgstr "这些设置会同步到服务端，并在其他设备登录后自动生
 msgid "进入租户"
 msgstr "进入租户"
 
+#: src/litellm-portal/errors/error-messages.ts:57
+msgid "进入租户的服务暂时不可用。请稍后重试；若持续请联系管理员。"
+msgstr "进入租户的服务暂时不可用。请稍后重试；若持续请联系管理员。"
+
 #: src/litellm-portal/tenant-portal/shell.tsx:221
 msgid "退出代操作"
 msgstr "退出代操作"
@@ -914,6 +1053,10 @@ msgstr "退出当前登录会话"
 #: src/litellm-portal/routes/portal-command-palette.tsx:140
 msgid "退出登录"
 msgstr "退出登录"
+
+#: src/litellm-portal/errors/error-messages.ts:38
+msgid "选择的账单周期无效。请重新选择有效周期后重试。"
+msgstr "选择的账单周期无效。请重新选择有效周期后重试。"
 
 #: src/litellm-portal/preferences-form.tsx:34
 msgid "选择自动时会跟随系统深色/浅色设置。"
@@ -952,6 +1095,10 @@ msgstr "邀请用户加入指定团队。"
 msgid "邮箱"
 msgstr "邮箱"
 
+#: src/litellm-portal/errors/error-messages.ts:37
+msgid "部分输入不符合要求。请按提示修正后重试，输入未丢失。"
+msgstr "部分输入不符合要求。请按提示修正后重试，输入未丢失。"
+
 #: src/litellm-portal/tenant-portal/screens/alerts.tsx:196
 msgid "配置预算告警通知的 Webhook 地址。"
 msgstr "配置预算告警通知的 Webhook 地址。"
@@ -964,6 +1111,14 @@ msgstr "重试"
 #: src/litellm-portal/ops-console/screens/user-detail.tsx:51
 msgid "门户角色"
 msgstr "门户角色"
+
+#: src/litellm-portal/errors/error-messages.ts:25
+msgid "需要团队管理员权限才能执行此操作。请联系团队管理员处理。"
+msgstr "需要团队管理员权限才能执行此操作。请联系团队管理员处理。"
+
+#: src/litellm-portal/errors/error-messages.ts:23
+msgid "需要平台管理员权限才能执行此操作。请用管理员账号登录后重试。"
+msgstr "需要平台管理员权限才能执行此操作。请用管理员账号登录后重试。"
 
 #: src/litellm-portal/routes/index.tsx:100
 msgid "面向团队的 AI 能力自助台。请登录以查看你的用量、密钥与团队管理。"
