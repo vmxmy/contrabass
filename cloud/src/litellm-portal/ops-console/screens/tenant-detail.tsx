@@ -9,6 +9,7 @@ import { useParams } from "@tanstack/react-router";
 import { useOpsTenantDetail, useStartImpersonation } from "../hooks";
 import { PanelSkeleton, PanelEmpty, PanelError } from "../../components/panel-state";
 import { densityClasses, useDensity } from "../../components/density";
+import { PanelCard } from "../../ui";
 
 export function OpsTenantDetailBody({ teamId }: { teamId: string }) {
   const { data, isLoading, isError, error } = useOpsTenantDetail(teamId);
@@ -50,12 +51,10 @@ export function OpsTenantDetailBody({ teamId }: { teamId: string }) {
 
   return (
     <div id="ops-tenant-detail-root" className="space-y-6">
-      <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-        <div className="flex items-start justify-between gap-4 border-b border-kumo-line bg-kumo-elevated p-6">
-          <div>
-            <Text variant="heading3" as="p">{data.alias ?? data.teamId}</Text>
-            <Text variant="secondary" as="p">{data.teamId}</Text>
-          </div>
+      <PanelCard
+        title={data.alias ?? data.teamId}
+        subtitle={data.teamId}
+        actions={
           <Button
             variant="primary"
             size="sm"
@@ -64,7 +63,9 @@ export function OpsTenantDetailBody({ teamId }: { teamId: string }) {
           >
             <Trans>进入租户</Trans>
           </Button>
-        </div>
+        }
+        padded={false}
+      >
         <dl className="grid grid-cols-2 gap-4 p-6 text-sm sm:grid-cols-4">
           <div>
             <dt className="text-kumo-subtle"><Trans>预算</Trans></dt>
@@ -87,15 +88,13 @@ export function OpsTenantDetailBody({ teamId }: { teamId: string }) {
             <dd className="tabular-nums text-kumo-default">{data.billingPeriods.length}</dd>
           </div>
         </dl>
-      </article>
+      </PanelCard>
 
-      <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-        <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-          <Text variant="heading3" as="p"><Trans>成员</Trans></Text>
-          <Text variant="secondary" as="p">
-            <Trans>该租户的所有成员及其门户角色与花费。</Trans>
-          </Text>
-        </div>
+      <PanelCard
+        title={t`成员`}
+        subtitle={t`该租户的所有成员及其门户角色与花费。`}
+        padded={false}
+      >
         {data.members.length === 0 ? (
           <PanelEmpty title={t`暂无成员`} />
         ) : (
@@ -129,7 +128,7 @@ export function OpsTenantDetailBody({ teamId }: { teamId: string }) {
             </Table>
           </div>
         )}
-      </article>
+      </PanelCard>
     </div>
   );
 }
