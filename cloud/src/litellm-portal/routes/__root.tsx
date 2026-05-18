@@ -172,7 +172,6 @@ function RootLayout() {
 function PortalRootLayout() {
   const router = useRouter();
   const { data: me } = useMe();
-  const isAdmin = me?.role === "admin";
 
   // Hash-compat shim: redirect `/#admin` -> `/` once, replacing history.
   // Remove this block after the compat period (see tasks.md 5.2).
@@ -202,7 +201,7 @@ function PortalRootLayout() {
         </div>
       </header>
 
-      {isAdmin ? (
+      {me ? (
         <React.Suspense fallback={<CommandPaletteFallback />}>
           <LazyPortalCommandPalette />
         </React.Suspense>
