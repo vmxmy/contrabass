@@ -25,6 +25,12 @@ export type PageShellProps = {
   header?: React.ReactNode;
   /** The fully-formed navigation element (the shell supplies its own SideNav). */
   nav: React.ReactNode;
+  /** Optional id forwarded to the root (e.g. shell anchors / test selectors). */
+  id?: string;
+  /** Optional inline style forwarded to the root (e.g. Ops OPS_STEEL_ACCENT). */
+  style?: React.CSSProperties;
+  /** Optional extra classes appended AFTER the canonical token set. */
+  className?: string;
   children: React.ReactNode;
 };
 
@@ -37,10 +43,18 @@ const MAIN =
 export function PageShell({
   header,
   nav,
+  id,
+  style,
+  className,
   children,
 }: PageShellProps): React.ReactElement {
   return (
-    <div className={ROOT} data-page-shell>
+    <div
+      className={className ? `${ROOT} ${className}` : ROOT}
+      id={id}
+      style={style}
+      data-page-shell
+    >
       {header !== undefined ? (
         <div className={HEADER} data-page-shell-header>
           {header}
