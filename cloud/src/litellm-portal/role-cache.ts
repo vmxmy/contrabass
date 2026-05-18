@@ -1,5 +1,6 @@
 import type { LiteLLMPortalEnv, PortalRole } from "./types";
 import { resolveLiteLLMUser } from "./litellm";
+import { mapLiteLLMRole } from "./role-mapping";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -52,12 +53,16 @@ const doCache = new Map<string, DOCacheEntry>();
  * read tuple matches the write tuple seeded at invite-consume time (the
  * LiteLLM team list is eventually-consistent and multi-team-ambiguous).
  */
-async function resolveLitellmUserId(env: LiteLLMPortalEnv, email: string): Promise<string> {
+async function resolveLitellmFacts(
+  env: LiteLLMPortalEnv,
+  email: string,
+): Promise<{ userId: string; role: string | null; teamIds: string[] }> {
   try {
     const user = await resolveLiteLLMUser(env, email);
-    return user.found && user.userId.trim().length > 0 ? user.userId : email;
+    const userId = user.found && user.userId.trim().length > 0 ? user.userId : email;
+    return { userId, role: user.role, teamIds: user.teamIds };
   } catch {
-    return email;
+    return { userId: email, role: null, teamIds: [] };
   }
 }
 
@@ -114,19 +119,28 @@ async function resolveRoleAndUserId(
   // The tenant facet keys (tenantUserId, tenantTeamId) come from the SAME
   // IndexDO user record — the portal-authoritative tuple the invite auto-join
   // seeds the tenantRole under — so the read key matches the write key.
-  let role: PortalRole = "none";
+  let indexRole: PortalRole = "none";
   let tenantUserId: string | null = null;
-  let tenantTeamId: string | null = null;
+  let indexTeamId: string | null = null;
   if (env.INDEX_DO) {
     const idxStub = env.INDEX_DO.get(env.INDEX_DO.idFromName("index")) as unknown as IndexDOStub;
     const user = await idxStub.getUserByEmail(key);
-    role = user == null ? "none" : (user.role as PortalRole);
+    indexRole = user == null ? "none" : (user.role as PortalRole);
     if (user != null) {
       tenantUserId = user.userId;
-      tenantTeamId = user.teamId;
+      indexTeamId = user.teamId;
     }
   }
-  const litellmUserId = await resolveLitellmUserId(env, key);
+  const facts = await resolveLitellmFacts(env, key);
+  const mapped = mapLiteLLMRole({
+    indexRole,
+    litellmRole: facts.role,
+    litellmTeamIds: facts.teamIds,
+    indexTeamId,
+  });
+  const role = mapped.role;
+  const tenantTeamId = mapped.tenantTeamId;
+  const litellmUserId = facts.userId;
   const tenantRole = await resolveTenantRole(env, tenantUserId, tenantTeamId);
   doCache.set(key, {
     role,
