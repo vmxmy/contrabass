@@ -12,6 +12,7 @@ import { Text } from "@cloudflare/kumo/components/text";
 import { Toasty } from "@cloudflare/kumo/components/toast";
 import { TooltipProvider } from "@cloudflare/kumo/components/tooltip";
 import React, { useEffect, useMemo, useState } from "react";
+import { PanelCard } from "./ui";
 import { QueryClient, QueryClientProvider, HydrationBoundary } from "@tanstack/react-query";
 import { fmt, fmtInt } from "./lib/format";
 import { useDashboard } from "./hooks/use-dashboard";
@@ -210,11 +211,7 @@ export function TeamsAccessCard() {
   const loaded = !isLoading;
 
   return (
-    <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-      <div className="border-b border-kumo-line bg-kumo-elevated p-6">
-        <Text variant="heading3" as="p">团队权限</Text>
-        <Text variant="secondary" as="p">只展示当前账号所属团队的信息。</Text>
-      </div>
+    <PanelCard title="团队权限" subtitle="只展示当前账号所属团队的信息。" padded={false}>
       {!loaded ? (
         <div className="p-6 text-sm text-kumo-subtle">Loading…</div>
       ) : teams.length === 0 ? (
@@ -263,7 +260,7 @@ export function TeamsAccessCard() {
           </Table>
         </div>
       )}
-    </article>
+    </PanelCard>
   );
 }
 
@@ -279,19 +276,16 @@ export function ModelAccessCard() {
     : `展开全部 ${modelAccess.models.length} 个模型${remainingCount > 0 ? `，还有 ${remainingCount} 个` : ""}`;
 
   return (
-    <article className="overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
-      <div className="border-b border-kumo-line bg-kumo-elevated p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="space-y-1">
-            <Text variant="heading3" as="p">团队可用模型</Text>
-            <Text variant="secondary" as="p">{sourceLabel(modelAccess.source)}</Text>
-          </div>
-          <Badge variant="outline" className="rounded-full">
-            {modelAccess.models.length || "—"} 个模型
-          </Badge>
-        </div>
-      </div>
-
+    <PanelCard
+      title="团队可用模型"
+      subtitle={sourceLabel(modelAccess.source)}
+      actions={
+        <Badge variant="outline" className="rounded-full">
+          {modelAccess.models.length || "—"} 个模型
+        </Badge>
+      }
+      padded={false}
+    >
       <div className="space-y-5 p-6">
         <div className="flex flex-wrap gap-3" aria-label="可用模型预览">
           <ModelBadges models={previewModels.length > 0 ? previewModels : modelAccess.models} />
@@ -316,7 +310,7 @@ export function ModelAccessCard() {
           </Text>
         )}
       </div>
-    </article>
+    </PanelCard>
   );
 }
 
