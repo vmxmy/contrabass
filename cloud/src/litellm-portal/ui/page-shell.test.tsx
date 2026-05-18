@@ -99,3 +99,47 @@ describe("PageShell — id/style/className passthrough (shell-migration unblock)
     expect(root.id).toBe("");
   });
 });
+describe("PageShell — preHeader slot (tenant impersonation/summary placement)", () => {
+  it("renders preHeader content before the header band and OUTSIDE nav/main", () => {
+    const { container } = render(
+      <PageShell
+        preHeader={<div data-testid="pre">PRE</div>}
+        header={<span>brand</span>}
+        nav={<aside data-testid="nav" />}
+      >
+        <p data-testid="body">body</p>
+      </PageShell>,
+    );
+    const root = container.querySelector("[data-page-shell]") as HTMLElement;
+    const pre = container.querySelector("[data-page-shell-preheader]") as HTMLElement;
+    const band = container.querySelector("[data-page-shell-header]") as HTMLElement;
+    const flex = container.querySelector("[data-page-shell-body]") as HTMLElement;
+    // present + is a direct child of root
+    expect(pre).not.toBeNull();
+    expect(pre.parentElement).toBe(root);
+    // NOT wrapped in the header band chrome
+    expect(pre.closest("[data-page-shell-header]")).toBeNull();
+    // NOT inside the nav/main flex container
+    expect(pre.closest("[data-page-shell-body]")).toBeNull();
+    // DOM order: preHeader comes before the header band, which comes before body flex
+    const kids = Array.from(root.children);
+    expect(kids.indexOf(pre)).toBeLessThan(kids.indexOf(band));
+    expect(kids.indexOf(band)).toBeLessThan(kids.indexOf(flex));
+    expect(screen.getByTestId("pre")).toBeTruthy();
+  });
+
+  it("omits the preHeader region entirely when not provided (backward compatible)", () => {
+    const { container } = render(
+      <PageShell header={<span>h</span>} nav={<aside />}>x</PageShell>,
+    );
+    expect(container.querySelector("[data-page-shell-preheader]")).toBeNull();
+  });
+
+  it("supports preHeader with NO header band (tenant non-owner has banner+summary, header optional)", () => {
+    const { container } = render(
+      <PageShell preHeader={<div data-testid="pre2" />} nav={<aside />}>x</PageShell>,
+    );
+    expect(container.querySelector("[data-page-shell-preheader]")).not.toBeNull();
+    expect(container.querySelector("[data-page-shell-header]")).toBeNull();
+  });
+});
