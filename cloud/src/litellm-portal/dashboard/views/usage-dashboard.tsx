@@ -10,6 +10,7 @@ import { KpiBand } from "../panels/kpi-band";
 import { AlertPanel, type AlertItem } from "../panels/alert-panel";
 import { buildChartAriaDescription } from "../charts/build-chart-aria";
 import { t } from "@lingui/core/macro";
+import { fmtCompact } from "../../lib/format";
 import { TrendChartLazy, RankBarLazy, ModelDonutLazy } from "./usage-charts-lazy";
 import { UserTable, type UserRow } from "../panels/user-table";
 import { Panel, WindowSelector } from "../components/panel";
@@ -129,7 +130,7 @@ export function UsageDashboard({ initialScope, initialWindow }: UsageDashboardPr
 
   const trendAriaLabel = buildChartAriaDescription(
     { windowLabel: win, points: trendSeries[0]?.points.length ?? 0, grain: data?.grain ?? "" },
-    { template: t`Token 用量趋势图，时间范围为 '{'window'}'，共 '{'points'}' 个 '{'grain'}' 粒度数据点。` },
+    { template: resolvedScope === "global" ? t`团队消费趋势图，时间范围为 '{'window'}'，共 '{'points'}' 个 '{'grain'}' 粒度数据点。` : t`Token 消耗趋势图，时间范围为 '{'window'}'，共 '{'points'}' 个 '{'grain'}' 粒度数据点。` },
   );
 
   return (
@@ -170,22 +171,40 @@ export function UsageDashboard({ initialScope, initialWindow }: UsageDashboardPr
             {resolvedScope === "global" ? <AlertPanel alerts={alertsFromSummary(data.summary)} /> : null}
             <KpiBand kpi={data.kpi} />
             {data.grainFallback ? <p className="mb-3 text-xs text-kumo-subtle">已自动调整为推荐粒度</p> : null}
-            <Panel title={resolvedScope === "global" ? "团队消费趋势" : "消费趋势"}>
+            <Panel title={resolvedScope === "global" ? "团队消费趋势" : "Token 消耗趋势"}>
               {data.empty ? (
                 <DashboardStatus>该时间段暂无数据</DashboardStatus>
               ) : (
-                <TrendChartLazy series={trendSeries} ariaLabel={trendAriaLabel} />
+                <TrendChartLazy
+                  series={trendSeries}
+                  ariaLabel={trendAriaLabel}
+                  yAxisFormatter={resolvedScope === "global" ? (v) => "$" + Number(v).toFixed(0) : (v) => fmtCompact(v)}
+                  stacked={resolvedScope === "global"}
+                />
               )}
             </Panel>
             {resolvedScope === "global" ? (
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                <Panel title="用户消费排行">
-                  <RankBarLazy rows={rankRows} />
+              <>
+                <Panel title="成员消费趋势">
+                  {data.empty ? (
+                    <DashboardStatus>该时间段暂无数据</DashboardStatus>
+                  ) : (
+                    <TrendChartLazy
+                      series={trendSeries}
+                      ariaLabel={trendAriaLabel}
+                      yAxisFormatter={(v) => "$" + Number(v).toFixed(0)}
+                    />
+                  )}
                 </Panel>
-                <Panel title="模型使用分布">
-                  <ModelDonutLazy slices={data.models.map((model) => ({ model: model.model, value: model.spend }))} />
-                </Panel>
-              </div>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <Panel title="用户消费排行">
+                    <RankBarLazy rows={rankRows} />
+                  </Panel>
+                  <Panel title="模型使用分布">
+                    <ModelDonutLazy slices={data.models.map((model) => ({ model: model.model, value: model.spend }))} />
+                  </Panel>
+                </div>
+              </>
             ) : (
               <Panel title="常用模型占比">
                 <ModelDonutLazy slices={data.models.map((model) => ({ model: model.model, value: model.spend }))} />

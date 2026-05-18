@@ -1,4 +1,5 @@
 import React from "react";
+import { fmtCompact } from "../../lib/format";
 
 type Metric = { current: number; previous: number | null; deltaPct: number | null };
 type Kpi = { spend: Metric; requests: Metric; totalTokens: Metric };
@@ -29,9 +30,9 @@ function Card({ label, value, pct }: { label: string; value: string; pct: number
 export function KpiBand({ kpi }: { kpi: Kpi }) {
   return (
     <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-3">
-      <Card label="累计消费" value={fmtSpend(kpi.spend.current)} pct={kpi.spend.deltaPct} />
-      <Card label="累计请求" value={fmtInt(kpi.requests.current)} pct={kpi.requests.deltaPct} />
-      <Card label="累计 Tokens" value={fmtInt(kpi.totalTokens.current)} pct={kpi.totalTokens.deltaPct} />
+      <Card label="消费额" value={fmtSpend(kpi.spend.current)} pct={kpi.spend.deltaPct} />
+      <Card label="请求数" value={fmtInt(kpi.requests.current)} pct={kpi.requests.deltaPct} />
+      <Card label="Tokens" value={fmtCompact(kpi.totalTokens.current)} pct={kpi.totalTokens.deltaPct} />
     </div>
   );
 }
