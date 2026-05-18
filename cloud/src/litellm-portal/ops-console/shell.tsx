@@ -8,6 +8,7 @@ import type { PortalIdentity } from "../types";
 import { DensityProvider, resolveDensity } from "../components/density";
 import { DensityToggle } from "../components/density-toggle";
 import { SideNav, type SideNavGroup } from "../components/side-nav";
+import { PageShell } from "../ui";
 import type { NavIconName } from "../components/nav-icons";
 import { usePreferences, useUpdatePreferences } from "../hooks/use-preferences";
 import { useOpsTenants } from "./hooks";
@@ -118,32 +119,29 @@ export function OpsConsoleShell({ identity, children }: OpsConsoleShellProps) {
   }
 
   return (
-    <div
-      id="ops-console-shell-root"
-      className="flex min-h-screen flex-col bg-kumo-canvas text-kumo-default"
-      style={OPS_STEEL_ACCENT}
-    >
-      <DensityProvider density={resolveDensity(densityPref, "compact")}>
-        <div
-          className="flex items-center gap-3 border-b border-kumo-line bg-kumo-elevated px-6 py-4"
-          aria-label={t`运营控制台`}
-        >
-          <Text variant="heading3" as="span" className="truncate text-kumo-strong">
-            <Trans>运营控制台</Trans>
-          </Text>
-          <span
-            data-ops-privileged-pill
-            className="rounded-full ring-1 ring-kumo-brand px-2 py-0.5 text-xs font-medium text-kumo-subtle"
-          >
-            <Trans>内部·特权</Trans>
-          </span>
-          <OpsSummaryChips />
-          <DensityToggle
-            current={resolveDensity(densityPref, "compact")}
-            onChange={(d) => updatePrefs.mutate({ density: d })}
-          />
-        </div>
-        <div className="flex flex-1">
+    <DensityProvider density={resolveDensity(densityPref, "compact")}>
+      <PageShell
+        id="ops-console-shell-root"
+        style={OPS_STEEL_ACCENT}
+        header={
+          <>
+            <Text variant="heading3" as="span" className="truncate text-kumo-strong">
+              <Trans>运营控制台</Trans>
+            </Text>
+            <span
+              data-ops-privileged-pill
+              className="rounded-full ring-1 ring-kumo-brand px-2 py-0.5 text-xs font-medium text-kumo-subtle"
+            >
+              <Trans>内部·特权</Trans>
+            </span>
+            <OpsSummaryChips />
+            <DensityToggle
+              current={resolveDensity(densityPref, "compact")}
+              onChange={(d) => updatePrefs.mutate({ density: d })}
+            />
+          </>
+        }
+        nav={
           <SideNav
             groups={[
               {
@@ -167,9 +165,10 @@ export function OpsConsoleShell({ identity, children }: OpsConsoleShellProps) {
             accent="steel"
             ariaLabel={t`运营导航`}
           />
-          <main className="min-w-0 flex-1 px-6 py-8 opacity-100 motion-safe:transition-opacity motion-safe:duration-150">{children}</main>
-        </div>
-      </DensityProvider>
-    </div>
+        }
+      >
+        {children}
+      </PageShell>
+    </DensityProvider>
   );
 }
