@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handleMagicCallback } from "./login-routes";
 import { issueMagicLink } from "./magic-link";
 import { _clearRoleCacheForTests } from "../roles";
+import * as roles from "../roles";
 import type { LiteLLMPortalEnv } from "../types";
 
 type UserRow = {
@@ -198,5 +199,44 @@ describe("handleMagicCallback — admin-invite auto-join", () => {
     const res = await callbackFor(EMAIL, env);
 
     expect(res.status).toBe(302);
+  });
+});
+
+function landingFor(role: "admin" | "user" | "none") {
+  vi.spyOn(roles, "resolveIdentity").mockResolvedValue({
+    ok: true,
+    identity: {
+      email: "x@x.com", userId: "x", domain: "x.com", litellmUserId: "x",
+      role, tenantRole: null, tenantTeamId: null,
+    },
+  } as Awaited<ReturnType<typeof roles.resolveIdentity>>);
+}
+
+describe("F3 post-login landing by role", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("Owner (admin) lands on /ops", async () => {
+    const mock = makeMock({
+      seedUser: { userId: "u1", email: EMAIL, role: "admin", teamId: null, createdAt: new Date().toISOString() },
+    });
+    const env = makeEnv(mock.namespace);
+    landingFor("admin");
+
+    const res = await callbackFor(EMAIL, env);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/ops");
+  });
+
+  it("non-Owner lands on /", async () => {
+    const mock = makeMock({
+      seedUser: { userId: "u1", email: EMAIL, role: "user", teamId: null, createdAt: new Date().toISOString() },
+    });
+    const env = makeEnv(mock.namespace);
+    landingFor("user");
+
+    const res = await callbackFor(EMAIL, env);
+
+    expect(res.headers.get("location")).toBe("/");
   });
 });
