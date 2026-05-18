@@ -21,6 +21,7 @@ export function checkCsrf(request: Request, env: LiteLLMPortalEnv): Response | n
   // authenticates via shared secret (not browser session).
   const requestUrl = new URL(request.url);
   if (requestUrl.pathname === "/api/_internal/role-changed") return null;
+  if (requestUrl.pathname === "/api/_internal/identity-reconcile") return null;
 
   const expectedOrigin = `${requestUrl.protocol}//${requestUrl.host}`;
 

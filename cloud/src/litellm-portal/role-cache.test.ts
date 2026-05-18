@@ -479,6 +479,84 @@ describe("POST /api/_internal/role-changed", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Integration tests: token-authed identity-reconcile trigger
+// ---------------------------------------------------------------------------
+
+describe("POST /api/_internal/identity-reconcile", () => {
+  it("returns 401 when ROLE_INVALIDATION_WEBHOOK_TOKEN is not configured", async () => {
+    const response = await handleLiteLLMPortalRequest(
+      new Request("https://portal.test/api/_internal/identity-reconcile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ secret: "anything" }),
+      }),
+      portalEnv(),
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("returns 401 when the secret is wrong", async () => {
+    const response = await handleLiteLLMPortalRequest(
+      new Request("https://portal.test/api/_internal/identity-reconcile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ secret: "wrong" }),
+      }),
+      portalEnv({ ROLE_INVALIDATION_WEBHOOK_TOKEN: "super-secret" }),
+    );
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
+  });
+
+  it("returns 400 on invalid body", async () => {
+    const response = await handleLiteLLMPortalRequest(
+      new Request("https://portal.test/api/_internal/identity-reconcile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "not-json",
+      }),
+      portalEnv({ ROLE_INVALIDATION_WEBHOOK_TOKEN: "super-secret" }),
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("is CSRF-exempt: session cookie + token still succeeds (not 403)", async () => {
+    // The operator's browser session may be degraded to admin_viewer; the
+    // shared-secret trigger must work even WITH a session cookie present
+    // (csrf.ts exemption parity with /_internal/role-changed).
+    const response = await handleLiteLLMPortalRequest(
+      new Request("https://portal.test/api/_internal/identity-reconcile", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Cookie: `${SESSION_COOKIE_NAME}=${_cookieCache.get("user@gz-zhiyun.com")}`,
+        },
+        body: JSON.stringify({ secret: "super-secret" }),
+      }),
+      portalEnv({ ROLE_INVALIDATION_WEBHOOK_TOKEN: "super-secret" }),
+    );
+    expect(response.status).not.toBe(403);
+    expect(response.status).toBe(200);
+  });
+
+  it("runs reconcile with a valid token (role-independent; 200 + summary)", async () => {
+    const response = await handleLiteLLMPortalRequest(
+      new Request("https://portal.test/api/_internal/identity-reconcile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ secret: "super-secret" }),
+      }),
+      portalEnv({ ROLE_INVALIDATION_WEBHOOK_TOKEN: "super-secret" }),
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    // No INDEX_DO in portalEnv → graceful summary with the binding error.
+    expect(body).toHaveProperty("scanned");
+    expect(body).toHaveProperty("errors");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // _clearRoleCacheForTests backward compat (re-exported from roles.ts)
 // ---------------------------------------------------------------------------
 
