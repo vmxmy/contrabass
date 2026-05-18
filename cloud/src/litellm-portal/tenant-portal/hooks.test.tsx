@@ -5,6 +5,8 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { setupI18n } from "../i18n/setup";
+import { errorMessage, GENERIC_FALLBACK } from "../errors/error-messages";
 import {
   useTenantInvites,
   useCreateTenantInvite,
@@ -79,11 +81,16 @@ describe("useTenantInvites", () => {
     const { result } = renderHook(() => useTenantInvites(), { wrapper });
 
     await waitFor(() => expect(result.current.isError).toBe(true));
-    // §F.3: an unmapped server code resolves to the generic safe fallback,
-    // NEVER the raw code in a Banner.
+    // §F.3 (post-T4d): extractError → errorMessage now yields the Lingui
+    // CATALOG ID (a defineMessage hash); an unmapped server code resolves to
+    // the generic fallback's id. The thrown id NEVER echoes the raw code, and
+    // PanelError resolves it through i18n to the generic safe sentence.
     const msg = (result.current.error as Error).message;
+    const i18n = setupI18n("zh-CN");
     expect(msg).not.toContain("forbidden");
-    expect(msg).toBe("操作未完成，请重试；若反复出现请联系管理员。");
+    expect(msg).toBe(GENERIC_FALLBACK.id);
+    expect(msg).toBe(errorMessage("forbidden"));
+    expect(i18n._(msg)).toBe("操作未完成，请重试；若反复出现请联系管理员。");
   });
 });
 
@@ -158,10 +165,14 @@ describe("useTenantBillingPeriods", () => {
     const { result } = renderHook(() => useTenantBillingPeriods(), { wrapper });
 
     await waitFor(() => expect(result.current.isError).toBe(true));
-    // §F.3: humanized message id, never the raw snake_case code.
+    // §F.3 (post-T4d): the thrown message is the Lingui CATALOG ID for the
+    // mapped code — never the raw snake_case code — and resolves through
+    // i18n to the humanized §F.3 sentence under zh-CN.
     const msg = (result.current.error as Error).message;
+    const i18n = setupI18n("zh-CN");
     expect(msg).not.toContain("billing_archive_unavailable");
-    expect(msg).toBe("账单归档服务暂不可用。请稍后重试；若持续请联系管理员。");
+    expect(msg).toBe(errorMessage("billing_archive_unavailable"));
+    expect(i18n._(msg)).toBe("账单归档服务暂不可用。请稍后重试；若持续请联系管理员。");
   });
 });
 
@@ -428,14 +439,24 @@ describe("downloadTenantBilling", () => {
     const createObjectURL = vi.spyOn(URL, "createObjectURL");
     const createElementSpy = vi.spyOn(document, "createElement");
 
-    // §F.3: extractError now humanizes the server code — the thrown message
-    // is the localized message id, NEVER the raw snake_case code.
-    await expect(downloadTenantBilling("2026-01")).rejects.toThrow(
+    // §F.3 (post-T4d): extractError → errorMessage yields the Lingui CATALOG
+    // ID for the mapped server code — the rejection carries that id, NEVER
+    // the raw snake_case code, and the id resolves through i18n to the
+    // humanized §F.3 sentence under zh-CN.
+    const i18n = setupI18n("zh-CN");
+    const expectedId = errorMessage("billing_archive_not_found");
+    const err = await downloadTenantBilling("2026-01").then(
+      () => {
+        throw new Error("expected downloadTenantBilling to reject");
+      },
+      (e: unknown) => e as Error,
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toBe(expectedId);
+    expect(err.message).not.toContain("billing_archive_not_found");
+    expect(i18n._(err.message)).toBe(
       "该周期暂无可下载的账单归档。请确认周期后重试，或稍后再试。",
     );
-    await expect(
-      downloadTenantBilling("2026-01"),
-    ).rejects.not.toThrow("billing_archive_not_found");
 
     expect(createObjectURL).not.toHaveBeenCalled();
     expect(createElementSpy).not.toHaveBeenCalled();
