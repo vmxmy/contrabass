@@ -61,8 +61,8 @@ msgid "Once your team is assigned, you can sign in again to see your dashboard."
 msgstr "Once your team is assigned, you can sign in again to see your dashboard."
 
 #: src/litellm-portal/tenant-portal/shell.tsx:182
-msgid "Operations Console arrives in Phase 2"
-msgstr "运营控制台将在 Phase 2 提供"
+#~ msgid "Operations Console arrives in Phase 2"
+#~ msgstr "运营控制台将在 Phase 2 提供"
 
 #: src/litellm-portal/dashboard/views/usage-dashboard.tsx:132
 msgid "Token 用量趋势图，时间范围为 '{'window'}'，共 '{'points'}' 个 '{'grain'}' 粒度数据点。"
@@ -121,6 +121,10 @@ msgstr "仅平台 Owner 可访问"
 #: src/litellm-portal/tenant-portal/screens/alerts.tsx:92
 msgid "仅接受 HTTPS 地址，服务端校验 SSRF 安全。"
 msgstr "仅接受 HTTPS 地址，服务端校验 SSRF 安全。"
+
+#: src/litellm-portal/tenant-portal/shell.tsx:182
+msgid "使用运营控制台管理团队、用量与审计"
+msgstr "使用运营控制台管理团队、用量与审计"
 
 #: src/litellm-portal/tenant-portal/screens/alerts.tsx:135
 msgid "保存"
@@ -789,8 +793,8 @@ msgid "管理团队成员的邀请状态。"
 msgstr "管理团队成员的邀请状态。"
 
 #: src/litellm-portal/tenant-portal/shell.tsx:188
-msgid "管理控制台"
-msgstr "管理控制台"
+#~ msgid "管理控制台"
+#~ msgstr "管理控制台"
 
 #: src/litellm-portal/components/density-toggle.tsx:30
 #: src/litellm-portal/preferences-form.tsx:87
@@ -989,6 +993,7 @@ msgstr "运营导航"
 
 #: src/litellm-portal/ops-console/shell.tsx:127
 #: src/litellm-portal/ops-console/shell.tsx:130
+#: src/litellm-portal/tenant-portal/shell.tsx:181
 msgid "运营控制台"
 msgstr "运营控制台"
 
@@ -997,8 +1002,8 @@ msgid "运营控制台仅对平台 Owner 开放。"
 msgstr "运营控制台仅对平台 Owner 开放。"
 
 #: src/litellm-portal/tenant-portal/shell.tsx:181
-msgid "运营控制台将在 Phase 2 提供"
-msgstr "运营控制台将在 Phase 2 提供"
+#~ msgid "运营控制台将在 Phase 2 提供"
+#~ msgstr "运营控制台将在 Phase 2 提供"
 
 #: src/litellm-portal/preferences-form.tsx:66
 msgid "近 12 个月"
@@ -1040,6 +1045,10 @@ msgstr "进入租户"
 #: src/litellm-portal/errors/error-messages.ts:57
 msgid "进入租户的服务暂时不可用。请稍后重试；若持续请联系管理员。"
 msgstr "进入租户的服务暂时不可用。请稍后重试；若持续请联系管理员。"
+
+#: src/litellm-portal/tenant-portal/shell.tsx:188
+msgid "进入运营控制台"
+msgstr "进入运营控制台"
 
 #: src/litellm-portal/tenant-portal/shell.tsx:221
 msgid "退出代操作"

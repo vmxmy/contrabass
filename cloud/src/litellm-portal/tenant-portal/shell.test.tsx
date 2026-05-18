@@ -82,13 +82,13 @@ describe("TenantPortalShell", () => {
     expect(nav.queryByText(/账单/)).toBeNull();
   });
 
-  it("shows a Phase-2 notice and a /manage link for a pure Owner (admin, no tenantTeamId)", async () => {
+  it("shows an Ops Console entry and a /ops link for a pure Owner (admin, no tenantTeamId)", async () => {
     const { container } = await renderTenantAt("/", pureOwnerMe);
-    expect((await screen.findAllByText(/Phase 2/)).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText(/运营控制台|Operations Console/)).length).toBeGreaterThan(0);
     expect(screen.queryByRole("navigation")).toBeNull();
-    const notice = within(container.querySelector("#owner-phase2-root") as HTMLElement);
-    const link = notice.getByRole("link", { name: /管理|Console|控制台/ });
-    expect(link.getAttribute("href")).toBe("/manage");
+    const notice = within(container.querySelector("#owner-ops-entry-root") as HTMLElement);
+    const link = notice.getByRole("link", { name: /运营控制台|Operations Console/ });
+    expect(link.getAttribute("href")).toBe("/ops");
   });
 });
 
