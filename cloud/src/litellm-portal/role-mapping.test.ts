@@ -5,8 +5,11 @@ describe("mapLiteLLMRole", () => {
   it("proxy_admin → admin", () => {
     expect(mapLiteLLMRole({ indexRole: "none", litellmRole: "proxy_admin", litellmTeamIds: [] }).role).toBe("admin");
   });
-  it("proxy_admin_viewer → admin (read-only owner, nav-equivalent)", () => {
-    expect(mapLiteLLMRole({ indexRole: "none", litellmRole: "proxy_admin_viewer", litellmTeamIds: [] }).role).toBe("admin");
+  it("proxy_admin_viewer is NOT owner — falls through to IndexDO role (escalation guard)", () => {
+    expect(mapLiteLLMRole({ indexRole: "none", litellmRole: "proxy_admin_viewer", litellmTeamIds: [] }).role).toBe("none");
+  });
+  it("proxy_admin_viewer NEVER yields admin even when IndexDO says user (escalation guard)", () => {
+    expect(mapLiteLLMRole({ indexRole: "user", litellmRole: "proxy_admin_viewer", litellmTeamIds: [] }).role).toBe("user");
   });
   it("normal user with no litellm role keeps IndexDO role", () => {
     expect(mapLiteLLMRole({ indexRole: "user", litellmRole: null, litellmTeamIds: [] }).role).toBe("user");
@@ -30,6 +33,6 @@ describe("mapLiteLLMRole", () => {
       litellmTeamIds: ["ea0e8075", "1255c10b"], indexTeamId: null,
     });
     expect(r.tenantTeamId).toBe("ea0e8075");
-    expect(r.role).toBe("admin");
+    expect(r.role).toBe("user");
   });
 });

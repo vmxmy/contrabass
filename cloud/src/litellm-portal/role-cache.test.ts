@@ -462,14 +462,14 @@ describe("_clearRoleCacheForTests (roles.ts re-export)", () => {
 // ---------------------------------------------------------------------------
 
 describe("F2 LiteLLM role mapping (proxy_admin_viewer + teams)", () => {
-  it("maps proxy_admin_viewer with teams to admin role", async () => {
+  it("maps proxy_admin_viewer with teams to its IndexDO role (NOT admin — escalation guard)", async () => {
     vi.spyOn(litellm, "resolveLiteLLMUser").mockResolvedValue({
       userId: "laoxu", email: "xu@gz-zhiyun.com", spend: null, maxBudget: null,
       teamIds: ["ea0e8075", "1255c10b"], role: "proxy_admin_viewer", found: true, raw: null,
     });
     const env = { INDEX_DO: makeIndexDO({ "xu@gz-zhiyun.com": { role: "user", userId: "laoxu", teamId: null } }) } as unknown as LiteLLMPortalEnv;
     const r = await getRole(env, "xu@gz-zhiyun.com");
-    expect(r.role).toBe("admin");
+    expect(r.role).toBe("user");
     expect(r.litellmUserId).toBe("laoxu");
     expect(r.tenantTeamId).toBe("ea0e8075");
   });

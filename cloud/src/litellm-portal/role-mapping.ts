@@ -1,6 +1,6 @@
 import type { PortalRole } from "./types";
 
-const LITELLM_OWNER_ROLES = new Set(["proxy_admin", "proxy_admin_viewer"]);
+const LITELLM_OWNER_ROLES = new Set(["proxy_admin"]);
 
 export type MapLiteLLMRoleInput = {
   /** Role resolved from IndexDO (portal-authoritative for non-admin). */
