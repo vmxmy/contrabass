@@ -93,8 +93,8 @@ function resolveNavGroups(identity: PortalIdentity): SideNavGroup[] {
   });
   const personal = nav.filter((i) => PERSONAL_HREFS.has(i.href)).map(toItem);
   const team = nav.filter((i) => TEAM_HREFS.has(i.href)).map(toItem);
-  const groups: SideNavGroup[] = [{ heading: "我的", items: personal }];
-  if (team.length > 0) groups.push({ heading: "团队管理", items: team });
+  const groups: SideNavGroup[] = [{ heading: t`我的`, items: personal }];
+  if (team.length > 0) groups.push({ heading: t`团队管理`, items: team });
   return groups;
 }
 
