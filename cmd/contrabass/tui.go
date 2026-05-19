@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	clitui "github.com/junhoyeo/contrabass/internal/cli/tui"
 )
 
 var tuiCmd = &cobra.Command{
@@ -56,12 +58,12 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	subscribeURL, err := tuiSubscribeURL(opts.APIBaseURL, opts.TeamID)
+	subscribeURL, err := clitui.SubscribeURL(opts.APIBaseURL, opts.TeamID)
 	if err != nil {
 		return err
 	}
 
-	return runTUIProgram(cmd.Context(), tuiProgramConfig{
+	return clitui.Run(cmd.Context(), clitui.ProgramConfig{
 		TeamID:       opts.TeamID,
 		SessionToken: sessionToken,
 		SubscribeURL: subscribeURL,
@@ -81,21 +83,4 @@ func tuiOptionsFromFlags(cmd *cobra.Command) (tuiOptions, error) {
 		TeamID:     strings.TrimSpace(teamID),
 		APIBaseURL: strings.TrimSpace(apiBaseURL),
 	}, nil
-}
-
-// tuiSubscribeURL converts an HTTP(S) API base URL into the WebSocket URL for
-// the team subscription endpoint (/v1/teams/{teamId}/subscribe).
-func tuiSubscribeURL(apiBaseURL, teamID string) (string, error) {
-	endpoint, err := workerAPIEndpoint(apiBaseURL, "/v1/teams/"+teamID+"/subscribe")
-	if err != nil {
-		return "", err
-	}
-	switch {
-	case strings.HasPrefix(endpoint, "https://"):
-		return "wss://" + endpoint[len("https://"):], nil
-	case strings.HasPrefix(endpoint, "http://"):
-		return "ws://" + endpoint[len("http://"):], nil
-	default:
-		return endpoint, nil
-	}
 }

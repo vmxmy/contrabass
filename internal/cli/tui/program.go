@@ -1,6 +1,6 @@
 //go:build !localonly
 
-package main
+package tui
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/junhoyeo/contrabass/internal/tui"
+	tui "github.com/junhoyeo/contrabass/internal/tui"
 )
 
 // tuiProgramConfig holds the configuration for the read-only cloud TUI.
