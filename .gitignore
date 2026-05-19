@@ -44,6 +44,7 @@
 CLAUDE.md
 contrabass_test.log
 contrabass.log
+contrabass-*.log
 graphify-out/
 node_modules/
 packages/dashboard/dist/
@@ -59,6 +60,7 @@ cloud/.wrangler/
 cloud/dist/litellm-portal-worker/
 cloud/dist/reports/
 cloud/output/
+cloud/test-results/
 cloud/pnpm-lock.yaml
 
 # Cloudflare Workers local secrets (never commit)
