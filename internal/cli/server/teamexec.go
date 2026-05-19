@@ -1,6 +1,6 @@
 //go:build localonly
 
-package main
+package server
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net"
 	"os"
 	"time"
@@ -16,6 +17,8 @@ import (
 	"github.com/charmbracelet/log"
 
 	contrabass "github.com/junhoyeo/contrabass"
+	"github.com/junhoyeo/contrabass/internal/agent"
+	clteam "github.com/junhoyeo/contrabass/internal/cli/team"
 	"github.com/junhoyeo/contrabass/internal/config"
 	"github.com/junhoyeo/contrabass/internal/hub"
 	"github.com/junhoyeo/contrabass/internal/orchestrator"
@@ -26,6 +29,24 @@ import (
 )
 
 const teamEventBufferSize = 256
+
+// Thin aliases over the team CLI facade so the localonly server runtime keeps
+// reading against stable identifiers. Mirrors cmd/contrabass/team.go.
+type teamRunOptions = clteam.RunOptions
+
+type teamRunHooks = clteam.RunHooks
+
+func runTeamWithHooks(opts teamRunOptions, hooks teamRunHooks) error {
+	return clteam.RunWithHooks(opts, hooks)
+}
+
+func createRunner(cfg *config.WorkflowConfig, teamName string, logger *slog.Logger) (agent.AgentRunner, error) {
+	return clteam.CreateRunner(cfg, teamName, logger)
+}
+
+func resolveTeamNameForIssue(issue tracker.LocalBoardIssue, override string) string {
+	return clteam.ResolveTeamNameForIssue(issue, override)
+}
 
 var (
 	startTUITeamEventBridge = tui.StartTeamEventBridge
@@ -120,6 +141,7 @@ func runTeamExecutionWebServer(ctx context.Context, logger *log.Logger, port int
 	printDashboardURL(os.Stderr, listenHost, port)
 	return webEvents, nil
 }
+
 func runTeamExecutionLoop(
 	ctx context.Context,
 	cfgPath string,

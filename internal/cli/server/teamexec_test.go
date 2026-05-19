@@ -1,6 +1,6 @@
 //go:build localonly
 
-package main
+package server
 
 import (
 	"context"

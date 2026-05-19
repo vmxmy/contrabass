@@ -10,23 +10,24 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/junhoyeo/contrabass/internal/cli/server"
 	"github.com/junhoyeo/contrabass/internal/tracker"
 )
+
+// Thin cobra wiring for `contrabass board dispatch`. The dispatch logic lives
+// in internal/cli/server; this file only parses flags and delegates. The
+// dispatch seam types are re-exported so the (untouched) localonly board tests
+// keep compiling against package-main identifiers.
+
+type boardDispatchOptions = server.DispatchOptions
+
+var runBoardDispatchTeam = func(opts teamRunOptions) error { return runTeamWithOptions(opts) }
 
 var boardDispatchCmd = &cobra.Command{
 	Use:   "dispatch",
 	Short: "Dispatch the next runnable internal board issue into a team run",
 	RunE:  runBoardDispatch,
 }
-
-type boardDispatchOptions struct {
-	ConfigPath string
-	TeamName   string
-	MaxWorkers int
-	UntilEmpty bool
-}
-
-var runBoardDispatchTeam = runTeamWithOptions
 
 func init() {
 	boardDispatchCmd.Flags().String("config", "", "path to WORKFLOW.md file")
@@ -67,6 +68,9 @@ func runBoardDispatch(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("getting until-empty flag: %w", err)
 	}
 
+	restore := server.SetBoardDispatchTeamRunner(runBoardDispatchTeam)
+	defer restore()
+
 	return dispatchBoardIssues(
 		context.Background(),
 		cmd.OutOrStdout(),
@@ -81,6 +85,8 @@ func runBoardDispatch(cmd *cobra.Command, _ []string) error {
 	)
 }
 
+// dispatchBoardIssues delegates to the server package, preserving the
+// package-main symbol the (untouched) localonly board tests call directly.
 func dispatchBoardIssues(
 	ctx context.Context,
 	out io.Writer,
@@ -88,66 +94,7 @@ func dispatchBoardIssues(
 	opts boardDispatchOptions,
 	runTeam func(teamRunOptions) error,
 ) error {
-	dispatched := 0
-	for {
-		issueID, resolvedTeamName, found, err := dispatchNextBoardIssue(ctx, localTracker, opts, runTeam)
-		if err != nil {
-			return err
-		}
-		if !found {
-			if !opts.UntilEmpty {
-				return fmt.Errorf("no dispatchable internal board issue found")
-			}
-			if dispatched == 0 {
-				_, _ = fmt.Fprintln(out, "board already drained")
-				return nil
-			}
-			_, _ = fmt.Fprintf(out, "drained board after %d dispatches\n", dispatched)
-			return nil
-		}
-
-		dispatched++
-		_, _ = fmt.Fprintf(out, "dispatched %s to %s\n", issueID, resolvedTeamName)
-		if !opts.UntilEmpty {
-			return nil
-		}
-	}
-}
-
-func dispatchNextBoardIssue(
-	ctx context.Context,
-	localTracker *tracker.LocalTracker,
-	opts boardDispatchOptions,
-	runTeam func(teamRunOptions) error,
-) (string, string, bool, error) {
-	issue, found, err := localTracker.FindDispatchableIssue(ctx, opts.TeamName)
-	if err != nil {
-		return "", "", false, err
-	}
-	if !found {
-		return "", "", false, nil
-	}
-
-	resolvedTeamName := resolveTeamNameForIssue(issue, opts.TeamName)
-	if _, err := localTracker.AssignIssue(ctx, issue.ID, resolvedTeamName); err != nil {
-		return "", "", false, err
-	}
-	if err := localTracker.PostComment(
-		ctx,
-		issue.ID,
-		fmt.Sprintf("dispatch requested for team %s", resolvedTeamName),
-	); err != nil {
-		return "", "", false, err
-	}
-
-	if err := runTeam(teamRunOptions{
-		ConfigPath: opts.ConfigPath,
-		TeamName:   resolvedTeamName,
-		IssueID:    issue.ID,
-		MaxWorkers: opts.MaxWorkers,
-	}); err != nil {
-		return "", "", false, fmt.Errorf("dispatching %s to %s: %w", issue.ID, resolvedTeamName, err)
-	}
-
-	return issue.ID, resolvedTeamName, true, nil
+	restore := server.SetBoardDispatchTeamRunner(runTeam)
+	defer restore()
+	return server.DispatchBoardIssues(ctx, out, localTracker, opts)
 }
