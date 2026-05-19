@@ -38,7 +38,10 @@ func TestOMCRunner_UsesTeamRuntime(t *testing.T) {
 			TeamSpec:   "1:claude",
 		},
 	}
-	runner := NewOMCRunner(cfg, time.Second)
+	// Generous startup timeout: the fake team CLI can take >1s to spawn under
+	// CPU contention (parallel/-count runs), which previously flaked as
+	// "signal: killed". This only bounds CLI startup, not the assertions below.
+	runner := NewOMCRunner(cfg, 30*time.Second)
 
 	proc, err := runner.Start(context.Background(), types.Issue{ID: "CB-104", Title: "Add OMC runner"}, workspace, "Do the OMC task")
 	require.NoError(t, err)
