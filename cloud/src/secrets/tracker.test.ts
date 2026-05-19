@@ -21,7 +21,7 @@ describe("tracker secret naming", () => {
     });
 
   it("publishes the supported tracker providers", () => {
-    expect(TRACKER_SECRET_PROVIDERS).toEqual(["linear", "github"]);
+    expect(TRACKER_SECRET_PROVIDERS).toEqual(["linear", "github", "plane"]);
   });
 
   it.each(["", "   "])("rejects blank team ids", (teamId) => {
