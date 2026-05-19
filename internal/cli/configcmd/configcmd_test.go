@@ -1,4 +1,4 @@
-package main
+package configcmd
 
 import (
 	"bytes"
@@ -14,8 +14,6 @@ import (
 )
 
 func TestConfigPushCommandPostsWorkflowConfig(t *testing.T) {
-	restoreConfigHTTPClient(t)
-
 	cfgPath := writeConfigCommandFixture(t, "---\ntracker:\n  type: internal\n---\nPrompt.\n")
 	var received map[string]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -27,9 +25,9 @@ func TestConfigPushCommandPostsWorkflowConfig(t *testing.T) {
 		_, _ = w.Write([]byte(`{"teamId":"team-1","version":7,"contentHash":"abc123","unchanged":false}`))
 	}))
 	t.Cleanup(server.Close)
-	configHTTPClient = server.Client()
+	t.Cleanup(SetHTTPClient(server.Client()))
 
-	cmd := newConfigCmd()
+	cmd := NewCmd()
 	out := new(bytes.Buffer)
 	cmd.SetOut(out)
 	cmd.SetErr(out)
@@ -53,8 +51,6 @@ func TestConfigPushCommandPostsWorkflowConfig(t *testing.T) {
 }
 
 func TestConfigImportMDCommandParsesAndPostsImportMetadata(t *testing.T) {
-	restoreConfigHTTPClient(t)
-
 	cfgPath := writeConfigCommandFixture(t, "---\ntracker:\n  type: internal\n---\nFix it.\n")
 	var received map[string]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,9 +59,9 @@ func TestConfigImportMDCommandParsesAndPostsImportMetadata(t *testing.T) {
 		_, _ = w.Write([]byte(`{"teamId":"team-1","version":3,"contentHash":"def456","unchanged":true}`))
 	}))
 	t.Cleanup(server.Close)
-	configHTTPClient = server.Client()
+	t.Cleanup(SetHTTPClient(server.Client()))
 
-	cmd := newConfigCmd()
+	cmd := NewCmd()
 	out := new(bytes.Buffer)
 	cmd.SetOut(out)
 	cmd.SetErr(out)
@@ -85,8 +81,6 @@ func TestConfigImportMDCommandParsesAndPostsImportMetadata(t *testing.T) {
 }
 
 func TestConfigImportMDCommandRejectsInvalidWorkflowBeforePosting(t *testing.T) {
-	restoreConfigHTTPClient(t)
-
 	cfgPath := writeConfigCommandFixture(t, "---\nmodel: [\n---\nPrompt.\n")
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -94,9 +88,9 @@ func TestConfigImportMDCommandRejectsInvalidWorkflowBeforePosting(t *testing.T) 
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	t.Cleanup(server.Close)
-	configHTTPClient = server.Client()
+	t.Cleanup(SetHTTPClient(server.Client()))
 
-	cmd := newConfigCmd()
+	cmd := NewCmd()
 	out := new(bytes.Buffer)
 	cmd.SetOut(out)
 	cmd.SetErr(out)
@@ -114,8 +108,6 @@ func TestConfigImportMDCommandRejectsInvalidWorkflowBeforePosting(t *testing.T) 
 }
 
 func TestConfigPushCommandReportsStructuredAPIErrors(t *testing.T) {
-	restoreConfigHTTPClient(t)
-
 	tests := []struct {
 		name       string
 		body       string
@@ -144,9 +136,9 @@ func TestConfigPushCommandReportsStructuredAPIErrors(t *testing.T) {
 				_, _ = w.Write([]byte(tt.body))
 			}))
 			t.Cleanup(server.Close)
-			configHTTPClient = server.Client()
+			t.Cleanup(SetHTTPClient(server.Client()))
 
-			cmd := newConfigCmd()
+			cmd := NewCmd()
 			out := new(bytes.Buffer)
 			cmd.SetOut(out)
 			cmd.SetErr(out)
@@ -165,8 +157,6 @@ func TestConfigPushCommandReportsStructuredAPIErrors(t *testing.T) {
 }
 
 func TestConfigCommandUsesEnvironmentFallbacks(t *testing.T) {
-	restoreConfigHTTPClient(t)
-
 	cfgPath := writeConfigCommandFixture(t, "---\ntracker:\n  type: internal\n---\nPrompt.\n")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "Bearer env-token", r.Header.Get("Authorization"))
@@ -174,11 +164,11 @@ func TestConfigCommandUsesEnvironmentFallbacks(t *testing.T) {
 		_, _ = w.Write([]byte(`{"teamId":"team-1","version":1,"contentHash":"hash","unchanged":false}`))
 	}))
 	t.Cleanup(server.Close)
-	configHTTPClient = server.Client()
+	t.Cleanup(SetHTTPClient(server.Client()))
 	t.Setenv("CONTRABASS_API_URL", server.URL)
 	t.Setenv("CONTRABASS_API_TOKEN", "env-token")
 
-	cmd := newConfigCmd()
+	cmd := NewCmd()
 	out := new(bytes.Buffer)
 	cmd.SetOut(out)
 	cmd.SetErr(out)
@@ -195,11 +185,4 @@ func writeConfigCommandFixture(t *testing.T, content string) string {
 	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 	return path
-}
-
-func restoreConfigHTTPClient(t *testing.T) {
-	t.Helper()
-
-	original := configHTTPClient
-	t.Cleanup(func() { configHTTPClient = original })
 }

@@ -3,13 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
-	"strings"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
-	"github.com/junhoyeo/contrabass/internal/config"
+	"github.com/junhoyeo/contrabass/internal/cli/board"
 	"github.com/junhoyeo/contrabass/internal/tracker"
 )
 
@@ -110,19 +107,7 @@ func runBoardInit(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-
-	manifest, err := localTracker.InitBoard(context.Background())
-	if err != nil {
-		return err
-	}
-
-	_, _ = fmt.Fprintf(
-		cmd.OutOrStdout(),
-		"initialized board at %s (prefix %s)\n",
-		localTracker.BoardDir(),
-		manifest.IssuePrefix,
-	)
-	return nil
+	return board.InitBoard(context.Background(), cmd.OutOrStdout(), localTracker)
 }
 
 func runBoardList(cmd *cobra.Command, _ []string) error {
@@ -136,38 +121,7 @@ func runBoardList(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("getting state flag: %w", err)
 	}
 
-	var filter tracker.LocalBoardState
-	if filterRaw != "" {
-		filter, err = tracker.ParseLocalBoardState(filterRaw)
-		if err != nil {
-			return err
-		}
-	}
-
-	issues, err := localTracker.ListIssues(context.Background(), true)
-	if err != nil {
-		return err
-	}
-
-	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "ID\tSTATE\tASSIGNEE\tPARENT\tTITLE\tLABELS")
-	for _, issue := range issues {
-		if filter != "" && issue.State != filter {
-			continue
-		}
-		_, _ = fmt.Fprintf(
-			w,
-			"%s\t%s\t%s\t%s\t%s\t%s\n",
-			issue.ID,
-			issue.State,
-			issue.Assignee,
-			issue.ParentID,
-			issue.Title,
-			strings.Join(issue.Labels, ","),
-		)
-	}
-
-	return w.Flush()
+	return board.ListIssues(context.Background(), cmd.OutOrStdout(), localTracker, filterRaw)
 }
 
 func runBoardCreate(cmd *cobra.Command, _ []string) error {
@@ -206,7 +160,7 @@ func runBoardCreate(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("getting blocked-by flag: %w", err)
 	}
 
-	issue, err := localTracker.CreateIssueWithOptions(context.Background(), tracker.LocalIssueCreateOptions{
+	return board.CreateIssue(context.Background(), cmd.OutOrStdout(), localTracker, board.CreateOptions{
 		Title:       title,
 		Description: description,
 		ParentID:    parentID,
@@ -214,12 +168,6 @@ func runBoardCreate(cmd *cobra.Command, _ []string) error {
 		Labels:      labels,
 		BlockedBy:   blockedBy,
 	})
-	if err != nil {
-		return err
-	}
-
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", issue.ID)
-	return nil
 }
 
 func runBoardShow(cmd *cobra.Command, args []string) error {
@@ -227,59 +175,7 @@ func runBoardShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-
-	issue, err := localTracker.GetIssue(context.Background(), args[0])
-	if err != nil {
-		return err
-	}
-
-	comments, err := localTracker.ListComments(context.Background(), args[0])
-	if err != nil {
-		return err
-	}
-
-	out := cmd.OutOrStdout()
-	_, _ = fmt.Fprintf(out, "ID: %s\n", issue.ID)
-	_, _ = fmt.Fprintf(out, "State: %s\n", issue.State)
-	_, _ = fmt.Fprintf(out, "Title: %s\n", issue.Title)
-	_, _ = fmt.Fprintf(out, "Labels: %s\n", strings.Join(issue.Labels, ","))
-	_, _ = fmt.Fprintf(out, "Assignee: %s\n", issue.Assignee)
-	_, _ = fmt.Fprintf(out, "Parent: %s\n", issue.ParentID)
-	_, _ = fmt.Fprintf(out, "Children: %s\n", strings.Join(issue.ChildIDs, ","))
-	_, _ = fmt.Fprintf(out, "BlockedBy: %s\n", strings.Join(issue.BlockedBy, ","))
-	_, _ = fmt.Fprintf(out, "ClaimedBy: %s\n", issue.ClaimedBy)
-	if teamName, ok := issue.TrackerMeta["team_name"].(string); ok && teamName != "" {
-		_, _ = fmt.Fprintf(out, "Team: %s\n", teamName)
-	}
-	if teamStatus, ok := issue.TrackerMeta["team_status"].(string); ok && teamStatus != "" {
-		_, _ = fmt.Fprintf(out, "TeamStatus: %s\n", teamStatus)
-	}
-	if teamPhase, ok := issue.TrackerMeta["team_phase"].(string); ok && teamPhase != "" {
-		_, _ = fmt.Fprintf(out, "TeamPhase: %s\n", teamPhase)
-	}
-	_, _ = fmt.Fprintf(out, "CreatedAt: %s\n", issue.CreatedAt.Format("2006-01-02T15:04:05Z07:00"))
-	_, _ = fmt.Fprintf(out, "UpdatedAt: %s\n", issue.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"))
-	_, _ = fmt.Fprintln(out, "")
-	_, _ = fmt.Fprintln(out, "Description:")
-	_, _ = fmt.Fprintln(out, issue.Description)
-	_, _ = fmt.Fprintln(out, "")
-	_, _ = fmt.Fprintln(out, "Comments:")
-	if len(comments) == 0 {
-		_, _ = fmt.Fprintln(out, "(none)")
-		return nil
-	}
-
-	for _, comment := range comments {
-		_, _ = fmt.Fprintf(
-			out,
-			"- [%s] %s: %s\n",
-			comment.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-			comment.Author,
-			comment.Body,
-		)
-	}
-
-	return nil
+	return board.ShowIssue(context.Background(), cmd.OutOrStdout(), localTracker, args[0])
 }
 
 func runBoardMove(cmd *cobra.Command, args []string) error {
@@ -287,19 +183,7 @@ func runBoardMove(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-
-	state, err := tracker.ParseLocalBoardState(args[1])
-	if err != nil {
-		return err
-	}
-
-	issue, err := localTracker.MoveIssue(context.Background(), args[0], state)
-	if err != nil {
-		return err
-	}
-
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s -> %s\n", issue.ID, issue.State)
-	return nil
+	return board.MoveIssue(context.Background(), cmd.OutOrStdout(), localTracker, args[0], args[1])
 }
 
 func runBoardComment(cmd *cobra.Command, args []string) error {
@@ -313,12 +197,7 @@ func runBoardComment(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("getting body flag: %w", err)
 	}
 
-	if err := localTracker.AddComment(context.Background(), args[0], body); err != nil {
-		return err
-	}
-
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "commented on %s\n", args[0])
-	return nil
+	return board.CommentIssue(context.Background(), cmd.OutOrStdout(), localTracker, args[0], body)
 }
 
 func runBoardAssign(cmd *cobra.Command, args []string) error {
@@ -326,16 +205,12 @@ func runBoardAssign(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-
-	issue, err := localTracker.AssignIssue(context.Background(), args[0], args[1])
-	if err != nil {
-		return err
-	}
-
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s -> %s\n", issue.ID, issue.Assignee)
-	return nil
+	return board.AssignIssue(context.Background(), cmd.OutOrStdout(), localTracker, args[0], args[1])
 }
 
+// loadLocalBoardTracker resolves the internal-board tracker from CLI flags. It
+// stays a package-main identifier because the (untouched) localonly board
+// dispatch command consumes it directly.
 func loadLocalBoardTracker(cmd *cobra.Command, allowPrefixOverride bool) (*tracker.LocalTracker, error) {
 	cfgPath, err := cmd.Flags().GetString("config")
 	if err != nil {
@@ -355,33 +230,9 @@ func loadLocalBoardTracker(cmd *cobra.Command, allowPrefixOverride bool) (*track
 		}
 	}
 
-	cfg := &config.WorkflowConfig{}
-	if cfgPath != "" {
-		parsed, err := config.ParseWorkflow(cfgPath)
-		if err != nil {
-			return nil, fmt.Errorf("parsing workflow config: %w", err)
-		}
-		cfg = parsed
-	}
-
-	boardDir := cfg.LocalBoardDir()
-	if dirOverride != "" {
-		boardDir = dirOverride
-	}
-
-	issuePrefix := cfg.LocalIssuePrefix()
-	if prefixOverride != "" {
-		issuePrefix = prefixOverride
-	}
-
-	actor := os.Getenv("TRACKER_ACTOR")
-	if actor == "" {
-		actor = cfg.GitHubAssignee()
-	}
-
-	return tracker.NewLocalTracker(tracker.LocalConfig{
-		BoardDir:    boardDir,
-		IssuePrefix: issuePrefix,
-		Actor:       actor,
-	}), nil
+	return board.LoadTracker(board.TrackerOptions{
+		ConfigPath:     cfgPath,
+		DirOverride:    dirOverride,
+		PrefixOverride: prefixOverride,
+	})
 }

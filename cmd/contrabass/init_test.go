@@ -103,18 +103,3 @@ func TestInitCmd_DefaultOutputName(t *testing.T) {
 	_, err = os.Stat("WORKFLOW.md")
 	assert.NoError(t, err, "WORKFLOW.md should exist in cwd when --output is omitted")
 }
-
-func TestInitCmd_CloudTemplateIsValid(t *testing.T) {
-	// Confirm the cloud template contains valid YAML front matter delimiters.
-	assert.True(t, strings.HasPrefix(cloudWorkflowTemplate, "---\n"),
-		"cloud template must start with front matter")
-	count := strings.Count(cloudWorkflowTemplate, "---")
-	assert.GreaterOrEqual(t, count, 2, "cloud template must have opening and closing --- delimiters")
-}
-
-func TestInitCmd_LocalTemplateIsValid(t *testing.T) {
-	assert.True(t, strings.HasPrefix(localWorkflowTemplate, "---\n"),
-		"local template must start with front matter")
-	count := strings.Count(localWorkflowTemplate, "---")
-	assert.GreaterOrEqual(t, count, 2, "local template must have opening and closing --- delimiters")
-}
