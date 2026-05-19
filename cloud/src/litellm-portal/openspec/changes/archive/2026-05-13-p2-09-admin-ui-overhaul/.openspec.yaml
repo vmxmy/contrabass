@@ -1,4 +1,0 @@
-schema: spec-driven
-created: 2026-05-13
-priority: P2
-depends_on: [p2-08-kumo-admin-navigation]
