@@ -1,6 +1,7 @@
-package main
+package worker
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -194,8 +195,6 @@ func TestWorkerSessionManagerConcurrentAccess(t *testing.T) {
 }
 
 func TestWorkerCommandSessionManagerIsWiredAfterRegistration(t *testing.T) {
-	defer resetWorkerFlagState()
-
 	store := &fakeWorkerEnrollmentStore{byTeam: map[string]workerEnrollment{
 		"team-soak": {TeamID: "team-soak", WorkerID: "worker-soak", RefreshToken: "soak-refresh"},
 	}}
@@ -238,9 +237,11 @@ func TestWorkerCommandSessionManagerIsWiredAfterRegistration(t *testing.T) {
 	})
 	defer restoreLookup()
 
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"worker", "--team", "team-soak", "--api-url", server.URL})
-	require.NoError(t, cmd.Execute())
+	require.NoError(t, Run(context.Background(), RunConfig{
+		TeamID:         "team-soak",
+		APIBaseURL:     server.URL,
+		MaxConcurrency: 1,
+	}, &bytes.Buffer{}))
 
 	require.NotNil(t, capturedRegistration.Session,
 		"Session manager must be set on the registration passed to the dispatch consumer")

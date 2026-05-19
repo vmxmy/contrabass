@@ -1,4 +1,4 @@
-package main
+package worker
 
 import (
 	"bytes"
@@ -48,19 +48,22 @@ var (
 	errWorkerEnrollmentNotFound = errors.New("worker enrollment not found")
 )
 
-var workerLoginCmd = &cobra.Command{
-	Use:   "login",
-	Short: "Enroll this machine as a cloud worker",
-	Long: `Exchange a one-time enrollment code from the Contrabass dashboard for a
+// NewLoginCmd builds the "worker login" Cobra subcommand. The CLI wiring layer
+// attaches it to the parent worker command; all enrollment business logic lives
+// in this package.
+func NewLoginCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "login",
+		Short: "Enroll this machine as a cloud worker",
+		Long: `Exchange a one-time enrollment code from the Contrabass dashboard for a
 worker refresh token and store it in the OS-native credential store.`,
-	RunE: runWorkerLogin,
-}
-
-func init() {
-	workerLoginCmd.Flags().String("code", "", "one-time enrollment code from the dashboard (required)")
-	workerLoginCmd.Flags().String("api-url", defaultWorkerAPIBaseURL, "Contrabass cloud API base URL")
-	workerLoginCmd.Flags().String("worker-id", "", "optional worker ID to request during enrollment")
-	_ = workerLoginCmd.MarkFlagRequired("code")
+		RunE: runWorkerLogin,
+	}
+	cmd.Flags().String("code", "", "one-time enrollment code from the dashboard (required)")
+	cmd.Flags().String("api-url", defaultWorkerAPIBaseURL, "Contrabass cloud API base URL")
+	cmd.Flags().String("worker-id", "", "optional worker ID to request during enrollment")
+	_ = cmd.MarkFlagRequired("code")
+	return cmd
 }
 
 func runWorkerLogin(cmd *cobra.Command, _ []string) error {
