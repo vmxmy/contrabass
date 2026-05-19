@@ -1,6 +1,6 @@
 //go:build localonly
 
-package main
+package team
 
 import (
 	"context"
@@ -13,8 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/junhoyeo/contrabass/internal/config"
 	"github.com/junhoyeo/contrabass/internal/team"
 	"github.com/junhoyeo/contrabass/internal/types"
@@ -22,50 +20,23 @@ import (
 
 const workerHeartbeatInterval = 5 * time.Second
 
-var teamWorkerCmd = &cobra.Command{
-	Use:   "worker",
-	Short: "Run as a team worker in a tmux pane",
-	RunE:  runTeamWorker,
+// workerOptions configures a single team worker run.
+type workerOptions struct {
+	ConfigPath string
+	TeamName   string
+	WorkerID   string
+	TaskFile   string
 }
 
-func init() {
-	teamWorkerCmd.Flags().StringP("config", "c", "", "path to WORKFLOW.md file (required)")
-	teamWorkerCmd.Flags().StringP("name", "n", "", "team name (required)")
-	teamWorkerCmd.Flags().String("worker-id", "", "worker ID (required)")
-	teamWorkerCmd.Flags().String("task-file", "", "path to task prompt file")
-
-	_ = teamWorkerCmd.MarkFlagRequired("config")
-	_ = teamWorkerCmd.MarkFlagRequired("name")
-	_ = teamWorkerCmd.MarkFlagRequired("worker-id")
-
-	teamCmd.AddCommand(teamWorkerCmd)
-}
-
-func runTeamWorker(cmd *cobra.Command, args []string) error {
-	cfgPath, err := cmd.Flags().GetString("config")
-	if err != nil {
-		return fmt.Errorf("getting config flag: %w", err)
-	}
-
-	teamName, err := cmd.Flags().GetString("name")
-	if err != nil {
-		return fmt.Errorf("getting name flag: %w", err)
-	}
-
-	workerID, err := cmd.Flags().GetString("worker-id")
-	if err != nil {
-		return fmt.Errorf("getting worker-id flag: %w", err)
-	}
-
-	taskFile, err := cmd.Flags().GetString("task-file")
-	if err != nil {
-		return fmt.Errorf("getting task-file flag: %w", err)
-	}
-
-	cfg, err := config.ParseWorkflow(cfgPath)
+func runTeamWorker(opts workerOptions) error {
+	cfg, err := config.ParseWorkflow(opts.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("parsing workflow config: %w", err)
 	}
+
+	teamName := opts.TeamName
+	workerID := opts.WorkerID
+	taskFile := opts.TaskFile
 
 	paths := team.NewPaths(cfg.TeamStateDir())
 	store := team.NewStore(paths)

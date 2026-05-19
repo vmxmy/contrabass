@@ -1,4 +1,6 @@
-package main
+//go:build localonly
+
+package team
 
 import (
 	"context"

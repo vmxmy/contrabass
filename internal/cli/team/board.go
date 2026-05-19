@@ -1,4 +1,6 @@
-package main
+//go:build localonly
+
+package team
 
 import (
 	"context"
@@ -15,7 +17,7 @@ import (
 
 var teamNamePattern = regexp.MustCompile(`[^a-z0-9]+`)
 
-type teamEventHandler func(context.Context, types.TeamEvent)
+type eventHandler func(context.Context, types.TeamEvent)
 
 type boardTeamPlan struct {
 	Tasks        []types.TeamTask
@@ -26,7 +28,7 @@ func consumeTeamEvents(
 	ctx context.Context,
 	logger *slog.Logger,
 	events <-chan types.TeamEvent,
-	handlers ...teamEventHandler,
+	handlers ...eventHandler,
 ) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
