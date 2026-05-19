@@ -1,6 +1,6 @@
 //go:build !localonly
 
-package main
+package tui
 
 import (
 	"flag"
@@ -9,9 +9,10 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/junhoyeo/contrabass/internal/tui"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	tui "github.com/junhoyeo/contrabass/internal/tui"
 )
 
 var updateGolden = flag.Bool("update", false, "update golden snapshot files")
@@ -30,7 +31,7 @@ func normalizeSpinner(s string) string {
 }
 
 func goldenPath(name string) string {
-	return filepath.Join("..", "..", "testdata", "snapshots", name+".txt")
+	return filepath.Join("..", "..", "..", "testdata", "snapshots", name+".txt")
 }
 
 func assertGolden(t *testing.T, name, got string) {
