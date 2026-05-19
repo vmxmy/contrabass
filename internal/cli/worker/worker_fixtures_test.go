@@ -1,6 +1,7 @@
-package main
+package worker
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -17,8 +18,8 @@ import (
 	workerv1 "github.com/junhoyeo/contrabass/internal/workerproto/v1"
 )
 
-// workerProtoFixtureDir is the path from cmd/contrabass/ to the shared fixture directory.
-const workerProtoFixtureDir = "../../testdata/workerproto/v1"
+// workerProtoFixtureDir is the path from internal/cli/worker/ to the shared fixture directory.
+const workerProtoFixtureDir = "../../../testdata/workerproto/v1"
 
 func loadWorkerFixture(t *testing.T, name string) []byte {
 	t.Helper()
@@ -294,8 +295,6 @@ func TestLongPollDispatchDeliversFixtureFrame(t *testing.T) {
 // server) and validates that the workerRegistration struct is populated from
 // the fixture fields.
 func TestMockCloudServerRegistrationSuccessWithFixtures(t *testing.T) {
-	defer resetWorkerFlagState()
-
 	store := &fakeWorkerEnrollmentStore{byTeam: map[string]workerEnrollment{
 		"team-alpha": {
 			TeamID:       "team-alpha",
@@ -346,9 +345,11 @@ func TestMockCloudServerRegistrationSuccessWithFixtures(t *testing.T) {
 	})
 	defer restoreLookup()
 
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"worker", "--team", "team-alpha", "--api-url", server.URL})
-	require.NoError(t, cmd.Execute())
+	require.NoError(t, Run(context.Background(), RunConfig{
+		TeamID:         "team-alpha",
+		APIBaseURL:     server.URL,
+		MaxConcurrency: 1,
+	}, &bytes.Buffer{}))
 
 	// The registration fixture specifies leaseSec=60 and heartbeatIntervalSec=20.
 	assert.Equal(t, workerv1.LeaseSec(60), capturedRegistration.LeaseSec)
